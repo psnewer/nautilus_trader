@@ -6,6 +6,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
@@ -29,12 +30,46 @@ from src.arbitrage.strategy.signals import SignalStore
 
 
 # ── 工具:fake loop / actions / portfolio ────────────────────────
+class _FakeTask:
+    """最小 task-like(#260):承载 coro + done-callback。
+
+    真 `asyncio.Task` 完成时由 loop 自动触发 callback;fake loop 没有 loop,故由 `_drain`
+    await 完 coro 后显式 `_complete(...)`,让 `_on_eval_done` 与生产同形地拿到 result/exception。
+    """
+
+    def __init__(self, coro):
+        self.coro = coro
+        self._callbacks = []
+        self._result = None
+        self._exc = None
+
+    def add_done_callback(self, cb):
+        self._callbacks.append(cb)
+
+    def cancelled(self):
+        return False
+
+    def exception(self):
+        return self._exc
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+    def _complete(self, result=None, exc=None):
+        self._result, self._exc = result, exc
+        for cb in self._callbacks:
+            cb(self)
+
+
 class _FakeLoop:
     def __init__(self):
         self.tasks = []
     def create_task(self, coro):
-        self.tasks.append(coro)
-        return coro
+        task = _FakeTask(coro)
+        self.tasks.append(task)
+        return task
 
 
 class _RecordingAction(Action):
@@ -138,11 +173,25 @@ def _harness(
     return actor, store, pair_reg, strat_reg, loop, active_flag
 
 
-async def _drain(loop):
-    """跑光 fake loop 中所有 task(evaluate + fire 都走 create_task)。"""
+async def _drain(loop, *, expect_exception: bool = False):
+    """跑光 fake loop 中所有 task,并按生产同形触发 done-callback(#260)。
+
+    默认异常照旧上抛(否则新引入的错误会被 `_FakeTask` 吞掉而测试仍绿);
+    故意制造异常的用例传 `expect_exception=True`,拿回异常列表自行断言。
+    """
+    raised = []
     while loop.tasks:
-        coro = loop.tasks.pop(0)
-        await coro
+        task = loop.tasks.pop(0)
+        try:
+            result = await task.coro
+        except Exception as e:                 # noqa: BLE001 — 复刻 Task 捕获异常的语义
+            task._complete(exc=e)              # callback 要能看到 exception(闸据此释放)
+            raised.append(e)
+            if not expect_exception:
+                raise
+        else:
+            task._complete(result=result)
+    return raised
 
 
 def _run(coro):
@@ -505,7 +554,9 @@ def test_same_pair_concurrent_eval_fires_once():
     assert len(loop.tasks) == 1                        # 只派发了一个评估 task(第二个被闸挡)
     _run(_drain(loop))
     assert arb_action.calls == 1                       # 只 fire 一次
-    assert gate.is_in_flight("match_X") is True        # fire 后持有,交执行清(本测试无 execution)
+    # #260:`_RecordingAction` 不提交任何订单 → 所有权未交出 → 闸必须归还。
+    # 旧断言是 `is True`(fire 即持有),那正是泄漏本身:action 空转也永久占闸,该 pair 再不被评估。
+    assert gate.is_in_flight("match_X") is False
 
 
 # ── eval.16(§6.10 §7):不同 pair 不互相阻塞 ──
@@ -680,3 +731,94 @@ def test_ended_releases_sports_and_obd_subscriptions():
     assert 888 not in actor._sports_subscribed
     assert 888 not in actor._game_obd
     assert actor._obd_subscribed == set()           # 各腿 OBD 已退订(归零 → book 回收)
+
+# ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────
+class _SubmittingAction(Action):
+    """模拟"单已送到 Risk":直接 bump 计数。
+
+    真实提交路径(`msgbus.send` 后才 ++)由 `test_submitter.py` 覆盖;这里只验交接判据的消费端。
+    """
+    async def execute(self, ctx):
+        ctx.submitter.submitted_count += 1
+
+
+class _RaisingAction(Action):
+    async def execute(self, ctx):
+        raise RuntimeError("action boom")
+
+
+def _gate_harness(action):
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    gate = PairInFlightGate()
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    store.view("match_X").set_persistent("arb_on", True)
+    return gate, actor, loop
+
+
+def test_gate_held_when_action_submits():
+    """有单送到 Risk → 所有权交执行,闸**不**释放(由 barrier / session 出口清)。"""
+    gate, actor, loop = _gate_harness(_SubmittingAction())
+
+    actor.on_data(_mp(confidence=1.0))
+    _run(_drain(loop))
+
+    assert gate.is_in_flight("match_X") is True
+
+
+def test_gate_released_when_actions_submit_nothing():
+    """action 跑了但零提交(上游清空 legs / 内部 abort)→ 闸必须归还。
+
+    #105 ② 的出口枚举缺这一条:既未 fire-abort(finally 不释放),又无 SubmitOrder 到 Risk
+    (barrier 不触发)、无 session(exec_finished 不触发)→ 旧代码下该 pair 永久失效。
+    """
+    gate, actor, loop = _gate_harness(_RecordingAction("arb"))
+
+    actor.on_data(_mp(confidence=1.0))
+    _run(_drain(loop))
+
+    assert gate.is_in_flight("match_X") is False
+
+
+def test_gate_released_when_action_raises():
+    """action 链中途抛异常 → task 以 exception 完成 → 闸归还(不是永久占用)。
+
+    注:`_on_eval_done` 里那条 `Strategy evaluate failed` 日志本测试**不断言** —— NT `Logger`
+    是只读 Cython 属性、`init_logging` 每进程只能调一次,拦不住;该日志靠代码审查保证。
+    这里断言的是可观测的闸行为。
+    """
+    gate, actor, loop = _gate_harness(_RaisingAction())
+
+    actor.on_data(_mp(confidence=1.0))
+    raised = _run(_drain(loop, expect_exception=True))
+
+    assert [type(e).__name__ for e in raised] == ["RuntimeError"]
+    assert gate.is_in_flight("match_X") is False
+
+
+def test_gate_released_when_task_scheduling_fails():
+    """`_create_task` 抛(如非 loop 线程调 create_task)→ 协程从未排程,闸安全归还且异常上抛。"""
+    import pytest
+
+    gate, actor, loop = _gate_harness(_RecordingAction("arb"))
+    loop.create_task = MagicMock(side_effect=RuntimeError("Non-thread-safe operation"))
+
+    with pytest.raises(RuntimeError, match="Non-thread-safe"):
+        actor.on_data(_mp(confidence=1.0))
+
+    assert gate.is_in_flight("match_X") is False
+
+
+def test_released_gate_allows_reevaluation():
+    """零提交释放后,同 pair 下一轮能再次被评估(不是永久失效)。"""
+    action = _RecordingAction("arb")
+    gate, actor, loop = _gate_harness(action)
+
+    actor.on_data(_mp(confidence=1.0))
+    _run(_drain(loop))
+    actor.on_data(_mp(confidence=1.0))
+    _run(_drain(loop))
+
+    assert action.calls == 2
+    assert gate.is_in_flight("match_X") is False

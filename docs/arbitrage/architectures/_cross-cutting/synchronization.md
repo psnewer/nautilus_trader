@@ -143,23 +143,35 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 | 时机 | 组件 | 动作 |
 |---|---|---|
-| OBD 回调 `_route_eval`(**同步**,`create_task` 之前) | Strategy | `try_enter(pair)`:已在飞 → **直接放弃**(`return`,不 create_task);否则置位 |
-| `_evaluate_and_fire` 收尾(finally) | Strategy | **未 fire**(无机会/abort/异常)→ `release_eval(pair)`;**已 fire** → 不释放(所有权交执行) |
+| OBD 回调 `_dispatch_eval`(**同步**,`create_task` 之前) | Strategy | `try_enter(pair)`:已在飞 → **直接放弃**(`return`,不 create_task);否则置位 |
+| 评估 task 完成(`_on_eval_done`,done-callback) | Strategy | `handed_off=False`(零提交/异常/取消)→ `release_eval(pair)`;`True` → 不释放(所有权交执行)。**#260**:加锁与释放同层对称,取代原先写在 `_evaluate_and_fire` finally 里的释放 |
 | `_begin_session`(per-leg,同步段) | execution | `exec_started(pair)`:per-pair execution session 计数 ++ |
 | `_end_session`(terminal/timeout) | execution | `exec_finished(pair)`:计数 --;**归 0 → 释放 in-flight** |
 
 **交接(strategy → execution)无空窗**:strategy fire 后**不释放**(in-flight 持续置位),异步 `_submit_order` 到 `_begin_session` 才 `exec_started` —— 这中间 in-flight 一直由 strategy 持有,并发 OBD 进来即被 `try_enter` 挡掉。执行全部结束(双腿 session 计数归 0)由 execution 释放。
 
-**置位一定有出口 —— 靠结构保证,无兜底猜测(#105 ②,2026-06-15)**:
-不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。每条 in-flight 的清除都由确定的结构路径兜到底,枚举如下:
+**置位一定有出口 —— 靠结构保证,无兜底猜测(#105 ②,2026-06-15;枚举方式 #260 修正,2026-07-22)**:
+不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。
 
-| fire 后所有权去向 | 清除路径 |
-|---|---|
-| 未 fire(无机会/abort/异常) | strategy `_evaluate_and_fire` finally `release_eval`(`exec_count==0` → 清) |
-| 进 execution(submit+track / cancel-only 残单) | `exec_started`↔`exec_finished` 配对;**`exec_finished` 一定走到** —— `_begin_session` 把 watchdog 与 `exec_started` 原子置位(watchdog 先 arm,见 execution §4.2),终态或绝对超时必触发 `_end_session`;`_end_session` 把 `exec_finished` 提到 publish 之前,publish 抛也不漏减 |
-| 全腿被 risk deny / barrier 超时(没进 venue) | opportunity barrier 出口:risk `_deny_order` publish `risk.opportunity.leg_denied` / barrier timeout → `_finish` → `release_eval`(此刻 `exec_count==0`,可清);连一腿都没 pass(ctx 为 None)时用 `pair_id` 合成 ctx 仍 `release_eval`(execution §3.5 / engine.py) |
+> **⚠️ 按"路径"枚举会漏,必须按"所有权状态"枚举(#260)。**
+> `#105 ②` 原表按清除**路径**组织,隐含前提是「fire ⟹ 至少一个 `SubmitOrder` 到达 Risk」。
+> 该前提不成立:`PlaceBetsAction` 有 4 个零提交 early return,上游 `ShareLimitModification` /
+> `CandiSelectAction` 另有 5 处主动清空 `legs`(其中 `remaining <= 0` = 打满 share limit,**常态**),
+> action 链中途抛异常也会跳过 `PlaceBetsAction`。这些情况下三条路径**一条都不触发** ——
+> 该 pair 永久失效直到重启,且几乎无日志。路径可以漏,状态不会。
 
-- `release_eval` 只在 `exec_count==0` 时清(fire 后 exec_count>0 则 no-op,交 `exec_finished` 清),故 barrier 出口与执行交接互不误清。
+**闸持有期恰好三种所有权状态,每种恰好一个出口:**
+
+| # | 所有权状态 | 判定 | 唯一出口 |
+|---|---|---|---|
+| 1 | **评估中**(单还没离开 strategy) | 评估 task 完成时 `submitter.submitted_count == 0` | strategy `_on_eval_done` → `release_eval`(`exec_count==0` → 清)。覆盖:无机会 / 让路 / 上游清空 legs / action abort / action 抛异常 / task 被取消 |
+| 2 | **已提交、待进 venue**(单到了 Risk,session 未起) | 全腿被 risk deny 或 barrier 超时 | opportunity barrier 出口:risk `_deny_order` publish `risk.opportunity.leg_denied` / barrier timeout → `_finish` → `release_eval`(此刻 `exec_count==0`,可清);连一腿都没 pass(ctx 为 None)时用 `pair_id` 合成 ctx 仍 `release_eval`(execution §3.5 / engine.py) |
+| 2b | **cancel-only**(残留挂单 → 撤单代替下单) | `_cancel_only` | **撤单与下单同走 session,不特殊处理闸**:`_cancel_residual_orders` 同步为每条残单 `_begin_cancel_session` → `exec_started`,pair 因此**进入状态 3**,由 `exec_finished` 释放;`_cancel_only` 末尾那次 `release_eval` 因 `exec_count>0` 是 **no-op**,只兜「一个 cancel session 都没起」(client 无该方法 / coid 已有 active session) |
+| 3 | **执行中**(session 已建立) | `exec_count > 0` | `exec_started`↔`exec_finished` 配对;**`exec_finished` 一定走到** —— `_begin_session` 把 watchdog 与 `exec_started` 原子置位(watchdog 先 arm,见 execution §4.2),终态或绝对超时必触发 `_end_session`;`_end_session` 把 `exec_finished` 提到 publish 之前,publish 抛也不漏减 |
+
+- **状态 1→2 的交接判据 = `submitter.submitted_count > 0`**(`msgbus.send` 之后才 ++),不是"哪个 action 跑到了"。判据在 strategy 侧,对新增 action 免维护;落地见 strategy `architecture.md`「pair 闸的所有权出口」。
+- `release_eval` 只在 `exec_count==0` 时清(进状态 3 后 no-op,交 `exec_finished` 清),故 barrier 出口与执行交接互不误清。
+- **排程失败**(`_create_task` 抛)不属于任何一态:协程从未排程、一定不会下单,`_dispatch_eval` 就地 `release_eval` 后原样抛出。
 
 ### 7.4 与既有机制的关系
 
@@ -219,7 +231,7 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 - **cancel-only 的撤单(✅ #105 已落地 2026-06-14)**:**撤单也是一次执行,纳入 exec_count** —— base `_cancel_residual_orders` 对每条残单**同步 `exec_started`**(先全加完,避免某条先完成提前清)+ `create_task(_tracked_residual_cancel)`;`_tracked_residual_cancel` 在 `finally` `exec_finished`。子类只实现 `_cancel_residual_one`(真实 venue 撤单)。**这堵住了"`exec_count→0`(session 结束)时撤单 task 还在跑"** —— 撤单 task 在跑则 exec_count>0,不会提前清。`test_orbitexch_client.py::test_cancel_residual_tracked_*`。
 - **watchdog 保留**:它是"session 起了但 terminal 不来(卡单)"的保证 —— **session 一定结束**(`_end_session`→`exec_finished`),卡单本身(订单在 venue 上死活)是 venue liveness / 订单终态的事(reconcile 写 `VenueExecutionLiveness`),不是 in-flight 的事。**#105 ②**:watchdog 与 `exec_started` 在 `_begin_session` 内**原子置位**(watchdog 先 arm),保证"只要 exec_count++ 就一定有出口"。
 - **deny 已解决(✅ #105 barrier,2026-06-14)**:strategy fired、全腿被 risk deny → 不进 execution(`exec_count==0`)曾会漏 in-flight。现由 **opportunity barrier**(§8.4bis)兜:risk `_deny_order` publish `risk.opportunity.leg_denied` → barrier `_finish` → `release_eval`(`exec_count==0` 可清);连一腿都没 pass(ctx 为 None)时用 `pair_id` 合成 ctx 仍 `release_eval`。barrier timeout 同走 `_finish`。**deny 不再需要 max-hold。**
-- **退役(✅ 2026-06-15,用户拍板"都撤")**:① **A5 desync 兜底**(2026-06-14 回退:误清 fire→`_begin_session` handoff 窗口);② **max-hold 陈旧自愈** + ③ **`health_check.finished→clear_all`** —— 已**全部删除**。`try_enter(pair)` 不再带时间戳参数;`PairInFlightGate` 不再有 `clear_all`;strategy 不再注入 `leg_settled`。前置 ①(barrier 兜 deny)与 ②(watchdog↔exec_started 原子 + `_end_session` 出口对称)落地后,所有 in-flight 出口已靠结构保证(§7.3),兜底删除安全。
+- **退役(✅ 2026-06-15,用户拍板"都撤")**:① **A5 desync 兜底**(2026-06-14 回退:误清 fire→`_begin_session` handoff 窗口);② **max-hold 陈旧自愈** + ③ **`health_check.finished→clear_all`** —— 已**全部删除**。`try_enter(pair)` 不再带时间戳参数;`PairInFlightGate` 不再有 `clear_all`;strategy 不再注入 `leg_settled`。前置 ①(barrier 兜 deny)与 ②(watchdog↔exec_started 原子 + `_end_session` 出口对称)落地后,所有 in-flight 出口已靠结构保证(§7.3),兜底删除安全。**⚠️ #260(2026-07-22)修正**:此处「fired 但一腿 session 都没起」只拆了「全 deny」「cancel-only 丢弃」两个子情形,**漏了第三个:action 链零提交**(上游清空 legs / action abort / 中途抛异常 → 连 `SubmitOrder` 都没到 Risk,barrier 与 session 均不触发)。删 max-hold 之前该情形由 max-hold 自愈掩盖,删后成为永久泄漏。现由 §7.3 状态 1 的 `_on_eval_done` 出口覆盖。
 
 ### 8.4bis opportunity execution barrier(已落地代码,待 live 验证,2026-06-14)
 

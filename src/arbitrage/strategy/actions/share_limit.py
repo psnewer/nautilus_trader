@@ -152,14 +152,25 @@ class ShareLimitModification(Action):
         requested_by_leg = []
         remaining_values = []
         scale = 1.0
+        # #260:丢弃 candidate 必须留痕 —— 单机会路径对相同条件有 warning(见 `execute` 内
+        # "missing qty/share_if_wins, clear legs"),这里原本两处静默 `return None`,
+        # 导致候选凭空消失、`CandiSelectAction` 从缩小的集合里选而无从追查。
         for leg in legs:
             venue = str(leg.get("venue", "")).upper()
             role = str(leg.get("role", ""))
             if not venue or not role:
+                _LOG.warning(
+                    f"ShareLimitModification: pair={pair_id} candidate={idx} "
+                    f"leg={leg.get('instrument_id')} missing venue/role, drop candidate",
+                )
                 return None
 
             requested_share = _leg_share_if_wins(leg, venue)
             if requested_share is None or requested_share <= 0:
+                _LOG.warning(
+                    f"ShareLimitModification: pair={pair_id} candidate={idx} "
+                    f"leg={leg.get('instrument_id')} missing qty/share_if_wins, drop candidate",
+                )
                 return None
 
             if is_decimal_odds_venue(venue):
@@ -167,6 +178,12 @@ class ShareLimitModification(Action):
             else:
                 remaining = self._probability_remaining(portfolio, pair_id, venue, role, max_leg_share)
             if remaining <= 0:
+                # 额度用满是**常态**(单机会路径同条件打 info)。candidate 路径每轮可能命中多次,
+                # 故降为 DEBUG:留痕可查,但不刷屏。
+                _LOG.debug(
+                    f"ShareLimitModification: pair={pair_id} candidate={idx} "
+                    f"venue={venue} role={role} remaining={remaining:.4f} <= 0, drop candidate",
+                )
                 return None
             scale = min(scale, remaining / requested_share)
             remaining_values.append(remaining)

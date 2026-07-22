@@ -222,11 +222,13 @@ class StrategyEvaluator(Actor):
             self._aevaluate(strategy.arbitrage_tree, arb_ctx),
             self._aevaluate(strategy.compensation_tree, comp_ctx),
         )
-        # 套利 > 补救;fire-and-forget(不阻塞)
+        # 套利 > 补救。#260:actions 改 `await`(原 fire-and-forget),因为返回值 handed_off
+        # 需要 actions 跑完后的 submitter 计数;详见下方「pair 闸的所有权出口」。
         if arb_res.hit and arb_res.pending_action is not None:
-            self._create_task(arb_res.pending_action.execute(arb_ctx))
+            await self._execute_actions(arb_res.pending_actions, arb_ctx)
         elif comp_res.hit and comp_res.pending_action is not None:
-            self._create_task(comp_res.pending_action.execute(comp_ctx))
+            await self._execute_actions(comp_res.pending_actions, comp_ctx)
+        return submitter.submitted_count > 0                     # handed_off
 
     async def _aevaluate(self, tree, ctx):
         return evaluate_tree(tree, ctx)         # sync evaluate 包成 coroutine 供 gather;
@@ -236,14 +238,71 @@ class StrategyEvaluator(Actor):
 
 `StrategyEvaluator` 的异步派发通过 `_create_task(...)` 统一处理:生产路径使用 NT kernel
 `Actor.register_executor(...)` 注入的运行 loop;`StrategyEvaluator.register_executor(...)` 先调用
-NT 原生注册,再把同一个 loop 保存为 Python 侧调度指针。NT `MessageBus` handler 是同步调用,
-`on_data` 不保证处于 asyncio task 内,所以不能把 `asyncio.get_running_loop()` 当作调度入口;若当前
-running loop 正是注册 loop,直接 `create_task`,否则通过 `registered_loop.call_soon_threadsafe(...)`
-投递。deps 注入的 `loop` 只作为未注册 executor 的单测 fallback。
+NT 原生注册,再把同一个 loop 保存为 Python 侧调度指针。deps 注入的 `loop` 只作为未注册 executor
+的单测 fallback。
+
+> **⚠️ 本段原文(2026-06-30 ~ 2026-07-22)把两个不同问题混写成一条,已按 #260 拆开。**
+> 旧文写"`on_data` 不保证处于 asyncio task 内,所以不能把 `get_running_loop()` 当作调度入口;
+> 若当前 running loop 正是注册 loop 直接 `create_task`,否则 `call_soon_threadsafe` 投递",
+> 读起来像"那条 fallback 是为下面那次事故写的"。实际是两件事:
+
+| | 问题 | 状态 |
+|---|---|---|
+| **A** | **loop 身份取错** —— `add_actors()` 在 `node.run()` 之前捕获的 loop 不是节点实际运行的 loop,协程投上去永不执行 | **真实事故**(见下段),由 `register_executor` 解决 |
+| **B** | **当前不在该 loop 上** —— 需要跨线程投递 | **未证实的假设**,#260 已删除该分支 |
+
+A 已由 NT 保证:`kernel.py` 在 `start_async()`(本身已跑在 kernel loop 上)内调 `_register_executor()`
+→ `actor.register_executor(self._loop, ...)`,拿到的就是真正运行中的 loop。因此 `_create_task`
+只需 `loop.create_task(coro)`。
+
+B 的 `call_soon_threadsafe` 分支 **#260 删除**,理由(同 `#105 ②`「无兜底猜测」纪律):
+① 它返回 `Handle` 而非 Task,挂不了 done-callback → pair 闸的释放会静默失效;
+② 它把"协程会不会跑"变成模糊态,导致在其上设计释放逻辑必然出错;
+③ 真发生时 `loop.create_task` 会响亮抛 `RuntimeError: Non-thread-safe operation ...`,
+届时按实际成因解决,而不是预先用一条未经验证的分支把问题吸收掉。
 
 `add_actors()` 在 `node.run()` 前装配 actor,不能把当时通过 `asyncio.get_event_loop()` 取得的 loop
 当作 NT 实际运行 loop,否则会出现只打印 `Strategy evaluate scheduled`、但无
-`Strategy evaluate result` 且 `PairInFlightGate` 一直占用的症状。
+`Strategy evaluate result` 且 `PairInFlightGate` 一直占用的症状(即上表问题 A)。
+
+#### pair 闸的所有权出口(#260,2026-07-22,已落地)
+
+**加锁与释放同层对称** —— 闸在 `_dispatch_eval`(OBD 回调同步段)置位,由**同一函数挂的
+done-callback `_on_eval_done` 唯一释放**;`_evaluate_and_fire` 不再持有闸的知识,只返回
+`handed_off`。闸机制本体与全局出口枚举见 `_cross-cutting/synchronization.md §7.3`。
+
+```python
+def _dispatch_eval(self, pair_id, ...):
+    if not self._pair_inflight.try_enter(pair_id):        # 置位
+        return
+    coro = self._evaluate_and_fire(strategy, pair_id)
+    try:
+        task = self._create_task(coro)
+    except Exception:
+        coro.close()
+        self._pair_inflight.release_eval(pair_id)         # 排程失败:协程从未排程 → 释放安全
+        raise
+    task.add_done_callback(partial(self._on_eval_done, pair_id))   # 唯一释放点
+
+def _on_eval_done(self, pair_id, task):
+    handed_off = False
+    if task.cancelled():          pass
+    elif task.exception():        self._log.error(...)    # 否则 fire-and-forget 异常被静默吞掉
+    else:                         handed_off = bool(task.result())
+    if not handed_off:
+        self._pair_inflight.release_eval(pair_id)
+```
+
+**交接判据 = `submitter.submitted_count > 0`,不是"哪个 action 跑到了"。** 按 action 分支枚举会漏 ——
+`PlaceBetsAction` 有 4 个零提交的 early return,上游 `ShareLimitModification` / `CandiSelectAction`
+另有 5 处主动 `ctx.scratch["legs"] = []`(其中 `remaining <= 0` 是**打满 share limit 的常态路径**),
+`make_submitter` 内部 `cache.instrument is None` 还有一处 skip。计数只在 `msgbus.send` 之后 ++,
+覆盖全部分支且对新增 action 免维护。
+
+**`await self._execute_actions(...)` 而非 `create_task`**:fire-and-forget 会让 `_evaluate_and_fire`
+在 actions 跑完前就返回,done-callback 读到 `submitted_count == 0` → 在下单途中误放闸。
+代价核对过为零:本方法本就在自己的 task 里,await 不阻塞别的 pair,也不阻塞 loop(actions 内部
+本就顺序 await);Q20 快照绑在 ctx 上,无论 await 与否都要活到 actions 结束。
 
 `StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加 INFO 级低噪声运行锚点日志,不改变决策语义:
 `Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /

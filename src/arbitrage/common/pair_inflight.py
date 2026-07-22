@@ -10,10 +10,16 @@
 所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。本类纯内存、无时钟依赖。
 
 **无兜底猜测(#105 ②)**:不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。in-flight 一定有出口,
-**靠结构保证**:fire 后所有权要么进 execution(`exec_started`→`exec_finished`,由 session watchdog
-兜到底),要么经 opportunity barrier 的 deny/timeout 出口 `release_eval` 释放;未 fire 由 strategy
-`release_eval` 释放。任一执行 session 的 `exec_started` 与 watchdog 在 `_begin_session` 内原子置位,
-保证 `exec_finished` 一定被走到(终态或超时),故 `_exec_count` 必回落到 0、in-flight 必被清。
+**靠结构保证** —— 出口按**所有权状态**枚举(#260;原按「路径」枚举漏了第三态,见 synchronization §7.3):
+
+| 状态 | 判定 | 唯一出口 |
+|---|---|---|
+| 评估中 | 评估 task 完成时 `submitter.submitted_count == 0` | strategy `_on_eval_done` → `release_eval` |
+| 已提交待进 venue | 全腿 risk deny / barrier timeout | opportunity barrier `_finish` / `_cancel_only` → `release_eval` |
+| 执行中 | `exec_count > 0` | `exec_started`↔`exec_finished` 配对(watchdog 兜底) |
+
+任一执行 session 的 `exec_started` 与 watchdog 在 `_begin_session` 内原子置位,保证 `exec_finished`
+一定被走到(终态或超时),故 `_exec_count` 必回落到 0、in-flight 必被清。
 """
 
 from __future__ import annotations
@@ -22,9 +28,11 @@ from __future__ import annotations
 class PairInFlightGate:
     """per-pair「评估→执行」串行闸。
 
-    生命周期:
-    - strategy `_route_eval`(同步,`create_task` 前):`try_enter(pair)` → False 即放弃本次评估;
-    - strategy `_evaluate_and_fire` 收尾:未 fire → `release_eval(pair)`;已 fire → 不释放(交执行 / barrier);
+    生命周期(**#260:加锁与释放同层对称** —— 均在 `_dispatch_eval` 这一层,协程内不碰闸):
+    - strategy `_dispatch_eval`(同步,`create_task` 前):`try_enter(pair)` → False 即放弃本次评估;
+    - strategy `_on_eval_done`(该 task 的 done-callback,**评估段唯一释放点**):
+      `handed_off=False`(零提交 / 异常 / 取消)→ `release_eval(pair)`;True → 不释放(所有权交执行);
+      同层的排程失败分支(`_create_task` 抛)也在此层 `release_eval` —— 协程从未排程,释放安全;
     - opportunity barrier deny/timeout 出口:`release_eval(pair)`(此刻 `exec_count==0`,腿被 barrier 扣着未下到 venue);
     - execution `_begin_session`(per-leg):`exec_started(pair)`;`_end_session`/timeout:`exec_finished(pair)`;
       per-pair session 计数归 0 → 释放 in-flight。

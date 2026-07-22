@@ -368,8 +368,21 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.5**:Q21 补救兜底:arb.hit=False + comp.hit=True → fire comp.action(等 arb evaluate 完成确认未命中后才 fire)
 
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
-- **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_route_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次;fire 后 gate 仍 in-flight(交执行清)。
+- **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_dispatch_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次。**#260 起断言 gate 已释放**(该用例的 `_RecordingAction` 不提交任何订单 → 所有权未交出);旧断言是「fire 后仍 in-flight」,那正是泄漏本身 —— action 空转也永久占闸,该 pair 再不被评估。
 - **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
+
+### strategy-4.framework.eval.gate.{1-5}:pair 闸所有权出口(#260,2026-07-22)
+> 设计 = synchronization §7.3(三所有权状态 / 三出口)+ strategy architecture「pair 闸的所有权出口」。
+> 覆盖 `#105 ②` 出口枚举漏掉的第三态:**fired 但零 `SubmitOrder` 到 Risk**。
+
+- **.gate.1**(`test_gate_held_when_action_submits`):action 使 `submitted_count>0` → 所有权交执行,闸**不**释放(留给 barrier / session 出口清)。
+- **.gate.2**(`test_gate_released_when_actions_submit_nothing`):action 跑了但零提交(上游清 legs / abort)→ 闸归还。**旧代码下该 pair 永久失效**。
+- **.gate.3**(`test_gate_released_when_action_raises`):action 抛异常 → task 以 exception 完成 → 闸归还。(`_on_eval_done` 的 error 日志不断言:NT `Logger` 只读 Cython、`init_logging` 每进程仅一次,拦不住;靠代码审查保证。)
+- **.gate.4**(`test_gate_released_when_task_scheduling_fails`):`_create_task` 抛(删掉 `call_soon_threadsafe` 后跨线程会抛)→ 协程从未排程 → 闸归还且异常原样上抛。
+- **.gate.5**(`test_released_gate_allows_reevaluation`):零提交释放后同 pair 下一轮能再评估(不是永久失效)。
+- 交接判据本身(`submitted_count` 只在 `msgbus.send` 后 ++、每轮独立)见 `test_submitter.py` 2 个用例。
+- **反验证**:把 `_on_eval_done` 的 `handed_off` 强制为 `True`(还原泄漏)→ `.15` / `.gate.2` / `.gate.5` 三个用例失败,确认非空断言。
+
 - gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / fire 后 release_eval no-op / 负计数防御)。**#105 ②:无 max-hold、无 `clear_all`**。设计 = synchronization.md §7。
 
 ### ~~strategy-4.framework.eval.17:健康检查互斥~~ —— 已删除(#108,2026-06-16)

@@ -9,7 +9,8 @@ StrategyRegistry → 并行 evaluate arb+comp → fire(套利优先)。
 - `_extract_evaluation_target(data)` —— 拿到 (pair_id, sport, competition);MatchedPair 直读,
   其它 event 经 PairRegistry + instrument.info 反查
 - `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + Q20 snapshot + asyncio.gather
-  并行 evaluate + 套利优先 fire(fire-and-forget)
+  并行 evaluate + 套利优先 fire;返 `handed_off`(#260:actions 改 `await`,不再 fire-and-forget)
+- `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口(#260)
 
 **evaluate 无副作用 / fire 在顶层**:`evaluate_tree` 返 EvalResult,本类决定 fire arb 还是 comp。
 """
@@ -17,8 +18,10 @@ StrategyRegistry → 并行 evaluate arb+comp → fire(套利优先)。
 from __future__ import annotations
 
 import asyncio
+import traceback
 from dataclasses import dataclass
 from dataclasses import replace
+from functools import partial
 from typing import Callable
 
 from nautilus_trader.common.actor import Actor
@@ -113,7 +116,11 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             ts_init=clock.timestamp_ns(),
         )
         msgbus.send("RiskEngine.execute", cmd)
+        # #260:所有权交接判据 —— 只有真的 send 出去才 ++(上面 `inst is None` 的 skip 分支不算)。
+        # `_evaluate_and_fire` 据此判断 pair 闸该不该释放,避免按 action 分支枚举(枚举会漏,见 §7.3)。
+        submit.submitted_count += 1
 
+    submit.submitted_count = 0     # 工厂里置初值;`_make_submitter()` 每轮评估新建一份,天然按轮隔离
     return submit
 
 
@@ -290,8 +297,40 @@ class StrategyEvaluator(Actor):
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
             return
-        # sync 入口 → async evaluate
-        self._create_task(self._evaluate_and_fire(strategy, pair_id))
+        # #260:acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
+        # `_evaluate_and_fire` 因此不再持有闸的知识(只回答 handed_off),协程内所有出口自动覆盖。
+        coro = self._evaluate_and_fire(strategy, pair_id)
+        try:
+            task = self._create_task(coro)
+        except Exception:
+            # 排程失败 → 协程**从未被排程**,一定不会跑、不会下单 → 此处释放闸是安全的。
+            # (对比:若协程已排程仅回调挂不上,释放才会造成"闸放了但还在下单",故不在别处这么做。)
+            coro.close()
+            if self._pair_inflight is not None:
+                self._pair_inflight.release_eval(pair_id)
+            raise                                     # 不吞:排程失败是真故障,要响亮暴露
+        task.add_done_callback(partial(self._on_eval_done, pair_id))
+
+    def _on_eval_done(self, pair_id: str, task) -> None:
+        """评估 task 的**唯一**闸出口(#260)。
+
+        `handed_off` = 本轮有 SubmitOrder 真的送到 Risk → 所有权交执行(barrier / session 负责释放);
+        否则(零提交 / 抛异常 / 被取消)在此释放,pair 下一轮可再评估。
+        判据取自 submitter 计数而非 action 分支枚举 —— 枚举会漏(上游 action 清 legs、链中途抛)。
+        """
+        handed_off = False
+        if task.cancelled():
+            pass
+        elif (exc := task.exception()) is not None:
+            # fire-and-forget task 的异常否则会被静默吞掉(只在 GC 时冒一条无上下文的 asyncio 警告)。
+            # NT `Logger.error` 不吃 `exc_info`,故手工展开 traceback —— 异常可能来自 action 链任意
+            # 深处(见 `web/actor.py:_on_serve_done` 的 `{exc!r}`:那里失败点唯一,这里需要栈定位)。
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            self._log.error(f"Strategy evaluate failed: pair_id={pair_id}\n{tb}")
+        else:
+            handed_off = bool(task.result())
+        if not handed_off and self._pair_inflight is not None:
+            self._pair_inflight.release_eval(pair_id)
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
         """slice 10e:MatchedPair 的两边各腿首次见到时订阅 OrderBookDeltas(去重)。
@@ -314,67 +353,67 @@ class StrategyEvaluator(Actor):
                 self._log.warning(f"OBD subscribe {iid_str} failed: {e!r}")
 
     # ── 评估主流程 ────────────────────────────────────────────────────
-    async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
-        # §6.10 §7:per-pair 闸已在 `_route_eval` 同步 acquire。未 fire(让路/无机会/异常)→ finally 释放;
-        # 已 fire → 不释放,所有权交执行(execution `exec_finished` 在双腿 session 归 0 时清)。
-        fired = False
-        try:
-            # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
-            if self._is_execution_active():
-                if self._log_evaluations:
-                    self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
-                return
-            # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
-            snapshot = build_snapshot(
-                pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
-                sports_store=self._get_sports_store(),
-            )
-            store = self._signal_store.view(pair_id)
-            store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
-            # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建。
-            # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
-            # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
-            submitter = self._make_submitter()
-            base_ctx = {
-                "pair_id": pair_id,
-                "snapshot": snapshot,
-                "store": store,
-                "submitter": submitter,
-                "portfolio": self._portfolio,
-                "strategy_defaults": self._strategy_defaults(),
-            }
-            arb_ctx = EvalContext(**base_ctx)
-            comp_ctx = EvalContext(**base_ctx)
-            # 并行 evaluate;各树 scratch 独立,顶层等两树都返回后再决定 fire
-            arb_res, comp_res = await asyncio.gather(
-                self._aevaluate(strategy.arbitrage_tree, arb_ctx),
-                self._aevaluate(strategy.compensation_tree, comp_ctx),
-            )
+    async def _evaluate_and_fire(self, strategy, pair_id: str) -> bool:
+        """返 `handed_off`:True = 有 SubmitOrder 已送到 Risk,所有权交执行;False = 本轮无提交。
+
+        #260:本方法**不再碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 唯一释放。
+        """
+        # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
+        if self._is_execution_active():
             if self._log_evaluations:
-                arb_actions_str = [type(a).__name__ for a in arb_res.pending_actions] if arb_res.pending_actions else None
-                comp_actions_str = [type(a).__name__ for a in comp_res.pending_actions] if comp_res.pending_actions else None
-                self._log.info(
-                    f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
-                    f"arb_actions={arb_actions_str}, "
-                    f"comp_hit={comp_res.hit}, "
-                    f"comp_actions={comp_actions_str}",
-                )
-            # Q21:套利优先 — 套利命中 → fire 套利 actions;否则 → 补救 actions(如命中)
-            if arb_res.hit and arb_res.pending_actions:
-                fired = True
-                if self._log_evaluations:
-                    self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-                self._create_task(self._execute_actions(arb_res.pending_actions, arb_ctx))
-            elif comp_res.hit and comp_res.pending_actions:
-                fired = True
-                if self._log_evaluations:
-                    self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-                self._create_task(self._execute_actions(comp_res.pending_actions, comp_ctx))
-            elif self._log_evaluations:
-                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
-        finally:
-            if not fired and self._pair_inflight is not None:
-                self._pair_inflight.release_eval(pair_id)
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
+            return False
+        # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
+        snapshot = build_snapshot(
+            pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
+            sports_store=self._get_sports_store(),
+        )
+        store = self._signal_store.view(pair_id)
+        store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
+        # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建。
+        # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
+        # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
+        submitter = self._make_submitter()
+        base_ctx = {
+            "pair_id": pair_id,
+            "snapshot": snapshot,
+            "store": store,
+            "submitter": submitter,
+            "portfolio": self._portfolio,
+            "strategy_defaults": self._strategy_defaults(),
+        }
+        arb_ctx = EvalContext(**base_ctx)
+        comp_ctx = EvalContext(**base_ctx)
+        # 并行 evaluate;各树 scratch 独立,顶层等两树都返回后再决定 fire
+        arb_res, comp_res = await asyncio.gather(
+            self._aevaluate(strategy.arbitrage_tree, arb_ctx),
+            self._aevaluate(strategy.compensation_tree, comp_ctx),
+        )
+        if self._log_evaluations:
+            arb_actions_str = [type(a).__name__ for a in arb_res.pending_actions] if arb_res.pending_actions else None
+            comp_actions_str = [type(a).__name__ for a in comp_res.pending_actions] if comp_res.pending_actions else None
+            self._log.info(
+                f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
+                f"arb_actions={arb_actions_str}, "
+                f"comp_hit={comp_res.hit}, "
+                f"comp_actions={comp_actions_str}",
+            )
+        # Q21:套利优先 — 套利命中 → fire 套利 actions;否则 → 补救 actions(如命中)
+        # #260:`await` 而非 `create_task` —— 必须等 actions 跑完才能读到 `submitted_count`。
+        # fire-and-forget 会让本方法立刻返回、done-callback 读到 0 → 误判"无提交"而在下单途中放闸。
+        if arb_res.hit and arb_res.pending_actions:
+            if self._log_evaluations:
+                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
+            await self._execute_actions(arb_res.pending_actions, arb_ctx)
+        elif comp_res.hit and comp_res.pending_actions:
+            if self._log_evaluations:
+                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
+            await self._execute_actions(comp_res.pending_actions, comp_ctx)
+        elif self._log_evaluations:
+            self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
+        # 判据是"有没有单真的离开 strategy",不是"哪个 action 跑到了"(两树共用同一 submitter,
+        # 但只有一棵会 fire,计数无歧义)。
+        return submitter.submitted_count > 0
 
     def _get_sports_store(self):
         """#250:lazy 建 SportsGameStateStore(注册后 self.cache 可用;失败返 None → snapshot 无 sports_state,in_play=False)。"""
@@ -388,20 +427,20 @@ class StrategyEvaluator(Actor):
     def _create_task(self, coro):
         """把 coroutine 投递到 NT kernel 为 Actor 注册的运行 loop。
 
-        NT msgbus handler 是同步调用,`on_data` 不保证处于 asyncio task 内;因此生产路径不能依赖
-        `asyncio.get_running_loop()`。`_test_loop` 只用于未注册 executor 的单测 harness。
+        loop 身份由 NT 保证:`kernel.py:1016` 在 `start_async()`(已跑在 kernel loop 上)内调
+        `_register_executor()` → `register_executor(self._loop, ...)`,故 `_registered_task_loop`
+        就是真正运行中的那个 loop。`_test_loop` 只用于未注册 executor 的单测 harness。
+
+        **#260:删除了 `call_soon_threadsafe` 兜底分支。** 它防的是"当前不在该 loop 上"(与 f017b78ee0
+        那次"loop 身份取错 → 协程静默不跑"是两个不同问题,旧 docstring 把二者混写)。该分支返回
+        `Handle` 而非 Task,挂不了 done-callback,会让闸的释放静默失效;且它把"协程会不会跑"变成
+        模糊态。按 #105 ② 同款纪律(无兜底猜测):不预防未证实的情况,真发生就让它响亮抛
+        `RuntimeError: Non-thread-safe operation ...`,届时按实际成因解决。
         """
         loop = self._registered_executor_loop()
         if loop is None:
             return self._test_loop.create_task(coro)
-
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-        if current_loop is loop:
-            return loop.create_task(coro)
-        return loop.call_soon_threadsafe(loop.create_task, coro)
+        return loop.create_task(coro)
 
     def _registered_executor_loop(self):
         return self._registered_task_loop

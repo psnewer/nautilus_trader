@@ -149,6 +149,12 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
 
         for command in list(ctx.allowed.values()):
             self._deny_order(command.order, reason)
+        # 上面 `_cancel_residual_orders` 已**同步**为每条残单起 cancel session(`_begin_cancel_session`
+        # → `exec_started`;只有 venue IO 是 create_task),故这里通常 `exec_count>0` → **本行 no-op**,
+        # 闸由撤单终态/watchdog 的 `exec_finished` 释放(撤单与下单同走 session,不特殊处理)。
+        # 保留本行是兜**一个 cancel session 都没起**的情况:client 无 `_cancel_residual_orders`(:142
+        # `continue`),或每条残单的 coid 已有 active session(`_begin_cancel_session` 返 False)。
+        # `release_eval` 的「exec_count>0 则 no-op」契约使其可无条件调用而不误清(synchronization §7.3)。
         if self._arb_pair_inflight is not None and ctx.meta.pair_id:
             self._arb_pair_inflight.release_eval(ctx.meta.pair_id)
 

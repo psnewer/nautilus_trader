@@ -144,3 +144,43 @@ def test_submit_accepts_string_instrument_id_from_strategy_specs():
     cache.instrument.assert_called_once_with(iid_obj)
     cmd = msgbus.send.call_args.args[1]
     assert cmd.order.instrument_id == iid_obj
+
+
+# ── #260:提交计数(pair 闸的所有权交接判据)────────────────────
+def test_submitted_count_starts_at_zero_and_counts_only_real_sends():
+    """`submitted_count` 只在 `msgbus.send` 真的发生后 ++。
+
+    `cache.instrument` 返 None 的 skip 分支不能计数 —— 否则 `_evaluate_and_fire` 会误判
+    "已交出所有权"而不释放 pair 闸,该 pair 永久停止评估(#260 泄漏的成因之一)。
+    """
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+
+    submit, cache, msgbus = _build()
+    assert submit.submitted_count == 0                 # 工厂置初值
+
+    iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
+    spec = {"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 2.0}
+
+    cache.instrument.return_value = None               # 冷启动 / 未订阅 → skip,不 send
+    _run(submit(spec))
+    assert msgbus.send.call_count == 0
+    assert submit.submitted_count == 0
+
+    cache.instrument.return_value = _fake_instrument()
+    _run(submit(spec))
+    _run(submit(spec))
+    assert msgbus.send.call_count == 2
+    assert submit.submitted_count == 2
+
+
+def test_each_make_submitter_call_has_independent_count():
+    """`_make_submitter()` 每轮评估新建一份 → 计数按轮隔离,不跨轮累加。"""
+    first, cache_a, _ = _build()
+    cache_a.instrument.return_value = _fake_instrument()
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
+    _run(first({"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 2.0}))
+    assert first.submitted_count == 1
+
+    second, _, _ = _build()
+    assert second.submitted_count == 0                 # 新一轮从 0 起
