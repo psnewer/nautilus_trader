@@ -257,10 +257,35 @@ def test_submit_order_transport_result_keeps_inflight_session():
 def test_submit_order_cancel_only_discards():
     c = _client()
     placed = []
+    # #261:cancel-only 的判定挪到**同步** `submit_order` —— session 必须同步建立,否则
+    # barrier 的全局 ≤1 派生态在 `_release` 之后有空窗。`_submit_order` 不再自己判。
+    from unittest.mock import patch
+    from nautilus_trader.live.execution_client import LiveExecutionClient
+
+    dispatched = []
     c._begin_session = lambda command: False         # cancel-only:丢弃
     c._place_via_executor = lambda order: placed.append(order)
-    _run(c._submit_order(SimpleNamespace(order=SimpleNamespace())))
+    with patch.object(LiveExecutionClient, "submit_order",
+                      lambda self, cmd: dispatched.append(cmd)):
+        c.submit_order(SimpleNamespace(order=SimpleNamespace()))
+    assert dispatched == []                          # 未下发给 NT(不 create_task)
     assert placed == []                              # 未下单
+
+
+def test_submit_order_builds_session_before_dispatch():
+    """#261 承重前提:session 同步建立后才交 NT create_task。"""
+    from unittest.mock import patch
+    from nautilus_trader.live.execution_client import LiveExecutionClient
+
+    c = _client()
+    order_seq = []
+    dispatched = []
+    c._begin_session = lambda command: order_seq.append("session") or True
+    with patch.object(LiveExecutionClient, "submit_order",
+                      lambda self, cmd: order_seq.append("dispatch") or dispatched.append(cmd)):
+        c.submit_order(SimpleNamespace(order=SimpleNamespace()))
+    assert order_seq == ["session", "dispatch"]      # 顺序不可颠倒
+    assert len(dispatched) == 1
 
 
 def test_submit_order_success_registers_pending_accept_not_immediate_ack():
@@ -1136,18 +1161,20 @@ class _CollectLoop:
         return coro
 
 
-def test_cancel_residual_tracked_clears_inflight_when_all_done():
+def test_cancel_residual_tracked_keeps_execution_active_until_all_terminal():
+    """#261:闸已退出执行段,撤单在飞改由 `_execution_active` 表达。
+
+    这个量是 barrier 全局 ≤1 判定的派生源之一 —— 撤单还没到终态就放行新机会,
+    新单会撞上正在被撤的残单。故必须"两条 cancel terminal 到齐"才落回 False。
+    """
     from nautilus_trader.common.factories import OrderFactory
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.identifiers import StrategyId
     from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-    from src.arbitrage.common.pair_inflight import PairInFlightGate
     from tests.arbitrage.risk._factories import oe_instrument
 
     c = _client()
-    gate = PairInFlightGate()
-    c._pair_inflight = gate
     c._pair_registry = SimpleNamespace(get=lambda x: "P1")
     loop = _CollectLoop()
     c._loop = loop
@@ -1156,12 +1183,11 @@ def test_cancel_residual_tracked_clears_inflight_when_all_done():
     iid = inst.id
     factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
 
-    gate.try_enter("P1")        # strategy fire 持 in-flight
     o1 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
     o2 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
     c._cancel_residual_orders(iid, [o1, o2])
 
-    assert gate.is_in_flight("P1") is True                     # exec_started ×2(同步),in-flight 仍持有
+    assert c._execution_active is True                         # 两个 cancel session 同步建立
     assert len(loop.tasks) == 2                                # 每条残单一个 tracked cancel task
 
     async def _drain():
@@ -1169,26 +1195,23 @@ def test_cancel_residual_tracked_clears_inflight_when_all_done():
             await coro
     _run(_drain())
 
-    assert gate.is_in_flight("P1") is True                     # 撤单请求完成不代表撤单终态
+    assert c._execution_active is True                         # 撤单请求完成不代表撤单终态
     c._send_order_event(TestEventStubs.order_canceled(o1))
-    assert gate.is_in_flight("P1") is True
+    assert c._execution_active is True
     c._send_order_event(TestEventStubs.order_canceled(o2))
-    assert gate.is_in_flight("P1") is False                    # 两条 cancel terminal 到齐才清
+    assert c._execution_active is False                        # 两条 cancel terminal 到齐才落回
 
 
-def test_cancel_residual_inflight_held_until_last_cancel():
-    """撤单 task 还在跑时 in-flight 不提前清(你指出的"session 结束时撤单还在执行"问题已堵)。"""
+def test_cancel_residual_execution_active_held_until_last_cancel():
+    """撤单 task 还在跑时 `_execution_active` 不提前落回。"""
     from nautilus_trader.common.factories import OrderFactory
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.identifiers import StrategyId
     from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-    from src.arbitrage.common.pair_inflight import PairInFlightGate
     from tests.arbitrage.risk._factories import oe_instrument
 
     c = _client()
-    gate = PairInFlightGate()
-    c._pair_inflight = gate
     c._pair_registry = SimpleNamespace(get=lambda x: "P1")
     loop = _CollectLoop()
     c._loop = loop
@@ -1199,13 +1222,12 @@ def test_cancel_residual_inflight_held_until_last_cancel():
     o1 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
     o2 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
 
-    gate.try_enter("P1")
     c._cancel_residual_orders(iid, [o1, o2])
 
     async def _drain_one():
         await loop.tasks[0]                                    # 只跑完第一个撤单
     _run(_drain_one())
-    assert gate.is_in_flight("P1") is True                     # 还有一个撤单没跑完 → in-flight 不清
+    assert c._execution_active is True                         # 还有一个撤单没跑完
     c._send_order_event(TestEventStubs.order_canceled(o1))
-    assert gate.is_in_flight("P1") is True                     # 第二条 cancel terminal 未到 → 仍不清
+    assert c._execution_active is True                         # 第二条 cancel terminal 未到
     loop.tasks[1].close()                                      # 测试只验证半程,收尾未 await coroutine

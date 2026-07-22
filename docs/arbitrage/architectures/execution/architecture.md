@@ -228,13 +228,13 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 - 对带完整 opportunity metadata 的套利,首选 §3.5 barrier 统一做 opportunity-level cancel-only:收齐所有 risk-pass legs 后,若同 pair 任一 registered instrument 有 residual 且 risk-pass legs 中没有显式撤单腿,则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 每轮全量重算(快照 Q20),下轮自行重发。
-- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog / `PairInFlightGate.exec_started/exec_finished` 出口。撤单请求返回成功只表示 venue 已接受请求,**不释放 session**;释放只能来自 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected`,或 30s watchdog 超时。
+- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求,**不释放 session**;释放只能来自 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected`,或 30s watchdog 超时。撤单在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
 - cancel session 不把成交事件当终点。若撤单等待期间订单成交,成交仍走正常 fill/order 流;cancel session 继续等撤单终态或 timeout。
 - venue 终态映射:
   - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
   - OE `CancelAllOrders` 只调用 `/customer/api/cancelAllUnmatchedBets`；API 失败直接返回失败，不再点击页面 UI 兜底。旧 `take-at-market/modify-and-take` 页面能力已删除：它不在 NT 套利执行链路内，且不能用固定 sleep 代替真实成交确认。
-- session mixin 只维护 `_active_sessions`、tracking timeout、`execution.started/finished` 和 `PairInFlightGate.exec_started/exec_finished`。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
+- session mixin 只维护 `_active_sessions` 与 tracking timeout(**#261**:`execution.*` 消息与 `PairInFlightGate` 记账均已删除)。`_execution_active` = `len(_active_sessions) > 0` 是 barrier 全局 ≤1 判定的派生源之一。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
 - **submit 异常收口**:只对“确定尚未提交到 venue”的本地失败立即生成终态；请求已发出但结果未知必须保留在飞状态:
   - PM 在签名后、POST 前按 CLOB order hash 算法得到确定性 `venue_order_id`，先写
     `client_order_id -> venue_order_id` 映射，再生成 `OrderSubmitted`。POST 返回明确拒绝时正常
@@ -273,19 +273,11 @@ def _on_session_timeout(self, event):
 - terminal 与 timeout 都触发 session 结束 → 都 publish `execution.finished` + 清 `_execution_active`。
 - **watchdog 与 per-pair 计数原子(#105 ②,保证置位一定有出口)**:`_begin_session` 顺序固定为
   ① 先 arm watchdog(`set_time_alert_ns`,本块唯一可能抛的操作 —— 若抛则尚未改任何共享态,干净失败)
-  → ② 再做纯 dict 置位(`_active_sessions` / `pair_inflight.exec_started`,不会抛)
+  → ② 再做纯 dict 置位(`_active_sessions`,不会抛;**#261**:`pair_inflight.exec_started` 已删除)
   → ③ `_publish_execution` 收尾(非关键:即便抛,watchdog + session 已就位,终会 `_end_session`)。
-  这样**只要 `exec_started` 自增了,就一定有人(终态或看门狗)来减**,不会出现"exec_count++ 却无看门狗"的永久泄漏。
-  出口对称:`_end_session` 把 `pair_inflight.exec_finished` 提到 `cancel_timer`/`publish` **之前**,
-  保证 publish 抛也不漏减。
-- **2026-06-09 live 校准(#85)**:OE `placeBets` venue 回执已直接确认返回 `status=OK + offerIds`。
-  ⚠️ **失效(#256,2026-07-20)**:下一句"代码路径会在成功 result 后调用 `generate_order_accepted`"
-  已不成立——OE/SE 现在都改为 ack via CURRENT_BETS(§4.3bis 新增块),回执成功只登记
-  `_pending_accept[offerId] = client_order_id`,`generate_order_accepted` 推迟到下一条
-  CURRENT_BETS 帧首次带出该 offerId 时才发。cancel-only 仍能从 cache open order 取到
-  `venue_order_id`——因为 ack(不论快慢)最终都会落地,索引随之建立,只是时间点后移。
-  若订单未成交/未撤销,submit+track session 按 Q15 继续等到 30s 绝对超时。当前代码不包含
-  timeout cleanup / stale accepted 特例。
+  这样**只要 `_active_sessions` 有条目,就一定有人(终态或看门狗)来清** —— 否则
+  `_execution_active` 恒真,#261 后 barrier 会从此拒绝所有新机会。
+  **#261**:原"`exec_finished` 先于 `cancel_timer`/`publish`"的顺序纪律随 pair 闸记账一并删除。
 
 ### 4.3 健康检查(§6.8.3 / §6.8.4,loop 节奏 §6.8.4.5)
 

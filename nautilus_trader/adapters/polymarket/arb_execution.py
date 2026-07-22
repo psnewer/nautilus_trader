@@ -27,7 +27,6 @@ from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import QueryOrder
 
-from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
@@ -102,8 +101,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         name=None,
         *,
         venue_liveness: VenueExecutionLiveness,
-        pair_registry: PairRegistry | None = None,
-        pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         settlement: PolymarketSettlement | None = None,
         session_timeout_secs: float = 30.0,
     ) -> None:
@@ -113,8 +110,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         )
         self._init_arb_session(
             session_timeout_secs=session_timeout_secs,
-            pair_registry=pair_registry,
-            pair_inflight=pair_inflight,
         )
         self._venue_liveness = venue_liveness
         self._settlement = settlement
@@ -123,8 +118,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._settlement_inflight = False
 
     async def _submit_order(self, command) -> None:
-        if not self._begin_session(command):
-            return
+        # #261:session 已由 mixin 的同步 `submit_order` 建立(派生态不能有空窗),此处不再建。
         try:
             await super()._submit_order(command)
         except Exception as e:

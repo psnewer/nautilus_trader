@@ -6,6 +6,8 @@ order event 须真实(mixin 用 isinstance)→ 经 TestEventStubs 构造。
 
 import asyncio
 import logging
+
+import pytest
 from types import SimpleNamespace
 
 from nautilus_trader.common.component import MessageBus
@@ -19,8 +21,6 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-from src.arbitrage.common.pair_inflight import PairInFlightGate
-from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import accepted_order_reserved_notional
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from tests.arbitrage.risk._factories import oe_account_state
@@ -74,9 +74,14 @@ class _Base:
         self.cancels = []
         self.account_states = []
         self._loop = asyncio.new_event_loop()
+        self._submit_order_dispatched = []
 
     def _send_order_event(self, event):
         self.sent.append(event)  # 充当 NT 基类 super()._send_order_event
+
+    def submit_order(self, command):
+        # 充当 NT 基类 `LiveExecutionClient.submit_order`(生产里是 create_task(_submit_order))
+        self._submit_order_dispatched.append(command.order.client_order_id)
 
     def generate_order_rejected(self, *, strategy_id, instrument_id, client_order_id, reason, ts_event):
         self.rejected.append((client_order_id, reason))
@@ -94,13 +99,9 @@ class _Base:
 
 
 class FakeSessionClient(ArbExecutionSessionMixin, _Base):
-    def __init__(self, clock, msgbus, cache, pair_registry, timeout_secs, pair_inflight=None):
+    def __init__(self, clock, msgbus, cache, timeout_secs):
         _Base.__init__(self, clock, msgbus, cache)
-        self._init_arb_session(
-            session_timeout_secs=timeout_secs,
-            pair_registry=pair_registry,
-            pair_inflight=pair_inflight,
-        )
+        self._init_arb_session(session_timeout_secs=timeout_secs)
 
     def _cancel_residual_orders(self, instrument_id, residual):
         self.cancels.append((instrument_id, list(residual)))
@@ -111,17 +112,16 @@ class FakeTrackedCancelClient(FakeSessionClient):
         self.cancels.append(("residual_one", order))
 
 
-def _harness(timeout_secs=30.0, pair_inflight=None):
+def _harness(timeout_secs=30.0):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = _FakeCache()
-    pair_registry = PairRegistry()
-    client = FakeSessionClient(clock, msgbus, cache, pair_registry, timeout_secs, pair_inflight)
+    client = FakeSessionClient(clock, msgbus, cache, timeout_secs)
     published = []  # #108 退役探针:execution.* 应永不再 publish → published 始终 []
     msgbus.subscribe("execution.started", lambda m: published.append(("started", m)))
     msgbus.subscribe("execution.finished", lambda m: published.append(("finished", m)))
     factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=clock)
-    return client, clock, cache, pair_registry, published, factory
+    return client, clock, cache, published, factory
 
 
 def _order(factory, instrument, qty=10, *, side=OrderSide.BUY, price=0.4):
@@ -134,9 +134,8 @@ def _cmd(order):
 
 # ── submit+track 入口(started + ref-count）──────────────────
 def test_submit_track_marks_execution_active():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
 
     assert client._begin_session(_cmd(order)) is True
@@ -147,9 +146,8 @@ def test_submit_track_marks_execution_active():
 # ── cancel-only(残留挂单 → 撤 + reject + 丢弃）────────────────────
 def test_cancel_only_when_residual_rejects_and_discards(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     residual = _order(factory, pm)
     cache.add_residual(residual)
     order = _order(factory, pm)
@@ -164,9 +162,8 @@ def test_cancel_only_when_residual_rejects_and_discards(caplog):
 
 def test_accepted_keeps_session_active(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
     client._begin_session(_cmd(order))
 
@@ -179,10 +176,9 @@ def test_accepted_keeps_session_active(caplog):
 
 
 def test_accepted_reserves_probability_venue_available_balance():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     cache.add_account(pm.id.venue, AccountFactory.create(pm_account_state(100)))
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=50)  # price=0.4, reserved=20
     cache.add_order(order)
     client._begin_session(_cmd(order))
@@ -197,10 +193,9 @@ def test_accepted_reserves_probability_venue_available_balance():
 
 
 def test_accepted_probability_sell_reduction_does_not_reserve_cash():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     cache.add_account(pm.id.venue, AccountFactory.create(pm_account_state(100)))
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=50, side=OrderSide.SELL)
     cache.add_order(order)
     client._begin_session(_cmd(order))
@@ -211,10 +206,9 @@ def test_accepted_probability_sell_reduction_does_not_reserve_cash():
 
 
 def test_accepted_reserves_decimal_venue_available_balance_without_fx():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     oe = oe_instrument("match_1", "away"); cache.add_instrument(oe)
     cache.add_account(oe.id.venue, AccountFactory.create(oe_account_state(total=100, free=100)))
-    pair_registry.register("match_1", [oe.id])
     order = _order(factory, oe, qty=12)  # decimal venue reserved=USD stake quantity, not qty/price/fx
     cache.add_order(order)
     client._begin_session(_cmd(order))
@@ -225,10 +219,9 @@ def test_accepted_reserves_decimal_venue_available_balance_without_fx():
 
 
 def test_accepted_reserves_decimal_lay_liability():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     oe = oe_instrument("match_1", "away"); cache.add_instrument(oe)
     cache.add_account(oe.id.venue, AccountFactory.create(oe_account_state(total=100, free=100)))
-    pair_registry.register("match_1", [oe.id])
     order = _order(factory, oe, qty=10, side=OrderSide.SELL, price=5.0)
     cache.add_order(order)
     client._begin_session(_cmd(order))
@@ -239,10 +232,9 @@ def test_accepted_reserves_decimal_lay_liability():
 
 
 def test_accepted_reserves_sharpexch_available_balance_without_fx():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     se = se_instrument("match_1", "away"); cache.add_instrument(se)
     cache.add_account(se.id.venue, AccountFactory.create(se_account_state(total=100, free=100)))
-    pair_registry.register("match_1", [se.id])
     order = _order(factory, se, qty=12)
     cache.add_order(order)
     client._begin_session(_cmd(order))
@@ -269,9 +261,8 @@ def test_accepted_order_reserved_notional_uses_venue_capability():
 
 # ── 终态(全成 / 撤单 → 结束 + finished + 取消 watchdog）───────────
 def test_full_fill_is_terminal_ends_session():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=10)
     client._begin_session(_cmd(order))
 
@@ -283,9 +274,8 @@ def test_full_fill_is_terminal_ends_session():
 
 
 def test_partial_fill_not_terminal():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=10)
     client._begin_session(_cmd(order))
 
@@ -296,9 +286,8 @@ def test_partial_fill_not_terminal():
 
 
 def test_canceled_is_terminal():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
     client._begin_session(_cmd(order))
 
@@ -309,9 +298,8 @@ def test_canceled_is_terminal():
 
 
 def test_cancel_session_ignores_fill_until_cancel_terminal():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=10)
 
     assert client._begin_cancel_session(order) is True
@@ -328,11 +316,8 @@ def test_base_cancel_only_tracks_residual_until_cancel_terminal():
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = _FakeCache()
-    pair_registry = PairRegistry()
-    gate = PairInFlightGate()
-    client = FakeTrackedCancelClient(clock, msgbus, cache, pair_registry, 30.0, gate)
+    client = FakeTrackedCancelClient(clock, msgbus, cache, 30.0)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     factory = OrderFactory(
         trader_id=TraderId("T-000"),
         strategy_id=StrategyId("S-000"),
@@ -340,24 +325,22 @@ def test_base_cancel_only_tracks_residual_until_cancel_terminal():
     )
     residual = _order(factory, pm)
     cache.add_residual(residual)
-    gate.try_enter("match_1")
 
     ArbExecutionSessionMixin._cancel_residual_orders(client, pm.id, [residual])
 
+    # #261:撤单 session 同样计入 `_execution_active` —— 它是 barrier 全局 ≤1 判定的派生源之一,
+    # 撤单在飞期间不应放行新机会。
     assert client._execution_active
-    assert _exec_count(gate, "match_1") == 1
 
     client._send_order_event(TestEventStubs.order_canceled(residual))
 
     assert not client._execution_active
-    assert _exec_count(gate, "match_1") == 0
 
 
 # ── 超时(NT clock 绝对超时 → 结束,不补救）───────────────────────
 def test_timeout_ends_session():
-    client, clock, cache, pair_registry, published, factory = _harness(timeout_secs=30.0)
+    client, clock, cache, published, factory = _harness(timeout_secs=30.0)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
     client._begin_session(_cmd(order))
     assert client._execution_active
@@ -371,10 +354,9 @@ def test_timeout_ends_session():
 
 # ── ref-count(两腿并发 → count>0 直到都结束）─────────────────────
 def test_refcount_two_concurrent_legs():
-    client, clock, cache, pair_registry, published, factory = _harness()
+    client, clock, cache, published, factory = _harness()
     pm_h = pm_instrument("match_1", "home", token="h"); cache.add_instrument(pm_h)
     pm_a = pm_instrument("match_1", "away", token="a"); cache.add_instrument(pm_a)
-    pair_registry.register("match_1", [pm_h.id, pm_a.id])
     o1 = _order(factory, pm_h); o2 = _order(factory, pm_a)
     client._begin_session(_cmd(o1)); client._begin_session(_cmd(o2))
     assert client._execution_active
@@ -385,22 +367,18 @@ def test_refcount_two_concurrent_legs():
     assert not client._execution_active
 
 
-# ── #105 ②:watchdog 与 exec_started 原子(置位一定有出口）─────────
-# 说明:strategy `try_enter` 先置 `_inflight`(is_in_flight 探针);session `exec_started` 置
-# `_exec_count`。下列测试先 try_enter 模拟 strategy 已 acquire,再验 exec_started/exec_finished 的 count。
-def _exec_count(gate, pair_id):
-    return gate._exec_count.get(pair_id, 0)
+# ── watchdog 与 session 置位(置位一定有出口）─────────────────────
+# #261:pair 闸已退出执行段,本组只验 session 自身的建立/收口不变量。
+def test_alert_failure_leaves_no_half_built_session():
+    """set_time_alert 抛(`_begin_order_session` 内唯一可能抛的操作)→ session 不得半建立。
 
-
-def test_watchdog_armed_before_exec_started_no_leak_on_alert_failure():
-    """set_time_alert 抛(本块唯一可能抛的操作)→ 尚未 exec_started → exec_count 不会 ++ 而无看门狗;
-    eval 层 in-flight 仍可由 strategy `release_eval` 清(因 exec_count==0)。"""
-    gate = PairInFlightGate()
-    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
+    顺序纪律:watchdog 先 arm,再做纯 dict 置位。若反过来,`_active_sessions` 会留下一条
+    没有看门狗的条目 —— 终态不来时永远清不掉,`_execution_active` 恒 True,barrier 从此
+    拒绝所有新机会(#261 后该派生量直接决定全局闸)。
+    """
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
-    gate.try_enter("match_1")   # strategy 已 acquire
 
     class _AlertBoomClock:  # Cython TestClock.set_time_alert_ns 只读,代理使其抛
         def __init__(self, real): self._real = real
@@ -408,47 +386,48 @@ def test_watchdog_armed_before_exec_started_no_leak_on_alert_failure():
         def set_time_alert_ns(self, **kwargs): raise RuntimeError("clock alert failed")
     client._clock = _AlertBoomClock(clock)
 
-    try:
+    with pytest.raises(RuntimeError):
         client._begin_session(_cmd(order))
-    except RuntimeError:
-        pass
-    assert _exec_count(gate, "match_1") == 0             # exec_started 未触达 → 无悬挂 count
-    assert not client._execution_active                   # session 未建立
-    gate.release_eval("match_1")                          # exec_count==0 → 正常释放
-    assert not gate.is_in_flight("match_1")
+    assert not client._execution_active                   # 没有悬挂 session
+    assert client._active_sessions == {}
 
 
-def test_begin_session_arms_watchdog_and_exec_started():
-    gate = PairInFlightGate()
-    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
+def test_begin_session_arms_watchdog():
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
-    gate.try_enter("match_1")
 
     assert client._begin_session(_cmd(order)) is True
-    assert _exec_count(gate, "match_1") == 1             # exec_started 已 ++
+    assert client._execution_active
     assert client._clock.timer_count >= 1                 # watchdog 已 arm
 
 
-def test_end_session_clears_inflight_even_if_publish_throws():
-    """#105 ②(出口对称):_publish_execution 抛 → exec_finished 已先行,in-flight 仍被清。"""
-    gate = PairInFlightGate()
-    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
+def test_submit_order_builds_session_synchronously():
+    """#261 承重前提:`submit_order` 返回时 session 必须已存在。
+
+    barrier 在 `_release` 里同步派发各腿,派发与 pop ctx 之间没有 `await`;若 session 留到
+    `_submit_order` 协程里才建,派生态会出现空窗,队列里连着的 `[A1,A2,B1,B2]` 会让两个
+    机会双双执行。故此处验证的是**同步性**,不是"最终会建"。
+    """
+    client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
-    gate.try_enter("match_1")
-    client._begin_session(_cmd(order))
-    assert gate.is_in_flight("match_1") and _exec_count(gate, "match_1") == 1
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("msgbus publish failed")
-    client._publish_execution = _boom
+    assert not client._execution_active
+    client.submit_order(_cmd(order))
+    # 未跑任何 event loop 迭代,session 就已就位
+    assert client._execution_active
+    assert client._submit_order_dispatched == [order.client_order_id]   # 且确实下发给了 NT
 
-    try:
-        client._end_session(order.client_order_id)
-    except RuntimeError:
-        pass
-    assert _exec_count(gate, "match_1") == 0            # exec_finished 已先行
-    assert not gate.is_in_flight("match_1")             # 归 0 → in-flight 被清(publish 抛之前)
+
+def test_submit_order_cancel_only_does_not_dispatch():
+    """残留挂单 → cancel-only:reject 本单且**不**下发给 NT。"""
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    residual = _order(factory, pm)
+    cache.add_residual(residual)
+    order = _order(factory, pm)
+
+    client.submit_order(_cmd(order))
+    assert client._submit_order_dispatched == []          # 没下发
+    assert client.rejected                                # 但已 reject 本单

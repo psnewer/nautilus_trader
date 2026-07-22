@@ -211,8 +211,6 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             config=config,
             name=name,
             venue_liveness=ctx.venue_liveness,
-            pair_registry=ctx.pair_registry,
-            pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             settlement=ctx.pm_settlement,
             session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", POLYMARKET),
             # #110:merge/redeem 改由 NT 连续 position 对账驱动;不再需要 positions_fetcher / health_interval。

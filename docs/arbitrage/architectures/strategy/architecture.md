@@ -222,13 +222,12 @@ class StrategyEvaluator(Actor):
             self._aevaluate(strategy.arbitrage_tree, arb_ctx),
             self._aevaluate(strategy.compensation_tree, comp_ctx),
         )
-        # 套利 > 补救。#260:actions 改 `await`(原 fire-and-forget),因为返回值 handed_off
-        # 需要 actions 跑完后的 submitter 计数;详见下方「pair 闸的所有权出口」。
+        # 套利 > 补救。actions 走 `await`(原 fire-and-forget):让异常落进本 task,
+        # 由 `_on_eval_done` 带 traceback 打出来。返回值无用(#261:闸无条件释放)。
         if arb_res.hit and arb_res.pending_action is not None:
             await self._execute_actions(arb_res.pending_actions, arb_ctx)
         elif comp_res.hit and comp_res.pending_action is not None:
             await self._execute_actions(comp_res.pending_actions, comp_ctx)
-        return submitter.submitted_count > 0                     # handed_off
 
     async def _aevaluate(self, tree, ctx):
         return evaluate_tree(tree, ctx)         # sync evaluate 包成 coroutine 供 gather;
@@ -269,7 +268,8 @@ B 的 `call_soon_threadsafe` 分支 **#260 删除**,理由(同 `#105 ②`「无�
 
 **加锁与释放同层对称** —— 闸在 `_dispatch_eval`(OBD 回调同步段)置位,由**同一函数挂的
 done-callback `_on_eval_done` 唯一释放**;`_evaluate_and_fire` 不再持有闸的知识,只返回
-`handed_off`。闸机制本体与全局出口枚举见 `_cross-cutting/synchronization.md §7.3`。
+(#261:不再返回 `handed_off`)。闸机制本体见 `_cross-cutting/synchronization.md §7.3`;
+全局 ≤1 执行见同文 §7.5(barrier 单点 + 纯派生态)。
 
 ```python
 def _dispatch_eval(self, pair_id, ...):
@@ -280,29 +280,32 @@ def _dispatch_eval(self, pair_id, ...):
         task = self._create_task(coro)
     except Exception:
         coro.close()
-        self._pair_inflight.release_eval(pair_id)         # 排程失败:协程从未排程 → 释放安全
+        self._pair_inflight.release(pair_id)             # 排程失败:协程从未排程 → 释放安全
         raise
     task.add_done_callback(partial(self._on_eval_done, pair_id))   # 唯一释放点
 
 def _on_eval_done(self, pair_id, task):
-    handed_off = False
-    if task.cancelled():          pass
-    elif task.exception():        self._log.error(...)    # 否则 fire-and-forget 异常被静默吞掉
-    else:                         handed_off = bool(task.result())
-    if not handed_off:
-        self._pair_inflight.release_eval(pair_id)
+    # #261:无条件释放 —— 闸只保证"同 pair 不并发评估",没有跨组件交接,就没有可漏的判据。
+    if not task.cancelled() and task.exception():
+        self._log.error(...)          # 否则 fire-and-forget 异常被静默吞掉
+    self._pair_inflight.release(pair_id)
 ```
 
-**交接判据 = `submitter.submitted_count > 0`,不是"哪个 action 跑到了"。** 按 action 分支枚举会漏 ——
-`PlaceBetsAction` 有 4 个零提交的 early return,上游 `ShareLimitModification` / `CandiSelectAction`
-另有 5 处主动 `ctx.scratch["legs"] = []`(其中 `remaining <= 0` 是**打满 share limit 的常态路径**),
-`make_submitter` 内部 `cache.instrument is None` 还有一处 skip。计数只在 `msgbus.send` 之后 ++,
-覆盖全部分支且对新增 action 免维护。
+**#261:释放是无条件的。** `_on_eval_done` 不再判断"有没有下单" —— 闸只保证「同一 pair 不并发评估」,
+评估 task 结束就释放。#260 的 `handed_off` / `submitter.submitted_count` 交接判据**已删除**:
+跨组件传递所有权才需要判据,而判据会漏(`#105 ②` 就漏了「action 链零提交」一态)。
+**全局 ≤1 执行**改由 `ArbLiveExecutionEngine` barrier 用纯派生态保证,见
+`_cross-cutting/synchronization.md §7.5`。
 
-**`await self._execute_actions(...)` 而非 `create_task`**:fire-and-forget 会让 `_evaluate_and_fire`
-在 actions 跑完前就返回,done-callback 读到 `submitted_count == 0` → 在下单途中误放闸。
-代价核对过为零:本方法本就在自己的 task 里,await 不阻塞别的 pair,也不阻塞 loop(actions 内部
-本就顺序 await);Q20 快照绑在 ctx 上,无论 await 与否都要活到 actions 结束。
+`await self._execute_actions(...)` 保留(原为 `create_task`):让 action 链的异常落进本 task,
+由 `_on_eval_done` 带 traceback 打出来,而不是变成无上下文的 asyncio
+"Task exception was never retrieved"。代价核对过为零 —— 本方法本就在自己的 task 里,
+await 不阻塞别的 pair、不阻塞 loop(actions 内部本就顺序 await);Q20 快照绑在 ctx 上,
+无论 await 与否都要活到 actions 结束。
+
+`is_execution_active` 前置检查保留,但 **#261 起只用于省算力**(避免明知会被 barrier 拒还去评估),
+**不承担正确性**。用户明确不把 barrier ctx 纳入该判据:执行刚起步的那 ~2s 内仍会评估、
+多几条 deny 日志,属吞吐/降噪取舍。
 
 `StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加 INFO 级低噪声运行锚点日志,不改变决策语义:
 `Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /
@@ -551,8 +554,8 @@ elif comp_res.hit: fire(comp_res.pending_action, comp_ctx)
 
 ### 4.5 Q19 互斥 + Q20 快照咬合
 
-- **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:Risk/Execution 的信号都在下游,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
-- **健康检查互斥已退役(#108,2026-06-16)**:strategy 不再订 `health_check.*`、无 `_hc_running`、`_route_eval` 无健检预检。原因:旧理由是"健康检查 reload **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、且 OE 下单是 `page.evaluate`(与焦点无关),不冲突。详见 synchronization.md §8.6 / refactor #108。(in-flight 出口靠结构保证 = opportunity barrier 出口 + session `exec_started`↔watchdog 原子,与本互斥无关。)
+- **per-pair 评估串行闸(§7,#84;#261 收窄)**:`_dispatch_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair **已在评估中** → 直接放弃(不派发)。释放在同层的 done-callback `_on_eval_done`,**无条件**(#261:不再有「已 fire 就交给执行」的例外)。**为什么必须同步在 `create_task` 前**:Risk/Execution 的信号都在下游,挡不住同毫秒并发评估;同步闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。**本闸不保证全局 ≤1 执行** —— 那由 barrier 单点用派生态保证,见 synchronization.md §7.5。
+- **健康检查互斥已退役(#108,2026-06-16)**:strategy 不再订 `health_check.*`、无 `_hc_running`、`_route_eval` 无健检预检。原因:旧理由是"健康检查 reload **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、且 OE 下单是 `page.evaluate`(与焦点无关),不冲突。详见 synchronization.md §8.6 / refactor #108。(#261 后 in-flight 出口只剩 `_on_eval_done` 一处无条件释放,与本互斥无关。)
 - **VenueExecutionLiveness 不在 Strategy 读(2026-06-15)**:Strategy 计算机会前不看 venue order/position liveness,也不再读 `leg_settled`。Strategy 只负责发现机会、生成带 `arb:expected_legs` 的 order metadata;Risk 从 metadata 推导 required venues 并统一门控。详见 `_cross-cutting/synchronization.md §8.5` 与 risk §3.1/§4.4。
 - evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
 - evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, instrument_info }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live

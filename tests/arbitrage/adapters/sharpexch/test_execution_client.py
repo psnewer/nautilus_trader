@@ -464,14 +464,38 @@ def test_submit_order_transport_result_keeps_inflight_session():
 
 
 def test_submit_order_cancel_only_discards():
+    """#261:cancel-only 判定挪到**同步** `submit_order`(session 必须同步建立)。"""
+    from unittest.mock import patch
+    from nautilus_trader.live.execution_client import LiveExecutionClient
+
     client = _client()
     placed = []
+    dispatched = []
     client._begin_session = lambda command: False
     client._place_via_executor = lambda order: placed.append(order)
 
-    _run(client._submit_order(SimpleNamespace(order=SimpleNamespace())))
+    with patch.object(LiveExecutionClient, "submit_order",
+                      lambda self, cmd: dispatched.append(cmd)):
+        client.submit_order(SimpleNamespace(order=SimpleNamespace()))
 
+    assert dispatched == []                          # 未下发给 NT
     assert placed == []
+
+
+def test_submit_order_builds_session_before_dispatch():
+    """#261 承重前提:session 同步建立后才交 NT create_task,顺序不可颠倒。"""
+    from unittest.mock import patch
+    from nautilus_trader.live.execution_client import LiveExecutionClient
+
+    client = _client()
+    order_seq = []
+    client._begin_session = lambda command: order_seq.append("session") or True
+
+    with patch.object(LiveExecutionClient, "submit_order",
+                      lambda self, cmd: order_seq.append("dispatch")):
+        client.submit_order(SimpleNamespace(order=SimpleNamespace()))
+
+    assert order_seq == ["session", "dispatch"]
 
 
 def test_cancel_order_uses_instrument_market_id_and_accepts_success():

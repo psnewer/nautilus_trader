@@ -24,16 +24,18 @@ class _OpportunityContext:
     meta: OpportunityMeta
     expected: set[str]
     allowed: dict[str, SubmitOrder] = field(default_factory=dict)
+    # #261:已拒的 leg_key。**不可复用 `allowed`** —— 后者会被 `_finish` 遍历去 `_deny_order`,
+    # 混用会对同一条腿重复拒单。集齐 `expected` 即可提前 pop 墓碑,不必空等 barrier timer。
+    denied: set[str] = field(default_factory=set)
     terminal: str | None = None
 
 
 class ArbLiveExecutionEngine(LiveExecutionEngine):
     """同一 opportunity 的所有腿 risk-pass 后才 release 到 venue ExecutionClient。"""
 
-    def __init__(self, *args, barrier_timeout_secs: float = 2.0, pair_inflight=None, **kwargs):
+    def __init__(self, *args, barrier_timeout_secs: float = 2.0, **kwargs):
         super().__init__(*args, **kwargs)
         self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
-        self._arb_pair_inflight = pair_inflight
         self._pair_registry = None
         self._arb_opportunities: dict[str, _OpportunityContext] = {}
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
@@ -41,11 +43,9 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def configure_arb(
         self,
         *,
-        pair_inflight=None,
         pair_registry=None,
         barrier_timeout_secs: float | None = None,
     ) -> None:
-        self._arb_pair_inflight = pair_inflight
         if pair_registry is not None:
             self._pair_registry = pair_registry
         if barrier_timeout_secs is not None:
@@ -62,15 +62,31 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def _handle_opportunity_pass(self, meta: OpportunityMeta, command: SubmitOrder) -> None:
         ctx = self._arb_opportunities.get(meta.opportunity_id)
         if ctx is None:
+            blocked = self._other_execution_in_flight()
             ctx = _OpportunityContext(meta=meta, expected=set(meta.expected_legs))
             self._arb_opportunities[meta.opportunity_id] = ctx
+            # timer 必须照常 arm —— 包括下面标 denied 的墓碑。若为墓碑另开一条"不 arm"的捷径,
+            # 它就永远清不掉(`denied` 凑不齐时无人回收),正是 #260 反复踩到的那类泄漏。
             self._clock.set_time_alert_ns(
                 name=f"{_TIMEOUT_PREFIX}{meta.opportunity_id}",
                 alert_time_ns=self._clock.timestamp_ns() + self._arb_barrier_timeout_ns,
                 callback=self._on_opportunity_timeout,
             )
+            if blocked:
+                # #261 全局 ≤1 执行:已有别的机会在执行 → 整个机会丢弃(不重试不排队,
+                # 下一个 OBD tick 重评,同 cancel-only 既有纪律)。标 terminal 让后到的腿
+                # 命中下面的分支被立刻拒,避免"先拒一条腿 → 执行结束 → 后一条腿另建 ctx 空等"。
+                ctx.terminal = "denied"
+                self._log.info(
+                    "Opportunity denied: another opportunity is executing "
+                    f"opportunity_id={meta.opportunity_id}, pair_id={meta.pair_id}",
+                )
         if ctx.terminal is not None:
             self._deny_order(command.order, f"opportunity already {ctx.terminal}")
+            ctx.denied.add(meta.leg_key)
+            if ctx.denied >= ctx.expected:      # 腿到齐且全被拒 → 立刻清墓碑,不等 timer
+                self._cancel_timer(ctx)
+                self._arb_opportunities.pop(meta.opportunity_id, None)
             return
         if set(meta.expected_legs) != ctx.expected:
             self._deny_order(command.order, "opportunity metadata mismatch: expected_legs differ")
@@ -80,24 +96,36 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         if set(ctx.allowed) >= ctx.expected:
             self._release(ctx)
 
+    def _other_execution_in_flight(self) -> bool:
+        """#261 全局 ≤1 执行的**唯一**判定,只读派生态 —— 无 token、无出口、不可能泄漏。
+
+        两个源:① barrier 里还在等腿的机会(跳过 `terminal is not None` 的墓碑,否则墓碑会挡住
+        合法新机会);② 任一 exec client 的 `_execution_active`(= 在飞 session 数 > 0)。
+
+        **无需参数**:本方法只在 `ctx is None`(全新机会)时调用,故在飞的执行必然不是它的
+        —— 三个出口 `_release`/`_finish`/`_cancel_only` 都会把 ctx 从 `_arb_opportunities` pop 掉,
+        所以"字典里有非墓碑 ctx" ⟺ "那个机会还在等腿"。方案不依赖识别执行归属
+        (`_active_sessions` 只存 `pair_id`,本就无法回答"属于哪次机会")。
+
+        **无需加锁**:所有 `SubmitOrder` 经 `LiveExecutionEngine` 的单队列单 task 逐条
+        `_execute_command`,构造上串行,本判定天然原子。
+        """
+        for ctx in self._arb_opportunities.values():
+            if ctx.terminal is None:
+                return True
+        for client in self._clients.values():
+            if getattr(client, "_execution_active", False):
+                return True
+        return False
+
     def _on_opportunity_leg_denied(self, msg) -> None:
         opportunity_id = (msg or {}).get("opportunity_id")
         if not opportunity_id:
             return
         ctx = self._arb_opportunities.get(opportunity_id)
         if ctx is None:
-            pair_id = (msg or {}).get("pair_id")
-            if pair_id and self._arb_pair_inflight is not None:
-                ctx = _OpportunityContext(
-                    meta=OpportunityMeta(
-                        opportunity_id=str(opportunity_id),
-                        pair_id=str(pair_id),
-                        leg_key=str((msg or {}).get("leg_key") or "denied"),
-                        expected_legs=(),
-                    ),
-                    expected=set(),
-                )
-                self._finish(ctx, terminal="denied")
+            # #261:原先这里合成一个空 ctx 只为调 `release_eval` 释放 pair 闸;闸已退出执行段,
+            # 没有 ctx 就没有待拒的腿,直接返回。
             return
         self._finish(ctx, terminal="denied", reason=str((msg or {}).get("reason") or "risk denied"))
 
@@ -149,14 +177,6 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
 
         for command in list(ctx.allowed.values()):
             self._deny_order(command.order, reason)
-        # 上面 `_cancel_residual_orders` 已**同步**为每条残单起 cancel session(`_begin_cancel_session`
-        # → `exec_started`;只有 venue IO 是 create_task),故这里通常 `exec_count>0` → **本行 no-op**,
-        # 闸由撤单终态/watchdog 的 `exec_finished` 释放(撤单与下单同走 session,不特殊处理)。
-        # 保留本行是兜**一个 cancel session 都没起**的情况:client 无 `_cancel_residual_orders`(:142
-        # `continue`),或每条残单的 coid 已有 active session(`_begin_cancel_session` 返 False)。
-        # `release_eval` 的「exec_count>0 则 no-op」契约使其可无条件调用而不误清(synchronization §7.3)。
-        if self._arb_pair_inflight is not None and ctx.meta.pair_id:
-            self._arb_pair_inflight.release_eval(ctx.meta.pair_id)
 
     def _opportunity_residuals(self, ctx: _OpportunityContext) -> list[tuple[object | None, object, list]]:
         residuals: list[tuple[object | None, object, list]] = []
@@ -184,7 +204,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         return residuals
 
     def _residual_check_instrument_ids(self, ctx: _OpportunityContext) -> list:
-        registry = getattr(self, "_pair_registry", None)
+        registry = self._pair_registry      # `__init__` 无条件设为 None,不需要 getattr 兜
         if registry is not None and ctx.meta.pair_id and hasattr(registry, "instrument_ids_for_pair"):
             instrument_ids = list(registry.instrument_ids_for_pair(ctx.meta.pair_id))
             if instrument_ids:
@@ -197,12 +217,10 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         ]
 
     def _client_for_instrument(self, instrument_id):
-        routing_map = getattr(self, "_routing_map", None)
-        if routing_map is not None:
-            client = routing_map.get(instrument_id.venue)
-            if client is not None:
-                return client
-        return getattr(self, "_default_client", None)
+        # `_routing_map` / `_default_client` 是 NT `ExecutionEngine` 的 cdef readonly 属性
+        # (`engine.pxd:50,53`),`__init__` 无条件初始化 → 直接访问,缺失即应响亮报错。
+        client = self._routing_map.get(instrument_id.venue)
+        return client if client is not None else self._default_client
 
     @staticmethod
     def _has_cancel_leg(ctx: _OpportunityContext) -> bool:
@@ -235,8 +253,6 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         deny_reason = reason or f"opportunity {terminal}"
         for command in list(ctx.allowed.values()):
             self._deny_order(command.order, deny_reason)
-        if self._arb_pair_inflight is not None and ctx.meta.pair_id:
-            self._arb_pair_inflight.release_eval(ctx.meta.pair_id)
 
     def _cancel_timer(self, ctx: _OpportunityContext) -> None:
         try:

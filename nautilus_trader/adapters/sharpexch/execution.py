@@ -26,7 +26,6 @@ from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
-from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
@@ -90,8 +89,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         config,
         *,
         venue_liveness: VenueExecutionLiveness | None = None,
-        pair_registry: PairRegistry | None = None,
-        pair_inflight=None,
         session_timeout_secs: float = 30.0,
         fx: float = 1.0,
         browser_lock: asyncio.Lock | None = None,
@@ -112,8 +109,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
         self._init_arb_session(
             session_timeout_secs=session_timeout_secs,
-            pair_registry=pair_registry,
-            pair_inflight=pair_inflight,
         )
         self._set_account_id(AccountId(f"{SHARPEXCH}-001"))
         self._browser_manager = browser_manager
@@ -293,8 +288,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._fx = fx
 
     async def _submit_order(self, command) -> None:
-        if not self._begin_session(command):
-            return
+        # #261:session 已由 mixin 的同步 `submit_order` 建立(派生态不能有空窗),此处不再建。
         order = command.order
         try:
             result = await self._place_via_executor(order)

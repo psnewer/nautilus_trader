@@ -4,11 +4,14 @@ ArbExecutionSessionMixin —— PM 子类 / OE 客户端共用的执行 session 
 详细设计:`docs/arbitrage/architectures/execution/architecture.md §4.1 / §4.2 / §4.4 / §3.4`。
 
 职责(execution = 执行 + 追踪,不做决策,Q13):
-- **session 入口**(`_begin_session`,由各 client `_submit_order` 调):残留挂单检测 →
+- **session 入口**(`submit_order` **同步**调 `_begin_session`,#261):残留挂单检测 →
   cancel-only(撤残留 + 丢弃当次 submit,reject 让 strategy 下轮重发)vs submit+track。
 - **tracking 超时**(§4.2):NT clock 绝对超时,terminal 抢先取消;超时即结束 session 不补救。
-- **同步**(§3.4 / §6.10):`_execution_active` = 在飞 session 数 > 0,供 strategy 全局 `is_execution_active`
-  callable 直读(Q19 ≤1 执行)。**#108**:`execution.*` 消息已退役(健康⊥执行互斥删除,无消费者)。
+- **同步**(§3.4 / §6.10):`_execution_active` = 在飞 session 数 > 0。**#261 起它是全局 ≤1 执行的
+  派生源之一**(另一个是 barrier 的 `_arb_opportunities`),由 `ArbLiveExecutionEngine` 在新机会入场时
+  读取;strategy 侧 `is_execution_active` 前置只用于省算力,不承担正确性。
+  **#108**:`execution.*` 消息已退役(健康⊥执行互斥删除,无消费者)。
+  **#261**:本类不再参与 pair 闸 —— 闸已收窄为 strategy 单层(评估串行)。
 
 宿主契约:`class ArbXxxClient(ArbExecutionSessionMixin, <NT ExecutionClient>)`(mixin 在前,
 覆盖 `_send_order_event`);`__init__` 末尾调 `self._init_arb_session(...)`;
@@ -27,7 +30,6 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
-from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
@@ -46,13 +48,9 @@ class ArbExecutionSessionMixin:
         self,
         *,
         session_timeout_secs: float,
-        pair_registry: PairRegistry | None = None,
-        pair_inflight=None,  # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不参与
     ) -> None:
-        self._pair_registry = pair_registry  # #34: matching 写,本类读;`_pair_id_for` 用
-        self._pair_inflight = pair_inflight   # §6.10 §7:execution 段维护 per-pair session 计数,归 0 释放闸
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
-        # coid -> {kind, qty, price, filled, instrument_id, pair_id, venue_order_id}
+        # coid -> {kind, qty, price, filled, instrument_id, venue_order_id}
         self._active_sessions: dict = {}
 
     @property
@@ -60,7 +58,24 @@ class ArbExecutionSessionMixin:
         """在飞 submit+track session 数 > 0(健康检查据此整 tick 让路,Q19/§6.10)。"""
         return len(self._active_sessions) > 0
 
-    # ── session 入口(client._submit_order 内调)────────────────────────
+    # ── NT 同步入口:session 必须在此建立(#261)─────────────────────────
+    def submit_order(self, command) -> None:
+        """覆盖 NT 同步入口,**同步**建 session 后再交 NT `create_task` 做 venue IO。
+
+        #261:barrier 的全局 ≤1 执行判定读派生态(`_arb_opportunities` + `_execution_active`)。
+        若 session 留在 `_submit_order` 协程里建,`_release` pop 掉 ctx 之后到 session 出现之间
+        派生态为空 —— 而队列非空时 `await queue.get()` 不让出控制权,submit 任务插不进来,
+        于是 `[A1,A2,B1,B2]` 这样的连续命令会让 A、B **双双执行**。
+        同步建立后,pop 与派发之间不存在 `await`,那个空窗夹在同步段内、外界观察不到。
+
+        与撤残单对齐(`_cancel_residual_orders`:同步 `_begin_cancel_session` → `create_task` 做 IO),
+        消除原先下单/撤单在 `exec_started` 相对 `create_task` 上的顺序不对称。
+        """
+        if not self._begin_session(command):
+            return                      # cancel-only:已 reject 本单,不再下发
+        super().submit_order(command)   # NT:create_task(self._submit_order(command))
+
+    # ── session 入口(由上面的 `submit_order` 同步调用)──────────────────
     def _begin_session(self, command) -> bool:
         """True = 继续 submit+track;False = cancel-only,调用方应直接 return(本次 submit 丢弃)。"""
         order = command.order
@@ -102,11 +117,9 @@ class ArbExecutionSessionMixin:
             return False
 
         instrument_id = order.instrument_id
-        pair_id = self._pair_id_for(instrument_id)
-        # #105 ②:watchdog 必须在 `exec_started` **之前**且与之原子 —— 保证"只要 exec_count++ 了,
-        # 就一定有人(终态或看门狗)来减"。顺序:(1) 先 arm watchdog(本块唯一可能抛的操作,若抛则
-        # 尚未改任何共享态,干净失败);(2) 再做纯 dict 置位(exec_started / active_sessions / arm,不会抛);
-        # (3) publish 收尾(非关键:即便抛,watchdog + session 已就位,终会 _end_session)。
+        # watchdog 先 arm(本块唯一可能抛的操作,若抛则尚未改任何共享态,干净失败),再做纯 dict 置位。
+        # #261 后 pair 闸不参与,但顺序仍保留:`_active_sessions` 一旦有条目就必须有人来清,
+        # 而 watchdog 正是"终态不来"时的唯一出口。
         self._clock.set_time_alert_ns(
             name=f"{_TIMEOUT_PREFIX}{coid.value}",
             alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
@@ -119,13 +132,10 @@ class ArbExecutionSessionMixin:
             "side": order.side,
             "filled": 0.0,
             "instrument_id": instrument_id,
-            "pair_id": pair_id,
             "venue_order_id": getattr(order, "venue_order_id", None),
         }
-        if pair_id is not None:
-            # §6.10 §7:per-pair session 计数 ++(套利已由 strategy fire,所有权进入执行)
-            if self._pair_inflight is not None:
-                self._pair_inflight.exec_started(pair_id)
+        # #261:session 不参与 pair 闸(闸已收窄为 strategy 评估串行),故也不再需要 `pair_id`
+        # —— 原先它只喂 `exec_started/exec_finished`,随之成为无消费者的死字段,一并删除。
         # #108:不再 publish `execution.started`(OE DataClient 的健康⊥执行互斥已退役,无消费者)。
         return True
 
@@ -169,21 +179,13 @@ class ArbExecutionSessionMixin:
         sess = self._active_sessions.pop(coid, None)
         if sess is None:
             return
-        # #105 ②(出口对称):先清 per-pair 计数(保证 exec_count 一定回落),再做可能抛的
-        # cancel_timer —— 否则它抛会漏减、in-flight 永久泄漏。
-        # §6.10 §7:per-pair session 计数 --;归 0 → 释放 per-pair 闸(本笔套利执行结束)
-        if self._pair_inflight is not None and sess["pair_id"] is not None:
-            self._pair_inflight.exec_finished(sess["pair_id"])
+        # #261:不再有 per-pair 计数需要回落(闸已退出执行段),故也不再需要 #105 ② 那条
+        # 「先减计数再做可能抛的操作」的顺序纪律。
         if not timed_out:
             self._clock.cancel_timer(f"{_TIMEOUT_PREFIX}{coid.value}")  # terminal 抢先取消 watchdog
         # #108:不再 publish `execution.finished`(健康⊥执行互斥已退役,无消费者)。
 
     # ── helpers / hooks ───────────────────────────────────────────────
-    def _pair_id_for(self, instrument_id):
-        # #34:pair_id 来自 matching 的 PairRegistry,**不是** info["competition"](后者是联赛名)
-        if self._pair_registry is None:
-            return None
-        return self._pair_registry.get(instrument_id)
 
     def _reserve_available_balance_for_accepted_order(self, event: OrderAccepted, sess: dict) -> None:
         """accepted 后本地预扣可用余额。

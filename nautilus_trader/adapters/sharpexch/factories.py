@@ -193,8 +193,6 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             instrument_provider=provider,
             config=config,
             venue_liveness=ctx.venue_liveness,
-            pair_registry=ctx.pair_registry,
-            pair_inflight=getattr(ctx, "pair_inflight", None),
             session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", SHARPEXCH),
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             browser_lock=browser_lock,

@@ -9,8 +9,8 @@ StrategyRegistry → 并行 evaluate arb+comp → fire(套利优先)。
 - `_extract_evaluation_target(data)` —— 拿到 (pair_id, sport, competition);MatchedPair 直读,
   其它 event 经 PairRegistry + instrument.info 反查
 - `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + Q20 snapshot + asyncio.gather
-  并行 evaluate + 套利优先 fire;返 `handed_off`(#260:actions 改 `await`,不再 fire-and-forget)
-- `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口(#260)
+  并行 evaluate + 套利优先 fire(actions 走 `await`,异常落进本 task)
+- `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口,**无条件释放**(#261)
 
 **evaluate 无副作用 / fire 在顶层**:`evaluate_tree` 返 EvalResult,本类决定 fire arb 还是 comp。
 """
@@ -116,11 +116,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             ts_init=clock.timestamp_ns(),
         )
         msgbus.send("RiskEngine.execute", cmd)
-        # #260:所有权交接判据 —— 只有真的 send 出去才 ++(上面 `inst is None` 的 skip 分支不算)。
-        # `_evaluate_and_fire` 据此判断 pair 闸该不该释放,避免按 action 分支枚举(枚举会漏,见 §7.3)。
-        submit.submitted_count += 1
 
-    submit.submitted_count = 0     # 工厂里置初值;`_make_submitter()` 每轮评估新建一份,天然按轮隔离
     return submit
 
 
@@ -142,7 +138,7 @@ class _RuntimeDeps:
     loop: object                            # 单测兜底 loop;生产调度使用 NT register_executor 注入的 ActorExecutor loop
     arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
-    pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
+    pair_inflight: object = None            # PairInFlightGate(§7);None → 不串行(测试/降级)
 
 
 class StrategyEvaluator(Actor):
@@ -159,7 +155,7 @@ class StrategyEvaluator(Actor):
         self._registered_task_loop = None
         self._log_evaluations = config.log_evaluations
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
-        self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
+        self._pair_inflight = deps.pair_inflight  # §7:per-pair **评估**串行闸(#261:不进执行段)
         self._sports_store = None                 # #250:SportsGameStateStore(lazy,注册后经 self.cache 建)
         self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
         self._game_obd: dict[int, set[str]] = {}   # #250:gameId → 本 actor 订过的 OBD 腿(ended 全退)
@@ -297,8 +293,8 @@ class StrategyEvaluator(Actor):
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
             return
-        # #260:acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
-        # `_evaluate_and_fire` 因此不再持有闸的知识(只回答 handed_off),协程内所有出口自动覆盖。
+        # acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
+        # #261:闸只管"同 pair 不并发评估";全局 ≤1 执行由 barrier 判定,strategy 不参与。
         coro = self._evaluate_and_fire(strategy, pair_id)
         try:
             task = self._create_task(coro)
@@ -307,30 +303,25 @@ class StrategyEvaluator(Actor):
             # (对比:若协程已排程仅回调挂不上,释放才会造成"闸放了但还在下单",故不在别处这么做。)
             coro.close()
             if self._pair_inflight is not None:
-                self._pair_inflight.release_eval(pair_id)
+                self._pair_inflight.release(pair_id)
             raise                                     # 不吞:排程失败是真故障,要响亮暴露
         task.add_done_callback(partial(self._on_eval_done, pair_id))
 
     def _on_eval_done(self, pair_id: str, task) -> None:
-        """评估 task 的**唯一**闸出口(#260)。
+        """评估 task 的**唯一**闸出口(#261:无条件释放)。
 
-        `handed_off` = 本轮有 SubmitOrder 真的送到 Risk → 所有权交执行(barrier / session 负责释放);
-        否则(零提交 / 抛异常 / 被取消)在此释放,pair 下一轮可再评估。
-        判据取自 submitter 计数而非 action 分支枚举 —— 枚举会漏(上游 action 清 legs、链中途抛)。
+        闸只保证"同一 pair 不并发评估",生命周期 = 本 task 的生命周期,故正常返回 / 抛异常 /
+        被取消都释放,没有"已 fire 就交给执行"的例外 —— 那条例外正是 #260 泄漏的根源
+        (跨组件交接需要判据,判据会漏)。全局 ≤1 执行由 barrier 用派生态另行保证。
         """
-        handed_off = False
-        if task.cancelled():
-            pass
-        elif (exc := task.exception()) is not None:
+        if not task.cancelled() and (exc := task.exception()) is not None:
             # fire-and-forget task 的异常否则会被静默吞掉(只在 GC 时冒一条无上下文的 asyncio 警告)。
             # NT `Logger.error` 不吃 `exc_info`,故手工展开 traceback —— 异常可能来自 action 链任意
             # 深处(见 `web/actor.py:_on_serve_done` 的 `{exc!r}`:那里失败点唯一,这里需要栈定位)。
             tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             self._log.error(f"Strategy evaluate failed: pair_id={pair_id}\n{tb}")
-        else:
-            handed_off = bool(task.result())
-        if not handed_off and self._pair_inflight is not None:
-            self._pair_inflight.release_eval(pair_id)
+        if self._pair_inflight is not None:
+            self._pair_inflight.release(pair_id)
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
         """slice 10e:MatchedPair 的两边各腿首次见到时订阅 OrderBookDeltas(去重)。
@@ -353,16 +344,13 @@ class StrategyEvaluator(Actor):
                 self._log.warning(f"OBD subscribe {iid_str} failed: {e!r}")
 
     # ── 评估主流程 ────────────────────────────────────────────────────
-    async def _evaluate_and_fire(self, strategy, pair_id: str) -> bool:
-        """返 `handed_off`:True = 有 SubmitOrder 已送到 Risk,所有权交执行;False = 本轮无提交。
-
-        #260:本方法**不再碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 唯一释放。
-        """
+    async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
+        """本方法**不碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 无条件释放。"""
         # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
         if self._is_execution_active():
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
-            return False
+            return
         # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
         snapshot = build_snapshot(
             pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
@@ -399,8 +387,8 @@ class StrategyEvaluator(Actor):
                 f"comp_actions={comp_actions_str}",
             )
         # Q21:套利优先 — 套利命中 → fire 套利 actions;否则 → 补救 actions(如命中)
-        # #260:`await` 而非 `create_task` —— 必须等 actions 跑完才能读到 `submitted_count`。
-        # fire-and-forget 会让本方法立刻返回、done-callback 读到 0 → 误判"无提交"而在下单途中放闸。
+        # `await` 而非 `create_task`:让 action 链的异常落进本 task,由 `_on_eval_done` 打出来,
+        # 而不是变成无上下文的 asyncio "Task exception was never retrieved"。
         if arb_res.hit and arb_res.pending_actions:
             if self._log_evaluations:
                 self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
@@ -411,9 +399,6 @@ class StrategyEvaluator(Actor):
             await self._execute_actions(comp_res.pending_actions, comp_ctx)
         elif self._log_evaluations:
             self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
-        # 判据是"有没有单真的离开 strategy",不是"哪个 action 跑到了"(两树共用同一 submitter,
-        # 但只有一棵会 fire,计数无歧义)。
-        return submitter.submitted_count > 0
 
     def _get_sports_store(self):
         """#250:lazy 建 SportsGameStateStore(注册后 self.cache 可用;失败返 None → snapshot 无 sports_state,in_play=False)。"""

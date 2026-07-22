@@ -1,8 +1,12 @@
-"""PairInFlightGate(synchronization.md §7,#84)单测:per-pair 串行闸。
+"""PairInFlightGate(synchronization.md §7,#84;#261 收窄为 strategy 单层)单测。
 
-#105 ②:无 max-hold 自愈、无 clear_all 兜底 —— in-flight 出口靠结构保证(barrier deny/timeout
-出口 + session `exec_started`↔watchdog 原子)。本闸只管 try_enter / release_eval / exec_count。
+**#261 后本闸只管一件事:同一 pair 不并发评估。** 它不再进入执行段 —— 原先的
+`exec_started`/`exec_finished`/`_exec_count` 与"已 fire 就不释放"的交接判据全部删除,
+因为跨组件传递所有权需要判据,而判据会漏(#260 查出四类同源泄漏)。
+全局 ≤1 执行改由 `ArbLiveExecutionEngine` barrier 用派生态判定,见 `test_engine_barrier.py`。
 """
+
+import pytest
 
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 
@@ -20,49 +24,45 @@ def test_different_pairs_independent():
     assert g.try_enter("P2") is True                      # 不同 pair 可并发
 
 
-def test_release_eval_when_no_fire_allows_reenter():
+def test_release_allows_reenter():
     g = PairInFlightGate()
     g.try_enter("P")
-    g.release_eval("P")                                  # 未 fire → 释放
+    g.release("P")
     assert g.try_enter("P") is True
 
 
-def test_fire_handoff_held_through_execution_then_released():
-    """fire 后 strategy 不释放;execution per-leg exec_started/finished,归 0 才释放。"""
+def test_release_is_unconditional():
+    """#261:没有"已 fire 则不释放"的例外 —— 评估 task 结束就释放,无论有没有下单。
+
+    旧行为(`release_eval` 在 `exec_count>0` 时 no-op)是为跨组件交接服务的,正是
+    #260 泄漏的根源:交接判据一旦漏判,闸就永久不放。
+    """
     g = PairInFlightGate()
-    g.try_enter("P")                                     # strategy 评估入口
-    # 已 fire → 双腿 session 启动
-    g.exec_started("P")
-    g.exec_started("P")
-    # strategy finally 的 release_eval:exec_count>0 → no-op(不释放)
-    g.release_eval("P")
-    assert g.is_in_flight("P") is True
-    assert g.try_enter("P") is False                     # 执行中,新机会放弃
-    # 一腿结束 → 仍持有
-    g.exec_finished("P")
-    assert g.is_in_flight("P") is True
-    # 末腿结束 → 计数归 0 → 释放
-    g.exec_finished("P")
+    g.try_enter("P")
+    g.release("P")
+    assert g.is_in_flight("P") is False
+
+
+def test_release_without_enter_is_safe():
+    """防御:未 acquire 就 release 不崩(排程失败分支可能走到)。"""
+    g = PairInFlightGate()
+    g.release("P")                                       # 不抛
+    assert g.is_in_flight("P") is False
+
+
+def test_repeated_release_is_idempotent():
+    g = PairInFlightGate()
+    g.try_enter("P")
+    g.release("P")
+    g.release("P")
     assert g.is_in_flight("P") is False
     assert g.try_enter("P") is True
 
 
-def test_release_eval_after_fire_is_noop():
-    """fire 后(exec_count>0)strategy finally 的 release_eval 不得提前清 in-flight。"""
+def test_execution_apis_removed():
+    """#261:执行段 API 必须真的消失,不能留下会误导的空壳。"""
     g = PairInFlightGate()
-    g.try_enter("P")
-    g.exec_started("P")
-    g.release_eval("P")                                  # exec_count>0 → no-op
-    assert g.is_in_flight("P") is True
-    g.exec_finished("P")
-    assert g.is_in_flight("P") is False                  # 归 0 才释放
-
-
-def test_exec_finished_without_started_is_safe():
-    """防御:exec_finished 多于 started 不崩、不负计数。"""
-    g = PairInFlightGate()
-    g.try_enter("P")
-    g.exec_started("P")
-    g.exec_finished("P")
-    g.exec_finished("P")                                 # 多余的一次
-    assert g.is_in_flight("P") is False
+    for name in ("exec_started", "exec_finished", "release_eval"):
+        assert not hasattr(g, name), f"{name} 应已随 #261 删除"
+    with pytest.raises(AttributeError):
+        _ = g._exec_count

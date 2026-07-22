@@ -1,72 +1,50 @@
-"""per-pair 机会串行闸(synchronization.md §7,#84)。
+"""per-pair 评估串行闸(synchronization.md §7,#84;#261 收窄为 strategy 单层)。
 
-不变量:同一 pair 同时只有 1 笔套利在「评估 → 执行」生命周期内(不同 pair 可并发)。
+不变量:**同一 pair 同时只有 1 次评估在跑**(不同 pair 可并发)。
 
-补的是全局互斥(§1-6 `_execution_active` / `execution.*`)拦不住的洞:那些在飞信号在
-**异步 `_submit_order` 下游**才置位,而 strategy 评估是并发 `create_task` 的 → 同一 OBD 突发的
-多个评估在信号置位前各自 fire(同毫秒重复下单,见 refactor.md #82)。本闸在 **OBD 回调同步段**
-(`create_task` 之前)置位,单 loop 串行保证后到的并发评估立刻看到 → 放弃。
+补的洞:strategy 评估是并发 `create_task` 的,而所有下游在飞信号(session / barrier ctx)都在
+**异步 `_submit_order` 下游**才置位 —— 同一 OBD 突发的多个评估会在信号出现前各自 fire(同毫秒
+重复下单,见 refactor.md #82)。本闸在 **OBD 回调同步段**(`create_task` 之前)置位,单 loop 串行
+保证后到的并发评估立刻看到 → 放弃。
 
-所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。本类纯内存、无时钟依赖。
+**#261:本闸不再进入执行段。** 原先它跨 strategy / barrier / session 三个组件传递所有权,是
+**持有型 token** —— 每个漏掉的 release 都是永久泄漏(#260 查出四类同源问题)。现在:
 
-**无兜底猜测(#105 ②)**:不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。in-flight 一定有出口,
-**靠结构保证** —— 出口按**所有权状态**枚举(#260;原按「路径」枚举漏了第三态,见 synchronization §7.3):
+- 生命周期 **恰好等于评估 task 的生命周期**:`_dispatch_eval` `try_enter` ↔ `_on_eval_done`
+  **无条件** `release`。没有跨组件交接,就没有"该不该释放"的判据,也就没有可漏的出口。
+- **全局 ≤1 执行**改由 `ArbLiveExecutionEngine` barrier 单点判定,只读派生态
+  (`_arb_opportunities` 非墓碑 ctx + 各 client `_execution_active`),无 token、无出口。
 
-| 状态 | 判定 | 唯一出口 |
-|---|---|---|
-| 评估中 | 评估 task 完成时 `submitter.submitted_count == 0` | strategy `_on_eval_done` → `release_eval` |
-| 已提交待进 venue | 全腿 risk deny / barrier timeout | opportunity barrier `_finish` / `_cancel_only` → `release_eval` |
-| 执行中 | `exec_count > 0` | `exec_started`↔`exec_finished` 配对(watchdog 兜底) |
-
-任一执行 session 的 `exec_started` 与 watchdog 在 `_begin_session` 内原子置位,保证 `exec_finished`
-一定被走到(终态或超时),故 `_exec_count` 必回落到 0、in-flight 必被清。
+所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。
+本类纯内存、无时钟依赖、无兜底猜测。
 """
 
 from __future__ import annotations
 
 
 class PairInFlightGate:
-    """per-pair「评估→执行」串行闸。
+    """per-pair 评估串行闸。
 
-    生命周期(**#260:加锁与释放同层对称** —— 均在 `_dispatch_eval` 这一层,协程内不碰闸):
+    生命周期(**加锁与释放同层对称**,均在 `_dispatch_eval` 这一层;协程内不碰闸):
     - strategy `_dispatch_eval`(同步,`create_task` 前):`try_enter(pair)` → False 即放弃本次评估;
-    - strategy `_on_eval_done`(该 task 的 done-callback,**评估段唯一释放点**):
-      `handed_off=False`(零提交 / 异常 / 取消)→ `release_eval(pair)`;True → 不释放(所有权交执行);
-      同层的排程失败分支(`_create_task` 抛)也在此层 `release_eval` —— 协程从未排程,释放安全;
-    - opportunity barrier deny/timeout 出口:`release_eval(pair)`(此刻 `exec_count==0`,腿被 barrier 扣着未下到 venue);
-    - execution `_begin_session`(per-leg):`exec_started(pair)`;`_end_session`/timeout:`exec_finished(pair)`;
-      per-pair session 计数归 0 → 释放 in-flight。
+    - strategy `_on_eval_done`(该 task 的 done-callback,**唯一释放点**):`release(pair)`,
+      无条件 —— 正常返回 / 抛异常 / 被取消都释放;
+    - 同层的排程失败分支(`_create_task` 抛)也在此层 `release` —— 协程从未排程,释放安全。
     """
 
     def __init__(self) -> None:
-        self._inflight: set[str] = set()         # 在飞 pair_id(评估中 / 执行中)
-        self._exec_count: dict[str, int] = {}    # pair_id → 在飞 execution session 数
+        self._inflight: set[str] = set()         # 正在评估的 pair_id
 
     def try_enter(self, pair_id: str) -> bool:
-        """评估入口同步 acquire。已在飞 → False(放弃);否则置位 → True。"""
+        """评估入口同步 acquire。已在评估 → False(放弃);否则置位 → True。"""
         if pair_id in self._inflight:
             return False
         self._inflight.add(pair_id)
         return True
 
-    def release_eval(self, pair_id: str) -> None:
-        """strategy 未 fire(无机会 / abort / 异常)或 barrier deny/timeout → 释放。
-        fire 后已进执行(exec_count>0)则 no-op(交 `exec_finished` 清)。"""
-        if self._exec_count.get(pair_id, 0) == 0:
-            self._inflight.discard(pair_id)
-
-    def exec_started(self, pair_id: str) -> None:
-        """execution session 启动(per-leg):per-pair 计数 ++(套利已 fire,所有权进入执行)。"""
-        self._exec_count[pair_id] = self._exec_count.get(pair_id, 0) + 1
-
-    def exec_finished(self, pair_id: str) -> None:
-        """execution session 结束(terminal/timeout):计数 --;归 0 → 释放 in-flight。"""
-        n = self._exec_count.get(pair_id, 0) - 1
-        if n <= 0:
-            self._exec_count.pop(pair_id, None)
-            self._inflight.discard(pair_id)
-        else:
-            self._exec_count[pair_id] = n
+    def release(self, pair_id: str) -> None:
+        """评估 task 结束 → 无条件释放(#261:不再有"已 fire 就交给执行"的例外)。"""
+        self._inflight.discard(pair_id)
 
     def is_in_flight(self, pair_id: str) -> bool:
         """只读探测(测试 / 诊断用)。"""

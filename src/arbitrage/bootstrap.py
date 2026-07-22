@@ -45,7 +45,7 @@ class ArbContext:
 
     venue_liveness: VenueExecutionLiveness | None = None  # enabled trading venues 共享同一份
     pair_registry: PairRegistry | None = None      # matching 唯一写;risk/portfolio/session 只读(#34)
-    pair_inflight: object | None = None            # PairInFlightGate(§6.10 §7,per-pair 串行);strategy+execution 共享一份
+    pair_inflight: object | None = None            # PairInFlightGate(§7);#261 起**仅 strategy 使用**(评估串行)
 
     # PM 专属
     pm_settlement: object | None = None
@@ -228,9 +228,6 @@ def wire_arbitrage_runtime(
 
     exec_engine = getattr(node.kernel, "exec_engine", None)
     if isinstance(exec_engine, ArbLiveExecutionEngine):
-        exec_engine.configure_arb(
-            pair_inflight=_arb_context.pair_inflight,
-            pair_registry=pair_registry,
-        )
+        exec_engine.configure_arb(pair_registry=pair_registry)   # #261:barrier 不再持有 pair 闸
 
     return venue_liveness

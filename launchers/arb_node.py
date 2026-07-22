@@ -303,7 +303,7 @@ def add_actors(
                 loop=loop,
                 arbitrage_params=to_arbitrage_params(cfg),  # Web Arbitrage 运行时默认 share/max_leg_share/fx
                 signal_collector=None,              # 用户域(slice 9 起)
-                pair_inflight=pair_inflight,        # §6.10 §7:per-pair 串行(与 execution 共享同一份)
+                pair_inflight=pair_inflight,        # §7:per-pair 评估串行(#261:execution 不再共享)
             ),
         ),
     )
@@ -348,7 +348,7 @@ def bootstrap_and_build(
     prepare_arb_context(
         venue_liveness=venue_liveness,
         pair_registry=pair_registry,
-        pair_inflight=pair_inflight,    # §6.10 §7:strategy + execution 共享同一份 per-pair 闸
+        pair_inflight=pair_inflight,    # §7:#261 起仅 strategy 消费(execution 侧接线已删)
         debug_config=debug_config,
         arbitrage_params=to_arbitrage_params(cfg),
         pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem

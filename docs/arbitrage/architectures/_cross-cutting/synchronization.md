@@ -144,34 +144,58 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 | 时机 | 组件 | 动作 |
 |---|---|---|
 | OBD 回调 `_dispatch_eval`(**同步**,`create_task` 之前) | Strategy | `try_enter(pair)`:已在飞 → **直接放弃**(`return`,不 create_task);否则置位 |
-| 评估 task 完成(`_on_eval_done`,done-callback) | Strategy | `handed_off=False`(零提交/异常/取消)→ `release_eval(pair)`;`True` → 不释放(所有权交执行)。**#260**:加锁与释放同层对称,取代原先写在 `_evaluate_and_fire` finally 里的释放 |
-| `_begin_session`(per-leg,同步段) | execution | `exec_started(pair)`:per-pair execution session 计数 ++ |
-| `_end_session`(terminal/timeout) | execution | `exec_finished(pair)`:计数 --;**归 0 → 释放 in-flight** |
+| 评估 task 完成(`_on_eval_done`,done-callback) | Strategy | **无条件** `release(pair)` —— 正常返回 / 抛异常 / 被取消都释放(#261)。加锁与释放同层对称 |
 
-**交接(strategy → execution)无空窗**:strategy fire 后**不释放**(in-flight 持续置位),异步 `_submit_order` 到 `_begin_session` 才 `exec_started` —— 这中间 in-flight 一直由 strategy 持有,并发 OBD 进来即被 `try_enter` 挡掉。执行全部结束(双腿 session 计数归 0)由 execution 释放。
+**#261:execution 侧两行已删除。** `_begin_session`/`_end_session` 不再参与本闸;
+全局 ≤1 执行由 barrier 判定(§7.5)。
 
-**置位一定有出口 —— 靠结构保证,无兜底猜测(#105 ②,2026-06-15;枚举方式 #260 修正,2026-07-22)**:
-不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。
+**#261 后不再有"交接"** —— 闸的作用域就是评估 task 本身。原先"fire 后不释放、交给 execution"的
+跨组件交接是持有型 token 的根源,已删除;执行期间的互斥改由 barrier 读派生态实现(§7.5)。
 
-> **⚠️ 按"路径"枚举会漏,必须按"所有权状态"枚举(#260)。**
-> `#105 ②` 原表按清除**路径**组织,隐含前提是「fire ⟹ 至少一个 `SubmitOrder` 到达 Risk」。
-> 该前提不成立:`PlaceBetsAction` 有 4 个零提交 early return,上游 `ShareLimitModification` /
-> `CandiSelectAction` 另有 5 处主动清空 `legs`(其中 `remaining <= 0` = 打满 share limit,**常态**),
-> action 链中途抛异常也会跳过 `PlaceBetsAction`。这些情况下三条路径**一条都不触发** ——
-> 该 pair 永久失效直到重启,且几乎无日志。路径可以漏,状态不会。
+**置位一定有出口(#261 后极简)**:闸只在评估 task 存活期间持有,出口只有一个 ——
+`_on_eval_done`(该 task 的 done-callback),**无条件** `release`:正常返回 / 抛异常 / 被取消都释放。
+`_dispatch_eval` 里排程失败(`_create_task` 抛)的分支也在同层 `release`(协程从未排程,释放安全)。
 
-**闸持有期恰好三种所有权状态,每种恰好一个出口:**
+> **为什么不再需要出口枚举表**:#260 之前闸跨 strategy → barrier → session 传递所有权,
+> 于是存在三种所有权状态、每种要有自己的出口,而**枚举会漏** —— `#105 ②` 就漏了「action 链零提交」
+> 那一态(`PlaceBetsAction` 4 个零提交 early return、上游 action 5 处清空 `legs`,其中 `remaining<=0`
+> 是打满 share limit 的常态路径),导致该 pair 永久停止评估。#261 取消跨组件交接后,
+> **不存在"该不该释放"的判据,也就没有可漏的出口**。
 
-| # | 所有权状态 | 判定 | 唯一出口 |
-|---|---|---|---|
-| 1 | **评估中**(单还没离开 strategy) | 评估 task 完成时 `submitter.submitted_count == 0` | strategy `_on_eval_done` → `release_eval`(`exec_count==0` → 清)。覆盖:无机会 / 让路 / 上游清空 legs / action abort / action 抛异常 / task 被取消 |
-| 2 | **已提交、待进 venue**(单到了 Risk,session 未起) | 全腿被 risk deny 或 barrier 超时 | opportunity barrier 出口:risk `_deny_order` publish `risk.opportunity.leg_denied` / barrier timeout → `_finish` → `release_eval`(此刻 `exec_count==0`,可清);连一腿都没 pass(ctx 为 None)时用 `pair_id` 合成 ctx 仍 `release_eval`(execution §3.5 / engine.py) |
-| 2b | **cancel-only**(残留挂单 → 撤单代替下单) | `_cancel_only` | **撤单与下单同走 session,不特殊处理闸**:`_cancel_residual_orders` 同步为每条残单 `_begin_cancel_session` → `exec_started`,pair 因此**进入状态 3**,由 `exec_finished` 释放;`_cancel_only` 末尾那次 `release_eval` 因 `exec_count>0` 是 **no-op**,只兜「一个 cancel session 都没起」(client 无该方法 / coid 已有 active session) |
-| 3 | **执行中**(session 已建立) | `exec_count > 0` | `exec_started`↔`exec_finished` 配对;**`exec_finished` 一定走到** —— `_begin_session` 把 watchdog 与 `exec_started` 原子置位(watchdog 先 arm,见 execution §4.2),终态或绝对超时必触发 `_end_session`;`_end_session` 把 `exec_finished` 提到 publish 之前,publish 抛也不漏减 |
+### 7.5 全局 ≤1 执行(#261,barrier 单点 + 纯派生态)
 
-- **状态 1→2 的交接判据 = `submitter.submitted_count > 0`**(`msgbus.send` 之后才 ++),不是"哪个 action 跑到了"。判据在 strategy 侧,对新增 action 免维护;落地见 strategy `architecture.md`「pair 闸的所有权出口」。
-- `release_eval` 只在 `exec_count==0` 时清(进状态 3 后 no-op,交 `exec_finished` 清),故 barrier 出口与执行交接互不误清。
-- **排程失败**(`_create_task` 抛)不属于任何一态:协程从未排程、一定不会下单,`_dispatch_eval` 就地 `release_eval` 后原样抛出。
+**判定点**:`ArbLiveExecutionEngine._handle_opportunity_pass` —— 新 opportunity 入场(`ctx is None`)时
+调 `_other_execution_in_flight()`,为真则整个机会丢弃(`_deny_order` 各腿;不重试不排队,
+下一个 OBD tick 重评,同 cancel-only 既有纪律)。
+
+**两个派生源**(都不需要释放,故不可能泄漏):
+
+| 源 | 覆盖 |
+|---|---|
+| `_arb_opportunities` 中的**非墓碑** ctx(`terminal is None`) | Risk pass → barrier 等腿 → `_release` |
+| 任一 exec client 的 `_execution_active`(= `len(_active_sessions) > 0`) | session 建立 → 终态/超时(含撤单 session) |
+
+**为什么不需要锁**:所有 `SubmitOrder` 经 `LiveExecutionEngine` 的单 `asyncio.Queue`、
+单 task 逐条 `_execute_command`,**构造上串行**,判定天然原子。
+
+**为什么不需要 `opportunity_id` 参数**:只在 `ctx is None`(全新机会)时调用,故在飞的执行必然不是它的
+—— 三个出口 `_release`/`_finish`/`_cancel_only` 都会 pop ctx。方案**不依赖识别执行归属**
+(`_active_sessions` 只存 `pair_id`,本就无法回答「属于哪次机会」;要更细的判定须先补该字段)。
+
+**承重前提(两条,改动时必须重新核对)**:
+1. `ctx is None` ⟺ 全新机会 ⟹ 在飞执行必非它的(依赖上面三个出口都 pop);
+2. **每条被 release 的腿必须同步产生 session** —— 故 `ArbExecutionSessionMixin.submit_order` 覆盖 NT
+   同步入口,先 `_begin_session` 再交 NT `create_task` 做 venue IO(对齐 `_cancel_residual_orders` 的既有写法,
+   顺带消除下单/撤单的顺序不对称)。否则 `_release` pop ctx 之后到 session 出现之间派生态为空,
+   而队列非空时 `await queue.get()` 不让出控制权,`[A1,A2,B1,B2]` 会让两个机会**双双执行**。
+
+**墓碑(`terminal="denied"`)**:被拒的机会照常建 ctx 并 **arm timer**,只是标 `terminal` ——
+使后到的腿命中 `ctx.terminal is not None` 分支被立刻拒,避免「B1 被拒 → A 执行结束 → B2 另建 ctx 空等 2s」
+挡住合法新机会。`ctx.denied`(**独立于 `allowed`**;后者会被 `_finish` 遍历 `_deny_order`,混用会重复拒单)
+集齐 `expected` 即提前 pop。**barrier timer 保留为结构保证** —— 某腿可能根本没发出
+(`make_submitter` 的 `cache.instrument is None` 分支),`denied` 永远凑不齐时只能靠 timer。
+提前清理是路径,timer 是保证;**只留路径会漏**。
+`_other_execution_in_flight` 必须跳过墓碑,否则墓碑自己会挡住别人。
 
 ### 7.4 与既有机制的关系
 
@@ -187,12 +211,12 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 ### 7.5 落地清单
 
-- [x] `src/arbitrage/common/pair_inflight.py`:`PairInFlightGate`(`try_enter(pair)` / `release_eval` / `exec_started` / `exec_finished`;**无 max-hold、无 `clear_all`**)
+- [x] `src/arbitrage/common/pair_inflight.py`:`PairInFlightGate`(**#261 后只剩** `try_enter` / `release` / `is_in_flight`;无 max-hold、无 `clear_all`、无 exec 记账)
 - [x] `ArbContext` + launcher 注入(StrategyEvaluator deps + execution session `_init_arb_session`)
-- [x] Strategy `_route_eval` 同步 `try_enter`(create_task 前)+ `_evaluate_and_fire` finally `release_eval`(未 fire)
-- [x] execution `_begin_session` `exec_started`(与 watchdog 原子)/ `_end_session` `exec_finished`(先于 publish)
+- [x] Strategy `_dispatch_eval` 同步 `try_enter`(create_task 前)+ `_on_eval_done` done-callback **无条件** `release`(#261)
+- [x] ~~execution `_begin_session` `exec_started` / `_end_session` `exec_finished`~~ —— **#261 删除**(execution 不再参与本闸);改为 `submit_order` 同步建 session 供 barrier 读派生态(§7.5)
 - [x] **Strategy 订 `health_check.*` → `_hc_running` per-venue 集合 + `_route_eval` 互斥 pre-check**(`finished` 仅移除 source,**不再 `clear_all`**)
-- [x] 测试:`test_pair_inflight.py`(try_enter/release/交接/负计数防御)+ `test_evaluator.py` eval.15-17(并发只 fire 一次 / 不同 pair 不阻塞 / 健检在跑放弃)+ `test_session.py`(watchdog 与 exec_started 原子、`_end_session` 出口对称)
+- [x] 测试:`test_pair_inflight.py`(try_enter / 无条件 release / 执行段 API 已删除守卫)+ `test_evaluator.py` eval.15-16 + gate.1-5 + `test_session.py`(watchdog 原子、`submit_order` 同步建 session)+ `test_engine_barrier.py`(全局 ≤1,#261)
 
 ---
 
@@ -226,6 +250,11 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 `PairInFlightGate`(§7)**机制本体保留**;变的是**防泄漏兜底**(注:`leg_settled` 已 #108 退役,执行健康真相改由 `VenueExecutionLiveness` 表达,见 §8.5):
 
 > **设计转向(2026-06-14,用户拍板)**:**去掉所有"兜底/猜测"机制(max-hold / A5 / health_check→clear_all),改为"保证每条 execution 结束时一定置位"**。判据:`PairInFlightGate` 的 `exec_count→0` 就是"本 pair 执行会话结束"(那一刻所有 session 都 `_end_session` 了、`_submit_order` 都返回了 → 无该 pair 任务在执行),**race-free**(exec_count 只在最后一条归 0)。关键是让**每一种 execution 都纳入 `exec_count`**,exec_count→0 自然兜到底,不需要任何 backstop。
+
+> **⚠️ #261(2026-07-22)起本小节的 `exec_count` 叙事已失效。** pair 闸不再进入执行段
+> (`exec_started`/`exec_finished`/`_exec_count` 已删除),下述"撤单纳入 exec_count""deny 由 barrier
+> `release_eval` 兜"等机制随之退役。执行期互斥的现状真理源是 **§7.5**(barrier 单点 + 纯派生态)。
+> 本小节保留为 #105 的历史设计记录。
 
 - **submit+track session(已有)**:`_begin_session` `exec_started` / `_end_session`(terminal **或** watchdog 超时,`session.py:103` NT clock 绝对 alert,不随 session 任务异常取消)`exec_finished`。
 - **cancel-only 的撤单(✅ #105 已落地 2026-06-14)**:**撤单也是一次执行,纳入 exec_count** —— base `_cancel_residual_orders` 对每条残单**同步 `exec_started`**(先全加完,避免某条先完成提前清)+ `create_task(_tracked_residual_cancel)`;`_tracked_residual_cancel` 在 `finally` `exec_finished`。子类只实现 `_cancel_residual_one`(真实 venue 撤单)。**这堵住了"`exec_count→0`(session 结束)时撤单 task 还在跑"** —— 撤单 task 在跑则 exec_count>0,不会提前清。`test_orbitexch_client.py::test_cancel_residual_tracked_*`。
@@ -413,7 +442,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 |---|---|---|
 | `leg_settled` / `LegSettledRegistry` | **退役** | 由 `VenueExecutionLiveness` + Risk gate 取代;Portfolio 不再读取执行健康状态 |
 | `VenueExecutionLiveness` | **已落地** | execution/reconciliation 写 `venue_order_alive`/`venue_position_alive`;Risk 按 opportunity required venues 读;Strategy/Portfolio 不读 |
-| `PairInFlightGate`(per-pair) | **保留**(兜底改 §8.4) | strategy `_route_eval` 同步 `try_enter` / execution `exec_started`·`exec_finished` |
+| `PairInFlightGate`(per-pair) | **保留但 #261 收窄为评估串行** | strategy `_dispatch_eval` `try_enter` / `_on_eval_done` 无条件 `release`;execution 不再参与 |
 | opportunity execution barrier | **已落地代码,待 live 验证** | Risk pass 后暂存 legs;Risk deny / timeout / 全 pass 都走 execution context 统一出口 |
 | per-session 超时 watchdog | **保留**(pair_inflight 主防线) | `_begin_session` 挂 NT clock alert |
 | `execution.started/finished` 消息 | **退役** | 旧消费者(OE DataClient 互斥)随迁移消失;strategy 改直读 callable → 无消费者 |

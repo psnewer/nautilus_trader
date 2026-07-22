@@ -733,15 +733,6 @@ def test_ended_releases_sports_and_obd_subscriptions():
     assert actor._obd_subscribed == set()           # 各腿 OBD 已退订(归零 → book 回收)
 
 # ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────
-class _SubmittingAction(Action):
-    """模拟"单已送到 Risk":直接 bump 计数。
-
-    真实提交路径(`msgbus.send` 后才 ++)由 `test_submitter.py` 覆盖;这里只验交接判据的消费端。
-    """
-    async def execute(self, ctx):
-        ctx.submitter.submitted_count += 1
-
-
 class _RaisingAction(Action):
     async def execute(self, ctx):
         raise RuntimeError("action boom")
@@ -757,14 +748,18 @@ def _gate_harness(action):
     return gate, actor, loop
 
 
-def test_gate_held_when_action_submits():
-    """有单送到 Risk → 所有权交执行,闸**不**释放(由 barrier / session 出口清)。"""
-    gate, actor, loop = _gate_harness(_SubmittingAction())
+def test_gate_released_even_when_actions_submit():
+    """#261:闸只保证"同 pair 不并发评估" → 评估结束**无条件**释放,有没有下单都一样。
+
+    旧行为("已 fire 则持有,交执行释放")需要一个跨组件交接判据,而判据会漏 —— 那正是
+    #260 泄漏的根源。全局 ≤1 执行改由 barrier 用派生态保证,见 `test_engine_barrier.py`。
+    """
+    gate, actor, loop = _gate_harness(_RecordingAction("arb"))
 
     actor.on_data(_mp(confidence=1.0))
     _run(_drain(loop))
 
-    assert gate.is_in_flight("match_X") is True
+    assert gate.is_in_flight("match_X") is False
 
 
 def test_gate_released_when_actions_submit_nothing():

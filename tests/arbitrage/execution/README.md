@@ -60,18 +60,23 @@
   立刻调用;不生成 `OrderAccepted`;不干等 §4.2 watchdog 整个超时。
 - 验收:`test_orbitexch_client.py::test_submit_order_exception_rejects_and_ends_session`。
 
-### execution-4.2.2: watchdog 在 exec_started 之前 arm,异常不留悬挂 count(#105 ②)
-- 前置:`PairInFlightGate` 已由 strategy `try_enter` 置位;注入会抛的 `set_time_alert_ns`(代理 clock)。
-- 输入:`_begin_session` 执行,arm watchdog 时抛。
-- 期望:`exec_started` 未触达(`_exec_count==0`),session 未建立;eval 层 in-flight 仍可由 `release_eval` 清。
-- 验收:`test_session.py::test_watchdog_armed_before_exec_started_no_leak_on_alert_failure`
-  + `test_begin_session_arms_watchdog_and_exec_started`(正常路径:exec_started 自增 + watchdog 已 arm)。
+### execution-4.2.2: watchdog 先 arm,异常不留半建立 session(#261 改写)
+- 前置:注入会抛的 `set_time_alert_ns`(`_begin_order_session` 内唯一可能抛的操作)。
+- 期望:session 不得半建立 —— `_active_sessions` 为空、`_execution_active` 为 False。
+  #261 后 `_execution_active` **直接决定 barrier 的全局闸**,留一条没有看门狗的悬挂 session
+  会让它恒 True,从此拒绝所有新机会。
+- 验收:`test_session.py::test_alert_failure_leaves_no_half_built_session`
+  + `test_begin_session_arms_watchdog`(正常路径:watchdog 已 arm)。
 
-### execution-4.2.3: _end_session 出口对称 —— exec_finished 先于 publish(#105 ②)
-- 前置:session 在飞(`exec_started` 已 ++,in-flight 置位);注入会抛的 `_publish_execution`。
-- 输入:`_end_session` 执行,publish 抛。
-- 期望:`exec_finished` 已先行 → `_exec_count→0` → in-flight 被清(publish 抛之前已落)。
-- 验收:`test_session.py::test_end_session_clears_inflight_even_if_publish_throws`。
+### execution-4.2.4: submit_order 同步建 session(#261 承重前提)
+- 前置:stub NT 基类 `submit_order` 记录下发。
+- 期望:`submit_order` 返回时 session **已存在**(未跑任何 loop 迭代),且顺序为
+  先 `_begin_session` 后 dispatch;cancel-only 时不下发。
+- 理由:barrier 在 `_release` 里同步派发各腿,派发与 pop ctx 之间无 `await`;session 若留到
+  `_submit_order` 协程才建,派生态有空窗,`[A1,A2,B1,B2]` 会让两个机会双双执行。
+- 验收:`test_session.py::test_submit_order_builds_session_synchronously`
+  + `test_submit_order_cancel_only_does_not_dispatch`
+  + OE/SE `test_submit_order_builds_session_before_dispatch`。
 
 ### execution-4.2.4: cancel session 只由撤单终态收口
 - 前置:一笔 cancel session 已建立。
@@ -82,7 +87,7 @@
 ### execution-4.2.5: cancel-only 残单撤单进入同一 watchdog / exec_count
 - 前置:strategy 已持有 pair in-flight;同 pair 有两条 residual open order。
 - 输入:cancel-only 发出两条残单撤单请求,撤单 coroutine 先完成,随后两条 `OrderCanceled` 到达。
-- 期望:撤单请求完成不释放 pair;每条 cancel terminal 到齐后才逐条 `exec_finished`,最后一条后释放 in-flight。
+- 期望:撤单请求完成不落回 `_execution_active`;每条 cancel terminal 到齐后才落回 False(#261:撤单在飞期间 barrier 不放行新机会)。
 - 验收:`test_session.py::test_base_cancel_only_tracks_residual_until_cancel_terminal` / `test_orbitexch_client.py::test_cancel_residual_tracked_clears_inflight_when_all_done` / `test_cancel_residual_inflight_held_until_last_cancel`。
 
 ## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)

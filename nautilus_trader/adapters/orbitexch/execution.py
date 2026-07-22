@@ -39,7 +39,6 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
-from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
@@ -292,8 +291,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         config,
         *,
         venue_liveness: VenueExecutionLiveness,
-        pair_registry: PairRegistry | None = None,
-        pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         session_timeout_secs: float = 30.0,
         fx: float = 1.0,
     ) -> None:
@@ -312,8 +309,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
         self._init_arb_session(
             session_timeout_secs=session_timeout_secs,
-            pair_registry=pair_registry,
-            pair_inflight=pair_inflight,
         )
         self._venue_liveness = venue_liveness
         self._set_account_id(AccountId(f"{ORBITEXCH}-001"))
@@ -467,8 +462,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # #62:共享 BrowserManager 不在此 close(data 也不关;避免关掉共享登录浏览器)。
 
     async def _submit_order(self, command) -> None:
-        if not self._begin_session(command):
-            return
+        # #261:session 已由 mixin 的同步 `submit_order` 建立(派生态不能有空窗),此处不再建。
         order = command.order
         try:
             result = await self._place_via_executor(order)
