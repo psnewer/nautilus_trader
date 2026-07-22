@@ -988,9 +988,13 @@ def test_reconcile_without_current_bets_marks_liveness_dead():
     client._page = FakeSharpExchPage()
     client._reload_bets_wait_ns = 1
 
-    assert _run(client.generate_order_status_reports(SimpleNamespace())) == []
-    assert _run(client.generate_order_status_report(SimpleNamespace(venue_order_id=None, client_order_id=None))) is None
-    assert _run(client.generate_position_status_reports(SimpleNamespace())) == []
+    # #259:与 OE 对称——快照不可信 = 查询失败 → 抛,不返空。
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(client.generate_order_status_reports(SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(client.generate_order_status_report(SimpleNamespace(venue_order_id=None, client_order_id=None)))
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(client.generate_position_status_reports(SimpleNamespace()))
 
     assert liveness.order_alive("SHARPEXCH") is False
     assert liveness.position_alive("SHARPEXCH") is False

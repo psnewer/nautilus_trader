@@ -919,8 +919,17 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         """reconcile:缓存的 CURRENT_BETS 快照(`_on_current_bets` 维护)→ `OrderStatusReport` 列表。
         仅为能反查到 NT order 的 bet 构建。"""
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:快照不可信 → 抛,不返空。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
+            # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
+            # `_did_position_status_query_fail` 恒 False、`:900-910` 跳过保护失效,连续对账遂用
+            # `_create_flat_position_report`(qty=0)当目标 + 默认 `generate_missing_orders=True`
+            # 合成成交,抹平真实状态的账面记录。`mark_*_dead` 只写我们自己的 VenueExecutionLiveness,
+            # NT 看不见,不能替代异常。(#122 当初让 PM「对齐 OE」,实为参照系本身偏离 NT 约定。)
             self._venue_liveness.mark_order_dead(ORBITEXCH)
-            return []
+            raise RuntimeError(
+                "OE order status reports unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
         reports = []
         for bet in self._current_bets.values():
             report = self._build_order_report(bet)
@@ -932,8 +941,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def generate_order_status_report(self, command):
         """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。"""
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             self._venue_liveness.mark_order_dead(ORBITEXCH)
-            return None
+            raise RuntimeError(
+                "OE order status report unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
         target_voi = str(command.venue_order_id) if command.venue_order_id is not None else None
         target_coid = command.client_order_id
         for offer_id, bet in self._current_bets.items():
@@ -960,8 +973,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         instrument 经 market_id+selection_id 反查,反查不到跳过。
         **注**:NT Portfolio 平时由 order fills 自行派生持仓;本 report 仅供 reconcile 对账用。"""
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             self._venue_liveness.mark_position_dead(ORBITEXCH)
-            return []
+            raise RuntimeError(
+                "OE position status reports unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
 
         reports = self._build_position_status_reports_from_current_bets()
         self._venue_liveness.mark_position_alive(ORBITEXCH)

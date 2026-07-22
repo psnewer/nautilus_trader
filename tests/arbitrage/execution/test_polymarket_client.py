@@ -910,10 +910,12 @@ def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
         client._venue_liveness = VenueExecutionLiveness()
 
         client._venue_liveness.mark_position_alive(POLYMARKET)
-        # #122:失败 mark_dead + 返空(不 raise,对齐 OE;避免 startup reconciliation 卡死)
-        reports = await client.generate_position_status_reports(SimpleNamespace())
+        # #259(修订 #122):失败 mark_dead + **重新抛出**。NT 判"venue 查询失败"只认异常
+        # (`live/execution_engine.py:876` → `failed_venues`);返 [] 会被读成"查询成功、无持仓",
+        # 使 `_did_position_status_query_fail` 跳过保护失效,连续对账合成成交抹掉真实持仓账面。
+        with pytest.raises(RuntimeError, match="positions unavailable"):
+            await client.generate_position_status_reports(SimpleNamespace())
 
-        assert reports == []
         assert not client._venue_liveness.position_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
@@ -966,10 +968,10 @@ def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_order_status_reports")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        # #122:retry failure → mark_dead + 返空(不 raise,对齐 OE)
-        reports = await client.generate_order_status_reports(SimpleNamespace())
+        # #259(修订 #122):retry 吞掉的失败同样是"查询失败"而非"无挂单" → mark_dead + 抛出
+        with pytest.raises(RuntimeError, match="PM order status reports failed"):
+            await client.generate_order_status_reports(SimpleNamespace())
 
-        assert reports == []
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
@@ -994,10 +996,11 @@ def test_arb_generate_single_order_report_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_order_status_report")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        # #122:single report retry failure → mark_dead + 返 None(不 raise)
-        report = await client.generate_order_status_report(SimpleNamespace())
+        # #259:三个 report 方法统一为 mark_dead + raise。注意区分「查询失败」(抛)与
+        # 「venue 查无此单」(仍返 None,NT 契约合法值)——见 test_..._returns_none_when_not_found。
+        with pytest.raises(RuntimeError, match="PM order status report failed"):
+            await client.generate_order_status_report(SimpleNamespace())
 
-        assert report is None
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
@@ -1027,10 +1030,10 @@ def test_arb_generate_order_reports_fill_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_fill_reports")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        # #122:retry failure → mark_dead + 返空(不 raise,对齐 OE)
-        reports = await client.generate_order_status_reports(SimpleNamespace())
+        # #259(修订 #122):bulk 内部 fill 查询失败同样 mark_dead + 抛出
+        with pytest.raises(RuntimeError, match="PM order status reports failed"):
+            await client.generate_order_status_reports(SimpleNamespace())
 
-        assert reports == []
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)

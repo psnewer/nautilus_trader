@@ -1077,9 +1077,14 @@ def test_reconcile_reports_without_current_bets_marks_oe_liveness_dead():
     c._venue_liveness.mark_order_alive("ORBITEXCH")
     c._venue_liveness.mark_position_alive("ORBITEXCH")
 
-    assert _run(c.generate_order_status_reports(SimpleNamespace())) == []
-    assert _run(c.generate_order_status_report(SimpleNamespace(venue_order_id=None, client_order_id=None))) is None
-    assert _run(c.generate_position_status_reports(SimpleNamespace())) == []
+    # #259:快照不可信 = 查询失败 → 抛(返空会被 NT 读成「venue 无挂单/持仓」,
+    # 使跳过保护失效、连续对账合成成交抹平真实状态账面)。
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(c.generate_order_status_reports(SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(c.generate_order_status_report(SimpleNamespace(venue_order_id=None, client_order_id=None)))
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(c.generate_position_status_reports(SimpleNamespace()))
 
     assert not c._venue_liveness.order_alive("ORBITEXCH")
     assert not c._venue_liveness.position_alive("ORBITEXCH")
@@ -1092,8 +1097,10 @@ def test_reconcile_reports_stale_snapshot_reload_failure_marks_dead():
     c._reload_bets_wait_ns = 50_000_000
     c._page = _FakePageReload(on_reload=None)         # stale 后 reload 失败
 
-    assert _run(c.generate_order_status_reports(SimpleNamespace())) == []
-    assert _run(c.generate_position_status_reports(SimpleNamespace())) == []
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(c.generate_order_status_reports(SimpleNamespace()))
+    with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
+        _run(c.generate_position_status_reports(SimpleNamespace()))
 
     assert c._page.reload_count == 2                  # order / position 各探一次,均失败
     assert not c._venue_liveness.order_alive("ORBITEXCH")

@@ -697,9 +697,17 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def generate_order_status_reports(self, command) -> list:
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:快照不可信 → 抛,不返空(与 OE 对称)。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
+            # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
+            # `_did_position_status_query_fail` 恒 False、`:900-910` 跳过保护失效,连续对账遂用
+            # `_create_flat_position_report`(qty=0)当目标 + 默认 `generate_missing_orders=True`
+            # 合成成交,抹平真实状态的账面记录。`mark_*_dead` 只写我们自己的 liveness,NT 看不见。
             if self._venue_liveness is not None:
                 self._venue_liveness.mark_order_dead(SHARPEXCH)
-            return []
+            raise RuntimeError(
+                "SE order status reports unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
         reports = []
         for bet in self._current_bets.values():
             report = self._build_order_report(bet)
@@ -711,9 +719,13 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def generate_order_status_report(self, command):
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             if self._venue_liveness is not None:
                 self._venue_liveness.mark_order_dead(SHARPEXCH)
-            return None
+            raise RuntimeError(
+                "SE order status report unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
         target_voi = str(command.venue_order_id) if command.venue_order_id is not None else None
         target_coid = command.client_order_id
         for offer_id, bet in self._current_bets.items():
@@ -733,9 +745,13 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def generate_position_status_reports(self, command) -> list:
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             if self._venue_liveness is not None:
                 self._venue_liveness.mark_position_dead(SHARPEXCH)
-            return []
+            raise RuntimeError(
+                "SE position status reports unavailable: exec snapshot not fresh "
+                "(page reload failed / CURRENT_BETS not repushed)",
+            )
 
         reports = self._build_position_status_reports_from_current_bets()
         if self._venue_liveness is not None:

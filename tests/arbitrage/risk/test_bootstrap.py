@@ -28,6 +28,54 @@ def test_install_replaces_kernel_module_names():
     assert k.LiveExecutionEngine is ArbLiveExecutionEngine
 
 
+def test_install_replaces_node_kernel_binding():
+    """#259:必须替 `live.node` 里的绑定 —— node 已在 import 时取走名字,替 kernel 模块无效。"""
+    bootstrap.install_arbitrage_engines()
+    import nautilus_trader.live.node as n
+    assert n.NautilusKernel is bootstrap.ArbNautilusKernel
+
+
+def test_arb_kernel_continues_startup_when_reconciliation_fails(monkeypatch):
+    """#259:对账失败不再中止启动(否则 `trader.start()` 永不执行,全 actor 卡 READY)。
+
+    失败的 venue 由 VenueExecutionLiveness 隔离(Risk 拒整个机会),并在下一轮连续对账成功后自愈。
+    """
+    logged = []
+    kernel = bootstrap.ArbNautilusKernel.__new__(bootstrap.ArbNautilusKernel)
+    kernel._log = SimpleNamespace(warning=logged.append)
+
+    async def failing_super(self):
+        return False
+
+    monkeypatch.setattr(
+        bootstrap._kernel.NautilusKernel,
+        "_await_execution_reconciliation",
+        failing_super,
+    )
+
+    assert asyncio.run(kernel._await_execution_reconciliation()) is True
+    assert any("continuing startup" in msg for msg in logged)
+
+
+def test_arb_kernel_passes_through_successful_reconciliation(monkeypatch):
+    """成功路径不加噪声:返 True 且不打 warning。"""
+    logged = []
+    kernel = bootstrap.ArbNautilusKernel.__new__(bootstrap.ArbNautilusKernel)
+    kernel._log = SimpleNamespace(warning=logged.append)
+
+    async def ok_super(self):
+        return True
+
+    monkeypatch.setattr(
+        bootstrap._kernel.NautilusKernel,
+        "_await_execution_reconciliation",
+        ok_super,
+    )
+
+    assert asyncio.run(kernel._await_execution_reconciliation()) is True
+    assert logged == []
+
+
 def _arb_node():
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)

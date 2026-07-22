@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+import nautilus_trader.live.node as _node
 import nautilus_trader.system.kernel as _kernel
 
 from src.arbitrage.common.pair_registry import PairRegistry
@@ -131,6 +132,36 @@ def reset_arb_context() -> None:
     _arb_context = ArbContext()
 
 
+class ArbNautilusKernel(_kernel.NautilusKernel):
+    """#259:启动对账失败不再中止启动 —— 失败的 venue 由 `VenueExecutionLiveness` 精确隔离。
+
+    上游 `kernel.py:1023-1025` 在 `_await_execution_reconciliation()` 返 False 时直接 `return`,
+    于是 `self._trader.start()` 永不执行 → 全部 actor 卡 READY、web 不绑,且进程仍存活、除一行
+    `Execution state could not be reconciled` 外无任何提示。而 PM data-api 启动期一次瞬时超时
+    就足以触发(见 refactor.md #122/#259)。
+
+    放行的安全性(逐条验证,勿凭直觉改动):
+    - 失败时 venue 已被标 dead(`arb_execution.py` 的 `mark_*_dead` 在 `raise` 之前执行);
+    - `risk/engine.py:_check_required_venues_alive` 对**任一**所需 venue 不 alive 即拒整个机会
+      (读 `meta.expected_legs`,不会只下单边);`venue_alive` 要求 order+position 双 alive;
+    - `execution_engine.py:1792-1794` 在 `finally` 里 set `_startup_reconciliation_event`,
+      故连续对账循环照常启动 → 下一轮成功即 `mark_*_alive`,自动恢复。
+
+    本类**只改「失败是否中止启动」**,对账逻辑与上游日志全部保留(仍调 `super()`)。
+    """
+
+    async def _await_execution_reconciliation(self) -> bool:
+        ok = await super()._await_execution_reconciliation()
+        if not ok:
+            self._log.warning(
+                "Execution reconciliation failed; continuing startup (#259). "
+                "Affected venues are fail-closed via VenueExecutionLiveness — Risk denies any "
+                "opportunity involving them — and will self-heal on the next successful "
+                "continuous reconciliation cycle.",
+            )
+        return True
+
+
 def install_arbitrage_engines(debug_config: object | None = None) -> None:
     """构造 TradingNode 之前调用一次。幂等。
 
@@ -141,6 +172,9 @@ def install_arbitrage_engines(debug_config: object | None = None) -> None:
     """
     _kernel.Portfolio = ArbitragePortfolio
     _kernel.LiveExecutionEngine = ArbLiveExecutionEngine
+    # #259:`live/node.py:35` 直接 `from ... import NautilusKernel`,故替换 node 模块里的绑定
+    # (替 `_kernel.NautilusKernel` 无效——node 已在 import 时取走名字)。
+    _node.NautilusKernel = ArbNautilusKernel
 
     if debug_config is not None and getattr(debug_config, "enabled", False):
         from src.arbitrage.debug.risk import DebugArbitrageLiveRiskEngine
