@@ -9,7 +9,7 @@ from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import BoolExpr
 from src.arbitrage.strategy.bool_expr import NotExpr
 from src.arbitrage.strategy.bool_expr import OrExpr
-from src.arbitrage.strategy.bool_expr import SignalRef
+from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import Condition
@@ -18,9 +18,7 @@ from src.arbitrage.strategy.condition import EvalResult
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
-from src.arbitrage.strategy.signals import SignalStore
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
-from src.arbitrage.strategy.snapshot import build_snapshot
+
 
 __all__ = [
     "Action",
@@ -31,14 +29,11 @@ __all__ = [
     "EvalContext",
     "EvalResult",
     "NotExpr",
-    "OpportunitySnapshot",
     "OrExpr",
-    "SignalRef",
-    "SignalStore",
+    "StateQuery",
     "Strategy",
     "StrategyEvaluator",
     "StrategyEvaluatorConfig",
     "StrategyRegistry",
-    "build_snapshot",
     "evaluate_tree",
 ]

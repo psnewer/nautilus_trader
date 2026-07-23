@@ -22,11 +22,7 @@ from nautilus_trader.adapters.orbitexch.config import (
     OrbitExchDataClientConfig,
     OrbitExchExecClientConfig,
 )
-from nautilus_trader.adapters.orbitexch.config_loader import (
-    create_data_client_config,
-    create_exec_client_config,
-    load_config,
-)
+from nautilus_trader.adapters.orbitexch.config_loader import load_config
 # New API-based discovery client (2026-07-03)
 from nautilus_trader.adapters.orbitexch.discovery_client import (
     OrbitExchDiscoveryClient,
@@ -46,8 +42,6 @@ __all__ = [
     # Config
     "OrbitExchDataClientConfig",
     "OrbitExchExecClientConfig",
-    "create_data_client_config",
-    "create_exec_client_config",
     "load_config",
     # New discovery client (preferred)
     "OrbitExchDiscoveryClient",

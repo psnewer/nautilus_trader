@@ -233,9 +233,9 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
   "strategy": {
     "enabled": true,
     "strategies": {
-      "tennis_prematch": {
+      "tennis_mean_rebate": {
         "arbitrage_tree": {
-          "self_hits": {"AND": [{"signal": "rebate"}, {"signal": "pre_match"}]},
+          "self_hits": {},
           "sub_conditions": [],
           "checktion": [{"type": "rebate_check", "params": {"min_rate": 0.03}}],
           "actions": [{"type": "place_bet", "params": {}}]
@@ -243,7 +243,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
         "compensation_tree": null
       }
     },
-    "bindings": [{"scope": "competition:ATP", "strategy_id": "tennis_prematch"}]
+    "bindings": [{"scope": "competition:ATP", "strategy_id": "tennis_mean_rebate"}]
   },
   "debug": {"enabled": false}
 }
@@ -301,6 +301,11 @@ def load_arb_config(path: str | Path) -> ArbConfig:
 ## 6. Dispatcher 接口(`src/arbitrage/config/dispatcher.py`)
 
 纯函数,无副作用(易测):
+
+NT 节点的 OE Data/Execution config 只允许由本 dispatcher 构造。
+`nautilus_trader.adapters.orbitexch.config_loader` 仅保留旧 YAML/env 字典读取
+`load_config()`;不再公开另一套 `create_*_client_config` factory,避免绕过当前 schema、
+venue enablement 与 `ArbContext` 接线。
 
 ```python
 def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConfig: ...
@@ -440,19 +445,22 @@ def build_check(spec: dict) -> Check:
 def build_action(spec: dict) -> Action: ...
 ```
 
-**框架层只提供 registry + builder,不预注册任何具体 Check/Action**(slice 9 由用户落具体类 + 在 launcher main 顶部调 `register_check("rebate", RebateCheck)`)。
+**框架层只提供 registry + builder,不预注册任何具体 StateQuery/Check/Action**。
 
-### 7.2 BoolExpr JSON 解析(`src/arbitrage/strategy/bool_expr.py` 扩展)
+### 7.2 BoolExpr JSON 解析
 
 ```python
 def bool_expr_from_json(spec) -> BoolExpr:
     """
-      {"signal": "name"}             → SignalRef("name")
+      {"type": "state_query_name", "params": {...}} → 已注册 StateQuery
       {"AND": [<sub>, <sub>, ...]}   → AndExpr([bool_expr_from_json(s) for s in subs])
       {"OR":  [<sub>, ...]}          → OrExpr(...)
       {"NOT": <sub>}                 → NotExpr(...)
     """
 ```
+
+`self_hits` 缺失、`null` 或 `{}` 时为空 AND，默认通过。框架不再维护 SignalStore；
+StateQuery 每次直接读取当前 `EvalContext`。
 
 ### 7.3 Condition JSON 解析(`src/arbitrage/strategy/condition.py` 扩展)
 
@@ -535,7 +543,9 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 - [x] **slice 7B PM matching info 真写 + series 过滤**(#53/#57):**Gap D 修**(PM 端 matching info 早期空值)+ **Gap B 修**(PM 全量 crawl 无 sport filter):当前实现由 `ArbPolymarketInstrumentProvider.load_all_async` 接管 PM discovery,先读 Gamma `/sports` 获取 series/order,再按 `target_competitions_by_data_source["PMSPORTS"]` 过滤并调用 `/events?series_id=...` 拉内嵌 teams + moneyline markets;`_load_moneyline_market` 写 `sport/competition/home_team/away_team/selection_role/game_id`,`start_ts` 不写入 matching info。PMSPORTS target competitions 当前由 dispatcher `to_sports_status_target_competitions` 写入 `ArbContext.target_competitions_by_data_source["PMSPORTS"]`,常规配置继承 `cfg.discovery.polymarket.sports[].competitions`;launcher timeout_connection 当时 20→120s,现随 #105 启动对账统一为 180s。当前离线验收见 `tests/arbitrage/adapters/polymarket/test_arb_provider.py`;完整 Gamma HTTP 路径归 live smoke。详见 `discovery/architecture.md §3.2`(PM 端 matching info 真写段)。
 - [x] **slice 10d 修 Gap A + E**(#52):**Gap A** `MarketMatchingActor` + `StrategyEvaluator` `Actor.subscribe_data` 强制路由 SubscribeData cmd 经 DataEngine 需 client_id/instrument_id 报 ERROR × 3 — **改 `self._msgbus.subscribe(topic=f"data.{TypeName}", handler=self.on_data)` 直订**(NT `publish_data` 内部正是 publish 到 `data.<TypeName>` topic);**MVP 不预订 OrderBookDeltas**(strategy 端 MatchedPair 触发即够,OBD-driven 重评待 slice 10e per-iid 接);**Gap E** `InstrumentRefresher._on_alert` 创建 task 未跟踪 → dispose 时 "Task was destroyed but it is pending" warning × 1 — **改存 `self._tick_task` + on_stop cancel**。**live smoke 验**:subscribe_data ERROR 3→**0**,pending task warning 1→**0**,OE refresh 3 次推进正常;仅剩 1 PM PolyApi 网络异常(无关本 slice,与 [[bug_polymarket_order_version_mismatch]] 同 PM 上游类问题)。`MatchedPair` 仍 0 fire 符合 slice 7B PM enricher 未写预期(`_both_recent()` 闸 Q5 守门)。详见 `matching/architecture.md §3.3` + `strategy/architecture.md §3.5` + `discovery/architecture.md §3.3`
 - [x] **slice 10c 第一次 live smoke**(#51,历史记录):跑 `python -m launchers.arb_node --config arb_config.example.json`;OE 端 connect+discovery 全链路通,**真发现 Tennis × Men's Roland Garros 2026 共 28 个 instruments**;PM 端 connect 通 + Account RegisteredCache + PM gamma crawl 跑(10000+ markets,无 sport filter)。**Smoke 期间修 5 处**:① `launchers/arb_node.py` 加 `load_dotenv(.env)`(launcher 进程不自动 load);② `dispatcher:to_instrument_refresher_configs` 加 `ComponentId("InstrumentRefresher-{venue}")`(两 Actor 默认 ID 冲突 NT raise RuntimeError);③ `BrowserManager.start()` 幂等(`if self._context is not None: return` — 共享多次起);④ `OrbitExchDataClient._connect` 改用 `start + create_page`(原 bug:`get_page` 只读返 None);⑤ `SkipExecutionOrbitExchClient._connect/_disconnect` skip 模式 no-op(base OE Exec NotImplementedError)。当时浮出的 Gap A-E 后续已分别由 msgbus 直订、PM series-based discovery、OE Exec 接线、PM 6-key 写入与 Refresher 退役收口;本条只保留 smoke 历史,不再作为当前 TODO。
-- [x] **slice 9**:`mean_rebate` 测试策略落地 ✅ #49(+32 passed)— **超出原计划**:(a) 用户写 Check/Action 子类(`PreMatchCheck` / `MeanRebateCheck` / `PlaceBetsAction`,放 `src/arbitrage/strategy/{checks,actions}/`);(b) launcher 加 `register_builtin_checks_and_actions()` 在 main 顶部;(c) `arb_config.example.json` strategy 段填 checktion 短路 AND;(d) 框架小改 3 件:`EvalContext.scratch`(per-eval Check→Action 传 legs)/ `SignalStore.view(pair_id)`(per-pair 持久态隔离)/ `OpportunitySnapshot` 加 `in_play`+`instrument_info` 字段;(e) OE DataClient 透 `marketDefinition.inPlay` 到 `cache.instrument.info["in_play"]`(**已随 #250 废除**,in_play 改单源 PMSPORTS sports 状态)。详见 `architectures/strategy/architecture.md §3.8` + `architectures/data/architecture.md §4`
+- [x] **slice 9**:`mean_rebate` 测试策略落地；后续 #250/#266 迁移到 PMS
+  `SportsGameStateStore` 与 live Cache，当前 `self_hits` 已改为直接查询 `EvalContext`，
+  不再保留 SignalStore 派生层。详见 `architectures/strategy/architecture.md §3.8`。
 - [ ] **slice 10**:`/live-test` skip_execution=true smoke
 
 ---

@@ -3,9 +3,8 @@
 对应用例:strategy-4.framework.reg.{1-4}
 """
 
-import pytest
 
-from src.arbitrage.strategy.bool_expr import SignalRef
+from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
@@ -13,7 +12,7 @@ from src.arbitrage.strategy.registry import StrategyRegistry
 
 def _stub_strategy(scope_key: str) -> Strategy:
     """空叶子条件树占位(测的是 registry 查找,不是 evaluate)。"""
-    leaf = Condition(self_hits=SignalRef("noop"))
+    leaf = Condition(self_hits=AndExpr())
     return Strategy(scope_key=scope_key, arbitrage_tree=leaf, compensation_tree=leaf)
 
 

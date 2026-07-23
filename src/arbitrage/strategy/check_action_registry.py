@@ -1,5 +1,5 @@
 """
-Check / Action 类型 registry(slice 5,Q25)。
+StateQuery / Check / Action 类型 registry(slice 5,Q25)。
 
 设计见 `docs/arbitrage/architectures/_cross-cutting/configuration.md §7.1`。
 
@@ -12,6 +12,7 @@ JSON loader 才能按 `{"type": "rebate", "params": {...}}` 构造实例。
 
 from __future__ import annotations
 
+from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import Check
 
@@ -22,6 +23,18 @@ class StrategyConfigError(Exception):
 
 _CHECK_REGISTRY: dict[str, type[Check]] = {}
 _ACTION_REGISTRY: dict[str, type[Action]] = {}
+_STATE_QUERY_REGISTRY: dict[str, type[StateQuery]] = {}
+
+
+def register_state_query(name: str, cls: type[StateQuery]) -> None:
+    """注册 self_hits 状态查询类型。重复注册同名同类幂等；同名异类 raise。"""
+    existing = _STATE_QUERY_REGISTRY.get(name)
+    if existing is not None and existing is not cls:
+        raise StrategyConfigError(
+            f"state query type '{name}' already registered to {existing.__name__}, "
+            f"cannot rebind to {cls.__name__}",
+        )
+    _STATE_QUERY_REGISTRY[name] = cls
 
 
 def register_check(name: str, cls: type[Check]) -> None:
@@ -79,7 +92,26 @@ def build_action(spec: dict) -> Action:
         raise StrategyConfigError(f"invalid params for action type '{name}': {exc}") from exc
 
 
+def build_state_query(spec: dict) -> StateQuery:
+    """`{"type": "<name>", "params": {...}}` → 无状态查询实例。"""
+    if not isinstance(spec, dict) or "type" not in spec:
+        raise StrategyConfigError(f"state query spec must have 'type' key: {spec!r}")
+    name = spec["type"]
+    cls = _STATE_QUERY_REGISTRY.get(name)
+    if cls is None:
+        raise StrategyConfigError(
+            f"unknown state query type: '{name}' "
+            f"(registered: {sorted(_STATE_QUERY_REGISTRY.keys())})",
+        )
+    params = spec.get("params") or {}
+    try:
+        return cls(**params)
+    except TypeError as exc:
+        raise StrategyConfigError(f"invalid params for state query type '{name}': {exc}") from exc
+
+
 def _reset_for_tests() -> None:
-    """测试隔离用:清空两个 registry。生产路径不调。"""
+    """测试隔离用:清空三个 registry。生产路径不调。"""
     _CHECK_REGISTRY.clear()
     _ACTION_REGISTRY.clear()
+    _STATE_QUERY_REGISTRY.clear()

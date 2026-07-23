@@ -668,6 +668,7 @@ def test_opportunity_deny_publishes_domain_message():
         "opportunity_id": "opp-1",
         "pair_id": "pair-1",
         "leg_key": "pm:home:0",
+        "expected_legs": ["pm:home:0", "oe:away:1"],   # #263:供 barrier 竞态墓碑算全集
         "client_order_id": str(order.client_order_id),
         "reason": "blocked",
     }]

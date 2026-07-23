@@ -16,6 +16,7 @@ from __future__ import annotations
 from itertools import product
 
 from src.arbitrage.common.venues import qty_from_share
+from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
@@ -29,12 +30,11 @@ class OneSideRebateCheck(Check):
         self._share = float(share) if share is not None else None
 
     def passes(self, ctx: EvalContext) -> bool:
-        snap = ctx.snapshot
-        if snap is None:
+        if ctx.cache is None or ctx.pair_registry is None:
             return False
 
-        legs_by_role = _legs_by_role(snap)
-        roles = _roles_present(legs_by_role, snap)
+        legs_by_role = _legs_by_role(ctx)
+        roles = _roles_present(legs_by_role)
         if roles is None:
             return False
         share = self._configured_share(ctx)
@@ -138,16 +138,15 @@ class OneSideRebateCheck(Check):
         return float((ctx.strategy_defaults or {}).get("share") or 0.0)
 
 
-def _legs_by_role(snap) -> dict[str, list[dict]]:
-    """#228:分组键 = claim 优先(3-way 腿),fallback selection_role(2-way);合法集 = snap.outcomes。"""
-    return quote_legs_by_outcome(snap)
+def _legs_by_role(ctx) -> dict[str, list[dict]]:
+    """#228:分组键 = claim 优先，fallback selection_role。"""
+    return quote_legs_by_outcome(ctx)
 
 
-def _roles_present(legs_by_role: dict[str, list[dict]], snap) -> tuple[str, ...] | None:
-    """#228:outcome 集合必须与 snap.outcomes 声明完全一致(有序稳定)。"""
-    declared = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
-    present = tuple(outcome for outcome in declared if outcome in legs_by_role)
-    return present if present == declared else None
+def _roles_present(legs_by_role: dict[str, list[dict]]) -> tuple[str, ...] | None:
+    """outcome 集合必须与统一的 yes/no 词汇表完全一致。"""
+    present = tuple(outcome for outcome in VALID_OUTCOMES if outcome in legs_by_role)
+    return present if present == VALID_OUTCOMES else None
 
 
 def _leg_for_role(legs: tuple[dict, ...], role: str) -> dict | None:

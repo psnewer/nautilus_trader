@@ -5,7 +5,7 @@
 **Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节);旧 `services/strategy/` 3000 行(signals / strategies)语义可作为新框架的 **Check / Action / SignalCollector 类填充**,不再是骨架。
 
 **测试结构**:
-- 框架层(本 README §"strategy-4.framework.x"):`SignalStore` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 纯逻辑,可全单测
+- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 纯逻辑,可全单测
 - 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 平移自旧实现,挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
@@ -85,11 +85,11 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **前置**: `ArbitragePortfolio` 已 swap 到 `kernel._portfolio`;某 MatchedPair/OBD 事件到达
 **输入**: Strategy 评估当前 `mean_rebate`/`mean_rebate_recovery` 树
 **期望**:
-- `mean_rebate` 主策略只从快照订单簿计算机会 rate,不读 `portfolio.way_rebate/min_way_rebate`
-- `mean_rebate_recovery` 从快照持仓 + instrument_info + 订单簿计算补齐后的 outcome return rate,不读 Portfolio way_rebate
+- `mean_rebate` 主策略只从 live Cache 订单簿计算机会 rate,不读 `portfolio.way_rebate/min_way_rebate`
+- `mean_rebate_recovery` 从 live Cache 持仓 + instrument_info + 订单簿计算补齐后的 outcome return rate,不读 Portfolio way_rebate
 **验收**:
 - `src/arbitrage/strategy/**` 无 `portfolio.way_rebate` / `portfolio.min_way_rebate` 调用
-- `OpportunitySnapshot` 不含 `way_rebate` 字段
+- Strategy 不再构建 `OpportunitySnapshot`,也不维护 strategy 级 `way_rebate`
 
 ### strategy-4.14: Strategy 调用 way_rebate 前的 settled pre-check(已失效,2026-06-15)
 
@@ -125,7 +125,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 **前置**: 同 4.12
 **输入**: 同一轮 loop 中多次 evaluate
-**期望**: Strategy 不缓存 Portfolio 派生收益指标;机会值来自当前快照订单簿/持仓计算
+**期望**: Strategy 不缓存 Portfolio 派生收益指标;机会值来自当前 live Cache 订单簿/持仓计算
 **验收**: Strategy 代码不持有 `_way_rebate_cache` / `_last_rebate` 等字段,也不从 Portfolio 拉 way_rebate
 
 ### ~~strategy-4.15: 健康检查互斥 pre-check~~ —— 已退役(#108,2026-06-16)
@@ -152,54 +152,33 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **期望**: 健康检查 tick 看到 `_execution_active` 跳过(见 pm-adapter-5.health.5 / oe-adapter 对应用例);执行不被打断,track 到 terminal/timeout
 **验收**: 执行全程不被健康检查干扰;`execution.finished` 后健康检查恢复
 
-### strategy-4.17: 机会快照隔离 —— 开跑时冻数据,全程用拷贝(Q20,2026-05-21)
+### strategy-4.17: live state + pair open-order baseline(#266)
 
-**前置**: MatchedPair 事件到达,strategy 准备评估某 pair 的机会
-**输入**: strategy 在评估开跑时取快照,随后规划 + submit + tracking
+**前置**:MatchedPair 已注册可交易 instruments，Strategy 准备评估。
+**输入**:Evaluator 开始一次 evaluation。
 **期望**:
-- 取 per-pair 快照(该 competition 所有腿):冻 **订单簿所需值 + 持仓 + instrument_info**
-- 规划 / `_adjust_share_by_liquidity` / 后续(含 deferred 的补偿逻辑)**全读快照**,不读 live cache
-- 期间 live cache 被新成交/新 tick 更新(包括本次执行自己的腿成交),**机会计算/执行不受影响**
-- 该次套利结束(双腿 terminal/timeout/放弃)→ 丢弃快照;下一轮重新取**新鲜**快照
-**验收**:
-- **安全闸走 live 不走快照**:Q19 健康检查互斥(4.15,**已退役 #108**)与 RiskEngine 余额/venue-liveness 门控都读最新 live 状态;Strategy 不读取 venue liveness
-- 快照不跨轮持久(与 4.9 每轮重算一致);strategy 不持有跨轮快照字段
-- 实现自建(NT 无原生读隔离快照):持仓 `pickle` 深拷贝,订单簿冻取所需值;不依赖 `Cache.snapshot_position`(那是 netting 归档,非读隔离)
-
-### strategy-4.18: 快照期间本腿成交不扰动机会计算(Q20 关键场景)
-
-**前置**: strategy 已取快照、submit 双腿;PM 腿先成交 → live cache 持仓变化
-**输入**: 在该次套利仍进行中,strategy 若有 deferred 的补偿/再评估逻辑触发
-**期望**: 补偿/再评估读**快照**的持仓/订单簿/instrument_info,**不**因本腿刚成交而用变化后的 live 值
-**验收**: 验证快照"全程一致"语义;live 持仓的变化由下一轮新快照才纳入
-
-### strategy-4.19: 快照回收 —— 所有出口确定性释放,无泄漏(Q20)
-
-**前置**: strategy 取快照机制已实现
-**输入**: 分别走四条出口 —— (a) 正常双腿 terminal;(b) §6.8.5 tracking timeout;(c) 规划阶段放弃(rebate 不够/流动性差);(d) 执行中抛异常
-**期望**: 四条出口**都**在 `finally` 释放快照;`pre-check 放弃`(settled/健康检查不过)路径**根本没取过快照**(取快照在 cheap live pre-check 之后)
-**验收**:
-- 跑 N 轮(含大量 pre-check 放弃 + 规划放弃 + 正常完成混合)后,strategy 持有的快照数**回落到 ≤1**(Q19 全局互斥 → 同时最多 1 次执行在飞 → 最多 1 份长命快照)
-- 快照绑 per-opportunity 上下文,**不**进长存 `self._snapshots` 字典(静态检查无此累积字典,或有则每出口 `del`)
-- 异常路径不漏快照(`finally` 覆盖)
-- 内存监测:长时间运行快照占用不单调增长
+- 只记录当前 pair open orders 的不可变 digest；
+- Check/Action 对 order book、instrument info、position、constraints 均在使用点读 live Cache；
+- `PlaceBetsAction` 把同一 digest 写入每条真实腿 spec。
+**验收**:`tests/arbitrage/common/test_open_orders.py` 覆盖摘要稳定性与字段/集合变化；
+`test_evaluator.py::test_submitter_wired_into_eval_context` 覆盖 evaluator 注入；
+`test_action_place_bets.py::test_action_calls_submitter_when_present` 覆盖所有腿透传。
 
 ## Slice 9 落地(2026-05-31 #49):mean_rebate 策略 + 框架小改
 
 详设见 `architectures/strategy/architecture.md §3.8`(slice 9 落地段)+ `_cross-cutting/configuration.md §10`(slice 9 ✅)。
 
-**框架改 4 件**(per-pair 隔离 + per-eval scratch + Web 默认规模):
-- ✅ `test_signal_store_view.py`(6):view writes 写 namespaced / view reads 只看 namespace / per-pair 不污染 / transient get 消费仅在 namespace / has namespaced / clear_persistent / root+view 共存
-- ✅ `test_snapshot.py` +3:in_play False when no leg marks / in_play True when any leg marks / 缺 cache.instrument 不 raise
-- ✅ `test_evaluator.py`:旧 test 改用 `store.view(pair_id).set_persistent(...)`,符合 view idiom;`test_eval_context_strategy_defaults_read_arbitrage_params` 验证每轮从 live `ArbitrageParams` 读取 `share/max_leg_share` 作为 strategy 默认值;`fx` 不进入 Strategy defaults,只留在 adapter 边界
+**当前框架边界**:
+- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由无状态 `StateQuery` 与 AND/OR/NOT 组成，直接读取 `EvalContext`
+- ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 open-order digest
+- ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
 **用户域 Check/Action**(slice 9 #49):
-- ✅ `pre_match` 只作为 `StrategyEvaluator` 从 snapshot 派生的 self_hits signal 使用,不再注册为 Check 类型;配置写 `{"type":"pre_match"}` 会 fail-fast
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；3-way event 拆出的每个 market 仍按独立 `[yes,no]` pair 生成 candidate；SE candidate 经 Venue Registry 使用 decimal odds stake qty；decimal venue 作为 target outcome 时用剩余预算集中返利并写 `qty/share_if_wins/cost`；rate 低于阈值不写 candidates；未配 share 时使用 Web 默认 share；缺 snapshot、缺 role、缺 order book、非正价格、非正 share 均 fail-fast 且不写 candidates
+- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；缺 live state、缺 claim、缺 order book、非正价格、非正 share 均 fail-fast
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
-- ✅ `test_action_place_bets.py`:基础 size/override/fail-closed 行为；真实 decimal `claim=no` 保持 BUY/BACK，只有带执行重定向的合成 no 转 SELL@lay；PM 互斥仓位拆单及最小数量回退见 #233。#256 续(7 用例)：`market_order_enabled` 关闭时价格不变 / 打开后用 book 内 `worst_ask` 换算的最差 back 价 / 合成 no 腿用最差 lay 价(提交目标仍是 `exec_instrument_id`) / 缺深度(snapshot 无 book)退回原限价 / 显式 `price_overrides` 优先于市价单 / 只对 decimal venue 生效,PM 腿不受影响；经真实 `oe_runner_to_book_deltas` 构造多档 book 验证。
+- ✅ `test_action_place_bets.py`:基础 size/override/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；市价覆盖从 live book 读取；缺深度退回原限价
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`(2):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs
@@ -213,7 +192,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 订各可交易腿,首次见到时
 `subscribe_order_book_deltas(InstrumentId, managed=not event.order_books_managed)`(去重
 `_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
-流进 cache → `build_snapshot` 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
+流进 cache → Check 从 live Cache 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
 `on_order_book_deltas` → `_route_eval`(经 `instrument_id→PairRegistry→pair_id` 评估,OBD-driven 重评)。
 - 概率校验已建立 managed books 时，Strategy 只注册自己的 handler，不重建 DataEngine OrderBook；
   Matching 在同步 publish 全组后才统一退订，完整交接契约见 matching architecture §4.2.1。
@@ -225,13 +204,13 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ 旧 PM/OE projection 字段已从 `MatchedPair` schema 删除;Strategy 当前只消费 `tradable_instrument_ids`,不再有 projection fallback 分支需要覆盖。
 
 **PMSPORTS event anchor 部分落地(#127/#129)**:当 MatchedPair 包含 `.PMSPORTS` anchor ids 时,
-`_ensure_obd_subscribed` 已只消费 `tradable_instrument_ids`,跳过 `.PMSPORTS`。`build_snapshot`
-经 `PairRegistry.instrument_ids_for_pair()` 默认只取可交易腿,已覆盖 `.PMSPORTS` 不进入机会快照。
+`_ensure_obd_subscribed` 已只消费 `tradable_instrument_ids`,跳过 `.PMSPORTS`。Strategy live
+state 读取经 `PairRegistry.instrument_ids_for_pair()` 默认只取可交易腿。
 `PlaceBetsAction` 已有 fail-closed 兜底:若上游误传 `tradable=false` / `anchor=true` leg,不提交任何 spec。仍需端到端 smoke 验证 `.PMSPORTS` 不进入正常 `ctx.scratch["legs"]`。详细设计见
 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 
 - ✅ `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:anchor id 不触发 `subscribe_order_book_deltas`。
-- ✅ `test_snapshot_uses_tradable_pair_ids_not_anchor_ids`:snapshot 只包含 tradable ids。
+- ✅ `PairRegistry.instrument_ids_for_pair()` 的既有测试保证默认只返回 tradable ids。
 - ✅ `test_action_aborts_when_leg_is_non_tradable_anchor`:若上游误传 `tradable=false` / `anchor=true` leg,action 不提交。
 - **live smoke15 验**:MatchedPair mensik-zverev → 4 个 `SubscribeOrderBook`(2 PM token + 2 OE selection)→ 两 data client `Subscribed ... order book deltas`,0 ERROR。
 
@@ -260,7 +239,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
 - ✅ **#105(2026-06-13)place_bets 顺序提交 → 并发 `gather`**:`place_bets.py` 多腿改 `await asyncio.gather(*(submitter(spec) ...))`(顺序 workaround 退役;同页并发 placeBets 丢回执由 OE ExecClient 页锁串行兜底,PM/OE 腿并行 → 对冲窗口更窄,synchronization §8.3)。`test_action_place_bets.py` 既有用例(submitter 调用次数 / spec 正确 / log-only fallback)在并发下仍 23 passed。⚠️ **仍需 live 重验**两腿真盘回执不丢。
-- ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
+- ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` 后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
 
 ## Opportunity barrier strategy 用例(已落地代码,待 live 验证,2026-06-14)
@@ -291,12 +270,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 验收: Risk deny 时只拿到 order 也能发布结构化 opportunity deny 消息。
 - 状态:✅ `test_submitter.py::test_submit_writes_opportunity_metadata_tags`
 
-**Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,4 tests):
+**Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
-- ✅ 门控 smoke:snapshot.in_play=True → `pre_match` self_hits signal False → MeanRebateCheck 不跑 → 无 fire
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
-- ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链;`pre_match` 由 `StrategyEvaluator` 从 snapshot 写入 signal,并在 `arbitrage_tree.self_hits` 中作为 condition 级门控;套利树 `checktion` 在机会生成后接 `require_cross_venue`,过滤单 venue 覆盖全部套利腿的机会
+- ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
 
 ## 策略内组合场景
@@ -313,8 +291,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 `src/arbitrage/strategy/check_action_registry.py` + `src/arbitrage/strategy/json_loader.py`(框架层,具体 Check/Action 子类由用户后落)。
 
-- ✅ `test_check_action_registry.py`(10):register + build + 默认 params / 未知 type / 缺 type / 参数错 / 同名同类幂等 / 同名异类 raise
-- ✅ `test_json_loader.py`(28):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + `actions` 数组顺序执行 + 旧单字段 `action` 明确拒绝 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry + `strategy.enabled=false` 时即使有 bindings 也返回空 registry(保留 OBD 订阅桥,禁用 Action)。旧 `strategy.signals` 配置定义表已从 ArbConfig schema 删除;`self_hits` 直接读取运行时 `SignalStore`。
+- ✅ `test_check_action_registry.py`:StateQuery/Check/Action 的 register + build、未知类型、参数错误和重复注册
+- ✅ `test_json_loader.py`:StateQuery/AND/OR/NOT/嵌套、空 self_hits 默认真值、旧 signal 叶子拒绝；Condition/Strategy/Registry 装配与错误路径
 
 ## Debug 相关
 
@@ -331,27 +309,21 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 新框架的纯逻辑件,可全单测。落地顺序见 `architectures/strategy/architecture.md §7`。
 
-### strategy-4.framework.store.{1-4}:SignalStore 双状态读写
-- **.1**:`set_persistent` 后多次 `peek`/`get` 都拿到值(写后保留)
-- **.2**:`set_transient` 后 `peek` 拿到值不消费;`get` 拿到值后再 `get` 返 None(用后即清)
-- **.3**:`clear_persistent` 删除该 key
-- **.4**:同 key 同时存在 persistent + transient 时,`get` 优先消费 transient(避免 stale)
-
-### strategy-4.framework.expr.{1-5}:BoolExpr (AND/OR/NOT) + SignalRef 求值
-- **.1**:`SignalRef("live")` 缺 → False;`set_persistent("live", True)` → True
+### strategy-4.framework.expr.{1-6}:BoolExpr (AND/OR/NOT) + StateQuery 求值
+- **.1**:`StateQuery.matches(ctx)` 读取当前 `EvalContext`，同一 query 对不同上下文得到对应结果
 - **.2**:`AndExpr(a, b)` 全 True 才 True;任一 False → False
 - **.3**:`OrExpr(a, b)` 任一 True 即 True
 - **.4**:`NotExpr(a)` 取反
 - **.5**:嵌套 `AND(a, OR(b, NOT(c)))` 求值正确
-- **.6**:`BoolExpr.eval` 经 `SignalStore.peek` 不消费 transient
+- **.6**:空 AND=True，空 OR=False
 
 ### strategy-4.framework.cond.{1-6}:Condition 树评估(EvalResult)
 - **.1**:self_hits=False → `EvalResult(hit=False, action=None)`
 - **.2**:self_hits=True、有 sub_conditions、第一个 sub 命中 → 返该 sub 的 EvalResult(后续不跑)
 - **.3**:self_hits=True、有 sub_conditions、全没命中 → `EvalResult(hit=False)`
-- **.4**:叶子节点(sub_conditions 空)、checktion 全过、action 非 None → `EvalResult(hit=True, pending_action=action)`(不执行 action)
+- **.4**:叶子节点(sub_conditions 空)、checktion 全过、actions 非空 → `EvalResult(hit=True, pending_actions=actions)`(不执行 action)
 - **.5**:叶子、checktion 空 list → 默认通过
-- **.6**:叶子、action=None → 仍 `hit=True`(`pending_action=None` 上层无事可 fire)
+- **.6**:叶子、actions 为空 → 仍 `hit=True`(`pending_actions=[]` 上层无事可 fire)
 
 ### strategy-4.framework.reg.{1-4}:StrategyRegistry scope 优先级 + 挂载锁定
 - **.1**:只挂 sport → 找该 sport 下任意 pair 都返该策略
@@ -390,10 +362,10 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 > **已删除(#105 ②,2026-06-15,用户"都撤")**:旧 eval.18/.19(健检 `finished`→`clear_all` 兜底)与 eval.20-22(`try_enter` desync A5 兜底)随 max-hold / clear_all / A5 一并退役。in-flight 出口改由 opportunity barrier 出口 + session `exec_started`↔watchdog 原子保证(synchronization.md §7.3),单测见 `test_session.py`(watchdog 原子 / 出口对称)+ `test_engine_barrier.py`(barrier deny/timeout `release_eval`)。
 
-### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
-- **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份
-- **.2**:期间 cache 被新事件更新,evaluate 内读到的还是 snapshot 旧值(隔离)
-- **.3**:evaluate 结束 + fire 结束后,snapshot 可被 GC(绑 per-evaluation 上下文,无长存 dict)
+### strategy-4.framework.open-orders.{1-3}(#266)
+- **.1**:evaluate 开跑时对 pair open orders 取稳定 digest
+- **.2**:Cache 返回顺序/对象身份变化不改变 digest；订单关键字段或集合变化会改变 digest
+- **.3**:行情、持仓、instrument info/constraints 不冻结，Strategy 在使用点读 live Cache
 
 ## #228:checks 换 outcome 分组键 + no 腿执行透传(2026-07-15)
 
@@ -403,7 +375,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 ## #233:canonical outcome + 下单前等价拆单
 
-- 2-way/3-way snapshot 的经济 outcome 统一为 `yes/no`;真实 decimal NO 仍 BUY/BACK，只有带 `exec_instrument_id` 的合成 NO 转 SELL/LAY。
+- 2-way/3-way pair 的经济 outcome 统一为 `yes/no`;真实 decimal NO 仍 BUY/BACK，只有带 `exec_instrument_id` 的合成 NO 转 SELL/LAY。
 - `test_action_place_bets.py` 覆盖 PM 目标 BUY 100、有互斥仓位 60 时拆为 SELL 60 + BUY 40；仓位 97 时按最小 5 调成 SELL 95 + BUY 5；仓位 3 时回退原 BUY；仓位 100 时只 SELL。
 - 同 venue 子单共享实际 `expected_legs` 与 `venue_required_balance`；PM SELL 对资金需求贡献 0。
 - `test_mean_rebate_e2e.py`:e2e fixture 改为 [yes,no] 拆分 pair(2 腿)。
@@ -429,7 +401,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   `test_single_legs_are_cleared_when_portfolio_invariant_is_broken` 与
   `test_recovery_rejects_probability_short_position`。
 
-## #250:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py` / `test_snapshot.py`)
+## #250:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py`)
 
 ### strategy-4.sports.1:MatchedPair 按场订阅 + per-game topic 触发评估
 
@@ -449,18 +421,16 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 **用例**:`test_sports_update_unregistered_game_is_noop`。
 **期望/验收**:不创建评估 task,不报错。
 
-### strategy-4.sports.4:sports state 冻结进 OpportunitySnapshot
+### strategy-4.sports.4:sports store 注入 EvalContext
 
-**用例**:`test_snapshot_sports_state_frozen_from_store`(`test_snapshot.py`)。
-**期望/验收**:开始评估后 Store 更新不改写本轮 `snapshot.sports_state`;下一轮重建读取新值。
+**用例**:`test_evaluator_injects_sports_store_into_eval_context`(`test_evaluator.py`)。
+**期望/验收**:Evaluator 把 Cache-backed `SportsGameStateStore` 注入 `EvalContext`；
+状态查询可按需读取，不派生 signal。
 
-### strategy-4.sports.5:in_play 单源 sports_state
+### strategy-4.sports.5:SportsGameUpdate 只负责触发和定位
 
-**用例**:`test_snapshot_in_play_from_sports_state_only` /
-`test_snapshot_without_game_id_or_store_has_no_sports_state` /
-`test_snapshot_ignores_legacy_instrument_info_in_play`(`test_snapshot.py`)。
-**期望/验收**:`sports_state.live/ended` 为真 → `in_play=True`;无 sports state → False
-(遗留 `info["in_play"]` 字段不参与,写回链已随 #250 删除)。
+**用例**:`test_sports_update_fans_out_to_all_registered_pairs_for_game`。
+**期望/验收**:事件到达前状态已写入 Store；Evaluator 不复制 sports 状态，也不保存暂态/持久态 signal。
 
 ### strategy-4.sports.6:ended 释放本场全部订阅
 

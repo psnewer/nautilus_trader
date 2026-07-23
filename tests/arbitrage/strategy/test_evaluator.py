@@ -1,4 +1,4 @@
-"""StrategyEvaluator —— Q21 完整集成:on_data → 查 → snapshot → 并行 evaluate → 套利优先 fire。
+"""StrategyEvaluator —— Q21 完整集成:on_data → 查 → live state → 并行 evaluate → 套利优先 fire。
 
 对应用例:strategy-4.framework.eval.{1-5}
 """
@@ -13,20 +13,19 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
 from src.arbitrage.strategy.actor import _RuntimeDeps
-from src.arbitrage.strategy.bool_expr import SignalRef
+from src.arbitrage.strategy.bool_expr import AndExpr
+from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
-from src.arbitrage.strategy.signals import SignalStore
 
 
 # ── 工具:fake loop / actions / portfolio ────────────────────────
@@ -89,13 +88,12 @@ class _CaptureDefaultsAction(Action):
         self.defaults = dict(ctx.strategy_defaults)
 
 
-class _CaptureSignalAction(Action):
-    def __init__(self, key: str):
-        self.key = key
+class _CaptureSportsStoreAction(Action):
+    def __init__(self):
         self.value = None
 
     async def execute(self, ctx):
-        self.value = ctx.store.peek(self.key)
+        self.value = ctx.sports_store
 
 
 class _CaptureScratchLegsAction(Action):
@@ -113,6 +111,14 @@ class _StubCheck(Check):
         return self._returns
 
 
+class _ConstantQuery(StateQuery):
+    def __init__(self, value: bool):
+        self._value = value
+
+    def matches(self, ctx):
+        return self._value
+
+
 class _SetScratchLegsCheck(Check):
     def __init__(self, legs: list[dict]):
         self._legs = legs
@@ -123,14 +129,14 @@ class _SetScratchLegsCheck(Check):
 
 
 def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) -> Strategy:
-    """构造一个策略,arb/comp 树各一叶子,通过 self_hits 信号控制命中。"""
+    """构造一个策略,arb/comp 树各一叶子,通过无状态查询控制命中。"""
     arb_tree = Condition(
-        self_hits=SignalRef("arb_on"),
+        self_hits=_ConstantQuery(arb_hit),
         checktion=[_StubCheck(True)],
         actions=[arb_action] if arb_action else [],
     )
     comp_tree = Condition(
-        self_hits=SignalRef("comp_on"),
+        self_hits=_ConstantQuery(comp_hit),
         checktion=[_StubCheck(True)],
         actions=[comp_action] if comp_action else [],
     )
@@ -150,7 +156,6 @@ def _harness(
 
     pair_reg = PairRegistry()
     strat_reg = StrategyRegistry()
-    store = SignalStore()
     loop = _FakeLoop()
 
     active_flag = {"v": execution_active}
@@ -158,11 +163,9 @@ def _harness(
         pair_registry=pair_reg,
         strategy_registry=strat_reg,
         portfolio=object(),
-        signal_store=store,
         is_execution_active=lambda: active_flag["v"],
         loop=loop,
         arbitrage_params=arbitrage_params,
-        signal_collector=None,
         pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
     )
     actor = StrategyEvaluator(
@@ -170,7 +173,7 @@ def _harness(
         deps,
     )
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
-    return actor, store, pair_reg, strat_reg, loop, active_flag
+    return actor, None, pair_reg, strat_reg, loop, active_flag
 
 
 async def _drain(loop, *, expect_exception: bool = False):
@@ -232,8 +235,6 @@ def test_matched_pair_routes_directly_with_embedded_pair_id():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-    store.view("match_X").set_persistent("arb_on", True)  # slice 9(#49):P3 per-pair view
-
     mp = _mp(confidence=1.0)
     actor.on_data(mp)
     _run(_drain(loop))
@@ -246,8 +247,6 @@ def test_eval_context_strategy_defaults_read_arbitrage_params():
     )
     action = _CaptureDefaultsAction()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    store.view("match_X").set_persistent("arb_on", True)
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -255,24 +254,29 @@ def test_eval_context_strategy_defaults_read_arbitrage_params():
     assert action.defaults == {"share": 40.0, "max_leg_share": 100.0}
 
 
-def test_evaluator_sets_pre_match_signal_from_snapshot():
+def test_evaluator_injects_sports_store_into_eval_context():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
-    action = _CaptureSignalAction("pre_match")
+    action = _CaptureSportsStoreAction()
     arb_tree = Condition(
-        self_hits=SignalRef("pre_match"),
+        self_hits=AndExpr(),
         checktion=[_StubCheck(True)],
         actions=[action],
     )
     strat_reg.register_pair(
         "match_X",
-        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=Condition(self_hits=SignalRef("never"))),
+        Strategy(
+            scope_key="pair:match_X",
+            arbitrage_tree=arb_tree,
+            compensation_tree=Condition(self_hits=_ConstantQuery(False)),
+        ),
     )
 
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
 
-    assert action.value is True
+    assert action.value is actor._sports_store
+    assert action.value is not None
 
 
 # ── eval.2: 无挂载 → no-op,不 fire ───────────────────────────────
@@ -292,8 +296,6 @@ def test_execution_active_skips_evaluation():
     actor, store, pair_reg, strat_reg, loop, active_flag = _harness(execution_active=True)
     arb_action = _RecordingAction()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-    store.view("match_X").set_persistent("arb_on", True)
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -307,9 +309,6 @@ def test_log_evaluations_enabled_keeps_evaluator_behavior():
     arb_action = _RecordingAction("arb")
     comp_action = _RecordingAction("comp")
     strat_reg.register_pair("match_X", _strategy(True, True, arb_action=arb_action, comp_action=comp_action))
-    store.view("match_X").set_persistent("arb_on", True)
-    store.view("match_X").set_persistent("comp_on", True)
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -326,8 +325,6 @@ def test_log_evaluations_enabled_covers_skip_paths():
     )
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-    store.view("match_X").set_persistent("arb_on", True)
-
     actor.on_data(_mp("match_unknown"))
     actor.on_data(_mp())
     _run(_drain(loop))
@@ -342,9 +339,6 @@ def test_arb_hit_blocks_comp_action():
     arb_action = _RecordingAction("arb")
     comp_action = _RecordingAction("comp")
     strat_reg.register_pair("match_X", _strategy(True, True, arb_action=arb_action, comp_action=comp_action))
-    store.view("match_X").set_persistent("arb_on", True)
-    store.view("match_X").set_persistent("comp_on", True)        # 两边 self_hits 都过
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -365,12 +359,12 @@ def test_arb_and_comp_evaluation_scratch_is_isolated():
         {"instrument_id": "A.POLYMARKET", "venue": "POLYMARKET", "role": "away"},
     ]
     arb_tree = Condition(
-        self_hits=SignalRef("arb_on"),
+        self_hits=_ConstantQuery(True),
         checktion=[_SetScratchLegsCheck(arb_legs)],
         actions=[arb_action],
     )
     comp_tree = Condition(
-        self_hits=SignalRef("comp_on"),
+        self_hits=_ConstantQuery(True),
         checktion=[_SetScratchLegsCheck(comp_legs)],
         actions=[comp_action],
     )
@@ -378,9 +372,6 @@ def test_arb_and_comp_evaluation_scratch_is_isolated():
         "match_X",
         Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
     )
-    store.view("match_X").set_persistent("arb_on", True)
-    store.view("match_X").set_persistent("comp_on", True)
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -395,9 +386,6 @@ def test_comp_hit_when_arb_miss_fires_comp():
     arb_action = _RecordingAction("arb")
     comp_action = _RecordingAction("comp")
     strat_reg.register_pair("match_X", _strategy(False, True, arb_action=arb_action, comp_action=comp_action))
-    # arb_on 不 set → arb self_hits False;comp_on set → comp self_hits True
-    store.view("match_X").set_persistent("comp_on", True)
-
     mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
@@ -416,26 +404,6 @@ def test_both_miss_no_fire():
     assert arb_action.calls == 0 and comp_action.calls == 0
 
 
-# ── SignalCollector 接入:每个 event 先过 collector,再 evaluate ──
-def test_signal_collector_called_before_evaluation():
-    collector_calls = []
-    def my_collector(event, store):
-        collector_calls.append(event)
-        # collector 拿 raw store(可自行决定 view 范围;此处 fake event 关联 pair "match_X")
-        store.view("match_X").set_persistent("arb_on", True)
-
-    actor, store, pair_reg, strat_reg, loop, _ = _harness()
-    actor._signal_collector = my_collector            # 注入(也可在 _harness 里设)
-    arb_action = _RecordingAction()
-    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-
-    mp = _mp()
-    actor.on_data(mp)
-    _run(_drain(loop))
-    assert collector_calls == [mp]                    # collector 收到 event
-    assert arb_action.calls == 1                      # signal 写入后,evaluate 命中
-
-
 # ── slice 10a(#50):EvalContext.submitter 由 evaluator 注入 ─────
 def test_submitter_wired_into_eval_context():
     """`_evaluate_and_fire` 构造 EvalContext 时 `submitter=self._make_submitter()`;
@@ -448,8 +416,6 @@ def test_submitter_wired_into_eval_context():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     capture_action = _CaptureCtxAction()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=capture_action))
-    store.view("match_X").set_persistent("arb_on", True)
-
     mp = _mp(confidence=1.0)
     actor.on_data(mp)
     _run(_drain(loop))
@@ -458,6 +424,7 @@ def test_submitter_wired_into_eval_context():
     ctx = captured[0]
     assert ctx.submitter is not None              # slice 10a:submitter 已注入
     assert callable(ctx.submitter)
+    assert ctx.open_orders_digest is not None
 
 
 # ── 非目标数据类型(无 pair 信息)→ silently no-op ──────────────
@@ -545,8 +512,6 @@ def test_same_pair_concurrent_eval_fires_once():
     actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-    store.view("match_X").set_persistent("arb_on", True)
-
     mp = _mp(confidence=1.0)
     # drain 前两次触发(模拟同突发并发):第一次 try_enter 成功派发评估;第二次 gate busy → 不派发
     actor.on_data(mp)
@@ -568,8 +533,6 @@ def test_different_pairs_not_blocked():
     a1, a2 = _RecordingAction("p1"), _RecordingAction("p2")
     strat_reg.register_pair("P1", _strategy(True, False, arb_action=a1))
     strat_reg.register_pair("P2", _strategy(True, False, arb_action=a2))
-    store.view("P1").set_persistent("arb_on", True)
-    store.view("P2").set_persistent("arb_on", True)
 
     actor.on_data(_mp("P1", confidence=1.0))
     actor.on_data(_mp("P2", confidence=1.0))
@@ -586,7 +549,6 @@ def test_running_loop_task_dispatch_uses_current_loop():
         actor.register_executor(asyncio.get_running_loop(), executor)
         action = _RecordingAction("arb")
         strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-        store.view("match_X").set_persistent("arb_on", True)
 
         try:
             actor.on_data(_mp(confidence=1.0))
@@ -606,7 +568,6 @@ def test_registered_executor_loop_used_without_running_loop():
     actor, store, pair_reg, strat_reg, fallback_loop, _ = _harness(log_evaluations=True)
     action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    store.view("match_X").set_persistent("arb_on", True)
 
     nt_loop = asyncio.new_event_loop()
     executor = ThreadPoolExecutor(max_workers=1)
@@ -645,8 +606,6 @@ def test_sports_update_fans_out_to_all_registered_pairs_for_game():
     a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
     strat_reg.register_pair("m2", _strategy(True, False, arb_action=a2))
-    store.view("m1").set_persistent("arb_on", True)
-    store.view("m2").set_persistent("arb_on", True)
     pair_reg.register("m1", ["H1.PM", "H2.OE"], game_id=888)
     pair_reg.register("m2", ["A1.PM", "A2.OE"], game_id=888)
 
@@ -672,8 +631,6 @@ def test_sports_fanout_respects_pair_inflight_gate():
     a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
     strat_reg.register_pair("m2", _strategy(True, False, arb_action=a2))
-    store.view("m1").set_persistent("arb_on", True)
-    store.view("m2").set_persistent("arb_on", True)
     pair_reg.register("m1", ["H1.PM"], game_id=888)
     pair_reg.register("m2", ["A1.PM"], game_id=888)
 
@@ -692,7 +649,6 @@ def test_matched_pair_subscribes_per_game_topic_and_routes_events():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     action = _RecordingAction("m1")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=action))
-    store.view("m1").set_persistent("arb_on", True)
     pair_reg.register("m1", ["H1.PM"], game_id=888)   # matching 注册先于 MatchedPair 发布
 
     actor.start()   # FSM → RUNNING(handle_data 门槛)+ on_start
@@ -716,7 +672,6 @@ def test_ended_releases_sports_and_obd_subscriptions():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     a1 = _RecordingAction("m1")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
-    store.view("m1").set_persistent("arb_on", True)
     pair_reg.register("m1", ["H1.PM", "H2.OE"], game_id=888)
 
     actor.start()
@@ -744,7 +699,6 @@ def _gate_harness(action):
     gate = PairInFlightGate()
     actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    store.view("match_X").set_persistent("arb_on", True)
     return gate, actor, loop
 
 

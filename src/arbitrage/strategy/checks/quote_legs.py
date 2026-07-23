@@ -1,22 +1,28 @@
-"""从 OpportunitySnapshot 构建策略检查共用的可执行报价腿。"""
+"""从 live Cache 构建策略检查共用的可执行报价腿。"""
 
 from __future__ import annotations
 
+from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
-def quote_legs_by_outcome(snapshot) -> dict[str, list[dict]]:
-    """按 snapshot 声明的 outcome 收集带执行重定向信息的报价腿。"""
-    valid_outcomes = tuple(getattr(snapshot, "outcomes", None) or ("home", "away"))
+VALID_OUTCOMES = ("yes", "no")
+
+
+def quote_legs_by_outcome(ctx) -> dict[str, list[dict]]:
+    """按二元 outcome 收集带执行重定向信息的 live 报价腿。"""
+    if ctx.cache is None or ctx.pair_registry is None:
+        return {}
     result: dict[str, list[dict]] = {}
-    for instrument_id in snapshot.instrument_ids:
-        info = snapshot.instrument_info.get(instrument_id) or {}
+    for instrument_id in pair_instrument_ids(ctx):
+        instrument = ctx.cache.instrument(instrument_id)
+        info = getattr(instrument, "info", None) or {}
         claim = str(info.get("claim") or "").lower()
         outcome = claim or str(info.get("selection_role") or "").lower()
-        if outcome not in valid_outcomes:
+        if outcome not in VALID_OUTCOMES:
             continue
-        book = snapshot.order_books.get(instrument_id)
+        book = ctx.cache.order_book(instrument_id)
         if book is None:
             continue
         venue = venue_of(instrument_id)
@@ -31,7 +37,7 @@ def quote_legs_by_outcome(snapshot) -> dict[str, list[dict]]:
         if price is None:
             continue
         leg = {
-            "instrument_id": instrument_id,
+            "instrument_id": str(instrument_id),
             "venue": venue,
             "side": "BUY",
             "price": price,
@@ -46,6 +52,39 @@ def quote_legs_by_outcome(snapshot) -> dict[str, list[dict]]:
             leg["exec_instrument_id"] = str(exec_instrument_id)
         result.setdefault(outcome, []).append(leg)
     return result
+
+
+def pair_instrument_ids(ctx) -> tuple[InstrumentId, ...]:
+    if ctx.pair_registry is None:
+        return ()
+    return tuple(
+        value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+        for value in ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id)
+    )
+
+
+def pair_positions(ctx) -> list:
+    """返回该 pair 当前 open positions，不持有跨 evaluation 的引用。"""
+    if ctx.cache is None:
+        return []
+    positions = []
+    seen = set()
+    for instrument_id in pair_instrument_ids(ctx):
+        for position in ctx.cache.positions_open(instrument_id=instrument_id) or ():
+            key = str(getattr(position, "id", None) or getattr(position, "position_id", None) or id(position))
+            if key in seen:
+                continue
+            seen.add(key)
+            positions.append(position)
+    return positions
+
+
+def instrument_info(ctx, instrument_id) -> dict:
+    if ctx.cache is None:
+        return {}
+    iid = instrument_id if isinstance(instrument_id, InstrumentId) else InstrumentId.from_str(str(instrument_id))
+    instrument = ctx.cache.instrument(iid)
+    return getattr(instrument, "info", None) or {}
 
 
 def best_ask(book) -> float | None:

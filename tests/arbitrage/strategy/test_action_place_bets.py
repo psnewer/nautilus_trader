@@ -12,7 +12,7 @@ from src.arbitrage import bootstrap
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.place_bets import _compute_size
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 def _run(coro):
@@ -136,6 +136,7 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
         "pair_id": "p",
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
+        "open_orders_digest": None,
         "venue_required_balance": 3.25,
     }]
 
@@ -292,6 +293,7 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         "pair_id": "p",
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
+        "open_orders_digest": None,
         "venue_required_balance": 7.0,
     }]
 
@@ -304,7 +306,7 @@ class _Qty:
         return self._value
 
 
-def _pm_inventory_snapshot(
+def _pm_inventory_ctx(
     *,
     held_qty: float,
     min_quantity: float = 5.0,
@@ -312,15 +314,14 @@ def _pm_inventory_snapshot(
 ):
     target = "ALCARAZ.POLYMARKET"
     opposite = "SINNER.POLYMARKET"
-    return OpportunitySnapshot(
-        pair_id="p",
+    return live_context(
         instrument_ids=[target, opposite],
         positions=[SimpleNamespace(instrument_id=opposite, side="LONG", quantity=_Qty(held_qty))],
-        instrument_info={
+        infos={
             target: {"selection_role": "away"},
             opposite: {"selection_role": "home"},
         },
-        instrument_constraints={
+        constraints={
             target: {
                 "min_quantity": min_quantity,
                 "min_notional": None,
@@ -334,17 +335,16 @@ def _pm_inventory_snapshot(
                 "size_increment": 0.01,
             },
         },
-        outcomes=["home", "away"],
     )
 
 
-def _pm_target_ctx(snapshot, *, price: float = 0.2):
+def _pm_target_ctx(ctx, *, price: float = 0.2):
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
         calls.append(spec)
 
-    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.submitter = fake_submitter
     ctx.scratch["legs"] = [{
         "instrument_id": "ALCARAZ.POLYMARKET",
         "venue": "POLYMARKET",
@@ -357,7 +357,7 @@ def _pm_target_ctx(snapshot, *, price: float = 0.2):
 
 
 def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
-    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=60))
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60))
 
     _run(PlaceBetsAction().execute(ctx))
 
@@ -375,7 +375,7 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
 
 
 def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
-    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=97))
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97))
 
     _run(PlaceBetsAction().execute(ctx))
 
@@ -383,7 +383,7 @@ def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
 
 
 def test_probability_split_keeps_minimum_buy_notional_at_low_price():
-    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=97), price=0.02)
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97), price=0.02)
 
     _run(PlaceBetsAction().execute(ctx))
 
@@ -394,7 +394,7 @@ def test_probability_split_keeps_minimum_buy_notional_at_low_price():
 
 
 def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_minimum():
-    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=3))
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=3))
 
     _run(PlaceBetsAction().execute(ctx))
 
@@ -405,7 +405,7 @@ def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_mini
 
 
 def test_probability_buy_fully_replaced_by_opposite_sell():
-    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=100))
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=100))
 
     _run(PlaceBetsAction().execute(ctx))
 
@@ -523,11 +523,10 @@ def test_market_order_disabled_uses_original_price():
 
     iid = "A.ORBITEXCH"
     book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    snapshot = OpportunitySnapshot(
-        pair_id="p", instrument_ids=[iid], order_books={iid: book},
-        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    ctx = live_context(
+        instrument_ids=[iid], books={iid: book},
+        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
     )
-    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
@@ -550,11 +549,10 @@ def test_market_order_enabled_uses_worst_back_price():
 
     iid = "A.ORBITEXCH"
     book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    snapshot = OpportunitySnapshot(
-        pair_id="p", instrument_ids=[iid], order_books={iid: book},
-        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    ctx = live_context(
+        instrument_ids=[iid], books={iid: book},
+        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
     )
-    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
@@ -579,15 +577,14 @@ def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
     quote_iid = "ANO.ORBITEXCH"
     exec_iid = "A.ORBITEXCH"
     book = _oe_book_with_depth(quote_iid, back=[2.6, 2.7], lay=[2.5, 2.0], claim="no")
-    snapshot = OpportunitySnapshot(
-        pair_id="p", instrument_ids=[quote_iid], order_books={quote_iid: book},
-        instrument_info={quote_iid: {
+    ctx = live_context(
+        instrument_ids=[quote_iid], books={quote_iid: book},
+        infos={quote_iid: {
             "selection_role": "away", "claim": "no", "quote_claim": "no",
             "exec_instrument_id": exec_iid,
         }},
-        outcomes=["home", "away"],
+        submitter=fake_submitter,
     )
-    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": quote_iid, "venue": "ORBITEXCH", "side": "BUY",
          "role": "away", "price": 2.0, "prob": 0.5, "share_if_wins": 10.0,
@@ -604,7 +601,7 @@ def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
 
 
 def test_market_order_missing_depth_falls_back_to_original_price():
-    """打开但该 instrument 还没收到过赔率帧(snapshot 无 book)→ 退回原限价,不报错。"""
+    """打开但该 instrument 还没收到过赔率帧(live cache 无 book)→ 退回原限价,不报错。"""
     bootstrap.reset_arb_context()
     bootstrap.prepare_arb_context(market_order_enabled=True)
     calls = []
@@ -612,7 +609,7 @@ def test_market_order_missing_depth_falls_back_to_original_price():
     async def fake_submitter(spec: dict) -> None:
         calls.append(spec)
 
-    ctx = EvalContext(pair_id="p", submitter=fake_submitter)  # snapshot=None(默认)
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
@@ -635,11 +632,10 @@ def test_market_order_explicit_price_override_takes_precedence():
 
     iid = "A.ORBITEXCH"
     book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    snapshot = OpportunitySnapshot(
-        pair_id="p", instrument_ids=[iid], order_books={iid: book},
-        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    ctx = live_context(
+        instrument_ids=[iid], books={iid: book},
+        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
     )
-    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},

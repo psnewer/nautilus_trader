@@ -48,6 +48,18 @@
 - 验收:撤单腿必须显式表达,不能由 residual cancel-only 内部动作反推。
 - 状态:✅ `test_engine_barrier.py::test_barrier_residual_with_explicit_cancel_leg_releases_normally`
 
+### execution-3.5.7: evaluation 窗口内 pair open orders 变化则整组拒绝
+- 前置:所有腿携带相同 `open_orders_digest`,且已全部 Risk pass。
+- 输入:barrier release 前重算出的 pair-wide digest 与基线不同。
+- 期望:不向任何 venue ExecutionClient release；所有暂存腿生成本地 `OrderDenied`。
+- 验收:✅ `test_engine_barrier.py::test_barrier_denies_all_legs_when_pair_open_orders_changed`
+
+### execution-3.5.8:缺失 open-order baseline 时 fail-closed
+- 前置:旧格式 opportunity 没有 `arb:open_orders_digest`。
+- 输入:所有 expected legs 已收齐。
+- 期望:整组拒绝，不为兼容旧 metadata 绕过窗口校验。
+- 验收:✅ `test_engine_barrier.py::test_barrier_denies_legacy_opportunity_without_open_orders_baseline`
+
 ## 异常路径置位保证(#105 ①②,已落地代码)
 
 对应设计:execution §4.1(submit 异常收口 PM/OE 对称)+ §4.2(watchdog 与 per-pair 计数原子)。

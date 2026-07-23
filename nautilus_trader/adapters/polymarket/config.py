@@ -158,6 +158,14 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
         Note: there will be a performance penalty parsing the JSON without an efficient msgspec decoder.
     ack_timeout_secs : PositiveFloat, default 5.0
         The timeout (seconds) to wait for order/trade acknowledgment from cache.
+    calculate_account_state : bool, default True
+        If True, registers the Polymarket venue as a calculated account so NT
+        updates the local account balance on each fill (mirrors Betfair). Without
+        it the balance only refreshes on the periodic venue pull, so the reported
+        balance lags real trades by up to `position_check_interval_secs`.
+        Calculated CASH accounts raise ``AccountBalanceNegative`` if the locally
+        computed balance goes negative between venue pulls; set to False to fall
+        back to venue-pull-only balances if that misbehaves in live trading.
 
     """
 
@@ -180,3 +188,4 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
     generate_order_history_from_trades: bool = False
     log_raw_ws_messages: bool = False
     ack_timeout_secs: PositiveFloat = 5.0
+    calculate_account_state: bool = True

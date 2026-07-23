@@ -28,7 +28,7 @@
 
 **2026-06-10 PM CLOB V2 SDK 迁移(#97)**:PM factory 统一构造 `py_clob_client_v2.ClobClient`,并注入 DataClient / ExecClient / Provider。discovery/data 侧的验收重点是“启动路径不再导入 V1 `py_clob_client`、Provider/DataClient 可用同一个 V2 client 构造”;提交/查询/撤单 surface 由 PM adapter README `pm-adapter-5.1b` 和 `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface` 锁定。
 
-**2026-06-10 PM CLOB REST 路由约束(#98)**:同一个 `py_clob_client_v2.ClobClient` 现在由 factory 显式配置 `venues.polymarket.proxy_url` 到 CLOB REST transport;Provider/Discovery 的行为语义不变,只要求发现侧 CLOB 读取与 PM WS/Exec REST 使用同一路由。geoblock 仅作为 PM Execution 真下单 preflight,不阻断 discovery 只读市场发现。验收见 PM adapter README `pm-adapter-2.3b` / `5.1c`。
+**2026-06-10 PM CLOB REST 路由约束(#98;2026-07-23 连接重试补充)**:同一个 `py_clob_client_v2.ClobClient` 现在由 factory 显式配置 `venues.polymarket.proxy_url` 到 CLOB REST transport;共享 `HTTPTransport(retries=1)` 只对 `ConnectError` / `ConnectTimeout` 重试一次。Provider/Discovery 的行为语义不变,只要求发现侧 CLOB 读取与 PM WS/Exec REST 使用同一路由。geoblock 仅作为 PM Execution 真下单 preflight,不阻断 discovery 只读市场发现。验收见 PM adapter README `pm-adapter-2.3b` / `5.1c`。
 
 **2026-07-02 PMSPORTS event anchor(#127,已落地 provider slice)**:`PMSPORTS` 执行公开 Gamma discovery,
 产出 `.PMSPORTS` non-tradable synthetic event instruments,供 matching 做 event anchor。PM discovery

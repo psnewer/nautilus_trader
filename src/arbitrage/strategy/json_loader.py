@@ -5,7 +5,7 @@ Strategy JSON loader(slice 5,Q25)—— JSON 描述 → Q21 in-memory 对象。
 
 3 个递归解析函数 + 1 个装配函数 + 1 个 registry builder:
 
-  bool_expr_from_json(spec)    → BoolExpr             递归 {AND/OR/NOT/signal}
+  bool_expr_from_json(spec)    → BoolExpr             递归 {AND/OR/NOT/StateQuery}
   condition_from_json(spec)    → Condition            递归 sub_conditions
   strategy_from_json(...)      → Strategy             arbitrage_tree + compensation_tree
   build_strategy_registry(cfg) → StrategyRegistry     消费 ArbConfig.strategy.{strategies, bindings}
@@ -21,13 +21,14 @@ from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import BoolExpr
 from src.arbitrage.strategy.bool_expr import NotExpr
 from src.arbitrage.strategy.bool_expr import OrExpr
-from src.arbitrage.strategy.bool_expr import SignalRef
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
 from src.arbitrage.strategy.check_action_registry import build_check
+from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
+
 
 # 默认值兜底(模块级常量,避免每次 new)
 _DEFAULT_SELF_HITS = AndExpr()      # 空 AND → True(self_hits 缺时让下游决定)
@@ -36,7 +37,7 @@ _NOOP_COMPENSATION_TREE = Condition(self_hits=_DEFAULT_NEVER_HIT)
 
 
 def bool_expr_from_json(spec) -> BoolExpr:
-    """{"signal": "name"} / {"AND": [...]} / {"OR": [...]} / {"NOT": <sub>} 递归。
+    """状态查询 / {"AND": [...]} / {"OR": [...]} / {"NOT": <sub>} 递归。
 
     None / 空 dict / 空字符串 → `AndExpr()`(真值兜底)。
     """
@@ -46,19 +47,23 @@ def bool_expr_from_json(spec) -> BoolExpr:
     if not isinstance(spec, dict):
         raise StrategyConfigError(f"bool_expr spec must be dict, got {type(spec).__name__}: {spec!r}")
 
-    # 互斥:一条 spec 只能含一个 key
+    if "type" in spec:
+        unknown = set(spec) - {"type", "params"}
+        if unknown:
+            raise StrategyConfigError(
+                f"state query spec has unknown fields: {sorted(unknown)}",
+            )
+        return build_state_query(spec)
+
+    # 布尔操作符互斥:一条 spec 只能含一个 key
     keys = list(spec.keys())
     if len(keys) != 1:
         raise StrategyConfigError(
-            f"bool_expr spec must have exactly one of AND/OR/NOT/signal, got {keys}",
+            f"bool_expr spec must have exactly one of AND/OR/NOT, or be a state query, got {keys}",
         )
     key = keys[0]
     val = spec[key]
 
-    if key == "signal":
-        if not isinstance(val, str):
-            raise StrategyConfigError(f"signal name must be str, got {val!r}")
-        return SignalRef(val)
     if key == "AND":
         if not isinstance(val, list):
             raise StrategyConfigError(f"AND value must be list, got {val!r}")
@@ -71,7 +76,7 @@ def bool_expr_from_json(spec) -> BoolExpr:
         return NotExpr(bool_expr_from_json(val))
 
     raise StrategyConfigError(
-        f"unknown bool_expr key '{key}' (expected AND/OR/NOT/signal)",
+        f"unknown bool_expr key '{key}' (expected AND/OR/NOT or a registered state query)",
     )
 
 

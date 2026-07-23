@@ -1,41 +1,36 @@
-"""
-BoolExpr —— `Condition.self_hits` 的布尔表达式 DSL(Q21 / Q10-b)。
+"""`Condition.self_hits` 的无状态布尔查询 DSL。
 
-支持 AND/OR/NOT 嵌套;叶子是 `SignalRef("live")` 等(读 `SignalStore.peek`,**不消费** transient
-—— 求值不能因为看一眼就把信号清掉,消费由 Action 内部用 `store.get`)。
-
-示例:`AndExpr(SignalRef("live"), OrExpr(SignalRef("home_winning"), NotExpr(SignalRef("draw"))))`
+支持 AND/OR/NOT 嵌套；叶子 `StateQuery` 每次直接读取当前 `EvalContext`，不保存暂态或持久态。
 """
 
 from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Callable
+from typing import TYPE_CHECKING
 
-from src.arbitrage.strategy.signals import SignalStore
+
+if TYPE_CHECKING:
+    from src.arbitrage.strategy.condition import EvalContext
 
 
 class BoolExpr(ABC):
     """Q21 self_hits 的布尔表达式基类。"""
 
     @abstractmethod
-    def eval(self, store: SignalStore) -> bool:
-        """求值,read-only(透过 store.peek,不消费 transient)。"""
+    def eval(self, ctx: EvalContext) -> bool:
+        """基于本轮上下文求值。"""
 
 
-class SignalRef(BoolExpr):
-    """叶子:读 `store.peek(key)`,可选谓词;无谓词时取 truthy。"""
+class StateQuery(BoolExpr):
+    """self_hits 叶子：直接查询当前上下文，不保存中间状态。"""
 
-    def __init__(self, key: str, pred: Callable[[object], bool] | None = None) -> None:
-        self.key = key
-        self.pred = pred
+    @abstractmethod
+    def matches(self, ctx: EvalContext) -> bool:
+        """返回当前状态是否满足条件。"""
 
-    def eval(self, store: SignalStore) -> bool:
-        value = store.peek(self.key)
-        if self.pred is not None:
-            return bool(self.pred(value))
-        return bool(value)
+    def eval(self, ctx: EvalContext) -> bool:
+        return bool(self.matches(ctx))
 
 
 class AndExpr(BoolExpr):
@@ -44,8 +39,8 @@ class AndExpr(BoolExpr):
     def __init__(self, *exprs: BoolExpr) -> None:
         self.exprs = exprs
 
-    def eval(self, store: SignalStore) -> bool:
-        return all(e.eval(store) for e in self.exprs)
+    def eval(self, ctx: EvalContext) -> bool:
+        return all(e.eval(ctx) for e in self.exprs)
 
 
 class OrExpr(BoolExpr):
@@ -54,13 +49,13 @@ class OrExpr(BoolExpr):
     def __init__(self, *exprs: BoolExpr) -> None:
         self.exprs = exprs
 
-    def eval(self, store: SignalStore) -> bool:
-        return any(e.eval(store) for e in self.exprs)
+    def eval(self, ctx: EvalContext) -> bool:
+        return any(e.eval(ctx) for e in self.exprs)
 
 
 class NotExpr(BoolExpr):
     def __init__(self, expr: BoolExpr) -> None:
         self.expr = expr
 
-    def eval(self, store: SignalStore) -> bool:
-        return not self.expr.eval(store)
+    def eval(self, ctx: EvalContext) -> bool:
+        return not self.expr.eval(ctx)

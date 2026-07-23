@@ -85,7 +85,6 @@ from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
-from src.arbitrage.strategy.signals import SignalStore
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
@@ -263,10 +262,9 @@ def add_actors(
 
     构造 Actor + `node.trader.add_actor`:
       - `MarketMatchingActor`
-      - `StrategyEvaluator`(`is_execution_active` Q19 桥到 exec client 的 `_execution_active`;
-        `signal_collector=None` 留 slice 9 用户域)
+      - `StrategyEvaluator`(`is_execution_active` Q19 桥到 exec client 的 `_execution_active`)
 
-    `loop` 用 `asyncio.get_event_loop()`;`SignalStore` 现地构造(每个 launcher 单实例)。
+    `loop` 用 `asyncio.get_event_loop()`。
 
     #58(slice A):InstrumentRefresher 退役 —— 周期发现已迁进 PM/OE DataClient 原生
     `_update_instruments`(provider→`_handle_data`→DataEngine→cache + on_instrument)。
@@ -298,11 +296,9 @@ def add_actors(
                 pair_registry=pair_registry,
                 strategy_registry=to_strategy_registry(cfg),
                 portfolio=node.kernel.portfolio,
-                signal_store=SignalStore(),
                 is_execution_active=_make_is_execution_active(node),  # Q19:桥到 exec client `_execution_active`
                 loop=loop,
                 arbitrage_params=to_arbitrage_params(cfg),  # Web Arbitrage 运行时默认 share/max_leg_share/fx
-                signal_collector=None,              # 用户域(slice 9 起)
                 pair_inflight=pair_inflight,        # §7:per-pair 评估串行(#261:execution 不再共享)
             ),
         ),

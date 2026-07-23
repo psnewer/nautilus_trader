@@ -6,7 +6,6 @@ import asyncio
 
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
-from nautilus_trader.config import ExecEngineConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import SubmitOrder
@@ -20,11 +19,11 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.mocks.exec_clients import MockExecutionClient
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.trading.strategy import Strategy
-
+from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
-from src.arbitrage.execution.engine import _OpportunityContext
-from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.execution.engine import ArbLiveExecutionEngine
+from src.arbitrage.execution.engine import _OpportunityContext
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -80,7 +79,12 @@ class _Ctx:
         intent: str = "arbitrage",
         opportunity_id: str = "opp-1",
         pair_id: str = "pair-1",
+        open_orders_digest: str | None = None,
     ) -> SubmitOrder:
+        baseline = open_orders_digest or pair_open_orders_digest(
+            self.cache,
+            [self.instrument.id],
+        )
         order = self.strategy.order_factory.limit(
             self.instrument.id,
             OrderSide.BUY,
@@ -92,6 +96,7 @@ class _Ctx:
                 f"arb:leg_key={leg_key}",
                 f"arb:expected_legs={','.join(expected)}",
                 f"arb:intent={intent}",
+                f"arb:open_orders_digest={baseline}",
             ],
         )
         return SubmitOrder(
@@ -114,6 +119,38 @@ def test_barrier_waits_until_all_legs_pass_before_release():
 
     ctx.engine._execute_command(second)
     assert len(ctx.client.commands) == 2
+
+
+def test_barrier_denies_all_legs_when_pair_open_orders_changed(monkeypatch):
+    ctx = _Ctx()
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+    first = ctx.submit_cmd("pm:home:0", open_orders_digest="baseline")
+    second = ctx.submit_cmd("oe:away:1", open_orders_digest="baseline")
+    monkeypatch.setattr(
+        "src.arbitrage.execution.engine.pair_open_orders_digest",
+        lambda cache, instrument_ids: "changed",
+    )
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
+    assert len(_denied_reasons(denied)) == 2
+    assert "opp-1" not in ctx.engine._arb_opportunities
+
+
+def test_barrier_denies_legacy_opportunity_without_open_orders_baseline():
+    ctx = _Ctx()
+    first = ctx.submit_cmd("pm:home:0")
+    second = ctx.submit_cmd("oe:away:1")
+    first.order.tags[:] = [tag for tag in first.order.tags if "open_orders_digest" not in tag]
+    second.order.tags[:] = [tag for tag in second.order.tags if "open_orders_digest" not in tag]
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
 
 
 def test_barrier_deny_blocks_pending_leg():
@@ -164,6 +201,32 @@ def test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_
 
     assert len(ctx.client.commands) == 0
     assert ctx.client.residual_cancels == [(ctx.instrument.id, [residual])]
+    assert len(denied) == 2
+
+
+def test_barrier_cancel_only_fires_even_with_execution_session_in_flight():
+    """多腿机会:准入后中途冒出在飞执行/撤单 session,cancel-only 动作仍照常触发(不被 ≤1 派生态阻塞)。
+
+    准入闸只在 ctx 创建(首腿)那一刻查 `_execution_active`,故 session 必须在首腿之后出现才落到本场景;
+    末腿到达时 ctx 已存在、不再查闸,`_release`→`_cancel_only` 也全程不看 `_execution_active`。
+    """
+    ctx = _Ctx()
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+    first = ctx.submit_cmd("pm:home:0")
+    second = ctx.submit_cmd("oe:away:1")
+    residual = ctx.submit_cmd("pm:home:0").order
+    ctx.engine._opportunity_residuals = (
+        lambda barrier_ctx: [(ctx.client, ctx.instrument.id, [residual])]
+    )
+
+    ctx.engine._execute_command(first)            # 首腿:准入闸 False(无 session)→ ctx 建立
+    ctx.client._execution_active = True            # 中途:撤单/执行 session 冒出(多腿窗口)
+    ctx.engine._execute_command(second)            # 末腿:ctx 已存在、不再查闸 → _release → cancel-only
+
+    # cancel-only 不被在飞 session 阻塞:残单撤单照常发起(且新腿仍被拒,不是放行)
+    assert ctx.client.residual_cancels == [(ctx.instrument.id, [residual])]
+    assert len(ctx.client.commands) == 0
     assert len(denied) == 2
 
 
@@ -322,3 +385,69 @@ def test_new_opportunity_allowed_once_nothing_in_flight():
     ctx.engine._execute_command(ctx.submit_cmd("pm:home:0", opportunity_id="opp-3"))
     ctx.engine._execute_command(ctx.submit_cmd("oe:away:1", opportunity_id="opp-3"))
     assert len(ctx.client.commands) == 2                                # 两腿都下到 venue
+
+
+# ── #263:leg_denied 早于 sibling ctx 的竞态(拒单通知先到)──────────────
+def test_leg_denied_before_sibling_ctx_leaves_no_orphan():
+    """Risk 队列发的 leg_denied 早于 Exec 队列建 ctx → 建持久墓碑,sibling 腿命中被拒,不成孤儿。
+
+    #263 前:`ctx is None → return` 丢弃拒单;sibling 腿随后建 ctx 成孤儿,占住全局执行槽
+    直到 barrier 超时(#261 后阻断所有机会 → deny 风暴)。这里验证 sibling 腿到达时被立即拒、
+    且机会即时清出 `_arb_opportunities`(denied 集齐),不占槽。
+    """
+    ctx = _Ctx()
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+
+    # 拒单通知先到(sibling 的 ctx 还没建),带 expected_legs
+    ctx.msgbus.publish(topic=RISK_LEG_DENIED_TOPIC, msg={
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "oe:away:1",
+        "expected_legs": ["pm:home:0", "oe:away:1"],
+        "client_order_id": "x",
+        "reason": "NOTIONAL_LESS_THAN_MIN",
+    })
+    # 墓碑已建、在等 sibling,但对全局闸不算"在执行"
+    assert "opp-1" in ctx.engine._arb_opportunities
+    assert ctx.engine._other_execution_in_flight() is False
+
+    # sibling(过 Risk 的那条腿)随后到 barrier
+    sibling = ctx.submit_cmd("pm:home:0")
+    ctx.engine._execute_command(sibling)
+
+    assert len(ctx.client.commands) == 0                 # sibling 没下到 venue
+    assert denied                                        # sibling 被拒
+    assert "opp-1" not in ctx.engine._arb_opportunities  # denied 集齐 → 墓碑即时清,不占槽
+
+
+def test_leg_denied_tombstone_reclaimed_by_timer_when_sibling_never_arrives():
+    """结构兜底:sibling 腿始终不来(如它也在 Risk 被拒但通知丢失)→ barrier timer 回收墓碑。"""
+    ctx = _Ctx()
+    ctx.msgbus.publish(topic=RISK_LEG_DENIED_TOPIC, msg={
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "oe:away:1",
+        "expected_legs": ["pm:home:0", "oe:away:1"],   # 两腿,只来了一条拒单
+        "client_order_id": "x",
+        "reason": "risk blocked",
+    })
+    assert "opp-1" in ctx.engine._arb_opportunities      # 墓碑在等 sibling
+
+    ctx.engine._on_opportunity_timeout(
+        type("Evt", (), {"name": "arb_opp_timeout:opp-1"})(),
+    )
+    assert "opp-1" not in ctx.engine._arb_opportunities  # timer 回收
+
+
+def test_leg_denied_without_expected_legs_cleans_immediately():
+    """expected_legs 缺失(非 arb / 旧格式)→ 退化为无竞态保护:立即清,不留墓碑。"""
+    ctx = _Ctx()
+    ctx.msgbus.publish(topic=RISK_LEG_DENIED_TOPIC, msg={
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "oe:away:1",
+        "client_order_id": "x",
+        "reason": "risk blocked",
+    })
+    assert "opp-1" not in ctx.engine._arb_opportunities  # 没 expected → 立即清

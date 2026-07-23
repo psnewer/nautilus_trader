@@ -7,7 +7,7 @@ from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 def _fake_book(ask_price):
@@ -17,15 +17,12 @@ def _fake_book(ask_price):
 
 
 def _ctx(*, books: dict, infos: dict, instrument_ids: list | None = None, outcomes: list | None = None) -> EvalContext:
-    snap = OpportunitySnapshot(
-        pair_id="p",
+    return live_context(
+        books=books,
+        infos=infos,
         instrument_ids=instrument_ids or list(books.keys()),
-        order_books=books,
-        instrument_info=infos,
-        outcomes=outcomes or ["home", "away"],
+        strategy_defaults={"share": 40.0},
     )
-    ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 40.0})
-    return ctx
 
 
 # ── #228:3-way 拆分后的 [yes,no] pair(旧"三 role 一 pair"分支退役)──

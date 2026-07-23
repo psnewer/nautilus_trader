@@ -61,7 +61,9 @@ POLYMARKET_API_BLOCKED_REGIONS = frozenset({
     ("UA", "09"),
 })
 
-_configured_proxy_url: str | None = None
+_UNCONFIGURED = object()
+_configured_proxy_url: str | None | object = _UNCONFIGURED
+CLOB_HTTP_CONNECT_RETRIES = 1
 
 
 def configure_clob_http_transport(proxy_url: str | None) -> None:
@@ -78,10 +80,15 @@ def configure_clob_http_transport(proxy_url: str | None) -> None:
         return
 
     old_client = clob_http_helpers._http_client
-    clob_http_helpers._http_client = httpx.Client(
+    transport = httpx.HTTPTransport(
         http2=True,
         proxy=proxy_url,
         trust_env=proxy_url is None,
+        retries=CLOB_HTTP_CONNECT_RETRIES,
+    )
+    clob_http_helpers._http_client = httpx.Client(
+        transport=transport,
+        trust_env=False,
     )
     old_client.close()
     _configured_proxy_url = proxy_url

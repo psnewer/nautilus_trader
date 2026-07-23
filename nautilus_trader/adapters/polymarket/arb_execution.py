@@ -178,7 +178,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
 
     async def _cancel_residual_one(self, order) -> None:
         """#105:撤一条残单 —— 构 `CancelOrder` 走 `_cancel_order`。循环 + exec_count 跟踪由 base
-        `_cancel_residual_orders`/`_tracked_residual_cancel` 统一(撤单纳入 exec_count,exec_count→0 才清 in-flight)。"""
+        `_cancel_residual_orders`/`_tracked_residual_cancel` 统一(撤单纳入 exec_count,exec_count→0 才清 in-flight)。
+        `session_started=True`:cancel session 已由 base 同步预开,`_cancel_order` 不得再 begin(否则自撞、
+        撤单在 begin 守卫处 return 而永不触达 venue);对齐 OE/SE `_cancel_one(session_started=True)`。"""
         cmd = CancelOrder(
             trader_id=self.trader_id,
             strategy_id=order.strategy_id,
@@ -188,7 +190,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             command_id=UUID4(),
             ts_init=self._clock.timestamp_ns(),
         )
-        await self._cancel_order(cmd)
+        await self._cancel_order(cmd, session_started=True)
 
     async def _run_settlement(self, raw_positions: list) -> None:
         """#110:后台跑 merge/redeem(fire-and-forget,不阻塞 NT 对账循环)。

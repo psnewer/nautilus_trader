@@ -2,7 +2,7 @@
 Condition / Check / Action / EvalResult —— condition 嵌套树的核心类型(Q21)。
 
 evaluate 流程(`StrategyEvaluator._evaluate_tree`):
-  1. `self_hits.eval(store)` False → 返 EvalResult(hit=False)
+  1. `self_hits.eval(ctx)` False → 返 EvalResult(hit=False)
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
   3. 叶子(sub_conditions 空)→ all(checktion).passes → 返 (hit=True, pending_actions=actions)
 
@@ -25,11 +25,13 @@ class EvalContext:
     """求值时的上下文,evaluator 顶层构造,贯穿整轮 evaluate + Action.execute。"""
 
     pair_id: str
-    snapshot: object | None = None     # OpportunitySnapshot(Q20),由 Slice D 定义;此处只占位
-    store: object | None = None        # SignalStore(双状态信号);evaluator 装时是 .view(pair_id) per-pair 视图
+    cache: object | None = None
+    pair_registry: object | None = None
+    sports_store: object | None = None
+    # 评估开始时该 pair 的 open-order 摘要；所有腿透传给 Execution barrier release 前比较。
+    open_orders_digest: str | None = None
     # slice 9(#49):per-eval scratch — Check 算 derived 数据(如 legs)给同 condition 树的 Action 用;
-    # per-eval 自动隔离(每次 evaluate 新建 ctx),无 race。**只在同 condition 树内 Check→Action 传**,
-    # 跨 evaluate 持久应该走 store(SignalStore.persistent)。
+    # per-eval 自动隔离(每次 evaluate 新建 ctx),无 race。只在同 condition 树内 Check→Action 传。
     scratch: dict = field(default_factory=dict)
     # slice 10a(#50):Action 真出单 callable —— evaluator 构造时注入,Action 经
     # `await ctx.submitter(spec)` 提交;`None` 时 Action 应 log-only fallback。
@@ -50,10 +52,7 @@ class Check(ABC):
 
 
 class Action(ABC):
-    """命中后执行(Q21):**fire-and-forget**(evaluator 顶层 `create_task(action.execute)`)。
-
-    `execute` 可以是 async(下单 IO);返回值忽略(evaluate 不等其完成)。
-    """
+    """命中后执行(Q21)；Evaluator 在自己的评估 task 内按顺序 await。"""
 
     @abstractmethod
     async def execute(self, ctx: EvalContext) -> None:
@@ -68,7 +67,7 @@ class Condition:
     """
 
     self_hits: BoolExpr
-    sub_conditions: list["Condition"] = field(default_factory=list)
+    sub_conditions: list[Condition] = field(default_factory=list)
     checktion: list[Check] = field(default_factory=list)     # 空 list = 默认通过
     actions: list[Action] = field(default_factory=list)       # 依次执行; 空 list = no-op(仍 hit=True)
 
@@ -84,15 +83,15 @@ class EvalResult:
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
     """Q21 主算法:递归求值 condition 嵌套树,**无副作用**(不执行 action)。
 
-    与 `StrategyEvaluator` 解耦:Actor 只做 orchestration(snapshot / gather / fire),
+    与 `StrategyEvaluator` 解耦:Actor 只做 orchestration(live state / gather / fire),
     本函数纯逻辑可全单测。
 
-    1. `self_hits.eval(store)` False → `EvalResult(hit=False)`
+    1. `self_hits.eval(ctx)` False → `EvalResult(hit=False)`
     2. `sub_conditions` 非空 → 递归(互斥,命中即停;全 miss 返 False)
     3. 叶子(`sub_conditions` 空)→ `all(check.passes for check in checktion)`(空 list 默认通过)
-       → `EvalResult(hit=True, pending_action=action)`(action=None 时上层 fire 跳过)
+       → `EvalResult(hit=True, pending_actions=actions)`(空 actions 时上层不执行)
     """
-    if not cond.self_hits.eval(ctx.store):
+    if not cond.self_hits.eval(ctx):
         return EvalResult(hit=False)
 
     if cond.sub_conditions:

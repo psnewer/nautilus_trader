@@ -74,7 +74,7 @@ class PlaceBetsAction(Action):
                     "missing executable price, abort opportunity",
                 )
                 return
-            price = _apply_market_order_override(leg, venue, price, ctx.snapshot, self._price_overrides)
+            price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
             if size is None:
                 _LOG.warning(
@@ -91,7 +91,7 @@ class PlaceBetsAction(Action):
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
             }
-            drafts.extend(_expand_probability_inventory(draft, leg, ctx.snapshot))
+            drafts.extend(_expand_probability_inventory(draft, leg, ctx))
 
         expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
         required_by_venue = _required_balance_by_venue(drafts)
@@ -107,6 +107,7 @@ class PlaceBetsAction(Action):
                 "pair_id": ctx.pair_id,
                 "leg_key": leg_key,
                 "expected_legs": expected_legs,
+                "open_orders_digest": ctx.open_orders_digest,
                 "venue_required_balance": required_by_venue[draft["venue"]],
             }
             prepared.append((draft, spec))
@@ -159,7 +160,7 @@ def _apply_market_order_override(
     leg: dict,
     venue: str,
     price: float,
-    snapshot,
+    ctx,
     price_overrides: dict[str, float],
 ) -> float:
     """decimal venue(OE/SE)市价单开关(#256 续):打开时用书内最差价替代限价,保证成交
@@ -180,16 +181,18 @@ def _apply_market_order_override(
         return price
     if not get_arb_context().market_order_enabled:
         return price
-    if snapshot is None:
+    if ctx.cache is None:
         return price
     instrument_id = leg.get("instrument_id")
-    book = (getattr(snapshot, "order_books", None) or {}).get(instrument_id)
+    iid = _as_instrument_id(instrument_id)
+    book = ctx.cache.order_book(iid)
     if book is None:
         return price
     worst_probability = worst_ask(book)
     if worst_probability is None or worst_probability <= 0:
         return price
-    info = (getattr(snapshot, "instrument_info", None) or {}).get(instrument_id) or {}
+    instrument = ctx.cache.instrument(iid)
+    info = getattr(instrument, "info", None) or {}
     quote_claim = str(info.get("quote_claim") or "yes").lower()
     worst_price = to_price(venue, worst_probability, quote_claim)
     if worst_price is None or worst_price <= 0:
@@ -267,12 +270,12 @@ def _is_non_tradable_leg(leg: dict) -> bool:
     return leg.get("tradable") is False or leg.get("anchor") is True
 
 
-def _expand_probability_inventory(draft: dict, leg: dict, snapshot) -> list[dict]:
+def _expand_probability_inventory(draft: dict, leg: dict, ctx) -> list[dict]:
     """把 probability BUY 优先转换成“卖互斥仓位 + 买剩余量”。
 
-    只使用本轮 OpportunitySnapshot；快照过期造成 venue 拒单时由现有执行流程收口。
+    在 Action 执行时读取 live Cache；之后挂单变化由 Execution barrier 基线比较收口。
     """
-    if snapshot is None or draft["side"] != "BUY":
+    if ctx.cache is None or ctx.pair_registry is None or draft["side"] != "BUY":
         return [draft]
     try:
         if not is_probability_odds_venue(draft["venue"]):
@@ -285,21 +288,22 @@ def _expand_probability_inventory(draft: dict, leg: dict, snapshot) -> list[dict
     if target_qty <= 0 or not 0 < target_price < 1:
         return [draft]
 
-    opposite_iid = _opposite_real_instrument(snapshot, leg, draft)
+    opposite_iid = _opposite_real_instrument(ctx, leg, draft)
     if opposite_iid is None:
         return [draft]
-    available = _long_position_quantity(snapshot, opposite_iid)
+    available = _long_position_quantity(ctx.cache, opposite_iid)
     if available <= 0:
         return [draft]
 
-    constraints = getattr(snapshot, "instrument_constraints", {}) or {}
+    opposite_constraints = _instrument_constraints(ctx.cache, opposite_iid)
+    target_constraints = _instrument_constraints(ctx.cache, draft["instrument_id"])
     sell_min = _effective_minimum_quantity(
-        constraints.get(str(opposite_iid), {}),
+        opposite_constraints,
         price=1.0 - target_price,
         side="SELL",
     )
     buy_min = _effective_minimum_quantity(
-        constraints.get(str(draft["instrument_id"]), {}),
+        target_constraints,
         price=target_price,
         side="BUY",
     )
@@ -324,9 +328,9 @@ def _expand_probability_inventory(draft: dict, leg: dict, snapshot) -> list[dict
     return [sell, buy]
 
 
-def _opposite_real_instrument(snapshot, leg: dict, draft: dict) -> str | None:
-    info_by_iid = getattr(snapshot, "instrument_info", {}) or {}
-    source_info = info_by_iid.get(str(leg.get("instrument_id")), {})
+def _opposite_real_instrument(ctx, leg: dict, draft: dict) -> str | None:
+    source = ctx.cache.instrument(_as_instrument_id(leg.get("instrument_id")))
+    source_info = getattr(source, "info", None) or {}
     outcome = str(
         leg.get("claim")
         or source_info.get("claim")
@@ -334,16 +338,17 @@ def _opposite_real_instrument(snapshot, leg: dict, draft: dict) -> str | None:
         or source_info.get("selection_role")
         or ""
     ).lower()
-    outcomes = tuple(str(value).lower() for value in (getattr(snapshot, "outcomes", None) or ()))
+    outcomes = ("yes", "no")
     if len(outcomes) != 2 or outcome not in outcomes:
         return None
     opposite = next(value for value in outcomes if value != outcome)
     venue = draft["venue"]
-    for iid in getattr(snapshot, "instrument_ids", []) or []:
+    for iid in ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id):
         iid_text = str(iid)
         if not iid_text.upper().endswith(f".{venue}"):
             continue
-        info = info_by_iid.get(iid_text, {})
+        instrument = ctx.cache.instrument(_as_instrument_id(iid_text))
+        info = getattr(instrument, "info", None) or {}
         candidate = str(info.get("claim") or info.get("selection_role") or "").lower()
         if candidate != opposite or info.get("exec_instrument_id"):
             continue
@@ -351,11 +356,9 @@ def _opposite_real_instrument(snapshot, leg: dict, draft: dict) -> str | None:
     return None
 
 
-def _long_position_quantity(snapshot, instrument_id: str) -> float:
+def _long_position_quantity(cache, instrument_id: str) -> float:
     total = 0.0
-    for position in getattr(snapshot, "positions", []) or []:
-        if str(getattr(position, "instrument_id", "")) != str(instrument_id):
-            continue
+    for position in cache.positions_open(instrument_id=_as_instrument_id(instrument_id)) or []:
         side = str(getattr(getattr(position, "side", None), "name", getattr(position, "side", ""))).upper()
         if side and side != "LONG":
             continue
@@ -366,6 +369,36 @@ def _long_position_quantity(snapshot, instrument_id: str) -> float:
         except (TypeError, ValueError):
             continue
     return total
+
+
+def _instrument_constraints(cache, instrument_id) -> dict:
+    instrument = cache.instrument(_as_instrument_id(instrument_id))
+    info = getattr(instrument, "info", None) or {}
+    return {
+        "min_quantity": _object_value(getattr(instrument, "min_quantity", None)),
+        "min_notional": _object_value(getattr(instrument, "min_notional", None)),
+        "min_buy_notional": _object_value(info.get("min_buy_notional")),
+        "size_increment": _object_value(getattr(instrument, "size_increment", None)),
+    }
+
+
+def _as_instrument_id(value):
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    return value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+
+
+def _object_value(value) -> float | None:
+    if value is None:
+        return None
+    for method in ("as_double", "as_decimal"):
+        fn = getattr(value, method, None)
+        if callable(fn):
+            return float(fn())
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _minimum_quantity(constraint: dict) -> float:

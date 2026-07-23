@@ -8,20 +8,18 @@ from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import NotExpr
 from src.arbitrage.strategy.bool_expr import OrExpr
-from src.arbitrage.strategy.bool_expr import SignalRef
+from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import _reset_for_tests
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
+from src.arbitrage.strategy.check_action_registry import register_state_query
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import Check
-from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.json_loader import bool_expr_from_json
-from src.arbitrage.strategy.json_loader import build_strategy_registry
 from src.arbitrage.strategy.json_loader import condition_from_json
 from src.arbitrage.strategy.json_loader import strategy_from_json
-from src.arbitrage.strategy.signals import SignalStore
 
 
 class _PassCheck(Check):
@@ -38,46 +36,64 @@ class _NoopAction(Action):
     async def execute(self, ctx) -> None: return None
 
 
+class _ContextValueQuery(StateQuery):
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    def matches(self, ctx) -> bool:
+        return bool(ctx.strategy_defaults.get(self.key))
+
+
 @pytest.fixture(autouse=True)
 def _registry():
     _reset_for_tests()
     register_check("pass", _PassCheck)
     register_check("fail", _FailCheck)
     register_action("noop", _NoopAction)
+    register_state_query("context_value", _ContextValueQuery)
     yield
     _reset_for_tests()
 
 
 # ─── bool_expr_from_json ──────────────────────────────────────────
 
-def test_signal_leaf():
-    e = bool_expr_from_json({"signal": "live"})
-    assert isinstance(e, SignalRef)
+def test_state_query_leaf():
+    e = bool_expr_from_json({"type": "context_value", "params": {"key": "live"}})
+    assert isinstance(e, _ContextValueQuery)
     assert e.key == "live"
 
 
 def test_and_expression():
-    e = bool_expr_from_json({"AND": [{"signal": "a"}, {"signal": "b"}]})
+    e = bool_expr_from_json({"AND": [
+        {"type": "context_value", "params": {"key": "a"}},
+        {"type": "context_value", "params": {"key": "b"}},
+    ]})
     assert isinstance(e, AndExpr)
     assert len(e.exprs) == 2
 
 
 def test_or_expression():
-    e = bool_expr_from_json({"OR": [{"signal": "a"}, {"signal": "b"}]})
+    e = bool_expr_from_json({"OR": [
+        {"type": "context_value", "params": {"key": "a"}},
+        {"type": "context_value", "params": {"key": "b"}},
+    ]})
     assert isinstance(e, OrExpr)
 
 
 def test_not_expression():
-    e = bool_expr_from_json({"NOT": {"signal": "live"}})
+    e = bool_expr_from_json({"NOT": {"type": "context_value", "params": {"key": "live"}}})
     assert isinstance(e, NotExpr)
-    assert isinstance(e.expr, SignalRef)
+    assert isinstance(e.expr, StateQuery)
 
 
 def test_nested_recursive():
-    """AND([live, OR([home, NOT draw])])"""
+    """AND([a, OR([b, NOT c])])。"""
     e = bool_expr_from_json({"AND": [
-        {"signal": "live"},
-        {"OR": [{"signal": "home"}, {"NOT": {"signal": "draw"}}]},
+        {"type": "context_value", "params": {"key": "a"}},
+        {"OR": [
+            {"type": "context_value", "params": {"key": "b"}},
+            {"NOT": {"type": "context_value", "params": {"key": "c"}}},
+        ]},
     ]})
     assert isinstance(e, AndExpr)
     assert isinstance(e.exprs[1], OrExpr)
@@ -88,7 +104,7 @@ def test_none_defaults_to_and_empty_true():
     e = bool_expr_from_json(None)
     assert isinstance(e, AndExpr) and len(e.exprs) == 0
     # 空 AND = vacuous truth
-    assert e.eval(SignalStore()) is True
+    assert e.eval(_ctx()) is True
 
 
 def test_multiple_keys_raises():
@@ -101,9 +117,14 @@ def test_unknown_key_raises():
         bool_expr_from_json({"XOR": []})
 
 
-def test_signal_value_must_be_str():
-    with pytest.raises(StrategyConfigError, match="must be str"):
-        bool_expr_from_json({"signal": 123})
+def test_legacy_signal_leaf_is_rejected():
+    with pytest.raises(StrategyConfigError, match="unknown bool_expr key"):
+        bool_expr_from_json({"signal": "live"})
+
+
+def test_state_query_unknown_field_is_rejected():
+    with pytest.raises(StrategyConfigError, match="unknown fields"):
+        bool_expr_from_json({"type": "context_value", "params": {"key": "a"}, "extra": True})
 
 
 # ─── condition_from_json ──────────────────────────────────────────
@@ -111,31 +132,26 @@ def test_signal_value_must_be_str():
 def test_empty_condition_defaults_to_truthy_pass():
     """全空 spec → self_hits=AndExpr() True / 空 checktion 默认 hit=True / actions=[]。"""
     c = condition_from_json({})
-    store = SignalStore()
-    res = evaluate_tree(c, _ctx(store))
+    res = evaluate_tree(c, _ctx())
     assert res.hit is True
     assert res.pending_actions == []
 
 
 def test_self_hits_false_blocks_evaluation():
     c = condition_from_json({
-        "self_hits": {"signal": "missing_signal"},
+        "self_hits": {"type": "context_value", "params": {"key": "disabled"}},
         "checktion": [{"type": "pass"}],
     })
-    store = SignalStore()  # missing_signal 未 set
-    res = evaluate_tree(c, _ctx(store))
-    assert res.hit is False
+    assert evaluate_tree(c, _ctx(disabled=False)).hit is False
 
 
 def test_self_hits_true_with_passing_check_fires_action():
     c = condition_from_json({
-        "self_hits": {"signal": "live"},
+        "self_hits": {"type": "context_value", "params": {"key": "live"}},
         "checktion": [{"type": "pass"}],
         "actions": [{"type": "noop", "params": {"label": "fire"}}],
     })
-    store = SignalStore()
-    store.set_persistent("live", True)
-    res = evaluate_tree(c, _ctx(store))
+    res = evaluate_tree(c, _ctx(live=True))
     assert res.hit is True
     assert len(res.pending_actions) == 1
     assert isinstance(res.pending_actions[0], _NoopAction)
@@ -147,7 +163,7 @@ def test_failing_check_short_circuits():
         "checktion": [{"type": "pass"}, {"type": "fail"}],
         "actions": [{"type": "noop"}],
     })
-    res = evaluate_tree(c, _ctx(SignalStore()))
+    res = evaluate_tree(c, _ctx())
     assert res.hit is False
 
 
@@ -155,33 +171,28 @@ def test_recursive_sub_conditions():
     """根 self_hits=True → sub_conditions 互斥;第一个 sub 命中则停。"""
     c = condition_from_json({
         "sub_conditions": [
-            {"self_hits": {"signal": "branch_a"}, "actions": [{"type": "noop", "params": {"label": "A"}}]},
-            {"self_hits": {"signal": "branch_b"}, "actions": [{"type": "noop", "params": {"label": "B"}}]},
+            {"self_hits": {"type": "context_value", "params": {"key": "branch_a"}}, "actions": [{"type": "noop", "params": {"label": "A"}}]},
+            {"self_hits": {"type": "context_value", "params": {"key": "branch_b"}}, "actions": [{"type": "noop", "params": {"label": "B"}}]},
         ],
     })
-    store = SignalStore()
-    store.set_persistent("branch_b", True)
-    res = evaluate_tree(c, _ctx(store))
+    res = evaluate_tree(c, _ctx(branch_b=True))
     assert res.hit and res.pending_actions[0].label == "B"
 
 
 def test_sub_conditions_all_miss():
     c = condition_from_json({
-        "sub_conditions": [{"self_hits": {"signal": "a"}}, {"self_hits": {"signal": "b"}}],
+        "sub_conditions": [
+            {"self_hits": {"type": "context_value", "params": {"key": "a"}}},
+            {"self_hits": {"type": "context_value", "params": {"key": "b"}}},
+        ],
     })
-    res = evaluate_tree(c, _ctx(SignalStore()))
+    res = evaluate_tree(c, _ctx())
     assert res.hit is False
 
 
 def test_unknown_check_type_in_condition_raises():
     with pytest.raises(StrategyConfigError, match="unknown check type"):
         condition_from_json({"checktion": [{"type": "nope"}]})
-
-
-def test_pre_match_checktion_is_rejected_signal_only():
-    """pre_match 是 self_hits signal,不再作为 Check 类型注册。"""
-    with pytest.raises(StrategyConfigError, match="unknown check type: 'pre_match'"):
-        condition_from_json({"checktion": [{"type": "pre_match"}]})
 
 
 def test_unknown_action_type_in_condition_raises():
@@ -197,15 +208,13 @@ def test_legacy_single_action_field_is_rejected():
 def test_actions_array_format():
     """新 actions 数组格式:多个 action 依次执行。"""
     c = condition_from_json({
-        "self_hits": {"signal": "live"},
+        "self_hits": {"type": "context_value", "params": {"key": "live"}},
         "actions": [
             {"type": "noop", "params": {"label": "first"}},
             {"type": "noop", "params": {"label": "second"}},
         ],
     })
-    store = SignalStore()
-    store.set_persistent("live", True)
-    res = evaluate_tree(c, _ctx(store))
+    res = evaluate_tree(c, _ctx(live=True))
     assert res.hit is True
     assert len(res.pending_actions) == 2
     assert res.pending_actions[0].label == "first"
@@ -223,10 +232,10 @@ def test_strategy_with_both_trees():
     assert s.scope_key == "sport:Tennis"
     assert s.metadata["id"] == "s1"
     # 套利树 hit
-    res = evaluate_tree(s.arbitrage_tree, _ctx(SignalStore()))
+    res = evaluate_tree(s.arbitrage_tree, _ctx())
     assert res.hit is True
     # 补救树 fail
-    res2 = evaluate_tree(s.compensation_tree, _ctx(SignalStore()))
+    res2 = evaluate_tree(s.compensation_tree, _ctx())
     assert res2.hit is False
 
 
@@ -234,7 +243,7 @@ def test_strategy_missing_compensation_uses_noop_never_hit():
     """compensation_tree 缺 → 永 False(OrExpr() 空 OR)。"""
     spec = {"arbitrage_tree": {"checktion": []}}
     s = strategy_from_json("s2", spec, scope_key="sport:Soccer")
-    res = evaluate_tree(s.compensation_tree, _ctx(SignalStore()))
+    res = evaluate_tree(s.compensation_tree, _ctx())
     assert res.hit is False
 
 
@@ -336,6 +345,6 @@ def test_strategy_disabled_returns_empty_registry_even_with_bindings():
 
 # ─── helpers ──────────────────────────────────────────────────────
 
-def _ctx(store):
+def _ctx(**values):
     from src.arbitrage.strategy.condition import EvalContext
-    return EvalContext(pair_id="test", snapshot=None, store=store)
+    return EvalContext(pair_id="test", strategy_defaults=values)

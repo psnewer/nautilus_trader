@@ -102,6 +102,8 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > **整体 override `load_all_async`**。撤掉 #53/#54 的 `_parse_instrument` enricher + upstream `event_slug_builder` 路径
 > (ticker 拆队名对 3-way Yes/No 市场不成立);#55 改 series-based;#57 修"发现链路漏主赛事"。
 > `PolymarketInstrumentProvider` 持有的 CLOB HTTP client 由 factory 统一构造为 `py_clob_client_v2.ClobClient`(#97);
+> 其共享 `HTTPTransport(retries=1)` 只重试一次连接建立错误,与 Execution 上层
+> `max_retries` 无关;
 > #98 起该 client 的 REST transport 显式使用 `venues.polymarket.proxy_url`(若配置/环境注入),避免 discovery/provider 读取与 WS 行情走不同出口;geoblock 只作为 PM Execution 真下单 preflight,不阻断 discovery/provider 只读市场发现;
 > provider 使用的 `get_market` / `get_markets` / `get_order_book(s)` / `get_tick_size` / `get_neg_risk`
 > 均在 v2 client surface 内,发现语义不变。
@@ -137,6 +139,9 @@ synthetic `BettingInstrument`:
   `update_instruments_interval_mins` 周期重抓;单轮普通异常只 warning,下轮继续。
 
 ### 3.3 周期发现:DataClient 原生 `_update_instruments`(#59;替代退役的 `InstrumentRefresher`)
+
+OE discovery/Data config 由项目 dispatcher 统一构造;adapter 旧 `config_loader`
+不再提供旁路 client-config factory。配置入口见 `_cross-cutting/configuration.md §6`。
 
 **#59(slice A)**:`InstrumentRefresher` Actor **已退役** —— 它实为从零重造 NT 原生 `DataClient._update_instruments`(bybit/binance 范式),且本会话 3 个 bug(pending-task / cache 桥接缺失 / topic 通配)皆脱离原生路径的症状。周期发现迁回 DataClient:
 

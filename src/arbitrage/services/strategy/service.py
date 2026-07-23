@@ -76,7 +76,7 @@ class StrategyService:
 
         # 信号分类
         self._odds_signals = {"rebate", "mean_rebate", "multi-way"}
-        self._status_signals = {"live", "pre-match"}
+        self._status_signals = {"live"}
 
 
         # 消息总线
@@ -193,7 +193,7 @@ class StrategyService:
         """
         if pair_id in self._match_contexts:
             self._match_contexts[pair_id].is_live = is_live
-            self._log.debug(f"Match {pair_id} status: {'live' if is_live else 'pre-match'}")
+            self._log.debug(f"Match {pair_id} status: {'live' if is_live else 'not-live'}")
             # 状态变化触发状态信号计算
             self._evaluate_match(pair_id, triggered_signals=self._status_signals)
 

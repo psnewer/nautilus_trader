@@ -158,10 +158,6 @@ DEFAULT_SIGNALS: dict[str, dict] = {
         "params": {"rate": 0.03},
         "description": "平均返水信号，各方向取最优价格，返水平均分配到所有方向。",
     },
-    "pre-match": {
-        "params": {},
-        "description": "赛前盘信号，比赛未开始时为 True",
-    },
     "live": {
         "params": {},
         "description": "赛中盘信号，比赛进行中时为 True",
@@ -174,8 +170,8 @@ DEFAULT_SIGNALS: dict[str, dict] = {
 
 DEFAULT_STRATEGIES: dict[str, dict] = {
     "strategy_1": {
-        "signals": ["rebate", "pre-match"],
-        "description": "赛前套利策略",
+        "signals": ["rebate"],
+        "description": "套利策略",
     },
     "strategy_2": {
         "signals": ["rebate", "live"],
@@ -211,14 +207,12 @@ class StrategyServiceConfig:
         signals:
           rebate:
             params: {rate: 0.03}
-          pre-match:
-            params: {}
           live:
             params: {}
 
         strategies:
           strategy_1:
-            signals: [rebate, pre-match]
+            signals: [rebate]
           strategy_2:
             signals: [rebate, live]
 

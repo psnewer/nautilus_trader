@@ -494,6 +494,45 @@ def test_polymarket_cancel_success_skips_duplicate_before_cache_updates():
     assert len(captured) == 1
 
 
+def _tracking_cancel_client(begin_returns):
+    """`_cancel_test_client` 变体:记录 venue 撤单是否真被调用,并可控 `_begin_cancel_session` 返回值。"""
+    venue_order_id_str = "0x" + "a" * 64
+    client, command, _captured, _voi = _cancel_test_client({
+        "canceled": [venue_order_id_str],
+        "not_canceled": {},
+    })
+    calls = []
+
+    def _cancel_order_http(payload):
+        calls.append(payload)
+        return {"canceled": [venue_order_id_str], "not_canceled": {}}
+
+    client._http_client = SimpleNamespace(cancel_order=_cancel_order_http)
+    client._begin_cancel_session = lambda _order: begin_returns
+    return client, command, calls
+
+
+def test_polymarket_residual_cancel_reaches_venue_despite_active_session():
+    # 残单撤单:cancel session 已由 base `_cancel_residual_orders` 同步预开 → 里层 begin 会返回 False。
+    # `session_started=True` 必须让 `_cancel_order` 跳过 begin 守卫、仍把撤单发到 venue。
+    # 回归 PM 撤残单自撞 bug:此前无旁路 → begin 返 False → 在守卫处 return,venue 撤单永不发出。
+    client, command, calls = _tracking_cancel_client(begin_returns=False)
+
+    _run(client._cancel_order(command, session_started=True))
+
+    assert len(calls) == 1  # venue 撤单确实发出
+
+
+def test_polymarket_explicit_cancel_bails_when_session_already_active():
+    # 显式 CancelOrder(session_started 默认 False):begin 返回 False = 该单已有撤单在飞,
+    # 守卫应短路、不重复发 venue 撤单(保留去重语义,不被上面的旁路破坏)。
+    client, command, calls = _tracking_cancel_client(begin_returns=False)
+
+    _run(client._cancel_order(command))
+
+    assert calls == []
+
+
 def test_polymarket_cancel_order_reject_generates_cancel_rejected_event():
     venue_order_id = "0x" + "a" * 64
     client, command, captured, expected_venue_order_id = _cancel_test_client({
@@ -1045,7 +1084,8 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
     """PM CLOB REST 必须吃项目 proxy_url,避免 WS/REST 走不同出口。"""
     get_polymarket_http_client.cache_clear()
 
-    created = []
+    clients = []
+    transports = []
 
     class _OldClient:
         def __init__(self):
@@ -1060,16 +1100,22 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
 
     class _HttpxClient:
         def __init__(self, **kwargs):
-            created.append(kwargs)
+            clients.append(kwargs)
 
         def close(self):
             pass
+
+    class _HttpxTransport:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            transports.append(self)
 
     class _ClobClient:
         def __init__(self, *args, **kwargs):
             pass
 
     monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
+    monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
     monkeypatch.setattr("nautilus_trader.adapters.polymarket.factories.ClobClient", _ClobClient)
 
     get_polymarket_http_client(
@@ -1081,8 +1127,44 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
         proxy_url="http://127.0.0.1:7890",
     )
 
-    assert created == [{"http2": True, "proxy": "http://127.0.0.1:7890", "trust_env": False}]
+    assert [transport.kwargs for transport in transports] == [{
+        "http2": True,
+        "proxy": "http://127.0.0.1:7890",
+        "trust_env": False,
+        "retries": 1,
+    }]
+    assert clients == [{"transport": transports[0], "trust_env": False}]
     assert old_client.closed
+
+
+def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
+    old_client = SimpleNamespace(close=lambda: None)
+    transports = []
+    clients = []
+
+    class _HttpxTransport:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            transports.append(self)
+
+    class _HttpxClient:
+        def __init__(self, **kwargs):
+            clients.append(kwargs)
+
+    monkeypatch.setattr(pm_transport.clob_http_helpers, "_http_client", old_client)
+    monkeypatch.setattr(pm_transport, "_configured_proxy_url", pm_transport._UNCONFIGURED)
+    monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
+    monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
+
+    pm_transport.configure_clob_http_transport(None)
+
+    assert [transport.kwargs for transport in transports] == [{
+        "http2": True,
+        "proxy": None,
+        "trust_env": True,
+        "retries": 1,
+    }]
+    assert clients == [{"transport": transports[0], "trust_env": False}]
 
 
 def test_polymarket_data_api_http_client_uses_proxy(monkeypatch):

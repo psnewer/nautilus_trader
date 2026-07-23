@@ -4,25 +4,23 @@
 提供各类信号量的计算实现。
 """
 
-from .base import (
-    Signal,
-    SignalResult,
-    MatchContext,
-    ArbitrageDirection,
-    ArbitrageLeg,
-    ArbitrageVenue,
-    ArbitrageAction,
-)
-from .rebate import RebateSignal
+from .base import ArbitrageAction
+from .base import ArbitrageDirection
+from .base import ArbitrageLeg
+from .base import ArbitrageVenue
+from .base import MatchContext
+from .base import Signal
+from .base import SignalResult
+from .match_status import LiveSignal
 from .mean_rebate import MeanRebateSignal
-from .match_status import PreMatchSignal, LiveSignal
 from .multi_way import MultiWaySignal
+from .rebate import RebateSignal
+
 
 # 信号类型注册表
 SIGNAL_REGISTRY: dict[str, type[Signal]] = {
     "rebate": RebateSignal,
     "mean_rebate": MeanRebateSignal,
-    "pre-match": PreMatchSignal,
     "live": LiveSignal,
     "multi-way": MultiWaySignal,
 }
@@ -59,7 +57,6 @@ __all__ = [
     "ArbitrageAction",
     "RebateSignal",
     "MeanRebateSignal",
-    "PreMatchSignal",
     "LiveSignal",
     "MultiWaySignal",
     "SIGNAL_REGISTRY",

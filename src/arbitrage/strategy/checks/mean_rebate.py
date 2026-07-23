@@ -3,7 +3,7 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49;#228 outcome 化)�
 
 算法(对应 requirements §8):
   1. 按 outcome 标签分组(#228:`info.get("claim") or info.get("selection_role")`,
-     合法集合 = `snapshot.outcomes` —— 所有 binary pair 均为 `[yes,no]`),
+     合法集合固定为 `[yes,no]`),
      每方向取所有 venue 中概率最小者(即 best_ask 最便宜方;decimal claim=no 腿的
      概率经 `probability_from_price(venue, price, claim)` 取补集)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
@@ -29,6 +29,7 @@ PlaceBetsAction 用 leg 自带 `share_if_wins` 经 Venue Registry 推 qty。
 from __future__ import annotations
 
 from src.arbitrage.common.venues import venue_preference_rank
+from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
@@ -42,14 +43,13 @@ class MeanRebateCheck(Check):
         self._share = float(share) if share is not None else None
 
     def passes(self, ctx: EvalContext) -> bool:
-        snap = ctx.snapshot
-        if snap is None:
+        if ctx.cache is None or ctx.pair_registry is None:
             return False
 
-        valid_outcomes = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
-        legs_by_outcome = quote_legs_by_outcome(snap)
+        valid_outcomes = VALID_OUTCOMES
+        legs_by_outcome = quote_legs_by_outcome(ctx)
 
-        # 必须 outcome 集合齐(#228:snap.outcomes 声明);每方向至少 2 条可比腿。
+        # 必须 yes/no 集合齐；每方向至少 2 条可比腿。
         if sorted(legs_by_outcome.keys()) != sorted(valid_outcomes):
             return False
         for outcome in valid_outcomes:

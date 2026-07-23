@@ -1,9 +1,9 @@
 """Slice 9.5(#49 in-process smoke):mean_rebate 全链路验证。
 
-不依赖真 NT TradingNode / Cache,直接喂 hand-crafted snapshot + 经 JSON loader 拿 Strategy,
+不依赖真 NT TradingNode,直接喂 hand-crafted live Cache + 经 JSON loader 拿 Strategy,
 跑 `evaluate_tree` + `pending_actions[0].execute(ctx)` —— 验证:
   1. JSON config → JSON loader → Strategy(Check/Action 经 registry 装入)
-  2. evaluate_tree:pre_match self_hits signal pass + MeanRebateCheck pass + 写 scratch["legs"]
+  2. evaluate_tree:空 self_hits 默认通过 + MeanRebateCheck pass + 写 scratch["legs"]
   3. PlaceBetsAction consume scratch + log 每 leg(Q-D1=A smoke)
 
 也就是 `mean_rebate` 配置→决策→fire(log-only)端到端真实跑一次。
@@ -28,8 +28,7 @@ from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
-from src.arbitrage.strategy.signals import SignalStore
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +62,7 @@ def _build_mean_rebate_strategy():
             "strategies": {
                 "mean_rebate": {
                     "arbitrage_tree": {
-                        "self_hits": {"signal": "pre_match"},
+                        "self_hits": {},
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.05}},
                         ],
@@ -80,8 +79,8 @@ def _build_mean_rebate_strategy():
     return strategy
 
 
-def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
-    """#228:3-way 拆分后的 [yes,no] pair snapshot(OE 两侧更便宜 → mean_rebate 命中)。
+def _3way_arbitrage_ctx() -> EvalContext:
+    """#228:3-way 拆分后的 [yes,no] pair live state(OE 两侧更便宜 → mean_rebate 命中)。
 
     best yes = OE back 4.0 → 0.25;best no = OE 合成 no(ask=lay 原值 2.0)→ 1−1/2=0.50;
     sum 0.75 → rate 0.25。
@@ -100,13 +99,12 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
                            "quote_claim": "no",
                            "exec_instrument_id": "H.ORBITEXCH"},
     }
-    return OpportunitySnapshot(
+    return live_context(
         pair_id="pair_X",
+        books=books,
+        infos=infos,
         instrument_ids=list(books.keys()),
-        order_books=books,
-        instrument_info=infos,
-        in_play=in_play,
-        outcomes=["yes", "no"],
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
     )
 
 
@@ -116,17 +114,10 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     """**核心 e2e**:JSON 配置 → JSON loader → Strategy → evaluate_tree 命中 → PlaceBetsAction.execute → log 3 leg。
 
     `min(prob) × 3 = 0.25 × 3 = 0.75 → rate = 0.25 > 0.05` → mean_rebate 命中。
-    pre_match signal True(snapshot.in_play=False)→ self_hits 通过。
+    空 self_hits → 默认通过。
     """
     strategy = _build_mean_rebate_strategy()
-    snap = _3way_arbitrage_snapshot(in_play=False)
-    ctx = EvalContext(
-        pair_id="pair_X",
-        snapshot=snap,
-        store=SignalStore().view("pair_X"),
-        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
-    )
-    ctx.store.set_transient("pre_match", True)
+    ctx = _3way_arbitrage_ctx()
 
     # 1. evaluate(纯求值,无副作用)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
@@ -148,23 +139,6 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     assert any("PlaceBets[smoke]" in m and "pair=pair_X" in m and "legs=2" in m for m in msgs)
     # 2 个 leg 各一行(yes/no 都选 OE 因更便宜)
     assert sum("ORBITEXCH" in m and "would submit" in m for m in msgs) == 2
-
-
-def test_in_play_blocks_mean_rebate(caplog):
-    """**门控 smoke**:snapshot.in_play=True → pre_match signal False → MeanRebateCheck 不跑 → 无 action fire。"""
-    strategy = _build_mean_rebate_strategy()
-    snap = _3way_arbitrage_snapshot(in_play=True)
-    ctx = EvalContext(
-        pair_id="pair_X",
-        snapshot=snap,
-        store=SignalStore().view("pair_X"),
-        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
-    )
-    ctx.store.set_transient("pre_match", False)
-
-    res = evaluate_tree(strategy.arbitrage_tree, ctx)
-    assert res.hit is False
-    assert "legs" not in ctx.scratch    # MeanRebateCheck 没跑 → 没写 scratch
 
 
 def test_no_arb_below_threshold_no_action(caplog):
@@ -189,7 +163,7 @@ def test_no_arb_below_threshold_no_action(caplog):
             "strategies": {
                 "mr_strict": {
                     "arbitrage_tree": {
-                        "self_hits": {"signal": "pre_match"},
+                        "self_hits": {},
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],
@@ -202,17 +176,13 @@ def test_no_arb_below_threshold_no_action(caplog):
     }, type=ArbConfig)
     strategy = to_strategy_registry(cfg).get_for(None, None, "Tennis")
 
-    snap = OpportunitySnapshot(
-        pair_id="pair_X", instrument_ids=list(books.keys()),
-        order_books=books, instrument_info=infos, in_play=False,
-    )
-    ctx = EvalContext(
+    ctx = live_context(
         pair_id="pair_X",
-        snapshot=snap,
-        store=SignalStore().view("pair_X"),
+        books=books,
+        infos=infos,
+        instrument_ids=list(books.keys()),
         strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
     )
-    ctx.store.set_transient("pre_match", True)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
     assert res.hit is False
 
@@ -223,7 +193,7 @@ def test_recovery_tree_config_builds_with_recovery_intent():
             "strategies": {
                 "mr_recovery": {
                     "arbitrage_tree": {
-                        "self_hits": {"signal": "pre_match"},
+                        "self_hits": {},
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],

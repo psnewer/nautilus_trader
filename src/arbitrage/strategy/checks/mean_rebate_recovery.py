@@ -24,6 +24,9 @@ from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.common.venues import venue_preference_rank
+from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
+from src.arbitrage.strategy.checks.quote_legs import instrument_info
+from src.arbitrage.strategy.checks.quote_legs import pair_positions
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.checks.quote_legs import venue_of as _venue_of
 from src.arbitrage.strategy.condition import Check
@@ -74,18 +77,14 @@ class MeanRebateRecoveryCheck(Check):
         self._min_repaired_rebate = float(min_repaired_rebate)
 
     def passes(self, ctx: EvalContext) -> bool:
-        snap = ctx.snapshot
-        if snap is None:
+        if ctx.cache is None or ctx.pair_registry is None:
             return False
-        valid_outcomes = tuple(
-            str(value).lower()
-            for value in (getattr(snap, "outcomes", None) or ("home", "away"))
-        )
+        valid_outcomes = VALID_OUTCOMES
         if len(valid_outcomes) < 2:
             return False
 
         try:
-            existing = _existing_legs(snap, valid_outcomes)
+            existing = _existing_legs(ctx, valid_outcomes)
         except PositionOutcomeInvariantError as e:
             _LOG.error(f"MeanRebateRecovery: pair={ctx.pair_id} portfolio invariant: {e}")
             return False
@@ -107,7 +106,7 @@ class MeanRebateRecoveryCheck(Check):
         if current and min(current.values()) >= self._min_repaired_rebate:
             return False
 
-        candidates = _best_candidates_by_role(snap, valid_outcomes)
+        candidates = _best_candidates_by_role(ctx, valid_outcomes)
         roles_present = sorted(candidates.keys())
         if roles_present != sorted(valid_outcomes):
             return False
@@ -159,11 +158,11 @@ class MeanRebateRecoveryCheck(Check):
         return True
 
 
-def _existing_legs(snap, outcomes: tuple[str, ...]) -> list[_CalcLeg]:
+def _existing_legs(ctx, outcomes: tuple[str, ...]) -> list[_CalcLeg]:
     result: list[_CalcLeg] = []
-    for position in snap.positions:
+    for position in pair_positions(ctx):
         iid = getattr(position, "instrument_id", None)
-        info = _info_for(snap, iid)
+        info = instrument_info(ctx, iid)
         selection_role = info.get("selection_role") or info.get("market_type")
         claim = info.get("claim")
         venue = _venue_of(iid)
@@ -200,8 +199,8 @@ def _actual_share_by_role(legs: list[_CalcLeg]) -> dict[str, float]:
     return result
 
 
-def _best_candidates_by_role(snap, outcomes: tuple[str, ...]) -> dict[str, dict]:
-    candidates = quote_legs_by_outcome(snap)
+def _best_candidates_by_role(ctx, outcomes: tuple[str, ...]) -> dict[str, dict]:
+    candidates = quote_legs_by_outcome(ctx)
     return {
         role: min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
         for role, legs in candidates.items()
@@ -219,26 +218,3 @@ def _outcome_return_rates(legs: list[_CalcLeg], roles: list[str], share: float) 
                 net -= leg.loss_if_loses()
         result[outcome] = net / share if share > 0 else 0.0
     return result
-
-
-def _info_for(snap, instrument_id) -> dict:
-    info = _safe_get(snap.instrument_info, instrument_id)
-    if info:
-        return info
-
-    instrument_id_str = str(instrument_id)
-    info = _safe_get(snap.instrument_info, instrument_id_str)
-    if info:
-        return info
-
-    for key, value in getattr(snap.instrument_info, "items", lambda: [])():
-        if str(key) == instrument_id_str:
-            return value or {}
-    return {}
-
-
-def _safe_get(mapping, key):
-    try:
-        return mapping.get(key)
-    except TypeError:
-        return None

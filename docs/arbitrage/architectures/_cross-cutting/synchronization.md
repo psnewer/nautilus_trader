@@ -264,9 +264,9 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 
 ### 8.4bis opportunity execution barrier(已落地代码,待 live 验证,2026-06-14)
 
-> **状态**:代码已落地(`common/opportunity.py`、`strategy/actions/place_bets.py`、`strategy/actor.py`、`risk/engine.py`、`execution/engine.py`、`bootstrap.py`),离线单测通过;尚未 live 验证。本文是跨 Strategy / Risk / Execution / `PairInFlightGate` 的单一真理源;各组件文档只写本方职责并交叉引用本节。
+> **状态**:代码已落地(`common/opportunity.py`、`strategy/actions/place_bets.py`、`strategy/actor.py`、`risk/engine.py`、`execution/engine.py`、`bootstrap.py`),离线单测通过;尚未 live 验证。本文是跨 Strategy / Risk / Execution 的单一真理源;各组件文档只写本方职责并交叉引用本节。
 
-**目标**:一次 opportunity 的所有真实腿先完成 Risk 决策,再决定是否进入 venue execution。任一腿被 Risk deny 时,整次 opportunity 走 execution 统一出口结束,不让已 pass 的其它腿进入 venue,也不由分支代码直接释放 `pair_inflight`。
+**目标**:一次 opportunity 的所有真实腿先完成 Risk 决策,再决定是否进入 venue execution。任一腿被 Risk deny 时,整次 opportunity 在 barrier 内结束,不让已 pass 的其它腿进入 venue。
 
 **关键事实**:
 - NT 原生 `SubmitOrderList` 只支持同一个 `instrument_id` 的订单列表,不能表达 PM/OE 跨 venue 或同 venue 多 selection 的套利机会。
@@ -278,9 +278,10 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 | 字段 | 落位 | 含义 |
 |---|---|---|
 | `arb:opportunity_id=<id>` | `Order.tags` | 本轮机会 ID,隔离同 pair 连续机会 |
-| `arb:pair_id=<pair>` | `Order.tags` | `PairRegistry` 产出的 pair_id,用于统一出口释放 per-pair 闸 |
+| `arb:pair_id=<pair>` | `Order.tags` | `PairRegistry` 产出的 pair_id,用于 pair-wide residual 与 open-order 校验 |
 | `arb:leg_key=<key>` | `Order.tags` | 本轮机会内腿标识,如 `pm_home` / `oe_home` |
 | `arb:expected_legs=a,b,...` | `Order.tags` | 本轮应收齐的真实腿集合,包含自己;不发 0 qty 空单 |
+| `arb:open_orders_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 open-order 基线；同机会所有腿必须相同 |
 | `arb:intent=<intent>` | `Order.tags` | 既有 intent 契约(`arbitrage` / `recovery`) |
 
 > metadata 放 `Order.tags`,不是仅放 `SubmitOrder.params`,因为 Risk deny 时 `_deny_order(order, reason)` 直接拿到的是 `order`;Execution 处理 `OrderDenied` 时也可经 cache 反查 order tags。
@@ -308,7 +309,7 @@ Execution barrier 以领域消息为主消费 deny;若需要容错,也可从 `Or
 OPEN
   risk-pass leg 到达 → pending.allowed[leg_key] = SubmitOrder
   risk-denied leg 到达 → DENIED
-  expected_legs 全部 pass → CANCEL_ONLY 或 RELEASED
+  expected_legs 全部 pass → CANCEL_ONLY、BASELINE_DENIED 或 RELEASED
   barrier timeout → TIMED_OUT
 
 CANCEL_ONLY
@@ -318,28 +319,39 @@ CANCEL_ONLY
   → 走统一 finish outlet
 
 RELEASED
+  pair 当前 open-order digest 与评估基线相同
   release 所有 pending SubmitOrder 到原生 ExecutionEngine._execute_command
-  后续由各 ExecutionClient session 结束汇总到同一个 execution 出口
+  后续由各 ExecutionClient 独立维护 session 生命周期
 
-DENIED / TIMED_OUT
+BASELINE_DENIED / DENIED / TIMED_OUT
   不 release 任何 leg 到 ExecutionClient
   对已暂存但未执行的 pass legs 生成本地 OrderDenied
-  以 zero-session execution 进入统一出口
+  在 barrier 内生成本地终态并清理 context
 ```
 
 **opportunity-level cancel-only(已落地代码 + 离线单测,2026-06-19)**:
 - 归属在 `ArbLiveExecutionEngine` barrier,判定点在 `expected_legs` 全部 Risk pass 之后、release 到任何 venue `ExecutionClient` 之前。
 - 触发条件是:① 任一 risk-pass leg 对应 instrument 在 NT cache 中存在 residual open order;② 本轮 risk-pass legs 中**没有显式撤单腿**。两者同时成立时,整次 opportunity 判定为 cancel-only。
 - “risk-pass legs”指 barrier 已暂存的 `allowed` commands;“撤单腿”必须由 command/metadata 明确表达,当前落地识别 `arb:intent=cancel` / `cancel-only` / `cancel_only`,不能把 barrier 自己即将触发的 residual cancel 反推为撤单腿。当前普通套利 `SubmitOrder` 不带撤单腿,因此 live 验证中“PM residual → PM 撤旧、OE 又开新单”的现象应改为“PM 撤旧、OE 新单也丢弃”。
-- cancel-only 触发后,barrier 不调用 `super()._execute_command` release 任何新 submit;它按 residual 所在 instrument 调用对应 execution client 的 residual cancel 能力,复用 `ArbExecutionSessionMixin._cancel_residual_orders(...)` 的 tracked cancel 与 `PairInFlightGate.exec_count` 生命周期。
+- cancel-only 触发后,barrier 不调用 `super()._execute_command` release 任何新 submit;它按 residual 所在 instrument 调用对应 execution client 的 residual cancel 能力,复用 `ArbExecutionSessionMixin._cancel_residual_orders(...)` 的 tracked cancel session。
 - 对本轮所有新 submit 生成本地 deny/reject 结果,reason 指向 `opportunity cancel-only: residual open orders present`;这些新 submit 不排队、不延后,Strategy 下一轮重新评估后再决定是否重发。
 - 若 residual 存在但 risk-pass legs 中已有显式撤单腿,barrier 不把整次 opportunity 改写为 cancel-only,而按该撤单腿所属语义继续执行;这是为后续显式撤单/补偿动作预留的边界,不是当前普通套利路径。
 - per-client `_begin_session` 的 residual 检查保留为防御性 fallback:无 opportunity metadata、barrier 未接管或非本协议订单仍可在 client 入口退化为单 instrument cancel-only;带完整 metadata 的 opportunity 以 barrier 判定为主,避免跨 venue 半边撤旧半边开新。
 
+**评估窗口 open-order 校验(#266)**:
+- Strategy 不再冻结 order book/position/instrument；只在 evaluation 开始记录 pair-wide
+  open-order digest，并随每条真实腿透传。
+- barrier 收齐全部 risk-pass legs 后，先执行既有 residual cancel-only；若未触发，再用同一
+  common helper 对 pair registered instruments 重算 digest。
+- digest 缺失、腿间不同或当前值变化均 fail-closed，整组拒绝。比较只做一次，不能拆到各
+  venue 分支，否则会重新引入腿间时序窗口。
+- 当前边界有意不覆盖 ABA：评估期间外部订单出现并完全成交，比较前 open-order 集合又恢复
+  原值时，digest 无法识别；用户接受该边界，不另加 fill epoch。
+
 **统一出口**:
-- opportunity context 有一个统一 finish outlet,负责清 pending、取消 timer、发布 opportunity finished(若需要)、释放 `PairInFlightGate`。
-- `pair_inflight` **不得**在 Risk deny 分支或 barrier cleanup 分支直接释放;pass / deny / timeout 都必须经该统一出口释放。
-- pass 路径进入 venue 后,现有 per-leg session 的 `_end_session` / cancel-only tracked cancel 仍负责报告 session 完成;最终由 opportunity context 汇总“所有真实 session finished”后走同一 finish outlet。deny / timeout 路径没有 venue session,session 数为 0,立即走同一 outlet。opportunity-level cancel-only 若调起 residual cancel,这些 cancel 先进入 `PairInFlightGate.exec_count`;barrier finish outlet 释放 eval 闸时不得绕过 tracked cancel 生命周期。
+- opportunity context 的统一 finish outlet 只负责清 pending、取消 timer,并为尚未 release 的订单生成本地终态。
+- `PairInFlightGate` 自 #261 起只属于 Strategy evaluation task:`_dispatch_eval` 进入,`_on_eval_done` 无条件释放。barrier 与 execution session 均不接管或释放该闸。
+- pass 路径 release 后,各 venue session 独立跟踪 accepted/fill/cancel/timeout;barrier 不等待或汇总 session。全局“同时至多一个 execution”由 barrier contexts 与各 client 的 `_execution_active` 派生。
 
 **timeout**:
 - barrier timeout 使用 NT 原生 clock:`set_time_alert_ns` / `cancel_timer`。

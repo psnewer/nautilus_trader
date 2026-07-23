@@ -174,6 +174,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
                 "opportunity_id": meta.opportunity_id,
                 "pair_id": meta.pair_id,
                 "leg_key": meta.leg_key,
+                # #263:带上 expected_legs,让 barrier 在"leg_denied 早于 sibling ctx"竞态下
+                # 建的墓碑知道全集,从而 sibling 到齐时能立即 pop(而非空等 barrier timer)。
+                "expected_legs": list(meta.expected_legs),
                 "client_order_id": str(order.client_order_id),
                 "reason": str(reason),
             },

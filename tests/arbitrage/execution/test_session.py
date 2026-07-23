@@ -337,6 +337,39 @@ def test_base_cancel_only_tracks_residual_until_cancel_terminal():
     assert not client._execution_active
 
 
+def test_base_cancel_only_skips_residual_with_active_cancel_session(caplog):
+    """交叉场景:cancel-only 撤残单时,其中一条残单已有在飞 cancel session。
+
+    per-order dedup(`_begin_cancel_session` 按 client_order_id)→ 已在飞的那条被跳过(不重复撤、不再 create_task),
+    另一条正常开 session 撤;整体不被阻塞。多腿机会准入后中途冒出的撤单 session 即走此路。
+    """
+    caplog.set_level(logging.INFO, logger="session-test")
+    clock = TestClock()
+    msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
+    cache = _FakeCache()
+    client = FakeTrackedCancelClient(clock, msgbus, cache, 30.0)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=clock)
+    r_active = _order(factory, pm)   # 已有在飞撤单的残单
+    r_fresh = _order(factory, pm)    # 未撤过的残单(client_order_id 不同)
+
+    assert client._begin_cancel_session(r_active) is True   # 预置:r_active 撤单已在飞
+
+    scheduled = []                    # 记录 create_task,避免真跑 loop
+    def _rec(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace()
+    client._loop = SimpleNamespace(create_task=_rec)
+
+    ArbExecutionSessionMixin._cancel_residual_orders(client, pm.id, [r_active, r_fresh])
+
+    assert len(scheduled) == 1                                   # 只为 r_fresh 起了撤单任务
+    assert r_fresh.client_order_id in client._active_sessions    # r_fresh 新开 session
+    assert r_active.client_order_id in client._active_sessions   # r_active 原 session 仍在(未重开)
+    assert "skip duplicate cancel" in caplog.text               # r_active 被 dedup 跳过
+
+
 # ── 超时(NT clock 绝对超时 → 结束,不补救）───────────────────────
 def test_timeout_ends_session():
     client, clock, cache, published, factory = _harness(timeout_secs=30.0)

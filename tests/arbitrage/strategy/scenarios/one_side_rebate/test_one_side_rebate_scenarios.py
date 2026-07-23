@@ -19,7 +19,7 @@ from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 def _run(coro):
@@ -81,7 +81,7 @@ class _MarkerAction(Action):
         ctx.scratch["fired"] = self.label
 
 
-def _snapshot(*, positions=None) -> OpportunitySnapshot:
+def _ctx(*, positions=None, **kwargs) -> EvalContext:
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),
@@ -90,12 +90,12 @@ def _snapshot(*, positions=None) -> OpportunitySnapshot:
         "H.POLYMARKET": {"selection_role": "home", "claim": "yes"},
         "A.SHARPEXCH": {"selection_role": "away", "claim": "no"},
     }
-    return OpportunitySnapshot(
-        pair_id="p",
-        instrument_ids=list(books.keys()),
-        order_books=books,
-        instrument_info=infos,
+    return live_context(
+        books=books,
+        infos=infos,
         positions=list(positions or []),
+        instrument_ids=list(books.keys()),
+        **kwargs,
     )
 
 
@@ -109,9 +109,9 @@ def _select_action(arb_res, comp_res):
 
 def test_existing_position_with_arb_and_recovery_fires_arbitrage_first():
     """已有仓位且补偿可修复时,若同时出现 one_side 套利,本轮触发套利树。"""
-    snap = _snapshot(positions=[_Position("H.POLYMARKET", quantity=100.0, avg_px_open=0.45)])
-    arb_ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
-    comp_ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
+    positions = [_Position("H.POLYMARKET", quantity=100.0, avg_px_open=0.45)]
+    arb_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
+    comp_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
     arb_tree = Condition(
         self_hits=AndExpr(),
         checktion=[OneSideRebateCheck(min_rate=0.09, share=100.0)],
@@ -133,9 +133,9 @@ def test_existing_position_with_arb_and_recovery_fires_arbitrage_first():
 
 def test_existing_position_with_recovery_only_fires_compensation():
     """已有仓位且套利阈值未达标时,补偿树命中则触发补偿。"""
-    snap = _snapshot(positions=[_Position("H.POLYMARKET", quantity=100.0, avg_px_open=0.45)])
-    arb_ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
-    comp_ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
+    positions = [_Position("H.POLYMARKET", quantity=100.0, avg_px_open=0.45)]
+    arb_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
+    comp_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
     arb_tree = Condition(
         self_hits=AndExpr(),
         checktion=[OneSideRebateCheck(min_rate=0.20, share=100.0)],
@@ -157,9 +157,7 @@ def test_existing_position_with_recovery_only_fires_compensation():
 
 def test_existing_position_share_limit_scales_candidates_before_selection():
     """已有仓位时,one_side candidates 先按 share_limit 缩放,再由 candi_select 选最大。"""
-    ctx = EvalContext(
-        pair_id="p",
-        snapshot=_snapshot(),
+    ctx = _ctx(
         portfolio=_Portfolio(pm={"yes": 30.0, "no": 0.0}),
         strategy_defaults={"share": 30.0, "max_leg_share": 40.0},
     )

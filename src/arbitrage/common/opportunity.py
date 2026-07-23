@@ -20,6 +20,7 @@ class OpportunityMeta:
     pair_id: str
     leg_key: str
     expected_legs: tuple[str, ...]
+    open_orders_digest: str | None = None
     intent: str = "arbitrage"
     venue_required_balance: float | None = None
 
@@ -36,6 +37,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         f"{TAG_PREFIX}expected_legs={','.join(meta.expected_legs)}",
         f"{TAG_PREFIX}intent={meta.intent}",
     ]
+    if meta.open_orders_digest is not None:
+        tags.append(f"{TAG_PREFIX}open_orders_digest={meta.open_orders_digest}")
     if meta.venue_required_balance is not None:
         tags.append(f"{TAG_PREFIX}venue_required_balance={meta.venue_required_balance}")
     return tags
@@ -58,6 +61,7 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
         pair_id=pair_id,
         leg_key=leg_key,
         expected_legs=expected,
+        open_orders_digest=values.get("open_orders_digest"),
         intent=values.get("intent", "arbitrage"),
         venue_required_balance=required_balance,
     )

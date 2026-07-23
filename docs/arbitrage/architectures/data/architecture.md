@@ -46,7 +46,7 @@ flowchart LR
 - decimal odds side 映射不变:BACK 写入 `BookOrder side = SELL`(ask/back),LAY 写入 `BookOrder side = BUY`(bid/lay)。但**存入值不再是原始赔率,是 `probability_from_price(venue, raw_odds, claim)` 换算后的隐含概率**——NT book 的固定排序规则(ask 取原始值 min 为 best、bid 取 max 为 best)跟"back 越高越好、lay 越低越好"这种反向语义不匹配,只发一档时靠 N=1 退化掩盖;发全档后必须让存入值单调方向配平,`1/price`(claim=yes)对 price 严格递减、`1-1/price`(claim=no)严格递增,恰好在换位后仍自洽。Web/Strategy 用 NT 标准 `best_ask_price()`/`best_bid_price()` 仍能拿到"业务最优概率",但**要拿真实赔率(下单价、展示价)必须再经 `price_from_probability` 逆变换**——不能像改造前那样直接把 book 值当赔率用。3 个既有读取点(`strategy/checks/quote_legs.py`、`matching/actor.py`、`web/actor.py`)均已按此改造。
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
-- PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
+- PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。共享 `HTTPTransport(retries=1)` 只重试一次连接建立错误(`ConnectError` / `ConnectTimeout`),Data/Provider 与 Execution CLOB 请求共用;上层业务 retry 仍归 Execution config。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
 
 ---
 
@@ -219,6 +219,9 @@ info 增 `claim="yes"`。**2-way 完全不动**(不暴露 claim/NO;2-way 的 no�
 一场 3-way 比赛 PM 共 6 条 instrument,按 role 两两落进 3 个拆分 pair(matching §4.2.2)。
 
 ### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py` + `adapters/sharpexch/factories.py`)
+
+OE Data config 的唯一 NT 节点构造入口是项目 dispatcher;旧 `config_loader`
+不再导出 client-config factory。配置边界见 `_cross-cutting/configuration.md §6`。
 
 - `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。构造完 provider 后回写 `instrument_provider_by_venue["POLYMARKET"]`。
 - `OrbitExchLiveDataClientFactory.create()`:只从 `ArbContext.discovery_config_by_venue["ORBITEXCH"]` / `*_aliases_by_venue["ORBITEXCH"]` / `browser_manager_by_venue["ORBITEXCH"]` 读取依赖;通过 `ctx_map_get_or_create` 复用或创建 `PlaywrightBrowserManager`,并把 `ArbContext.arbitrage_params.fx` 注入 `OrbitExchInstrumentProvider`,用于把 OE 最小 stake 7 GBP 写成 adapter 外 USD 口径的 `min_notional = Money(7 * fx, USD)`。discovery `json_fetcher` 与 SE 同构(2026-07-10 对齐):不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext 的 `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`。构造完 provider 后回写 `instrument_provider_by_venue["ORBITEXCH"]`。

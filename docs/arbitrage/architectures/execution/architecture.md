@@ -118,7 +118,7 @@ session 预扣双扣。**成交确认语义不变**:fill 仍只在 trade `CONFIR
 (`POLYMARKET_FINALIZED_TRADE_STATUSES`),MATCHED/MINED 只记录 + 补 ack、不生成 fill。
 测试:`tests/arbitrage/adapters/polymarket/test_execution_ack.py`。
 
-**PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并在显式 `proxy_url` 存在时关闭环境代理继承(`trust_env=False`)。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
+**PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并在显式 `proxy_url` 存在时关闭环境代理继承(`trust_env=False`)。共享 client 的 `HTTPTransport(retries=1)` 只对 `ConnectError` / `ConnectTimeout` 重试一次,覆盖 CLOB report GET 与 submit/cancel 的连接建立阶段;不重试 HTTP 状态、读写超时或业务拒绝。它不同于 `PolymarketExecClientConfig.max_retries` 的上层共享 RetryManagerPool,后者仍默认关闭。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
 
 WS 接线约束:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,内部按 USER channel 拼接 `user`;项目 dispatcher 兼容旧 `.../ws/market` / `.../ws/user` 配置并统一归一化。否则 ExecClient user WS 会误连 `.../ws/marketuser`。
 
@@ -201,16 +201,21 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 | 字段 | 含义 |
 |---|---|
 | `opportunity_id` | 本轮机会 ID |
-| `pair_id` | 用于 finish outlet 释放 `PairInFlightGate` |
+| `pair_id` | 用于 pair-wide residual 检查与 open-order digest 重算 |
 | `expected_legs` | 应收齐的真实腿 key 集合 |
+| `open_orders_digest` | Strategy 评估开始时该 pair open orders 的不可变摘要 |
 | `allowed` | `leg_key -> SubmitOrder`,尚未 release 到 venue |
 | `terminal` | `None` / `denied` / `timeout` / `released` |
 
 **出口**:
-- `all allowed`:取消 barrier timer,先执行 opportunity-level cancel-only 判定;若不触发,把 `allowed` 中所有 command 逐条交回 `super()._execute_command(command)` 进入各 venue `ExecutionClient`;后续由现有 `ArbExecutionSessionMixin` 的 per-leg session 计数在最后一腿 `_end_session` 时释放 `PairInFlightGate`。
+- `all allowed`:先执行 opportunity-level cancel-only 判定；若不触发，按
+  `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 open-order digest。基线缺失、腿间
+  digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release 任一腿。只有一致时
+  才取消 timer，并把所有 command 逐条交回父类进入各 venue `ExecutionClient`。
 - `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order,且本轮 risk-pass legs 中没有显式撤单腿时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。详细条件与“撤单腿”边界见同步真理源 §8.4bis。
 - `denied` / `timeout`:不 release 到 venue;对 `allowed` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
-- `finish outlet`:清 context / 取消 timer / 发布可观测 finished 消息(如需要) / 释放 `PairInFlightGate`。代码中 deny / timeout 经 `_finish(...)` 一个出口;pass 路径交给已存在的 session `_end_session` 出口。`pair_inflight` 不在 Risk deny 分支释放。
+- `finish outlet`:清 context / 取消 timer，并对尚未执行的 orders 生成本地终态。
+  `PairInFlightGate` 自 #261 起只属于 Strategy evaluation task，不由 barrier/session 释放。
 
 **timeout**:使用 NT 原生 clock `set_time_alert_ns` / `cancel_timer`;只覆盖 Risk decision 收齐窗口,不替代 §4.2 per-session venue timeout。
 
@@ -227,7 +232,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 
 - 对带完整 opportunity metadata 的套利,首选 §3.5 barrier 统一做 opportunity-level cancel-only:收齐所有 risk-pass legs 后,若同 pair 任一 registered instrument 有 residual 且 risk-pass legs 中没有显式撤单腿,则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
-- cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 每轮全量重算(快照 Q20),下轮自行重发。
+- cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
 - cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求,**不释放 session**;释放只能来自 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected`,或 30s watchdog 超时。撤单在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
 - cancel session 不把成交事件当终点。若撤单等待期间订单成交,成交仍走正常 fill/order 流;cancel session 继续等撤单终态或 timeout。
 - venue 终态映射:
@@ -388,7 +393,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `_startup_reconciliation_event` 在 `finally` 里 set,连续对账照常启动并自愈。以下 #122 段落描述的是历史行为,
   已被 #259 全面取代。原先失败 raise 给 NT reconciliation,但 PM 启动期偶发瞬时失败(data-api 超时 / geoblock 403)→ `generate_mass_status` 抛 →「Execution state could not be reconciled」→ kernel 跳过 `trader.start()` → actors 卡 READY、web 不绑;改返空后启动不被瞬时失败卡死,venue 仍 fail-closed(标 dead,靠后续成功对账自愈,**不** mark_alive)。**PM order reports 额外处理上游 RetryManager 语义**:上游 `RetryManager.run()` 网络失败时记 ERROR 返回 `None`,部分 report 方法把它当空结果返回;Arb 子类经 `_RetryFailureRecorder` 在 report 调用期间识别 `generate_order_status_report(s)` / `generate_fill_reports` 的 retry failure,若发生则 `mark_order_dead` + 返空(不再 raise),避免"无真实 response"被误判为 alive。PM position reports 同理:Data API 异常 → `mark_position_dead` + 返空。**对齐参照(⚠️ 已失效)**:#122 曾以 OE 的"失败 `mark_dead + return []`、不抛"为参照系;2026-07-22 (#259) 核查确认**OE/SE 本身就带同一个洞**(`_ensure_exec_snapshot_fresh()` 失败即返空,从不抛异常,NT 同样无法感知),故那是参照系偏离 NT 约定、而非 PM 走偏。OE/SE 已随 #259 一并改为 `mark_*_dead + raise RuntimeError("... exec snapshot not fresh ...")`,三个 venue 语义现已统一。
 - PM `generate_fill_reports` 读取用户历史 trades 时可能遇到当前未加载/未匹配的 instrument;这是目标市场外历史成交的正常跳过路径,只打 DEBUG,不影响 order/position liveness。open-order report 中未知 instrument 仍保留 WARNING,因为它代表当前 venue open-order response 无法映射到 NT instrument。
-- PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None(不改变上游 submit/cancel/report 的共享 retry pool 语义)。周期 order 对账若要抗瞬时 SSL/proxy timeout,应通过显式配置启用,不能默认打开以免影响真钱 submit/cancel。
+- PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None(不改变上游 submit/cancel/report 的共享 retry pool 语义)。CLOB 底层 transport 已独立提供一次连接建立重试;更广泛的周期 order 对账重试若要启用,仍须显式配置并意识到会同时影响真钱 submit/cancel。Data API `/positions` 使用另一套 NT `HttpClient`,不在这两个 CLOB retry 层内。
 - `_send_order_event` 漏斗不再写健康状态。NT fabricate 的本地终态只能推进 NT 状态机,不能把 venue 真相置 alive。
 - Risk 从 opportunity `expected_legs` 推导 required venues;任一 required venue `order_alive && position_alive` 不成立则 deny。Strategy/Portfolio 不读 liveness。
 
@@ -546,7 +551,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 | 横切 | 约束 |
 |---|---|
 | Q19 同步(§6.10) | session 发 `execution.*`;pair_inflight 出口由 barrier/session 结构保证 |
-| Q20 快照 | execution 不读 strategy 快照;执行健康写 `VenueExecutionLiveness`,由 Risk 读 live |
+| 挂单窗口校验 | barrier 读取 `open_orders_digest`,release 前以 common helper 重算并比较 |
 | Q17 余额 | 账户状态本组件维护写 cache;可用余额计算在 Risk |
 | §6.6 Debug | ✅ #40/#93 落地:`SkipExecution{PM,OE}Client`(`src/arbitrage/debug/execution_clients.py`)子类化 `_submit_order`;`is_override_active("skip_execution")` 真时**保留 `_begin_session` / `execution.started/finished` / per-pair gate 生命周期**,只跳真 venue IO,随后 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=USD,commission=0,liquidity=TAKER);`_begin_session` 返回 False(cancel-only)时不 mock fill;否则透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Skip 子类传 `debug=cfg`)。**不实现订单 lifecycle 时序**(Q11.4 `timeline.py` 仅在真需要部分填 / 拒单 / 撤单时序时才做)。`skip_settlement`(健康检查路径不真上链)待后续。详见 `_cross-cutting/debug-injection.md` |
 | §6.7 锁 | 上游 ClobClient 不加外层锁(初版);遇问题再子类化只对写操作加锁 |
@@ -632,6 +637,8 @@ sequenceDiagram
 NT `LiveExecClientFactory.create(loop, name, config, msgbus, cache, clock)` 签名固定,**经
 `src.arbitrage.bootstrap.ArbContext` 进程级共享件注入**额外依赖(venue_liveness / settlement /
 positions_fetcher / 间隔)—— 同 `install_arbitrage_engines` 的 import-替换思路。
+OE Exec config 的唯一 NT 节点构造入口是项目 dispatcher;adapter 旧 `config_loader`
+不再导出旁路 client-config factory。配置入口见 `_cross-cutting/configuration.md §6`。
 
 启动顺序(launcher):
 1. `install_arbitrage_engines()` —— 替换 kernel.Portfolio / .LiveRiskEngine / .LiveExecutionEngine

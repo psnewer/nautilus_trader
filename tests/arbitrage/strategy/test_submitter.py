@@ -105,6 +105,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "pair_id": "pair-1",
         "leg_key": "pm:home:0",
         "expected_legs": ("pm:home:0", "oe:away:1"),
+        "open_orders_digest": "digest-1",
     }))
 
     cmd = msgbus.send.call_args.args[1]
@@ -114,6 +115,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "arb:leg_key=pm:home:0",
         "arb:expected_legs=pm:home:0,oe:away:1",
         "arb:intent=recovery",
+        "arb:open_orders_digest=digest-1",
     ]
 
 
@@ -144,4 +146,3 @@ def test_submit_accepts_string_instrument_id_from_strategy_specs():
     cache.instrument.assert_called_once_with(iid_obj)
     cmd = msgbus.send.call_args.args[1]
     assert cmd.order.instrument_id == iid_obj
-

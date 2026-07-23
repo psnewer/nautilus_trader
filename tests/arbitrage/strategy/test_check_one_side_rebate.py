@@ -7,7 +7,7 @@ from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 def _fake_book(ask_price):
@@ -17,14 +17,12 @@ def _fake_book(ask_price):
 
 
 def _ctx(*, books: dict, infos: dict, outcomes: list | None = None) -> EvalContext:
-    snap = OpportunitySnapshot(
-        pair_id="p",
-        instrument_ids=list(books.keys()),
-        order_books=books,
-        instrument_info=infos,
-        outcomes=outcomes or ["home", "away"],
+    return live_context(
+        books=books,
+        infos=infos,
+        instrument_ids=list(infos.keys()),
+        strategy_defaults={"share": 100.0},
     )
-    return EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
 
 
 def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():
@@ -47,7 +45,7 @@ def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():
     assert ok is True
     candidates = ctx.scratch["candidates"]
     assert len(candidates) == 4
-    assert {c["target_role"] for c in candidates} == {"home", "away"}
+    assert {c["target_role"] for c in candidates} == {"yes", "no"}
     combo_keys = {tuple(leg["instrument_id"] for leg in c["legs"]) for c in candidates}
     assert ("H.POLYMARKET", "A.POLYMARKET") in combo_keys
     assert ("H.POLYMARKET", "A.ORBITEXCH") in combo_keys
@@ -67,15 +65,15 @@ def test_candidate_quantities_put_rebate_on_one_side():
     assert OneSideRebateCheck(min_rate=0.10, share=100.0).passes(ctx) is True
 
     candidate = ctx.scratch["candidates"][0]
-    assert candidate["target_role"] == "home"
+    assert candidate["target_role"] == "yes"
     assert round(candidate["rate"], 6) == round((1.0 - 0.95) / 0.45, 6)
     by_role = {leg["role"]: leg for leg in candidate["legs"]}
-    assert round(by_role["home"]["share_if_wins"], 6) == round(50.0 / 0.45, 6)
-    assert round(by_role["home"]["qty"], 6) == round(50.0 / 0.45, 6)
-    assert by_role["home"]["cost"] == 50.0
-    assert by_role["away"]["share_if_wins"] == 100.0
-    assert by_role["away"]["qty"] == 100.0
-    assert by_role["away"]["cost"] == 50.0
+    assert round(by_role["yes"]["share_if_wins"], 6) == round(50.0 / 0.45, 6)
+    assert round(by_role["yes"]["qty"], 6) == round(50.0 / 0.45, 6)
+    assert by_role["yes"]["cost"] == 50.0
+    assert by_role["no"]["share_if_wins"] == 100.0
+    assert by_role["no"]["qty"] == 100.0
+    assert by_role["no"]["cost"] == 50.0
 
 
 def test_sharpexch_candidate_uses_decimal_odds_qty():
@@ -93,10 +91,10 @@ def test_sharpexch_candidate_uses_decimal_odds_qty():
 
     candidate = ctx.scratch["candidates"][0]
     by_role = {leg["role"]: leg for leg in candidate["legs"]}
-    assert by_role["away"]["venue"] == "SHARPEXCH"
-    assert by_role["away"]["share_if_wins"] == 100.0
-    assert by_role["away"]["qty"] == 50.0
-    assert by_role["away"]["cost"] == 50.0
+    assert by_role["no"]["venue"] == "SHARPEXCH"
+    assert by_role["no"]["share_if_wins"] == 100.0
+    assert by_role["no"]["qty"] == 50.0
+    assert by_role["no"]["cost"] == 50.0
 
 
 def test_3way_split_pair_yes_no_generates_candidates():
@@ -145,15 +143,15 @@ def test_decimal_odds_target_qty_share_and_cost():
 
     assert OneSideRebateCheck(min_rate=0.10, share=100.0).passes(ctx) is True
 
-    away_target = next(c for c in ctx.scratch["candidates"] if c["target_role"] == "away")
+    away_target = next(c for c in ctx.scratch["candidates"] if c["target_role"] == "no")
     by_role = {leg["role"]: leg for leg in away_target["legs"]}
     assert round(away_target["rate"], 6) == round((1.0 - 0.95) / 0.50, 6)
-    assert by_role["home"]["share_if_wins"] == 100.0
-    assert by_role["home"]["cost"] == 45.0
-    assert by_role["away"]["venue"] == "SHARPEXCH"
-    assert round(by_role["away"]["share_if_wins"], 6) == round(55.0 / 0.50, 6)
-    assert round(by_role["away"]["qty"], 6) == round((55.0 / 0.50) / 2.0, 6)
-    assert round(by_role["away"]["cost"], 6) == 55.0
+    assert by_role["yes"]["share_if_wins"] == 100.0
+    assert by_role["yes"]["cost"] == 45.0
+    assert by_role["no"]["venue"] == "SHARPEXCH"
+    assert round(by_role["no"]["share_if_wins"], 6) == round(55.0 / 0.50, 6)
+    assert round(by_role["no"]["qty"], 6) == round((55.0 / 0.50) / 2.0, 6)
+    assert round(by_role["no"]["cost"], 6) == 55.0
 
 
 def test_rate_below_threshold_does_not_write_candidates():
@@ -188,8 +186,8 @@ def test_uses_strategy_default_share_when_param_absent():
     assert candidate["base_share"] == 40.0
 
 
-def test_missing_snapshot_does_not_write_candidates():
-    ctx = EvalContext(pair_id="p", snapshot=None, strategy_defaults={"share": 100.0})
+def test_missing_live_state_does_not_write_candidates():
+    ctx = EvalContext(pair_id="p", strategy_defaults={"share": 100.0})
 
     assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
     assert "candidates" not in ctx.scratch
@@ -219,7 +217,6 @@ def test_missing_order_book_does_not_write_candidates():
         "A.POLYMARKET": {"selection_role": "away"},
     }
     ctx = _ctx(books=books, infos=infos)
-    ctx.snapshot.instrument_ids.append("A.POLYMARKET")
 
     assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
     assert "candidates" not in ctx.scratch

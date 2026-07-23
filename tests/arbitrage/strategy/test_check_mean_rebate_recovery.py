@@ -10,7 +10,7 @@ from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.snapshot import OpportunitySnapshot
+from tests.arbitrage.strategy._live_state import live_context
 
 
 class _Qty:
@@ -39,15 +39,12 @@ class _InstrumentIdOnlyInfoMap(dict):
 
 
 def _ctx(*, books, infos, positions, outcomes=None):
-    snap = OpportunitySnapshot(
-        pair_id="p",
-        instrument_ids=list(books.keys()),
-        order_books=books,
-        instrument_info=infos,
+    return live_context(
+        books=books,
+        infos=infos,
         positions=positions,
-        outcomes=outcomes or ["home", "away"],
+        instrument_ids=list(infos.keys()),
     )
-    return EvalContext(pair_id="p", snapshot=snap)
 
 
 def test_recovery_adds_missing_outcome_to_max_actual_share():
@@ -74,8 +71,9 @@ def test_recovery_adds_missing_outcome_to_max_actual_share():
         "side": "BUY",
         "price": 0.50,
         "prob": 0.50,
-        "role": "away",
+        "role": "no",
         "qty": 5.0,
+        "claim": "no",
     }]
     assert ctx.scratch["mean_rebate_recovery"]["target_share"] == 5.0
 
@@ -186,7 +184,7 @@ def test_recovery_handles_typed_instrument_info_map():
     ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx)
 
     assert ok is True
-    assert ctx.scratch["legs"][0]["instrument_id"] == away
+    assert ctx.scratch["legs"][0]["instrument_id"] == str(away)
 
 
 def test_recovery_rejects_when_existing_avg_price_missing():

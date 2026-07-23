@@ -39,6 +39,7 @@ from py_clob_client_v2.exceptions import PolyApiException
 from py_clob_client_v2.order_utils import ExchangeOrderBuilderV1
 from py_clob_client_v2.order_utils import ExchangeOrderBuilderV2
 
+from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_CANCEL_ALREADY_DONE
@@ -212,6 +213,15 @@ class PolymarketExecutionClient(LiveExecutionClient):
         account_id = AccountId(f"{name or POLYMARKET_VENUE.value}-001")
         self._set_account_id(account_id)
         self._log.info(f"account_id={account_id.value}", LogColor.BLUE)
+
+        # Register the venue as a calculated account so NT decrements the local
+        # balance on each fill; otherwise the balance only refreshes on the
+        # periodic venue pull (`_update_account_state`) and lags real trades.
+        # Must be registered before the first AccountState creates the account.
+        self._log.info(f"{config.calculate_account_state=}", LogColor.BLUE)
+        if config.calculate_account_state:
+            # Register under the account's own issuer (matches `name` override).
+            AccountFactory.register_calculated_account(account_id.get_issuer())
 
         wallet_address = http_client.get_address()
         if wallet_address is None:
@@ -974,8 +984,13 @@ class PolymarketExecutionClient(LiveExecutionClient):
         # Specific account ID (sub account) not yet supported
         await self._update_account_state()
 
-    async def _cancel_order(self, command: CancelOrder) -> None:
+    async def _cancel_order(self, command: CancelOrder, *, session_started: bool = False) -> None:
         # https://docs.polymarket.com/#cancel-an-order
+        # `session_started` mirrors OE/SE `_cancel_one`: residual cancels have their
+        # cancel session opened synchronously by the base `_cancel_residual_orders`, so
+        # the begin-guard below must be skipped for them; otherwise it self-collides and
+        # returns before the venue cancel is ever sent. Explicit CancelOrder commands
+        # (the default) still open + dedup their session here.
         await self._maintain_active_market(command.instrument_id)
 
         order: Order | None = self._cache.order(command.client_order_id)
@@ -1004,7 +1019,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             return
 
         begin_cancel_session = getattr(self, "_begin_cancel_session", None)
-        if begin_cancel_session is not None and not begin_cancel_session(order):
+        if begin_cancel_session is not None and not session_started and not begin_cancel_session(order):
             return
 
         retry_manager = await self._retry_manager_pool.acquire()

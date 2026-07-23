@@ -11,7 +11,7 @@
 
 | API | 用途 |
 |---|---|
-| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / intent / venue_required_balance`；最后一项是该 opportunity 在本订单 venue 的整组资金需求 |
+| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / open_orders_digest / intent / venue_required_balance`；digest 是 Strategy 评估开始时该 pair 的 open-order 基线 |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
@@ -21,7 +21,13 @@
 **约束**:
 - metadata 的权威载体是 `Order.tags`,不是 `SubmitOrder.params`,因为 Risk deny 和 Execution barrier 都以 `order` 为入口。
 - `expected_legs` 只包含真实下单腿;不发送 0 qty 空单。
+- 同一 opportunity 的所有真实腿必须携带相同 `open_orders_digest`。
 - common 模块只负责解析 / 构造,不维护 opportunity 状态;状态机归 Execution barrier。
+
+`src/arbitrage/common/open_orders.py::pair_open_orders_digest(cache, instrument_ids)` 是 Strategy
+记录与 Execution 重算基线的唯一实现。摘要只包含当前 open orders 的不可变字段：
+`client_order_id / venue_order_id / instrument_id / side / status / quantity / filled_qty /
+leaves_qty / price`。它不持有 NT `Order` 引用；Cache 返回顺序和对象身份不影响结果。
 
 ## 2. VenueExecutionLiveness(已落地,2026-06-15)
 

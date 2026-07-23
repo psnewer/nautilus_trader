@@ -1,6 +1,6 @@
 """
-StrategyEvaluator —— NT Actor,唯一活体(Q21):订触发事件 → 更新 SignalStore → 查
-StrategyRegistry → 并行 evaluate arb+comp → fire(套利优先)。
+StrategyEvaluator —— NT Actor,唯一活体(Q21):订触发事件 → 查 StrategyRegistry
+→ 基于当前 EvalContext 并行 evaluate arb+comp → fire(套利优先)。
 
 设计见 `docs/arbitrage/architectures/strategy/architecture.md §3.5 / §4`。
 
@@ -8,7 +8,7 @@ StrategyRegistry → 并行 evaluate arb+comp → fire(套利优先)。
 - `on_data(data)` —— NT msgbus 路由进:OrderBookDeltas / MatchedPair / 自定义信号事件
 - `_extract_evaluation_target(data)` —— 拿到 (pair_id, sport, competition);MatchedPair 直读,
   其它 event 经 PairRegistry + instrument.info 反查
-- `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + Q20 snapshot + asyncio.gather
+- `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + 挂单基线 + asyncio.gather
   并行 evaluate + 套利优先 fire(actions 走 `await`,异常落进本 task)
 - `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口,**无条件释放**(#261)
 
@@ -19,33 +19,29 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace
 from functools import partial
-from typing import Callable
 
-from nautilus_trader.common.actor import Actor
-from nautilus_trader.common.actor import ActorConfig
-from nautilus_trader.model.data import DataType
-from nautilus_trader.model.data import OrderBookDeltas
-
-from src.arbitrage.common.pair_registry import PairRegistry
-from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
-from src.arbitrage.common.control import SetArbitrageParamsCommand
-from src.arbitrage.common.params import ArbitrageParams
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
+from nautilus_trader.common.actor import Actor
+from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.model.identifiers import ClientId
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.control import SetArbitrageParamsCommand
+from src.arbitrage.common.open_orders import pair_open_orders_digest
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
+from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.registry import StrategyRegistry
-from src.arbitrage.strategy.signals import SignalStore
-from src.arbitrage.strategy.snapshot import build_snapshot
-from src.arbitrage.common.opportunity import OpportunityMeta
-from src.arbitrage.common.opportunity import tags_from_meta
 
 
 _STRATEGY_ID_LITERAL = "ARB-EVAL-001"
@@ -91,6 +87,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
                 pair_id=str(spec["pair_id"]),
                 leg_key=str(spec["leg_key"]),
                 expected_legs=tuple(str(v) for v in spec["expected_legs"]),
+                open_orders_digest=spec.get("open_orders_digest"),
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
             ))
@@ -133,11 +130,9 @@ class _RuntimeDeps:
     pair_registry: PairRegistry
     strategy_registry: StrategyRegistry
     portfolio: object                      # ArbitragePortfolio
-    signal_store: SignalStore
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
     loop: object                            # 单测兜底 loop;生产调度使用 NT register_executor 注入的 ActorExecutor loop
     arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share
-    signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
     pair_inflight: object = None            # PairInFlightGate(§7);None → 不串行(测试/降级)
 
 
@@ -147,10 +142,8 @@ class StrategyEvaluator(Actor):
         self._pair_registry = deps.pair_registry
         self._strategy_registry = deps.strategy_registry
         self._portfolio = deps.portfolio
-        self._signal_store = deps.signal_store
         self._is_execution_active = deps.is_execution_active
         self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
-        self._signal_collector = deps.signal_collector
         self._test_loop = deps.loop
         self._registered_task_loop = None
         self._log_evaluations = config.log_evaluations
@@ -186,15 +179,12 @@ class StrategyEvaluator(Actor):
 
     # ── data 入口(NT 路由)──────────────────────────────────────────
     def on_data(self, data) -> None:
-        # 1. SignalCollector 先消化事件(信号写入 store;sports 比分 / 自定义信号)
-        if self._signal_collector is not None:
-            self._signal_collector(data, self._signal_store)
-        # 2. slice 10e:MatchedPair fire → per-iid 订阅 OBD,把真实赔率引进 cache(下游 snapshot 读)
+        # 1. slice 10e:MatchedPair fire → per-iid 订阅 OBD,把真实赔率引进 cache。
         #    #250:同时按场订阅 sports 状态 + 记录该场的 OBD 腿(ended 时全退)
         if isinstance(data, MatchedPair):
             self._ensure_obd_subscribed(data)
             self._ensure_sports_subscribed(data)
-        # 3. 路由评估(#250:sports 事件按 game_id 扇出全部注册 pair;其余单 pair 路由)
+        # 2. 路由评估(#250:sports 事件按 game_id 扇出全部注册 pair;其余单 pair 路由)
         if isinstance(data, SportsGameUpdate):
             self._route_eval_sports(data)
             return
@@ -214,7 +204,7 @@ class StrategyEvaluator(Actor):
     def _route_eval_sports(self, update: SportsGameUpdate) -> None:
         """#250:sports 事件只负责唤醒+定位 —— `game_id` 反查全部已注册 pair,
         按确定性顺序逐 pair 调度(各自受 PairInFlightGate 约束,无 event 级全局锁);
-        未注册 game no-op。状态由 `build_snapshot` 从 Store 冻结,不直接信事件 payload。
+        未注册 game no-op。评估时从 Store 读取当前状态,不直接信事件 payload。
         ended:分发完毕后释放本场全部订阅(sports + 各 pair 腿 OBD)→ 归零回收。"""
         for pair_id in sorted(self._pair_registry.pair_ids_for_game(update.game_id)):
             sport, competition = self._pair_scope(pair_id)
@@ -226,7 +216,7 @@ class StrategyEvaluator(Actor):
         """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态,并记录该场的 OBD 腿。
 
         gid 经 PairRegistry 反查(matching 注册先于发布,同步时序安全);无 gid 的 pair
-        (无 sports 覆盖的赛事)静默跳过,该类 pair 的 snapshot.in_play 保持 False。
+        (无 sports 覆盖的赛事)静默跳过。
         """
         gid = self._pair_registry.game_id_for_pair(mp.pair_id)
         if gid is None:
@@ -351,21 +341,18 @@ class StrategyEvaluator(Actor):
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
             return
-        # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
-        snapshot = build_snapshot(
-            pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
-            sports_store=self._get_sports_store(),
-        )
-        store = self._signal_store.view(pair_id)
-        store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
-        # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建。
+        instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
+        open_orders_digest = pair_open_orders_digest(self.cache, instrument_ids)
+        sports_store = self._get_sports_store()
         # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
         # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
         submitter = self._make_submitter()
         base_ctx = {
             "pair_id": pair_id,
-            "snapshot": snapshot,
-            "store": store,
+            "cache": self.cache,
+            "pair_registry": self._pair_registry,
+            "sports_store": sports_store,
+            "open_orders_digest": open_orders_digest,
             "submitter": submitter,
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
@@ -401,7 +388,7 @@ class StrategyEvaluator(Actor):
             self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
 
     def _get_sports_store(self):
-        """#250:lazy 建 SportsGameStateStore(注册后 self.cache 可用;失败返 None → snapshot 无 sports_state,in_play=False)。"""
+        """#250:lazy 建 SportsGameStateStore，供状态查询读取 PMS Cache。"""
         if self._sports_store is None:
             try:
                 self._sports_store = SportsGameStateStore(self.cache)
