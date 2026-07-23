@@ -1,9 +1,14 @@
 """
 MeanRebateRecoveryCheck —— mean_rebate 补救检查。
 
-目标:已有不完整持仓时,把每个 outcome 补到当前最大实际 share,并要求补齐后的最差
-rebate 不低于 `min_repaired_rebate`。命中时只写缺口 legs,供 `PlaceBetsAction(intent="recovery")`
-下补救单。
+目标:已有不完整持仓时,把每个 outcome 补到当前最大实际 share。
+
+`min_repaired_rebate` 是**双向**门槛(#262):
+- **要不要补**:当前最差 outcome 的 rebate **低于**该值才需要补救(否则仓位已达标,不该花钱);
+- **补了有没有用**:补齐后的最差 rebate 必须**不低于**该值。
+
+两者共用同一分母(当前最大实际 share),口径一致、直接可比。
+命中时只写缺口 legs,供 `PlaceBetsAction(intent="recovery")` 下补救单。
 """
 
 from __future__ import annotations
@@ -89,6 +94,17 @@ class MeanRebateRecoveryCheck(Check):
         actual_by_role = _actual_share_by_role(existing)
         target_share = max(actual_by_role.values())
         if target_share <= _EPS:
+            return False
+
+        # #262 前置门:**当前**最差 outcome 已达标 → 本就不需要补救,直接放弃。
+        # 原先只判「补齐后达标」(见下方 `repaired` 判断),缺这一半 → 仓位已接近平衡时照样触发,
+        # 算出极小的补单被 Risk 以 `min_notional` 拒掉,且状态不变 → 每个 OBD tick 重复一次。
+        # 加上之后 `min_repaired_rebate` 才自洽地同时定义两件事:
+        #   current  < 阈值 → 需要补;   repaired >= 阈值 → 补了确实有用。
+        # 与 `repaired` 共用同一分母 `target_share`,两个数直接可比、同一把尺子。
+        # 放在取盘口候选之前:本判据不需要行情,能早退就早退。
+        current = _outcome_return_rates(existing, sorted(valid_outcomes), target_share)
+        if current and min(current.values()) >= self._min_repaired_rebate:
             return False
 
         candidates = _best_candidates_by_role(snap, valid_outcomes)

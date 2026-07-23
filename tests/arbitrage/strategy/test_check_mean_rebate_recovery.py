@@ -324,3 +324,82 @@ def test_recovery_decimal_no_candidate_keeps_lay_execution_fields():
         "lay_price": 2.0,
         "exec_instrument_id": "Y.ORBITEXCH",
     }]
+
+
+# ── #262:前置门 —— 当前已达标就不该补救 ──────────────────────────
+def test_no_recovery_when_current_rebate_already_meets_threshold():
+    """两腿已接近平衡 → 当前最差 rebate 已达标 → **不触发**补救。
+
+    实盘症状(2026-07-22):缺口仅折合 0.16 USD 时仍触发,算出的补单被 Risk 以
+    `min_notional=12.00` 拒掉,而状态不变 → 每个 OBD tick 重复一次,日志刷屏。
+    根因不是"单太小",而是缺「当前是否需要补」这一半判断 —— `min_repaired_rebate`
+    原先只作用于"补齐后",对"当前"完全不设防;且缺口越小、补齐后越漂亮,越容易放行。
+    """
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[
+            _position("H.POLYMARKET", qty=10.0, price=0.50),
+            _position("A.POLYMARKET", qty=9.99, price=0.50),   # 极小缺口
+        ],
+    )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is False
+    assert "legs" not in ctx.scratch                          # 没写补救腿 → 不会下单
+
+
+def test_recovery_still_fires_when_current_rebate_below_threshold():
+    """当前不达标(单边持仓)→ 仍照常触发。前置门不能把正常补救一起挡掉。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=10.0, price=0.50)],   # 只有一边
+    )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is True
+    assert ctx.scratch["legs"]
+
+
+def test_threshold_governs_both_directions():
+    """同一个 `min_repaired_rebate` 同时决定「要不要补」和「补了有没有用」。
+
+    同一份接近平衡的仓位:阈值宽松(-0.05)→ 当前已达标 → 不补;
+    阈值收紧到 0.0 → 当前不达标 → 触发补救。参数语义因此自洽。
+    """
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+
+    def _fresh_ctx():
+        return _ctx(
+            books=books,
+            infos=infos,
+            positions=[
+                _position("H.POLYMARKET", qty=10.0, price=0.50),
+                _position("A.POLYMARKET", qty=9.99, price=0.50),
+            ],
+        )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(_fresh_ctx()) is False
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=0.0).passes(_fresh_ctx()) is True
