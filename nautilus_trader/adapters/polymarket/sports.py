@@ -35,29 +35,31 @@ import json
 from decimal import Decimal
 from typing import Any
 
-import httpx
 import pandas as pd
 import pyarrow as pa
 
-from nautilus_trader.config import LiveDataClientConfig
-from nautilus_trader.config import InstrumentProviderConfig
-from nautilus_trader.core import Data
+from nautilus_trader.adapters.polymarket.arb_provider import _EVENTS_PAGE_LIMIT
+from nautilus_trader.adapters.polymarket.arb_provider import _GAMMA_BASE
+from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
+from nautilus_trader.adapters.polymarket.arb_provider import _teams_from_event
+from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_json
 from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.config import InstrumentProviderConfig
+from nautilus_trader.config import LiveDataClientConfig
+from nautilus_trader.core import Data
+from nautilus_trader.core.nautilus_pyo3 import HttpClient
+from nautilus_trader.core.nautilus_pyo3 import WebSocketClient
+from nautilus_trader.core.nautilus_pyo3 import WebSocketConfig
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.custom import customdataclass
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.instruments import BettingInstrument
-from nautilus_trader.model.instruments.betting import null_handicap
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.instruments import BettingInstrument
+from nautilus_trader.model.instruments.betting import null_handicap
 from nautilus_trader.model.objects import Money
-
-from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
-from nautilus_trader.adapters.polymarket.arb_provider import _teams_from_event
-from nautilus_trader.adapters.polymarket.arb_provider import _EVENTS_PAGE_LIMIT
-from nautilus_trader.adapters.polymarket.arb_provider import _GAMMA_BASE
 
 
 SPORTS_CLIENT = "PMSPORTS"   # 不含 `-`:NT node_builder 按 `key.partition("-")[0]` 找 factory,
@@ -69,6 +71,7 @@ class PolymarketSportsDataClientConfig(LiveDataClientConfig, frozen=True, kw_onl
     """`sports_ws_url` 可覆盖端点(默认 `SPORTS_WS_URL`)。"""
 
     sports_ws_url: str | None = None
+    proxy_url: str | None = None
     update_instruments_interval_mins: int | None = 60
 
 
@@ -86,31 +89,34 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
         target_competitions: list | tuple | None = None,
         competition_to_sport: dict | None = None,
         competition_aliases: dict | None = None,
+        http_client: HttpClient | None = None,
     ) -> None:
         super().__init__(config=config)
         self._target_competitions = {str(c).lower() for c in (target_competitions or [])}
         self._competition_to_sport = dict(competition_to_sport or {})
         self._competition_aliases = dict(competition_aliases or {})
+        # Gamma discovery 与 PM 主链共用路由:factory 注入带 proxy_url 的 NT HttpClient
+        self._http_client = http_client or HttpClient(timeout_secs=30)
 
     async def load_all_async(self, filters: dict | None = None) -> None:
         if not self._target_competitions:
             self._log.info("PMSPORTS discovery: no target competitions configured → load 0")
             return
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            sports = await self._fetch_json(client, f"{_GAMMA_BASE}/sports")
-            count = 0
-            for comp_info in sports or []:
-                comp_raw = str(comp_info.get("sport", ""))
-                series_id = comp_info.get("series")
-                if comp_raw.lower() not in self._target_competitions or not series_id:
-                    continue
-                sport = self._competition_to_sport.get(comp_raw.lower(), comp_raw)
-                competition = self._competition_aliases.get(
-                    comp_raw,
-                    self._competition_aliases.get(comp_raw.lower(), comp_raw),
-                )
-                count += await self._load_series(client, str(series_id), competition, sport)
+        client = self._http_client
+        sports = await self._fetch_json(client, f"{_GAMMA_BASE}/sports")
+        count = 0
+        for comp_info in sports or []:
+            comp_raw = str(comp_info.get("sport", ""))
+            series_id = comp_info.get("series")
+            if comp_raw.lower() not in self._target_competitions or not series_id:
+                continue
+            sport = self._competition_to_sport.get(comp_raw.lower(), comp_raw)
+            competition = self._competition_aliases.get(
+                comp_raw,
+                self._competition_aliases.get(comp_raw.lower(), comp_raw),
+            )
+            count += await self._load_series(client, str(series_id), competition, sport)
         self._log.info(f"PMSPORTS discovery: loaded {count} anchor instrument(s)")
 
     async def _load_series(self, client, series_id: str, comp_name: str, sport: str) -> int:
@@ -206,16 +212,12 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
             },
         )
 
-    @staticmethod
-    async def _fetch_json(client, url: str, params: dict | None = None):
+    async def _fetch_json(self, client, url: str, params: dict | None = None):
         try:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            return resp.json()
+            return await fetch_gamma_json(client, url, params)
         except Exception as e:
             # 保持发现失败 fail-soft,下轮再试;cache 保留 last-good。
-            import logging
-            logging.getLogger(__name__).warning(f"PMSPORTS discovery fetch failed {url} params={params}: {e}")
+            self._log.warning(f"PMSPORTS discovery fetch failed {url} params={params}: {e}")
             return None
 
 
@@ -448,7 +450,8 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
 
     无 instrument 订阅:`_connect` 即开 WS 流式收;消费者按场经
     `subscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))`。
-    服务端协议层 ping 由 websockets 自动回 pong;另兼容偶发 app-level text `"ping"`(回 `"pong"`)。
+    服务端协议层 ping 由 NT WebSocketClient 自动回 pong;另兼容偶发 app-level text
+    `"ping"`(回 `"pong"`)。
     """
 
     def __init__(
@@ -474,6 +477,8 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
         )
         self._sports_config = config  # Keep config object ref (base class stores json_primitives dict)
         self._ws_url = getattr(config, "sports_ws_url", None) or SPORTS_WS_URL
+        self._proxy_url = getattr(config, "proxy_url", None)
+        self._ws_client: WebSocketClient | None = None
         self._ws_task: asyncio.Task | None = None
         self._update_instruments_task: asyncio.Task | None = None
         # #250:兴趣注册表直接复用 NT 原生订阅记账(client 基类 `_add_subscription` 同步维护,
@@ -505,6 +510,9 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
         if self._ws_task is not None:
             self._ws_task.cancel()
             self._ws_task = None
+        if self._ws_client is not None:
+            await self._ws_client.disconnect()
+            self._ws_client = None
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
@@ -523,27 +531,37 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
             self._log.debug("Canceled task 'pmsports_update_instruments'")
 
     async def _run_ws(self) -> None:
-        import websockets  # 局部 import:仅 sports client 用
-
-        while True:  # 断线重连(外层 cancel 退出)
+        while True:  # 初连失败重试;连接后的断线重连由 NT WebSocketClient 负责
             try:
-                async with websockets.connect(self._ws_url, ping_interval=None, max_size=None) as ws:
-                    self._log.info("Sports WS connected")
-                    while True:
-                        raw = await ws.recv()
-                        if isinstance(raw, bytes):
-                            raw = raw.decode("utf-8", "replace")
-                        s = raw.strip()
-                        if s == "ping":
-                            await ws.send("pong")
-                            continue
-                        self._on_frame(s)
+                config = WebSocketConfig(
+                    url=self._ws_url,
+                    headers=[],
+                    heartbeat=None,
+                    reconnect_timeout_ms=30_000,
+                    proxy_url=self._proxy_url,
+                )
+                self._ws_client = await WebSocketClient.connect(
+                    loop_=self._loop,
+                    config=config,
+                    handler=self._on_ws_message,
+                    post_reconnection=lambda: self._log.info("Sports WS reconnected"),
+                )
+                self._log.info("Sports WS connected")
+                return
             except asyncio.CancelledError:
                 self._log.debug("Sports WS task canceled")
                 return
             except Exception as e:  # noqa: BLE001 — 重连,不让单次异常杀任务
                 self._log.warning(f"Sports WS error: {e!r}; reconnecting in 5s")
                 await asyncio.sleep(5.0)
+
+    def _on_ws_message(self, raw: bytes) -> None:
+        s = raw.decode("utf-8", "replace").strip()
+        if s == "ping":
+            if self._ws_client is not None:
+                self.create_task(self._ws_client.send_text(b"pong"))
+            return
+        self._on_frame(s)
 
     def _on_frame(self, s: str) -> None:
         try:

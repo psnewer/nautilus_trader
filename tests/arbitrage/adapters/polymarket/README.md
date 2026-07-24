@@ -18,7 +18,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 | 文件 | 范围 |
 |---|---|
 | `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
-| `test_sports.py` | **#60/#127** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`):6 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip + `PolymarketSportsInstrumentProvider` 产出 `.PMSPORTS` non-tradable anchor + `PolymarketSportsLiveDataClientFactory` 读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。2026-06-29 live 诊断确认 PM Sports 发协议层 ping(约 15s),`websockets` 自动回 pong;生产代码关闭客户端主动 keepalive ping(`ping_interval=None`),避免本地 `keepalive ping timeout` 误杀连接。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` / PMSPORTS provider 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
+| `test_sports.py` | **#60/#127/#273** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`)：解析、状态管线、per-game 订阅、NT 原生 `WebSocketClient` 接线与 app-level pong。Sports WS 显式复用 PM proxy，初连后台重试、连接后由 NT client 断线重连；协议层 ping/pong 由 NT client 处理。**映射键 `game_id`** == gamma `event["gameId"]`；eviction 由 `ended` 驱动(matching,见 matching README) |
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 | `test_execution_ack.py` | **#256 起** PM ack 只来自 WS(不再回执即 ack):14 tests —— `_mark_accepted_emitted` 去重(首次 True / 重复 False / 有界挤出最老)、HTTP 回执成功只索引 `venue_order_id`(`_post_signed_order`/`_process_batch_response` 均不 `generate_order_accepted`)、失败只 reject、WS `PLACEMENT` 对 SUBMITTED 单 ack / 已 ack 则幂等跳过、**order 消息 `UPDATE`/`CANCELLATION` 到达同样 ack**(`CANCELLATION` 先补 ack 再走既有撤单终态)、WS trade 消息 MATCHED/MINED/CONFIRMED 任一先到达即 ack(taker 单无 PLACEMENT,靠这条证明已被接收)、PLACEMENT 与 trade 消息共用去重表不重复 ack、CONFIRMED 补 ack 之余仍正常生成 fill。见 execution architecture §3.1 #256(#253 已失效)。|
@@ -477,3 +477,13 @@ matching/strategy README 的接线用例(经 NT per-game topic 路由到 consume
 **期望/验收**:重复业务帧只刷时戳不发布;`ts_event` 倒退丢弃;ended 放行一次后该场帧全拒
 (终态,覆盖退订异步小窗);Store codec roundtrip 正确,`delete` 真删除
 (归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,不写 `Instrument.info`。
+
+### pm-adapter-sports.state.7:NT 原生 WS 与显式代理
+
+**用例**:`test_sports_ws_uses_nt_client_with_explicit_proxy` /
+`test_sports_ws_initial_failure_retries` /
+`test_sports_ws_text_ping_uses_nt_client_pong` /
+`tests/arbitrage/config/test_dispatcher.py::test_sports_data_client_config_maps_data_source_url_and_pm_proxy`。
+**期望/验收**:PMSPORTS 使用 NT pyo3 `WebSocketClient`;dispatcher 将 PM `proxy_url` 透传给
+Sports config;禁用客户端主动 heartbeat;app-level `ping` 经同一 client 回复 `pong`。
+初连失败由后台 task 每 5s 重试，连接成功后的断线重连归 NT client。

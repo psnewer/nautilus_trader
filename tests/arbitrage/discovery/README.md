@@ -35,6 +35,10 @@
 保留并继续产出可交易 `.POLYMARKET`;PMSPORTS discovery 不产出可交易腿,也不接 Risk/Execution。详细设计见
 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 
+**2026-07-24 PMSPORTS WS IO(#273)**:仅替换同一 data-only client 的 Sports WS 传输为 NT
+pyo3 `WebSocketClient`，并复用 PM 显式代理；Gamma discovery、synthetic anchor 生成及周期刷新
+语义不变。验收见 PM adapter README `pm-adapter-sports.state.7`。
+
 ## 文件分布
 
 | 文件 | 范围 |

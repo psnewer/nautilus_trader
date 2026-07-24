@@ -26,6 +26,7 @@ import asyncio
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.core.nautilus_pyo3 import HttpClient
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 
@@ -85,6 +86,11 @@ class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
                 POLYMARKET,
                 {},
             ),
+            # Gamma discovery 与 PM 主链同路由(venues.polymarket.proxy_url 经 dispatcher 传入)
+            http_client=HttpClient(
+                timeout_secs=30,
+                proxy_url=getattr(config, "proxy_url", None),
+            ),
         )
         return PolymarketSportsDataClient(
             loop=loop,
@@ -135,6 +141,8 @@ class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
             client=http_client,
             clock=clock,
             config=instrument_config,
+            # Gamma discovery 与 CLOB 同路由(否则 proxy 场景下交易通、discovery 断)
+            http_client=HttpClient(timeout_secs=30, proxy_url=config.proxy_url),
         )
         ctx_map_set(ctx, "instrument_provider_by_venue", POLYMARKET, provider)
         debug = ctx.debug_config

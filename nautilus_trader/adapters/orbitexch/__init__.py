@@ -13,7 +13,8 @@ OrbitExch adapter for NautilusTrader.
 Provides integration with OrbitExch betting exchange using Playwright browser automation.
 
 2026-07-03: NT 适配器层迁移到 `sport/details` API(OrbitExchDiscoveryClient)。
-旧 OrbitExchScraper 保留供旧服务层使用,新代码应使用 OrbitExchDiscoveryClient。
+2026-07-24: 旧 OrbitExchOddsClient/scraper.py 已删除;discovery_scraper 仅保留给
+gapc_place_cancel_probe 等旧探针,从模块路径直接导入,不再作为包级公共 API 导出。
 """
 
 __version__ = "0.1.0"
@@ -29,14 +30,8 @@ from nautilus_trader.adapters.orbitexch.discovery_client import (
     OrbitExchMarketEvent,
     OrbitExchRunner,
 )
-# Legacy scraper (kept for old service layer compatibility)
-from nautilus_trader.adapters.orbitexch.discovery_scraper import (
-    MatchEvent as OrbitExchMatchEvent,
-)
-from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper
 from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
 from nautilus_trader.adapters.orbitexch.executor import OrbitExchOrderRequest
-from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
 
 
 __all__ = [
@@ -48,11 +43,7 @@ __all__ = [
     "OrbitExchDiscoveryClient",
     "OrbitExchMarketEvent",
     "OrbitExchRunner",
-    # Legacy scraper (for old service layer)
-    "OrbitExchMatchEvent",
-    "OrbitExchScraper",
     # Execution
     "OrbitExchExecutor",
     "OrbitExchOrderRequest",
-    "OrbitExchOddsClient",
 ]

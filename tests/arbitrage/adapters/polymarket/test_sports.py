@@ -4,21 +4,29 @@ WS 连接(`PolymarketSportsDataClient._run_ws`)经 /live-test 验(公开 firehos
 样本取自本会话实采(wnba / atp ended)。
 """
 
+import asyncio
 import logging
 from unittest.mock import MagicMock
 
 import pytest
 
+import nautilus_trader.adapters.polymarket.sports as sports_module
 import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.polymarket import arb_factories as pm_factories
+from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
+from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataFilter
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataProcessor
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
-from nautilus_trader.adapters.polymarket.sports import game_id_of_data_type
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+from nautilus_trader.adapters.polymarket.sports import game_id_of_data_type
 from nautilus_trader.adapters.polymarket.sports import parse_sport_result
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.common.component import TestClock
+from nautilus_trader.model.identifiers import TraderId
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import SPORTS_CLIENT
 
@@ -90,6 +98,100 @@ def test_sports_provider_builds_non_tradable_anchor_instrument():
     assert inst.info["competition"] == "ATP"
     assert inst.info["home_team"] == "Rafael Jodar"
     assert inst.info["away_team"] == "Felix Gill"
+
+
+def _sports_client(loop, *, proxy_url=None):
+    clock = TestClock()
+    return PolymarketSportsDataClient(
+        loop=loop,
+        msgbus=MessageBus(trader_id=TraderId("TESTER-001"), clock=clock),
+        cache=Cache(),
+        clock=clock,
+        instrument_provider=PolymarketSportsInstrumentProvider(),
+        config=PolymarketSportsDataClientConfig(proxy_url=proxy_url),
+    )
+
+
+def test_sports_ws_uses_nt_client_with_explicit_proxy(monkeypatch):
+    async def run():
+        captured = {}
+
+        class FakeConfig:
+            def __init__(self, **kwargs):
+                captured["config"] = kwargs
+
+        class FakeClient:
+            @classmethod
+            async def connect(cls, **kwargs):
+                captured["connect"] = kwargs
+                return cls()
+
+            async def disconnect(self):
+                pass
+
+        monkeypatch.setattr(sports_module, "WebSocketConfig", FakeConfig)
+        monkeypatch.setattr(sports_module, "WebSocketClient", FakeClient)
+
+        client = _sports_client(asyncio.get_running_loop(), proxy_url="http://proxy:7890")
+        await client._run_ws()
+
+        assert captured["config"]["url"] == sports_module.SPORTS_WS_URL
+        assert captured["config"]["proxy_url"] == "http://proxy:7890"
+        assert captured["config"]["heartbeat"] is None
+        assert captured["connect"]["handler"] == client._on_ws_message
+        assert client._ws_client is not None
+
+    asyncio.run(run())
+
+
+def test_sports_ws_initial_failure_retries(monkeypatch):
+    async def run():
+        calls = {"connect": 0, "sleep": []}
+
+        class FakeConfig:
+            def __init__(self, **_kwargs):
+                pass
+
+        class FakeClient:
+            @classmethod
+            async def connect(cls, **_kwargs):
+                calls["connect"] += 1
+                if calls["connect"] == 1:
+                    raise TimeoutError("opening handshake")
+                return cls()
+
+        async def fake_sleep(seconds):
+            calls["sleep"].append(seconds)
+
+        monkeypatch.setattr(sports_module, "WebSocketConfig", FakeConfig)
+        monkeypatch.setattr(sports_module, "WebSocketClient", FakeClient)
+        monkeypatch.setattr(sports_module.asyncio, "sleep", fake_sleep)
+
+        client = _sports_client(asyncio.get_running_loop())
+        await client._run_ws()
+
+        assert calls == {"connect": 2, "sleep": [5.0]}
+        assert client._ws_client is not None
+
+    asyncio.run(run())
+
+
+def test_sports_ws_text_ping_uses_nt_client_pong():
+    async def run():
+        sent = []
+
+        class FakeClient:
+            async def send_text(self, raw):
+                sent.append(raw)
+
+        client = _sports_client(asyncio.get_running_loop())
+        client._ws_client = FakeClient()
+        client._on_ws_message(b" ping ")
+        await asyncio.sleep(0)
+
+        assert sent == [b"pong"]
+
+    asyncio.run(run())
 
 
 # ── #250:CustomData 状态管线(Store / 兴趣门控 / Processor / per-game DataType)──
@@ -257,7 +359,8 @@ def test_sports_factory_uses_data_source_context(monkeypatch):
     pm_factories.PolymarketSportsLiveDataClientFactory.create(
         loop=MagicMock(),
         name="PMSPORTS",
-        config=MagicMock(),
+        # proxy_url 会传入 pyo3 HttpClient(要求 str|None),mock 需给具体值
+        config=MagicMock(proxy_url=None),
         msgbus=MagicMock(),
         cache=MagicMock(),
         clock=MagicMock(),
@@ -275,6 +378,9 @@ def test_engine_zero_count_unsubscribe_reclaims_store():
     回收 Store 条目。"""
     import asyncio
 
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
     from nautilus_trader.cache.cache import Cache
     from nautilus_trader.common.component import MessageBus
     from nautilus_trader.common.component import TestClock
@@ -284,9 +390,6 @@ def test_engine_zero_count_unsubscribe_reclaims_store():
     from nautilus_trader.data.messages import UnsubscribeData
     from nautilus_trader.model.identifiers import ClientId
     from nautilus_trader.model.identifiers import TraderId
-    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
-    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
-    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
 
     async def run():
         clock = TestClock()

@@ -404,10 +404,13 @@ Polymarket `ws_url` 传给 NT 上游 `PolymarketWebSocketClient` 时必须是 ba
 `ConfigError`,避免 DataClient 生成 `.../ws/marketmarket`、ExecClient 生成
 `.../ws/marketuser`。
 
-Polymarket `proxy_url` 传给 NT 上游 `PolymarketDataClientConfig` / `PolymarketExecClientConfig`。
+Polymarket `proxy_url` 传给 NT 上游 `PolymarketDataClientConfig` /
+`PolymarketExecClientConfig`，并作为同一网络出口传给
+`PolymarketSportsDataClientConfig`。PMSPORTS 虽是独立 data source，但不另设代理字段。
 若 JSON 未显式配置,loader 按 `POLYMARKET_PROXY_URL` → `https_proxy` / `HTTPS_PROXY` →
 `http_proxy` / `HTTP_PROXY` 顺序兜底注入。原因:NT pyo3 `WebSocketClient` 不自动读取系统代理;
-PM CLOB market WS 在部分网络下直连会 `Operation timed out`,显式 `proxy_url` 后可正常握手。
+PM CLOB market WS 与 Sports WS 在部分网络下直连会 `Operation timed out`,显式
+`proxy_url` 后可正常握手。
 
 Polymarket `max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 透传给
 NT 上游 `PolymarketExecClientConfig` 的共享 `RetryManagerPool`。默认仍为 `None`

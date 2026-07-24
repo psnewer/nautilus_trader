@@ -29,7 +29,8 @@ def _common_nt_args():
     return dict(
         loop=MagicMock(),
         name="X",
-        config=MagicMock(),
+        # proxy_url 会传入 pyo3 HttpClient(要求 str|None),mock 需给具体值
+        config=MagicMock(proxy_url=None),
         msgbus=MagicMock(),
         cache=MagicMock(),
         clock=MagicMock(),

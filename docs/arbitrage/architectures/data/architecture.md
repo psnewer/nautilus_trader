@@ -47,6 +47,7 @@ flowchart LR
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
 - PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。共享 `HTTPTransport(retries=1)` 只重试一次连接建立错误(`ConnectError` / `ConnectTimeout`),Data/Provider 与 Execution CLOB 请求共用;上层业务 retry 仍归 Execution config。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
+- Gamma discovery(PM `ArbPolymarketInstrumentProvider` 与 PMSPORTS `PolymarketSportsInstrumentProvider`)与 CLOB 同路由(#274):两 provider 的 `_fetch_json` 统一走 `common/gamma_markets.fetch_gamma_json`,底层为 factory 注入的 NT pyo3 `HttpClient(timeout_secs=30, proxy_url=venues.polymarket.proxy_url)`(PMSPORTS 侧 proxy 经 dispatcher `to_sports_data_client_config` 传入)。不再各自裸建 `httpx.AsyncClient`(旧路径不走显式 proxy,proxy 场景下会"交易通、discovery 断")。discovery 失败仍 fail-soft:单次请求非 2xx 抛错由 `_fetch_json` 捕获记日志返 `None`,下轮周期发现再试,cache 保留 last-good。
 
 ---
 
@@ -237,10 +238,18 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 
 - `_connect` 先 `PolymarketSportsInstrumentProvider.load_all_async()` + `_handle_data(instrument)` 灌入 NT cache,再开 WS firehose;`update_instruments_interval_mins` 默认 60min,单轮失败只 warning,下一轮重试。
 - synthetic anchor 每场一条 `BettingInstrument(venue=PMSPORTS, market_type=EVENT_ANCHOR)`, `info` 含 matching 字段 + `game_id` + `tradable=False` + `anchor=True`。它只给 Matching 识别 event,不代表可交易 selection。
-- WS firehose 无 instrument 订阅;服务端协议层 ping 由 `websockets` 自动回 pong,客户端主动 keepalive ping 关闭(`ping_interval=None`),避免 PM Sports / 代理链路不回客户端 ping 时被本地 `keepalive ping timeout` 误杀;仍兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
-- 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate` → **`msgbus.publish` 裸发到 `data.SportsGameUpdate*`**(同 MatchedPair/InstrumentsRefreshed 的 publish_data 风格;消费者 `msgbus.subscribe("data.{Type}*")` 带 #58 的 `*` 通配)。**注**:`_handle_data` 走 DataEngine.process 只认内置/CustomData,裸自定义 Data 报 "unrecognized type"(#60 smoke 抓出 → 改裸 publish)。
+- WS firehose 无 instrument 订阅;IO 使用 NT 原生 pyo3 `WebSocketClient`，显式复用
+  `venues.polymarket.proxy_url`。初次连接在后台 task 中执行，失败不阻塞 DataEngine 启动并按
+  5s 重试；连接成功后的断线、退避重连由 NT client 负责。`heartbeat=None` 不发送客户端主动
+  keepalive，协议层 ping/pong 由 client 处理，仍兼容 app-level text `"ping"`→`"pong"`；
+  `_disconnect` 先取消初连 task，再断开 client。不得改回 `websockets.connect`：其 15/16
+  新 asyncio 代理实现存在握手超时后的清理竞态，会额外抛出 callback traceback。
+- 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate`；processor 对已订阅比赛先写
+  `SportsGameStateStore`，再以 `CustomData(sports_data_type(game_id), update)` 交给 DataEngine，
+  路由到该场 per-game topic。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
-- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 经 `signal_collector` seam(strategy)。详见 refactor.md §5.9 / #60。
+- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 收到该场更新后触发评估，
+  条件判断按需查询 `SportsGameStateStore`。详见 strategy architecture §3.1/§3.8.1。
 
 #### 3.4.1 CustomData 状态管线(#250,已落地)
 

@@ -36,18 +36,12 @@ from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_ins
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
-from nautilus_trader.adapters.polymarket.executor import PolymarketExecutor
 from nautilus_trader.adapters.polymarket.factories import PolymarketLiveDataClientFactory
 from nautilus_trader.adapters.polymarket.factories import PolymarketLiveExecClientFactory
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
 from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
-from nautilus_trader.adapters.polymarket.odds_client import PolymarketOddsClient
-from nautilus_trader.adapters.polymarket.odds_client import PolymarketOrder
-from nautilus_trader.adapters.polymarket.odds_client import PolymarketPosition
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
-from nautilus_trader.adapters.polymarket.scraper import MatchEvent as PolymarketMatchEvent
-from nautilus_trader.adapters.polymarket.scraper import PolymarketScraper
 
 
 __all__ = [
@@ -62,15 +56,9 @@ __all__ = [
     "PolymarketDataClientConfig",
     "PolymarketDataLoader",
     "PolymarketExecClientConfig",
-    "PolymarketExecutor",
     "PolymarketInstrumentProvider",
     "PolymarketLiveDataClientFactory",
     "PolymarketLiveExecClientFactory",
-    "PolymarketMatchEvent",
-    "PolymarketOddsClient",
-    "PolymarketOrder",
-    "PolymarketPosition",
-    "PolymarketScraper",
     "get_polymarket_http_client",
     "get_polymarket_instrument_id",
     "get_polymarket_instrument_provider",

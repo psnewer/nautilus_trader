@@ -45,9 +45,6 @@ class ExecutionConfig:
     tracking_check_interval_sec: float = 5.0  # 追踪检查间隔
     max_failure_retries: int = 3             # 失败重试次数上限
 
-    # 健康检查
-    health_check_interval_sec: float = 30.0  # 健康检查间隔
-
     # Post-session cleanup 开关
     cleanup_enabled: bool = True
     cleanup_merge_enabled: bool = True
@@ -77,7 +74,6 @@ class ExecutionConfig:
             tracking_timeout_sec=data.get("tracking_timeout_sec", 30.0),
             tracking_check_interval_sec=data.get("tracking_check_interval_sec", 5.0),
             max_failure_retries=data.get("max_failure_retries", 3),
-            health_check_interval_sec=data.get("health_check_interval_sec", 30.0),
             cleanup_enabled=data.get("cleanup_enabled", True),
             cleanup_merge_enabled=data.get("cleanup_merge_enabled", True),
             cleanup_claim_enabled=data.get("cleanup_claim_enabled", True),
@@ -96,7 +92,6 @@ class ExecutionConfig:
             "tracking_timeout_sec": self.tracking_timeout_sec,
             "tracking_check_interval_sec": self.tracking_check_interval_sec,
             "max_failure_retries": self.max_failure_retries,
-            "health_check_interval_sec": self.health_check_interval_sec,
             "cleanup_enabled": self.cleanup_enabled,
             "cleanup_merge_enabled": self.cleanup_merge_enabled,
             "cleanup_claim_enabled": self.cleanup_claim_enabled,

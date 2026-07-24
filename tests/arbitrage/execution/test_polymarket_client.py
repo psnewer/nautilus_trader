@@ -1105,6 +1105,7 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
     monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
     monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
     monkeypatch.setattr("nautilus_trader.adapters.polymarket.factories.ClobClient", _ClobClient)
+    monkeypatch.setenv("https_proxy", "http://env-should-lose:1")
 
     get_polymarket_http_client(
         api_key="K",
@@ -1126,6 +1127,7 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
 
 
 def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
+    """proxy_url 未配置时必须继承代理环境变量(transport 层 trust_env 不读代理)。"""
     old_client = SimpleNamespace(close=lambda: None)
     transports = []
     clients = []
@@ -1143,6 +1145,39 @@ def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
     monkeypatch.setattr(pm_transport, "_configured_proxy_url", pm_transport._UNCONFIGURED)
     monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
     monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+
+    pm_transport.configure_clob_http_transport(None)
+
+    assert [transport.kwargs for transport in transports] == [{
+        "http2": True,
+        "proxy": "http://127.0.0.1:7890",
+        "trust_env": True,
+        "retries": 1,
+    }]
+    assert clients == [{"transport": transports[0], "trust_env": False}]
+
+
+def test_polymarket_factory_direct_connect_without_proxy_env(monkeypatch):
+    old_client = SimpleNamespace(close=lambda: None)
+    transports = []
+    clients = []
+
+    class _HttpxTransport:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            transports.append(self)
+
+    class _HttpxClient:
+        def __init__(self, **kwargs):
+            clients.append(kwargs)
+
+    monkeypatch.setattr(pm_transport.clob_http_helpers, "_http_client", old_client)
+    monkeypatch.setattr(pm_transport, "_configured_proxy_url", pm_transport._UNCONFIGURED)
+    monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
+    monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
+    for var in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(var, raising=False)
 
     pm_transport.configure_clob_http_transport(None)
 

@@ -39,19 +39,15 @@ matching info:home/away←teams;selection_role←slug+ordering;competition←con
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
-import httpx
-
+from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_json
 from nautilus_trader.adapters.polymarket.common.gamma_markets import (
     normalize_gamma_market_to_clob_format,
 )
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
-
-_LOG = logging.getLogger(__name__)
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
 
@@ -223,26 +219,27 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
             ),
         )
         if not target_comps:
-            _LOG.info("PM discovery: no target competitions configured → load 0")
+            self._log.info("PM discovery: no target competitions configured → load 0")
             return
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            sports = await self._fetch_json(client, f"{_GAMMA_BASE}/sports")
-            count = 0
-            for comp_info in sports or []:
-                comp_raw = str(comp_info.get("sport", ""))   # API `sport` 字段实为 competition 缩写(如 "atp")
-                series_id = comp_info.get("series")
-                if comp_raw.lower() not in target_comps or not series_id:
-                    continue
-                sport = comp_to_sport.get(comp_raw.lower(), comp_raw)
-                # 写 info 用 aliased competition(matching 分组键);raw 只用于 /sports 比对 + sport 查表
-                competition = comp_aliases.get(comp_raw, comp_aliases.get(comp_raw.lower(), comp_raw))
-                # ordering:competition 特异(ATP=home / MLB=away),决定 2-way outcomes 映射
-                ordering = str(comp_info.get("ordering") or "home")
-                count += await self._load_series(
-                    client, str(series_id), competition, sport, ordering,
-                )
-        _LOG.info(f"PM discovery: loaded {count} instruments")
+        # Gamma discovery 与 CLOB 主链共用 NT HttpClient(proxy/timeout 由 factory 注入)
+        client = self._http_client
+        sports = await self._fetch_json(client, f"{_GAMMA_BASE}/sports")
+        count = 0
+        for comp_info in sports or []:
+            comp_raw = str(comp_info.get("sport", ""))   # API `sport` 字段实为 competition 缩写(如 "atp")
+            series_id = comp_info.get("series")
+            if comp_raw.lower() not in target_comps or not series_id:
+                continue
+            sport = comp_to_sport.get(comp_raw.lower(), comp_raw)
+            # 写 info 用 aliased competition(matching 分组键);raw 只用于 /sports 比对 + sport 查表
+            competition = comp_aliases.get(comp_raw, comp_aliases.get(comp_raw.lower(), comp_raw))
+            # ordering:competition 特异(ATP=home / MLB=away),决定 2-way outcomes 映射
+            ordering = str(comp_info.get("ordering") or "home")
+            count += await self._load_series(
+                client, str(series_id), competition, sport, ordering,
+            )
+        self._log.info(f"PM discovery: loaded {count} instruments")
 
     async def _load_series(
         self, client, series_id: str, comp_name: str, sport: str, ordering: str,
@@ -359,14 +356,11 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         return count
 
     # ── 辅助 ────────────────────────────────────────────────────────
-    @staticmethod
-    async def _fetch_json(client, url: str, params: dict | None = None):
+    async def _fetch_json(self, client, url: str, params: dict | None = None):
         try:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            return resp.json()
+            return await fetch_gamma_json(client, url, params)
         except Exception as e:
-            _LOG.error(f"PM discovery fetch failed {url} params={params}: {e}")
+            self._log.error(f"PM discovery fetch failed {url} params={params}: {e}")
             return None
 
     @staticmethod

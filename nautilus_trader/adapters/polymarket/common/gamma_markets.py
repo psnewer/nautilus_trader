@@ -104,6 +104,33 @@ def build_markets_query(filters: dict[str, Any] | None = None) -> dict[str, Any]
     return params
 
 
+async def fetch_gamma_json(
+    http_client: HttpClient,
+    url: str,
+    params: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """
+    Single Gamma GET returning decoded JSON.
+
+    Discovery(arb_provider / sports)与 CLOB 主链共用同一 NT ``HttpClient``
+    (proxy/timeout 由构造方注入);非 2xx 抛 ``RuntimeError``,fail-soft 由调用方决定。
+
+    """
+    effective_params = {k: str(v) for k, v in (params or {}).items()}
+    resp: HttpResponse = await http_client.get(
+        url,
+        params=effective_params,
+        timeout_secs=max(1, ceil(timeout)),
+    )
+    if resp.status >= 400:
+        body = resp.body.decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Gamma request failed: {resp.status} for url {url} with params {params} and body {body}",
+        )
+    return msgspec.json.decode(resp.body)
+
+
 async def _request_markets_page(
     http_client: HttpClient,
     base_url: str,

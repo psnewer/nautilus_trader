@@ -22,16 +22,15 @@ from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfi
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.config import SharpExchExecClientConfig
-
-from src.arbitrage.config.schema import ArbConfig
-from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import SPORTS_CLIENT
 from src.arbitrage.common.venues import descriptor_for
-from src.arbitrage.common.venues import enabled_tradable_venues
 from src.arbitrage.common.venues import enabled_tradable_venue_ids
+from src.arbitrage.common.venues import enabled_tradable_venues
+from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
 from src.arbitrage.debug.config import MockCategory
@@ -39,9 +38,10 @@ from src.arbitrage.debug.config import MockDataItem
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
-from src.arbitrage.web.actor import WebGatewayConfig
 from src.arbitrage.strategy.json_loader import build_strategy_registry
 from src.arbitrage.strategy.registry import StrategyRegistry
+from src.arbitrage.web.actor import WebGatewayConfig
+
 
 if TYPE_CHECKING:
     pass
@@ -82,7 +82,10 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
 def to_sports_data_client_config(cfg: ArbConfig) -> PolymarketSportsDataClientConfig:
     """#60:PM Sports 比分 firehose client config（公开 WS,无凭证;端点用默认)。"""
     sports = cfg.data_sources.sports_status
-    return PolymarketSportsDataClientConfig(sports_ws_url=sports.ws_url)
+    return PolymarketSportsDataClientConfig(
+        sports_ws_url=sports.ws_url,
+        proxy_url=cfg.venues.polymarket.proxy_url,
+    )
 
 
 def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConfig:

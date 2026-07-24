@@ -6,6 +6,7 @@
 import msgspec
 import pytest
 
+from src.arbitrage.config.dispatcher import _polymarket_ws_base_url
 from src.arbitrage.config.dispatcher import to_arb_context_init_kwargs
 from src.arbitrage.config.dispatcher import to_arb_risk_params
 from src.arbitrage.config.dispatcher import to_arbitrage_params
@@ -15,12 +16,11 @@ from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
 from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
-from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_se_discovery_config
 from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
 from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
+from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
-from src.arbitrage.config.dispatcher import _polymarket_ws_base_url
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
@@ -119,11 +119,15 @@ def test_polymarket_credentials_none_passthrough():
     assert cc.private_key is None
 
 
-def test_sports_data_client_config_maps_data_source_url():
-    cfg = _cfg(data_sources={"sports_status": {"ws_url": "wss://sports.example/ws"}})
+def test_sports_data_client_config_maps_data_source_url_and_pm_proxy():
+    cfg = _cfg(
+        data_sources={"sports_status": {"ws_url": "wss://sports.example/ws"}},
+        venues={"polymarket": {"proxy_url": "http://proxy.example:7890"}},
+    )
     cc = to_sports_data_client_config(cfg)
 
     assert cc.sports_ws_url == "wss://sports.example/ws"
+    assert cc.proxy_url == "http://proxy.example:7890"
 
 
 def test_orbitexch_data_client_config_maps_credentials():
