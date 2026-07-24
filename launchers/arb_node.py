@@ -125,7 +125,14 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
 
     return TradingNodeConfig(
         trader_id=TraderId("ARBITRAGE-001"),
-        logging=LoggingConfig(log_level="INFO"),
+        logging=LoggingConfig(
+            log_level="INFO",
+            log_component_levels={
+                "ARB-EVAL": "WARNING",  # OrderInitialized
+                "StrategyEvaluator": "WARNING",  # SubmitOrder
+                "RiskEngine": "ERROR",  # deny order 只输出 ERROR 以上
+            },
+        ),
         exec_engine=LiveExecEngineConfig(
             reconciliation=True,
             # 各 ExecutionClient 已显式等待初始业务状态，startup reconciliation 完成后无需固定 grace period。

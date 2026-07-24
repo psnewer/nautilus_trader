@@ -115,6 +115,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 - PM:所有订单的最小 share 由 Provider/解析层写入 `BinaryOption.min_quantity`(当前通常 5),NT 父类拦 `quantity < min_quantity`。仅 BUY 另要求 `quantity × price >= info["min_buy_notional"]`(当前 1 USD),由 `_check_min_buy_notional` 在 NT 基础检查后逐实际订单拦截；SELL 不应用该金额下限。
 - OE/SE:最小值是 stake。adapter 外部的 order quantity 是 USD stake,所以 Provider 写入 `BettingInstrument.currency="USD"` 与 `min_notional=Money(min_stake * arbitrage.fx, USD)`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦小于 min_notional 的订单。
 - Risk 组件不维护 venue 最小值常量；PM BUY-only 金额值也由 instrument info 提供。最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
+- **判定点前移(#277,2026-07-24)**:Strategy 层 `CandiSelectAction` 在候选选择前按同判据(`min_quantity` / `min_notional` 经 `notional_value` / BUY `min_buy_notional`)淘汰低于限额的 candidate,Risk 侧上述检查**保留为兜底**——place_bets 的 market-order 最差价覆盖与 PM 减仓拆单发生在门控之后,仍会改变 notional。正常路径下 Risk 限额拒单应为罕见事件;若频繁出现,优先怀疑门控与提交路径的解析漂移(两者共用 `strategy/leg_plan.py`)。详见 strategy architecture §3.8/§4.2。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 

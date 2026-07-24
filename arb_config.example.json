@@ -111,6 +111,9 @@
               "type": "share_limit"
             },
             {
+              "type": "candi_select"
+            },
+            {
               "type": "place_bets",
               "params": {
                 "price_overrides": {
@@ -135,6 +138,9 @@
             }
           ],
           "actions": [
+            {
+              "type": "candi_select"
+            },
             {
               "type": "place_bets",
               "params": {

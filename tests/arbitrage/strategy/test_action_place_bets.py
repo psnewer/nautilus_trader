@@ -10,7 +10,7 @@ from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage import bootstrap
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
-from src.arbitrage.strategy.actions.place_bets import _compute_size
+from src.arbitrage.strategy.leg_plan import compute_size as _compute_size
 from src.arbitrage.strategy.condition import EvalContext
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -666,3 +666,43 @@ def test_market_order_does_not_apply_to_probability_venue():
 
     assert calls[0]["price"] == 0.4
     bootstrap.reset_arb_context()
+
+
+# ── #277:intent 优先读 selected_candidate ────────────────────────
+
+def test_intent_from_selected_candidate_overrides_configured():
+    """recovery 候选经 arb 链胜出时,提交 intent 必须是 candidate 自带的 recovery。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["selected_candidate"] = {"candidate_id": "recovery", "intent": "recovery"}
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
+    ]
+
+    _run(PlaceBetsAction(intent="arbitrage").execute(ctx))
+
+    assert [spec["intent"] for spec in calls] == ["recovery"]
+
+
+def test_intent_falls_back_to_configured_without_candidate_tag():
+    """selected_candidate 无 intent 标记(常规 arb 候选)→ 用 Action 配置值。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["selected_candidate"] = {"candidate_id": "arb"}
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
+    ]
+
+    _run(PlaceBetsAction(intent="arbitrage").execute(ctx))
+
+    assert [spec["intent"] for spec in calls] == ["arbitrage"]

@@ -181,7 +181,9 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_action_place_bets.py`:基础 size/override/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；市价覆盖从 live book 读取；缺深度退回原限价
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
-- ✅ `test_action_candi_select.py`(2):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs
+- ✅ `test_action_candi_select.py`(12,#277 扩展):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs / **最小下注门控**:低于 `min_quantity` 的高分 candidate 先淘汰不参与选择、PM BUY 低于 `min_buy_notional`(qty×price)淘汰、OE `min_notional` 按 **stake 口径**(NT `notional_value`=qty×multiplier,qty×price 会误判)、双腿任一腿不过整 candidate 淘汰 / **套利优先分组**:primary 有幸存者时 recovery 分数再大也不参与、primary 全灭同轮落 recovery(selected 带 `intent=recovery`)、两池全灭清空 legs / **legs-only 包装**(mean_rebate/comp 链):`legs` 包成单 candidate 走同一路径、低于限额清空、无 candidates 无 legs 纯 no-op
+- ✅ `test_action_place_bets.py` +2(#277):提交 intent 优先读 `selected_candidate["intent"]`(recovery 经 arb 链胜出不丢豁免)/ 无标记时回退 Action 配置值
+- ✅ `test_evaluator.py` +2(#277):arb+comp 同轮命中 → comp 链不 fire,comp legs 包成 `{candidate_id: recovery, intent: recovery}` 注入 arb ctx `recovery_candidates` / comp 未命中不注入
 
 **OE inplay 写入**:
 - ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise

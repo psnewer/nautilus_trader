@@ -357,10 +357,20 @@ class StrategyEvaluator(Strategy):
                 f"comp_hit={comp_res.hit}, "
                 f"comp_actions={comp_actions_str}",
             )
-        # Q21:套利优先 — 套利命中 → fire 套利 actions;否则 → 补救 actions(如命中)
+        # #277:树间取舍(Q21 套利优先语义不变)下移至 candi_select。顶层只决定跑哪条链:
+        # arb 命中 → 跑 arb 链,comp 同轮命中时把 comp legs 包成 recovery candidate 注入
+        # (candi_select 在 arb 候选被最小下注门控全部淘汰时同轮落到补救);仅 comp 命中 → comp 链。
         # `await` 而非 `create_task`:让 action 链的异常落进本 task,由 `_on_eval_done` 打出来,
         # 而不是变成无上下文的 asyncio "Task exception was never retrieved"。
         if arb_res.hit and arb_res.pending_actions:
+            if comp_res.hit and comp_res.pending_actions and comp_ctx.scratch.get("legs"):
+                arb_ctx.scratch["recovery_candidates"] = [
+                    {
+                        "candidate_id": "recovery",
+                        "intent": "recovery",
+                        "legs": comp_ctx.scratch["legs"],
+                    },
+                ]
             if self._log_evaluations:
                 self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
             await self._execute_actions(arb_res.pending_actions, arb_ctx)

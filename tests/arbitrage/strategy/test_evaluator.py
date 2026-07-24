@@ -804,3 +804,53 @@ def test_released_gate_allows_reevaluation():
 
     assert action.calls == 2
     assert gate.is_in_flight("match_X") is False
+
+
+# ── #277:comp 同轮命中 → recovery candidate 注入 arb ctx ──────────
+
+class _CaptureRecoveryAction(Action):
+    def __init__(self):
+        self.recovery = "UNSET"
+
+    async def execute(self, ctx):
+        self.recovery = ctx.scratch.get("recovery_candidates")
+
+
+def test_both_hit_injects_recovery_candidates_into_arb_ctx():
+    """arb+comp 同轮命中:comp 链不 fire,comp legs 包成 recovery candidate 进 arb ctx。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    capture = _CaptureRecoveryAction()
+    comp_action = _RecordingAction("comp")
+    comp_legs = [{"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET",
+                  "role": "yes", "price": 0.5, "qty": 8.0}]
+    arb_tree = Condition(
+        self_hits=_ConstantQuery(True), checktion=[_StubCheck(True)], actions=[capture],
+    )
+    comp_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=[_SetScratchLegsCheck(comp_legs)],
+        actions=[comp_action],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
+
+    actor.on_data(_mp())
+    _run(_drain(loop))
+
+    assert comp_action.calls == 0            # 树间取舍已下移:comp 链不直接 fire
+    assert capture.recovery == [
+        {"candidate_id": "recovery", "intent": "recovery", "legs": comp_legs},
+    ]
+
+
+def test_arb_hit_comp_miss_no_recovery_injection():
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    capture = _CaptureRecoveryAction()
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=capture))
+
+    actor.on_data(_mp())
+    _run(_drain(loop))
+
+    assert capture.recovery is None

@@ -8,6 +8,9 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - probability BUY 可用同 pair 互斥 LONG 仓位拆成 SELL 减仓 + BUY 剩余量
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
+    #277 起优先读 `ctx.scratch["selected_candidate"]["intent"]`(recovery 候选经 arb 链胜出时不丢豁免)。
+  - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
+    与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
 
 from __future__ import annotations
@@ -21,11 +24,14 @@ from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
-from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.checks.quote_legs import to_price
 from src.arbitrage.strategy.checks.quote_legs import worst_ask
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.leg_plan import as_instrument_id as _as_instrument_id
+from src.arbitrage.strategy.leg_plan import compute_leg_size as _compute_leg_size
+from src.arbitrage.strategy.leg_plan import instrument_constraints
+from src.arbitrage.strategy.leg_plan import resolve_side_and_price as _resolve_side_and_price
 
 
 _LOG = logging.getLogger(__name__)
@@ -51,6 +57,10 @@ class PlaceBetsAction(Action):
             return
 
         rate = ctx.scratch.get("mean_rebate_rate")
+        # #277:胜出 candidate 自带 intent(recovery 候选经 arb 链胜出时必须以 recovery 提交,
+        # 保住 Risk 的 profit-gates 豁免);无标记时用本 Action 配置值。
+        selected = ctx.scratch.get("selected_candidate") or {}
+        intent = str(selected.get("intent") or self._intent)
         submitter = ctx.submitter      # slice 10a:None → log-only fallback;否则真出单
         mode = "submit" if submitter is not None else "smoke"
         _LOG.info(
@@ -102,7 +112,7 @@ class PlaceBetsAction(Action):
                 "side": draft["side"],
                 "qty": draft["qty"],
                 "price": draft["price"],
-                "intent": self._intent,
+                "intent": intent,
                 "opportunity_id": opportunity_id,
                 "pair_id": ctx.pair_id,
                 "leg_key": leg_key,
@@ -125,35 +135,6 @@ class PlaceBetsAction(Action):
                     f"role={draft['role']} venue={draft['venue']} qty={spec['qty']:.4f} "
                     f"price={spec['price']}",
                 )
-
-
-def _compute_size(venue: str, share: float, price: float) -> float:
-    """PM=share;OE/SE=share/price(stake)。Mean rebate 数学:确保 win 一致。"""
-    if price <= 0:
-        return 0.0
-    try:
-        return qty_from_share(venue, share, price)
-    except KeyError:
-        return 0.0
-
-
-def _compute_leg_size(
-    leg: dict,
-    venue: str,
-    price: float,
-    qty_overrides: dict[str, float],
-) -> float | None:
-    """按优先级决定最终 qty:显式 override > leg qty > leg share_if_wins。"""
-    if venue in qty_overrides:
-        return qty_overrides[venue]
-    if _is_synthetic_decimal_no(leg, venue) and leg.get("share_if_wins") is not None:
-        return _compute_size(venue, float(leg["share_if_wins"]), price)
-    if "qty" in leg:
-        return float(leg["qty"])
-    leg_share = leg.get("share_if_wins")
-    if leg_share is not None:
-        return _compute_size(venue, float(leg_share), price)
-    return None
 
 
 def _apply_market_order_override(
@@ -200,59 +181,6 @@ def _apply_market_order_override(
     return worst_price
 
 
-def _resolve_side_and_price(
-    leg: dict,
-    venue: str,
-    price_overrides: dict[str, float],
-) -> tuple[str, float | None]:
-    """将语义 leg 转成最终 submit side/price。
-
-    只有带执行重定向的 decimal 合成 no instrument 才转成 SELL @ bid/lay。
-    真实 instrument 即使逻辑 claim=no 也保持正常 BUY/BACK。
-    """
-    venue_key = str(venue).upper()
-    if venue_key in price_overrides:
-        price = price_overrides[venue_key]
-        return _execution_side(leg, venue), price
-    if _is_synthetic_decimal_no(leg, venue):
-        return "SELL", _leg_bid_price(leg)
-    return str(leg.get("side") or "BUY").upper(), _try_float(leg.get("price"))
-
-
-def _execution_side(leg: dict, venue: str) -> str:
-    if _is_synthetic_decimal_no(leg, venue):
-        return "SELL"
-    return str(leg.get("side") or "BUY").upper()
-
-
-def _is_synthetic_decimal_no(leg: dict, venue: str) -> bool:
-    instrument_id = str(leg.get("instrument_id") or "")
-    exec_instrument_id = str(leg.get("exec_instrument_id") or "")
-    if not exec_instrument_id or exec_instrument_id == instrument_id:
-        return False
-    try:
-        return is_decimal_odds_venue(venue)
-    except KeyError:
-        return False
-
-
-def _leg_bid_price(leg: dict) -> float | None:
-    for key in ("bid", "best_bid", "lay", "lay_price"):
-        value = _try_float(leg.get(key))
-        if value is not None and value > 0:
-            return value
-    return None
-
-
-def _try_float(value) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:
     """配置里的 venue key 统一转大写,便于临时 live 验证覆盖。"""
     if not raw:
@@ -295,8 +223,8 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx) -> list[dict]:
     if available <= 0:
         return [draft]
 
-    opposite_constraints = _instrument_constraints(ctx.cache, opposite_iid)
-    target_constraints = _instrument_constraints(ctx.cache, draft["instrument_id"])
+    opposite_constraints = instrument_constraints(ctx.cache, opposite_iid)
+    target_constraints = instrument_constraints(ctx.cache, draft["instrument_id"])
     sell_min = _effective_minimum_quantity(
         opposite_constraints,
         price=1.0 - target_price,
@@ -369,36 +297,6 @@ def _long_position_quantity(cache, instrument_id: str) -> float:
         except (TypeError, ValueError):
             continue
     return total
-
-
-def _instrument_constraints(cache, instrument_id) -> dict:
-    instrument = cache.instrument(_as_instrument_id(instrument_id))
-    info = getattr(instrument, "info", None) or {}
-    return {
-        "min_quantity": _object_value(getattr(instrument, "min_quantity", None)),
-        "min_notional": _object_value(getattr(instrument, "min_notional", None)),
-        "min_buy_notional": _object_value(info.get("min_buy_notional")),
-        "size_increment": _object_value(getattr(instrument, "size_increment", None)),
-    }
-
-
-def _as_instrument_id(value):
-    from nautilus_trader.model.identifiers import InstrumentId
-
-    return value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
-
-
-def _object_value(value) -> float | None:
-    if value is None:
-        return None
-    for method in ("as_double", "as_decimal"):
-        fn = getattr(value, method, None)
-        if callable(fn):
-            return float(fn())
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _minimum_quantity(constraint: dict) -> float:
