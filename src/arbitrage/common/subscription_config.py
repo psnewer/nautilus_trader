@@ -48,6 +48,8 @@ class OddsSubscriptionConfig:
     polymarket_builder_passphrase: str = ""
     polymarket_relayer_url: str = "https://relayer-v2.polymarket.com/"
     polygon_rpc_url: str = "https://polygon-rpc.com/"
+    # #276:显式代理或直连(与 PM CLOB 同路由;"" = 直连)
+    polymarket_proxy_url: str = ""
 
     # OrbitExch 配置
     orbitexch_base_url: str = "https://www.orbitexch.com"

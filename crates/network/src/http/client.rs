@@ -104,11 +104,16 @@ impl HttpClient {
             client_builder = client_builder.timeout(Duration::from_secs(timeout_secs));
         }
 
-        // Configure proxy if provided
+        // Configure proxy if provided; otherwise force direct connections.
+        // ARB PATCH: reqwest enables system/env proxies (https_proxy etc.) by default,
+        // which makes routing depend on process environment. Project policy is
+        // explicit-proxy-or-direct, so `no_proxy()` disables that fallback.
         if let Some(proxy_url) = proxy_url {
             let proxy = reqwest::Proxy::all(&proxy_url)
                 .map_err(|e| HttpClientError::InvalidProxy(format!("{proxy_url}: {e}")))?;
             client_builder = client_builder.proxy(proxy);
+        } else {
+            client_builder = client_builder.no_proxy();
         }
 
         let client = client_builder

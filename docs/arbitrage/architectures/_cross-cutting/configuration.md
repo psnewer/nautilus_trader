@@ -99,7 +99,7 @@ class PolymarketSectionConfig(Struct, kw_only=True):
     ws_url:                   str = "wss://ws-subscriptions-clob.polymarket.com/ws/"
     relayer_url:              str = "https://relayer-v2.polymarket.com/"
     polygon_rpc_url:          str = "https://polygon-rpc.com/"
-    proxy_url:                str | None = None  # PM HTTP/WS 代理;loader 可从 env 注入
+    proxy_url:                str | None = None  # 显式代理或直连,不读 env(#276,§6 网络代理路由)
     signature_type:           int = 0            # EOA=0;Polymarket proxy/funder 钱包通常为 2
     max_retries:              int | None = None  # 透传 PM ExecClient;默认不改上游 retry 语义
     retry_delay_initial_ms:   int | None = None
@@ -123,6 +123,7 @@ class OrbitExchSectionConfig(Struct, kw_only=True):
     headless:                 bool = True
     browser_type:             str = "chromium"
     user_data_dir:            str | None = None
+    proxy_url:                str | None = None  # 显式代理或直连(浏览器 launch;#276)
     # 凭证(从 env 注入)
     username:                 str | None = None
     password:                 str | None = None
@@ -138,6 +139,7 @@ class SharpExchSectionConfig(Struct, kw_only=True):
     headless:                 bool = True
     browser_type:             str = "chromium"
     user_data_dir:            str | None = None
+    proxy_url:                str | None = None  # 显式代理或直连(浏览器 launch;#276)
     # 凭证(从 env 注入)
     username:                 str | None = None
     password:                 str | None = None
@@ -285,7 +287,7 @@ def load_arb_config(path: str | Path) -> ArbConfig:
     顺序:
       1. open(path) read text + json.loads → dict
       2. 检测 JSON 中非空 env-only 凭证字段 → ConfigWarning
-      3. 补缺省 venues 子 section,并从 env 覆盖凭证/proxy 字段
+      3. 补缺省 venues 子 section,并从 env 覆盖凭证字段(代理不走 env,#276)
       4. msgspec.convert(raw, type=ArbConfig)             # schema 校验 + freeze
     """
 ```
@@ -404,13 +406,27 @@ Polymarket `ws_url` 传给 NT 上游 `PolymarketWebSocketClient` 时必须是 ba
 `ConfigError`,避免 DataClient 生成 `.../ws/marketmarket`、ExecClient 生成
 `.../ws/marketuser`。
 
-Polymarket `proxy_url` 传给 NT 上游 `PolymarketDataClientConfig` /
-`PolymarketExecClientConfig`，并作为同一网络出口传给
-`PolymarketSportsDataClientConfig`。PMSPORTS 虽是独立 data source，但不另设代理字段。
-若 JSON 未显式配置,loader 按 `POLYMARKET_PROXY_URL` → `https_proxy` / `HTTPS_PROXY` →
-`http_proxy` / `HTTP_PROXY` 顺序兜底注入。原因:NT pyo3 `WebSocketClient` 不自动读取系统代理;
-PM CLOB market WS 与 Sports WS 在部分网络下直连会 `Operation timed out`,显式
-`proxy_url` 后可正常握手。
+**网络代理路由(#276,已落地 2026-07-24)**
+
+政策:代理路由唯一真理源 = `venues.<venue>.proxy_url`(JSON-only)。显式配置 → 该 venue
+**全部**出口走它;未配置(None)→ **直连**。任何层(loader、client 构造、SDK、底层库)不得读
+代理环境变量或系统代理设置兜底(旧 loader `_inject_env_proxy` env 注入已删)。理由:env 依赖使
+同一配置在不同 shell/守护进程下路由不同,曾直接妨碍故障定位(#275 误定性)。
+
+各 venue "全部出口"的接线(单一真理源在此,venue 文档只挂指针):
+
+| venue | 出口 | 接线 | env/系统兜底如何关死 |
+|---|---|---|---|
+| PM | CLOB REST(SDK httpx) | `get_polymarket_http_client(proxy_url=…)` → `configure_clob_http_transport` swap | swap client `trust_env=False`(显式与否均是) |
+| PM | CLOB WS ×2 / Sports WS | NT pyo3 `WebSocketClient(proxy_url=…)` | rust 层无 env 读取 |
+| PM | Gamma discovery / exec 辅助 HttpClient | NT pyo3 `HttpClient(proxy_url=…)` | **crate 补丁**:`proxy_url=None` → reqwest `.no_proxy()`(reqwest 默认读 env,见 `crates/network/src/http/client.rs` ARB PATCH) |
+| PM | geoblock 预检 | `check_polymarket_geoblock(proxy_url)` | httpx `trust_env=False` |
+| PM | 结算 Relayer(SDK requests) | `configure_relayer_http_transport(proxy_url)` swap(`contract.initialize` 调用;`OddsSubscriptionConfig.polymarket_proxy_url`) | Session `trust_env=False` |
+| OE/SE | 全部流量(浏览器) | `PlaywrightBrowserManager(proxy_url=…)` → `launch(proxy={"server": …})` | 未配置时 launch 加 `--no-proxy-server`(Chromium 默认吃系统代理设置) |
+
+PMSPORTS 不另设代理字段,复用 `venues.polymarket.proxy_url`(同一物理出口)。背景:NT pyo3
+`WebSocketClient` 不读系统代理,PM CLOB/Sports WS 在部分网络直连会 `Operation timed out`,
+必须显式 `proxy_url`;独立脚本(`scripts/`、gapc 探针)不在本政策范围,需要代理时显式传参。
 
 Polymarket `max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 透传给
 NT 上游 `PolymarketExecClientConfig` 的共享 `RetryManagerPool`。默认仍为 `None`

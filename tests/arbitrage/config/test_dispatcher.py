@@ -93,6 +93,26 @@ def test_polymarket_exec_client_config_maps_proxy():
     assert cc.proxy_url == "http://127.0.0.1:7890"
 
 
+def test_browser_venue_proxy_maps_to_data_and_exec(  # #276:OE/SE 对称 proxy_url
+):
+    from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
+    from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
+    from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
+
+    cfg = _cfg(venues={
+        "orbitexch": {"proxy_url": "http://oe-proxy:7891"},
+        "sharpexch": {"proxy_url": "http://se-proxy:7892"},
+    })
+    assert to_orbitexch_data_client_config(cfg).proxy_url == "http://oe-proxy:7891"
+    assert to_orbitexch_exec_client_config(cfg).proxy_url == "http://oe-proxy:7891"
+    assert to_sharpexch_data_client_config(cfg).proxy_url == "http://se-proxy:7892"
+    assert to_sharpexch_exec_client_config(cfg).proxy_url == "http://se-proxy:7892"
+
+    default_cfg = _cfg()
+    assert to_orbitexch_data_client_config(default_cfg).proxy_url is None
+    assert to_sharpexch_exec_client_config(default_cfg).proxy_url is None
+
+
 def test_polymarket_exec_client_config_maps_retry_params():
     cfg = _cfg(venues={"polymarket": {
         "max_retries": 2,

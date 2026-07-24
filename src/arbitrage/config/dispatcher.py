@@ -117,6 +117,7 @@ def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig
         headless=oe.headless,
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
+        proxy_url=oe.proxy_url,
         page_timeout=int(oe.page_load_timeout_sec * 1000),
         # #109:OE 无 HealthCheckLoop;`staleness_timeout_secs` 改作 WS handler 内部 liveness timeout。
         staleness_timeout_secs=oe.staleness_timeout_sec,
@@ -132,6 +133,7 @@ def to_orbitexch_exec_client_config(cfg: ArbConfig) -> OrbitExchExecClientConfig
         headless=oe.headless,
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
+        proxy_url=oe.proxy_url,
         page_timeout=int(oe.page_load_timeout_sec * 1000),
     )
 
@@ -146,6 +148,7 @@ def to_sharpexch_data_client_config(cfg: ArbConfig) -> SharpExchDataClientConfig
         headless=se.headless,
         browser_type=se.browser_type,
         user_data_dir=se.user_data_dir,
+        proxy_url=se.proxy_url,
         page_timeout=int(se.page_load_timeout_sec * 1000),
         staleness_timeout_secs=se.staleness_timeout_sec,
     )
@@ -161,6 +164,7 @@ def to_sharpexch_exec_client_config(cfg: ArbConfig) -> SharpExchExecClientConfig
         headless=se.headless,
         browser_type=se.browser_type,
         user_data_dir=se.user_data_dir,
+        proxy_url=se.proxy_url,
         page_timeout=int(se.page_load_timeout_sec * 1000),
         cloudflare_timeout=int(se.cloudflare_timeout_sec * 1000),
     )

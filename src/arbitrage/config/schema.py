@@ -111,6 +111,8 @@ class OrbitExchSectionConfig(ConfigStruct):
     headless: bool = True
     browser_type: str = "chromium"
     user_data_dir: str | None = None
+    # #276:显式代理或直连(接浏览器 launch;None → --no-proxy-server)
+    proxy_url: str | None = None
     # 凭证(env-only)
     username: str | None = None
     password: str | None = None
@@ -128,6 +130,8 @@ class SharpExchSectionConfig(ConfigStruct):
     headless: bool = True
     browser_type: str = "chromium"
     user_data_dir: str | None = None
+    # #276:显式代理或直连(接浏览器 launch;None → --no-proxy-server)
+    proxy_url: str | None = None
     # 凭证(env-only)
     username: str | None = None
     password: str | None = None

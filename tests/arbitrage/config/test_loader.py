@@ -202,18 +202,28 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     assert cfg.venues.polymarket.funder == "0xfun"
 
 
-def test_env_injects_polymarket_proxy_when_json_missing(cfg_path, monkeypatch):
+def test_proxy_not_injected_from_env(cfg_path, monkeypatch):
+    """#276:代理只从 JSON 读,env 不注入(未配置 = None = 直连)。"""
     monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setenv("POLYMARKET_PROXY_URL", "http://127.0.0.1:7890")
     cfg_path.write_text("{}")
     cfg = load_arb_config(cfg_path)
-    assert cfg.venues.polymarket.proxy_url == "http://127.0.0.1:7890"
+    assert cfg.venues.polymarket.proxy_url is None
+    assert cfg.venues.orbitexch.proxy_url is None
+    assert cfg.venues.sharpexch.proxy_url is None
 
 
-def test_json_polymarket_proxy_wins_over_env(cfg_path, monkeypatch):
+def test_json_proxy_url_per_venue(cfg_path, monkeypatch):
+    """#276:三 venue 对称的显式 proxy_url。"""
     monkeypatch.setenv("https_proxy", "http://env-proxy:7890")
-    cfg_path.write_text(json.dumps({"venues": {"polymarket": {"proxy_url": "http://json-proxy:7890"}}}))
+    cfg_path.write_text(json.dumps({"venues": {
+        "polymarket": {"proxy_url": "http://json-proxy:7890"},
+        "orbitexch": {"proxy_url": "http://oe-proxy:7891"},
+    }}))
     cfg = load_arb_config(cfg_path)
     assert cfg.venues.polymarket.proxy_url == "http://json-proxy:7890"
+    assert cfg.venues.orbitexch.proxy_url == "http://oe-proxy:7891"
+    assert cfg.venues.sharpexch.proxy_url is None
 
 
 # ── .4 env 凭证注入 OE ──────────────────────────────────────────

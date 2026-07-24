@@ -49,11 +49,13 @@
     "polymarket": {
       "enabled": true,
       "clob_url": "https://clob.polymarket.com",
+    "proxy_url": "http://127.0.0.1:7890",
       "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/"
     },
     "orbitexch": {
       "enabled": true,
       "base_url": "https://www.orbitexch.com",
+    "proxy_url": null,
       "headless": false,
       "page_load_timeout_sec": 120
     },

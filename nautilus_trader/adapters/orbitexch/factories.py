@@ -54,6 +54,7 @@ def _shared_oe_browser_manager(ctx, config) -> PlaywrightBrowserManager:
             browser_type=config.browser_type,
             headless=config.headless,
             user_data_dir=config.user_data_dir,
+            proxy_url=config.proxy_url,
         ),
     )
 

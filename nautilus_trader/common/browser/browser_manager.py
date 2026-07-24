@@ -41,17 +41,22 @@ class PlaywrightBrowserManager:
         Run in headless mode
     user_data_dir : str, optional
         Directory for persistent browser data
+    proxy_url : str, optional
+        Explicit forward proxy for all browser traffic (#276). None → force
+        direct (``--no-proxy-server``), never system proxy settings.
     """
-    
+
     def __init__(
         self,
         browser_type: str = 'chromium',
         headless: bool = True,
         user_data_dir: Optional[str] = None,
+        proxy_url: Optional[str] = None,
     ):
         self.browser_type = browser_type
         self.headless = headless
         self.user_data_dir = user_data_dir
+        self.proxy_url = proxy_url
         
         self._playwright = None
         self._browser: Optional[Browser] = None
@@ -98,15 +103,23 @@ class PlaywrightBrowserManager:
             '--disable-dev-shm-usage',
             '--no-sandbox',
         ]
-        
+
+        # #276 路由政策:显式代理或直连;不配置时禁用 Chromium 的系统代理设置兜底
+        if self.proxy_url:
+            launch_proxy = {'server': self.proxy_url}
+        else:
+            launch_proxy = None
+            launch_args.append('--no-proxy-server')
+
         # Launch with persistent context if user_data_dir specified
         if self.user_data_dir:
             self._log.info(f'📁 Using persistent context: {self.user_data_dir}')
-            
+
             self._context = await launcher.launch_persistent_context(
                 user_data_dir=self.user_data_dir,
                 headless=self.headless,
                 args=launch_args,
+                proxy=launch_proxy,
                 viewport={'width': 1920, 'height': 1080},
             )
             self._browser = self._context.browser
@@ -114,6 +127,7 @@ class PlaywrightBrowserManager:
             self._browser = await launcher.launch(
                 headless=self.headless,
                 args=launch_args,
+                proxy=launch_proxy,
             )
             self._context = await self._browser.new_context(
                 viewport={'width': 1920, 'height': 1080},

@@ -201,6 +201,7 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
         polymarket_builder_passphrase=pm.builder_passphrase or "",
         polymarket_relayer_url=pm.relayer_url,
         polygon_rpc_url=pm.polygon_rpc_url,
+        polymarket_proxy_url=pm.proxy_url or "",
     )
     contract = PolymarketContractService(contract_config, logger=_LOG)
     if not asyncio.run(contract.initialize()):

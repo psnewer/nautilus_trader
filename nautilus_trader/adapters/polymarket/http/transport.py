@@ -13,7 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import os
 from typing import Any
 
 import httpx
@@ -67,27 +66,13 @@ _configured_proxy_url: str | None | object = _UNCONFIGURED
 CLOB_HTTP_CONNECT_RETRIES = 1
 
 
-def _resolve_env_proxy_url() -> str | None:
-    # CLOB REST 只有 https 端点,按标准语义取 https_proxy,其次 all_proxy。
-    for var in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-        value = os.environ.get(var)
-        if value:
-            return value
-    return None
-
-
 def configure_clob_http_transport(proxy_url: str | None) -> None:
     """
     Configure py_clob_client_v2's shared HTTP client.
 
-    The v2 SDK owns a module-level ``httpx.Client`` and otherwise reads process
-    proxy environment variables. When ``venues.polymarket.proxy_url`` is set, the
-    project config must win so CLOB REST and CLOB WS use the same explicit route.
-
-    ``proxy_url=None`` 时必须显式解析代理环境变量再传给 transport:httpx 的
-    ``HTTPTransport(trust_env=True)`` 只读 SSL 证书环境变量、不读代理变量(代理
-    环境变量在 Client 层 mounts 生效,而显式 ``transport=`` 会绕过 mounts),
-    否则 swap 会把 CLOB REST 从环境代理改成直连。
+    #276 路由政策:显式 ``venues.polymarket.proxy_url`` 或直连,不读代理环境
+    变量(v2 SDK 原生 client 的 ``trust_env=True`` 会读,故必须 swap 收口),
+    保证 CLOB REST 与 CLOB WS 同路由。
     """
     global _configured_proxy_url
 
@@ -95,11 +80,10 @@ def configure_clob_http_transport(proxy_url: str | None) -> None:
         return
 
     old_client = clob_http_helpers._http_client
-    effective_proxy_url = proxy_url if proxy_url is not None else _resolve_env_proxy_url()
     transport = httpx.HTTPTransport(
         http2=True,
-        proxy=effective_proxy_url,
-        trust_env=proxy_url is None,
+        proxy=proxy_url,
+        trust_env=False,
         retries=CLOB_HTTP_CONNECT_RETRIES,
     )
     clob_http_helpers._http_client = httpx.Client(
@@ -108,6 +92,40 @@ def configure_clob_http_transport(proxy_url: str | None) -> None:
     )
     old_client.close()
     _configured_proxy_url = proxy_url
+
+
+_relayer_configured_proxy_url: str | None | object = _UNCONFIGURED
+
+
+def configure_relayer_http_transport(proxy_url: str | None) -> None:
+    """
+    Configure py_builder_relayer_client's HTTP transport.
+
+    #276 路由政策同 CLOB:显式 proxy 或直连。relayer SDK 的 helpers 直接调
+    ``requests.request``(requests 默认 ``trust_env=True`` 读代理环境变量),
+    故换成显式路由的 ``Session``;helpers 仅引用 ``requests.{request,
+    JSONDecodeError, RequestException}``,shim 只需覆盖这三个名字。
+    """
+    global _relayer_configured_proxy_url
+
+    if proxy_url == _relayer_configured_proxy_url:
+        return
+
+    import requests
+    from py_builder_relayer_client.http_helpers import helpers as relayer_http_helpers
+
+    session = requests.Session()
+    session.trust_env = False
+    if proxy_url is not None:
+        session.proxies = {"http": proxy_url, "https": proxy_url}
+
+    class _RequestsShim:
+        JSONDecodeError = requests.JSONDecodeError
+        RequestException = requests.RequestException
+        request = staticmethod(session.request)
+
+    relayer_http_helpers.requests = _RequestsShim
+    _relayer_configured_proxy_url = proxy_url
 
 
 def check_polymarket_geoblock(proxy_url: str | None, timeout: float = 10.0) -> dict[str, Any]:
@@ -122,7 +140,7 @@ def check_polymarket_geoblock(proxy_url: str | None, timeout: float = 10.0) -> d
     try:
         with httpx.Client(
             proxy=proxy_url,
-            trust_env=proxy_url is None,
+            trust_env=False,
             timeout=timeout,
         ) as client:
             response = client.get(GEOBLOCK_URL)

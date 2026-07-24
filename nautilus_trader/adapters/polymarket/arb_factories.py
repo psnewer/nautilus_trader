@@ -123,6 +123,8 @@ class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
             api_secret=config.api_secret,
             passphrase=config.passphrase,
             base_url=config.base_url_http,
+            # #276:漏传即 CLOB REST 直连(WS/Gamma 走代理而 REST 超时的根因)
+            proxy_url=config.proxy_url,
         )
         ctx = get_arb_context()
         # #55:ArbPolymarketInstrumentProvider.load_all_async 整体 override(series-based 发现),
@@ -198,6 +200,8 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             api_secret=config.api_secret,
             passphrase=config.passphrase,
             base_url=config.base_url_http,
+            # #276:漏传即 CLOB REST 直连(WS/Gamma 走代理而 REST 超时的根因)
+            proxy_url=config.proxy_url,
         )
         ws_auth = PolymarketWebSocketAuth(
             apiKey=config.api_key or get_polymarket_api_key(),

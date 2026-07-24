@@ -175,6 +175,13 @@ class PolymarketContractService:
             return False
 
         try:
+            # #276:relayer SDK 用 requests(默认读代理环境变量),换显式路由 Session
+            from nautilus_trader.adapters.polymarket.http.transport import (
+                configure_relayer_http_transport,
+            )
+
+            configure_relayer_http_transport(self._config.polymarket_proxy_url or None)
+
             builder_config = BuilderConfig(
                 local_builder_creds=BuilderApiKeyCreds(
                     key=self._config.polymarket_builder_api_key,

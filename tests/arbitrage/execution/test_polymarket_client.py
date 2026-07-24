@@ -1126,8 +1126,8 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
     assert old_client.closed
 
 
-def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
-    """proxy_url 未配置时必须继承代理环境变量(transport 层 trust_env 不读代理)。"""
+def test_polymarket_transport_direct_when_unconfigured(monkeypatch):
+    """#276:proxy_url 未配置 → 直连,不读代理环境变量(即使 env 有值)。"""
     old_client = SimpleNamespace(close=lambda: None)
     transports = []
     clients = []
@@ -1145,49 +1145,43 @@ def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
     monkeypatch.setattr(pm_transport, "_configured_proxy_url", pm_transport._UNCONFIGURED)
     monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
     monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
-    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
-
-    pm_transport.configure_clob_http_transport(None)
-
-    assert [transport.kwargs for transport in transports] == [{
-        "http2": True,
-        "proxy": "http://127.0.0.1:7890",
-        "trust_env": True,
-        "retries": 1,
-    }]
-    assert clients == [{"transport": transports[0], "trust_env": False}]
-
-
-def test_polymarket_factory_direct_connect_without_proxy_env(monkeypatch):
-    old_client = SimpleNamespace(close=lambda: None)
-    transports = []
-    clients = []
-
-    class _HttpxTransport:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            transports.append(self)
-
-    class _HttpxClient:
-        def __init__(self, **kwargs):
-            clients.append(kwargs)
-
-    monkeypatch.setattr(pm_transport.clob_http_helpers, "_http_client", old_client)
-    monkeypatch.setattr(pm_transport, "_configured_proxy_url", pm_transport._UNCONFIGURED)
-    monkeypatch.setattr(pm_transport.httpx, "HTTPTransport", _HttpxTransport)
-    monkeypatch.setattr(pm_transport.httpx, "Client", _HttpxClient)
-    for var in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("https_proxy", "http://env-should-be-ignored:1")
 
     pm_transport.configure_clob_http_transport(None)
 
     assert [transport.kwargs for transport in transports] == [{
         "http2": True,
         "proxy": None,
-        "trust_env": True,
+        "trust_env": False,
         "retries": 1,
     }]
     assert clients == [{"transport": transports[0], "trust_env": False}]
+
+
+def test_relayer_transport_explicit_proxy_or_direct(monkeypatch):
+    """#276:relayer SDK requests swap —— 显式 proxy 进 Session,未配置直连且 trust_env=False。"""
+    import requests as real_requests
+
+    from py_builder_relayer_client.http_helpers import helpers as relayer_helpers
+
+    original = relayer_helpers.requests
+    try:
+        monkeypatch.setattr(pm_transport, "_relayer_configured_proxy_url", pm_transport._UNCONFIGURED)
+
+        pm_transport.configure_relayer_http_transport("http://127.0.0.1:7890")
+        shim = relayer_helpers.requests
+        session = shim.request.__self__
+        assert session.trust_env is False
+        assert session.proxies == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+        assert shim.RequestException is real_requests.RequestException
+        assert shim.JSONDecodeError is real_requests.JSONDecodeError
+
+        pm_transport.configure_relayer_http_transport(None)
+        session = relayer_helpers.requests.request.__self__
+        assert session.trust_env is False
+        assert session.proxies == {}
+    finally:
+        relayer_helpers.requests = original
 
 
 def test_polymarket_balance_query_failure_is_not_retried():

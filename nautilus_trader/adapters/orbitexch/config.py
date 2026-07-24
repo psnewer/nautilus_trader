@@ -52,6 +52,8 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     headless: bool = True
     browser_type: str = 'chromium'
     user_data_dir: Optional[str] = None
+    # #276:显式代理或直连(浏览器 launch;None → --no-proxy-server)
+    proxy_url: str | None = None
     page_timeout: int = 120000
     scrape_interval_ms: int = 1000
     update_instruments_interval_mins: Optional[int] = 60
@@ -90,6 +92,8 @@ class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True)
     headless: bool = True
     browser_type: str = 'chromium'
     user_data_dir: Optional[str] = None
+    # #276:显式代理或直连(浏览器 launch;None → --no-proxy-server)
+    proxy_url: str | None = None
     page_timeout: int = 120000
     max_bet_amount: float = 10000.0
     confirm_bet: bool = True
