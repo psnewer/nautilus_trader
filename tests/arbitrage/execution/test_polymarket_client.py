@@ -16,6 +16,7 @@ from py_clob_client_v2 import ClobClient
 from py_clob_client_v2 import PostOrdersArgs as TopLevelPostOrdersArgs
 from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import PostOrdersV2Args
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
@@ -1152,6 +1153,27 @@ def test_polymarket_factory_configures_connect_retry_without_proxy(monkeypatch):
         "retries": 1,
     }]
     assert clients == [{"transport": transports[0], "trust_env": False}]
+
+
+def test_polymarket_balance_query_failure_is_not_retried():
+    calls = []
+
+    def fail_balance(_params):
+        calls.append("attempt")
+        raise PolyApiException(error_msg="transport unavailable")
+
+    async def scenario():
+        client = SimpleNamespace(
+            _log=_Log(),
+            _config=SimpleNamespace(signature_type=2),
+            _http_client=SimpleNamespace(get_balance_allowance=fail_balance),
+        )
+
+        with pytest.raises(PolyApiException, match="transport unavailable"):
+            await PolymarketExecutionClient._update_account_state(client)
+
+    _run(scenario())
+    assert calls == ["attempt"]
 
 
 def test_polymarket_data_api_http_client_uses_proxy(monkeypatch):

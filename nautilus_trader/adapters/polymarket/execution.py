@@ -349,25 +349,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
             asset_type=AssetType.COLLATERAL,
             signature_type=self._config.signature_type,
         )
-        # #59:余额读取有界重试 —— PM CLOB 余额端点偶发瞬时 `Request exception!`(transport 错,
-        # status_code=None)曾连挂 connect → ExecEngine 不连 → 节点 120s 超时 + trader 不启动。
-        # 只读重试(不碰下单);持续 outage 仍按原语义抛(真钱读不到余额不应启动 trading)。
-        max_attempts = 3
-        response: dict[str, Any] | None = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                response = await asyncio.to_thread(
-                    self._http_client.get_balance_allowance,
-                    params,
-                )
-                break
-            except PolyApiException as e:
-                if attempt >= max_attempts:
-                    raise
-                self._log.warning(
-                    f"Balance check failed (attempt {attempt}/{max_attempts}): {e!r}; retrying in 2s",
-                )
-                await asyncio.sleep(2.0)
+        response: dict[str, Any] = await asyncio.to_thread(
+            self._http_client.get_balance_allowance,
+            params,
+        )
         total = usdce_from_units(int(response["balance"]))
         account_balance = AccountBalance(
             total=total,

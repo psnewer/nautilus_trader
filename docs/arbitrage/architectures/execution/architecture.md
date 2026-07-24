@@ -62,7 +62,7 @@ flowchart LR
   ACCEPT["OrderAccepted<br/>本地预扣(仅 OE/SE,#254)"] -->|generate_account_state| C
   C --> RISK["RiskEngine._check_balance 读 live"]
 ```
-> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣(**仅 OE/SE;PM 关闭,#254 见 §4.5**);RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
+> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后各发一次余额请求,失败不在调用内重试;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣(**仅 OE/SE;PM 关闭,#254 见 §4.5**);RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
 SE 登录提交表单后，在同一个 deadline 内等待顶层 customer URL 或 customer iframe，
 总预算统一取 `venues.sharpexch.page_load_timeout_sec`，不会先后各等待一轮；任一信号到达即继续。
@@ -511,7 +511,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 
 | Venue | 方式 | 触发 |
 |---|---|---|
-| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 显式 `QueryAccount` + PM position reconciliation 成功后**;**CONFIRMED trade 不拉** |
+| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 显式 `QueryAccount` + PM position reconciliation 成功后**,每次单次请求、失败即返回调用方;**CONFIRMED trade 不拉** |
 | OE | WS 余额帧(已含挂单占用)→ `generate_account_state` | 被动 reactive(Step 5 实写第三类 WS 帧捕获) |
 | SE | HTTP profile/balance response → `generate_account_state` | 被动 reactive(response listener 捕获 profile/balance);WS `BALANCE` 不作为余额真值 |
 

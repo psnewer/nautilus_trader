@@ -202,7 +202,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: PM ExecutionClient 启动
 **输入**: 分别触发 (a) `_connect()`;(b) 显式 `QueryAccount`; (c) PM `generate_position_status_reports(...)` 成功返回 reports。
-**期望**: 三种情形各调一次 `_update_account_state` → `get_balance_allowance` → `generate_account_state` 写 cache;实时 `CONFIRMED` trade 只产 fill,不刷新余额。
+**期望**: 三种情形各调一次 `_update_account_state` → 单次 `get_balance_allowance` → `generate_account_state` 写 cache;请求失败立即抛给调用方,不在余额方法内部重试;实时 `CONFIRMED` trade 只产 fill,不刷新余额。
 **验收**:
 - 上游 `execution.py` 内**无 `set_timer` 私有余额轮询**;周期刷新复用 NT 原生 position reconciliation。
 - NT 无默认 `QueryAccount` 周期发送(全库仅反序列化处实例化)
@@ -212,6 +212,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement` 覆盖 position reconcile 成功后余额刷新。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile` 覆盖余额刷新失败不影响 position reconcile。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_balance_query_failure_is_not_retried` 覆盖余额请求失败只调用一次 CLOB client。
 
 ### pm-adapter-5.account.2: free=total 陷阱已由 accepted 本地预扣替代(Q17 修订已落地)
 
