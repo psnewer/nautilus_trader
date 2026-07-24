@@ -2,11 +2,11 @@
 
 对应章节: `refactor.md §5.4 / Q21`;详细设计 `architectures/strategy/architecture.md`(Q21 锁定 2026-05-24)
 
-**Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节);旧 `services/strategy/` 3000 行(signals / strategies)语义可作为新框架的 **Check / Action / SignalCollector 类填充**,不再是骨架。
+**Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节)；所需策略语义已落到当前 Check / Action，迁移前 services 实现已删除。
 
 **测试结构**:
 - 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 纯逻辑,可全单测
-- 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 平移自旧实现,挂在新框架的 Check/Action 上落地
+- 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 已挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
 
@@ -231,13 +231,17 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ## Slice 10d(2026-05-31 #52):msgbus 直订替代 subscribe_data
 
-`StrategyEvaluator.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(MatchedPair))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 路由经 DataEngine,需 client_id/instrument_id;MatchedPair 是 Actor-to-Actor 事件无 venue/instrument 归属。同时**MVP 不预订 OrderBookDeltas**(原 `subscribe_data(DataType(OrderBookDeltas))` 同样需要 instrument_id),需 OBD-driven 重评时 MatchedPair fire 后 per-iid 调 `subscribe_order_book_deltas(iid)`。**slice 10d live smoke 验:strategy 端 0 ERROR**。
+`StrategyEvaluator.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(MatchedPair))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 路由经 DataEngine,需 client_id/instrument_id;MatchedPair 是组件间事件，无 venue/instrument 归属。同时**MVP 不预订 OrderBookDeltas**(原 `subscribe_data(DataType(OrderBookDeltas))` 同样需要 instrument_id),需 OBD-driven 重评时 MatchedPair fire 后 per-iid 调 `subscribe_order_book_deltas(iid)`。**slice 10d live smoke 验:strategy 端 0 ERROR**。
 
 ## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
 
-- ✅ `test_submitter.py`(6):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `RiskEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 写入 `Order.tags=["arb:intent=<intent>"]` / opportunity metadata 写入 `Order.tags`。
+- ✅ `test_submitter.py`(6):`make_submitter` 经 NT `OrderFactory` 构 LimitOrder 并委托
+  `Strategy.submit_order` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串
+  `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 与 opportunity metadata 写入 tags。
 - ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
-- ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
+- ✅ `test_evaluator.py`:evaluator 构造 ctx 时注入 callable submitter；
+  `test_submitter_uses_native_strategy_submit_order_path` 锁定原生路径先把 Order 写入 NT Cache，再向
+  `RiskEngine.execute` 路由 `SubmitOrder`，且 strategy ID 为 `ARB-EVAL-001`。
 - ✅ **#105(2026-06-13)place_bets 顺序提交 → 并发 `gather`**:`place_bets.py` 多腿改 `await asyncio.gather(*(submitter(spec) ...))`(顺序 workaround 退役;同页并发 placeBets 丢回执由 OE ExecClient 页锁串行兜底,PM/OE 腿并行 → 对冲窗口更窄,synchronization §8.3)。`test_action_place_bets.py` 既有用例(submitter 调用次数 / spec 正确 / log-only fallback)在并发下仍 23 passed。⚠️ **仍需 live 重验**两腿真盘回执不丢。
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` 后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
@@ -247,12 +251,13 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 对应设计:`architectures/_cross-cutting/synchronization.md §8.4bis` + strategy §3.9。
 
 ### strategy-4.23: submitter 入口走 RiskEngine
-- 前置: `make_submitter` 注入 mock msgbus;cache 有 instrument。
+- 前置:已注册 `StrategyEvaluator`;cache 有 instrument;注册测试 RiskEngine endpoint。
 - 输入: 调 `submit(spec)`。
-- 步骤: 捕获 `msgbus.send(...)`。
-- 期望: endpoint 为 `RiskEngine.execute`,不是 `ExecEngine.execute`。
+- 步骤:检查 NT Cache 与捕获的 `SubmitOrder`。
+- 期望:订单先写入 Cache，再由 NT `Strategy.submit_order` 路由 `RiskEngine.execute`，不是直接进 ExecEngine。
+- 期望:新订单仍为 `INITIALIZED`，不出现在 `cache.orders_open(instrument_id)`，不污染 barrier baseline。
 - 验收: Strategy 下单路径不绕过 `ArbitrageLiveRiskEngine`。
-- 状态:✅ `test_submitter.py::test_submit_builds_limit_order_and_sends_to_risk_engine`
+- 状态:✅ `test_evaluator.py::test_submitter_uses_native_strategy_submit_order_path`
 
 ### strategy-4.24: 同一次 PlaceBetsAction 给所有真实腿写同一 opportunity metadata
 - 前置: `ctx.pair_id="P1"`,scratch 中有 PM/OE 两条真实 legs,submitter 记录 spec。

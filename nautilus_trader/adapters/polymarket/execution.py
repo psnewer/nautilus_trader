@@ -122,6 +122,15 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import Order
 
 
+def _raise_on_retry_failure(retry_manager, operation: str) -> None:
+    """把 RetryManager 吞掉的请求失败恢复为 report 契约中的异常。"""
+    if retry_manager.result:
+        return
+    if retry_manager.last_exception is not None:
+        raise retry_manager.last_exception
+    raise RuntimeError(retry_manager.message or f"{operation} failed without a response")
+
+
 def _parse_position_avg_price(position: dict[str, Any]) -> Decimal | None:
     avg_price = position.get("avgPrice", position.get("avg_price"))
     if avg_price in (None, ""):
@@ -453,6 +462,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 self._http_client.get_open_orders,
                 params=params,
             )
+            _raise_on_retry_failure(retry_manager, "generate_order_status_reports")
 
             if response:
                 # Uncomment for development
@@ -646,6 +656,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     self._http_client.get_order,
                     order_id=venue_order_id.value,
                 )
+                _raise_on_retry_failure(retry_manager, "generate_order_status_report")
 
             if not response:
                 return None
@@ -711,6 +722,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 self._http_client.get_trades,
                 params=params,
             )
+            _raise_on_retry_failure(retry_manager, "generate_fill_reports")
 
             if response:
                 # Uncomment for development

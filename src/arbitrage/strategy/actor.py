@@ -1,5 +1,5 @@
 """
-StrategyEvaluator —— NT Actor,唯一活体(Q21):订触发事件 → 查 StrategyRegistry
+StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 → 查 StrategyRegistry
 → 基于当前 EvalContext 并行 evaluate arb+comp → fire(套利优先)。
 
 设计见 `docs/arbitrage/architectures/strategy/architecture.md §3.5 / §4`。
@@ -28,9 +28,10 @@ from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
-from nautilus_trader.common.actor import Actor
-from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.trading.config import StrategyConfig
+from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.open_orders import pair_open_orders_digest
@@ -44,32 +45,24 @@ from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.registry import StrategyRegistry
 
 
-_STRATEGY_ID_LITERAL = "ARB-EVAL-001"
-
-
-def make_submitter(*, cache, msgbus, clock, trader_id, log):
-    """slice 10a(#50)module-level 工厂:返 `async def submit(spec)` callable。
+def make_submitter(*, cache, order_factory, submit_order, log):
+    """把 Action spec 转成 NT Order，再经 `Strategy.submit_order` 提交。
 
     `spec` schema:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, ...}`
 
     流程:`spec` → 经 `cache.instrument(iid).{size_precision,price_precision}` 构 NT `LimitOrder`
-    → 包成 `SubmitOrder` cmd → `msgbus.send("RiskEngine.execute", cmd)` → Risk pass 后再进
-    Execution opportunity barrier / venue ExecClient。
+    → `Strategy.submit_order` 发布 initialized event、写 Cache、检查重复 ID并路由 RiskEngine
+    → Risk pass 后再进 Execution opportunity barrier / venue ExecClient。
 
     `cache.instrument(iid)` 返 None(冷启动 / 未订阅)→ 跳过 + warning,不 raise。
     """
     from nautilus_trader.core.uuid import UUID4
-    from nautilus_trader.execution.messages import SubmitOrder
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.enums import TimeInForce
     from nautilus_trader.model.identifiers import ClientOrderId
     from nautilus_trader.model.identifiers import InstrumentId
-    from nautilus_trader.model.identifiers import StrategyId
     from nautilus_trader.model.objects import Price
     from nautilus_trader.model.objects import Quantity
-    from nautilus_trader.model.orders import LimitOrder
-
-    strategy_id = StrategyId(_STRATEGY_ID_LITERAL)
 
     async def submit(spec: dict) -> None:
         raw_iid = spec["instrument_id"]
@@ -91,35 +84,26 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
             ))
-        order = LimitOrder(
-            trader_id=trader_id,
-            strategy_id=strategy_id,
+        order = order_factory.limit(
             instrument_id=iid,
-            client_order_id=ClientOrderId(f"ARB-{UUID4().value[:8]}"),
             order_side=order_side,
             quantity=Quantity(float(spec["qty"]), precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
             time_in_force=TimeInForce.GTC,
             tags=tags,
-            init_id=UUID4(),
-            ts_init=clock.timestamp_ns(),
+            client_order_id=ClientOrderId(f"ARB-{UUID4().value[:8]}"),
         )
-        cmd = SubmitOrder(
-            trader_id=trader_id,
-            strategy_id=strategy_id,
-            position_id=None,
-            order=order,
-            command_id=UUID4(),
-            ts_init=clock.timestamp_ns(),
-        )
-        msgbus.send("RiskEngine.execute", cmd)
+        submit_order(order)
 
     return submit
 
 
-class StrategyEvaluatorConfig(ActorConfig, frozen=True, kw_only=True):
-    """目前无运行时参数;预留 actor 标识 / 调试开关。"""
+class StrategyEvaluatorConfig(StrategyConfig, frozen=True, kw_only=True):
+    """单一运行时 evaluator strategy 的配置。"""
 
+    # NT `Strategy.__init__` 的实际实现要求这里是 str（上游注解仍写 StrategyId）。
+    strategy_id: StrategyId | None = "ARB-EVAL"
+    order_id_tag: str | None = "001"
     log_evaluations: bool = False
 
 
@@ -136,7 +120,7 @@ class _RuntimeDeps:
     pair_inflight: object = None            # PairInFlightGate(§7);None → 不串行(测试/降级)
 
 
-class StrategyEvaluator(Actor):
+class StrategyEvaluator(Strategy):
     def __init__(self, config: StrategyEvaluatorConfig, deps: _RuntimeDeps) -> None:
         super().__init__(config=config)
         self._pair_registry = deps.pair_registry
@@ -160,7 +144,7 @@ class StrategyEvaluator(Actor):
 
     def on_start(self) -> None:
         # slice 10d(#52)修 Gap A:`subscribe_data` 强制 SubscribeData cmd 路由,需 client_id/instrument_id;
-        # custom Actor-to-Actor 事件用 `msgbus.subscribe(topic)` 直订。
+        # custom 组件间事件用 `msgbus.subscribe(topic)` 直订。
         # NT publish_data 经 `data.{DataType.topic}` 发布,无 metadata 时带尾部 `*`(= `data.MatchedPair*`);
         # 订阅串必须带同款 `*`,否则精确串不匹配带星 publish topic → on_data 永不触发。
         self._msgbus.subscribe(
@@ -397,7 +381,7 @@ class StrategyEvaluator(Actor):
         return self._sports_store
 
     def _create_task(self, coro):
-        """把 coroutine 投递到 NT kernel 为 Actor 注册的运行 loop。
+        """把 coroutine 投递到 NT kernel 为组件注册的运行 loop。
 
         loop 身份由 NT 保证:`kernel.py:1016` 在 `start_async()`(已跑在 kernel loop 上)内调
         `_register_executor()` → `register_executor(self._loop, ...)`,故 `_registered_task_loop`
@@ -453,13 +437,12 @@ class StrategyEvaluator(Actor):
     def _make_submitter(self):
         """返 async callable:Action 经 `await ctx.submitter(spec)` 提交订单。
 
-        thin wrapper 经 module-level `make_submitter(...)`,便于单测 mock 各 dep。
+        thin wrapper 经 module-level `make_submitter(...)`,最终调用 NT 原生 `Strategy.submit_order`。
         """
         return make_submitter(
             cache=self.cache,
-            msgbus=self.msgbus,
-            clock=self._clock,
-            trader_id=self.trader_id,
+            order_factory=self.order_factory,
+            submit_order=self.submit_order,
             log=self._log,
         )
 

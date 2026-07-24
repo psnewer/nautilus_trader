@@ -4,6 +4,9 @@
 
 **落地状态(2026-06-23)**:Step 7 **完整控制台页面**(忠实照搬 legacy Bootstrap 标签页 + 控制 + 只读监控)已实现(`src/arbitrage/web/{actor,app}.py` + `static/console.html`)。`tests/arbitrage/web/test_web_gateway.py` 通过。
 
+**旧栈清理(2026-07-23 #271)**:`src/arbitrage/services/web_gateway/` 及其独立启动/配置脚本已删除；
+本目录用例只覆盖同 TradingNode 内的 `WebGatewayActor` 与当前 FastAPI app。
+
 **演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,按 `odds_model` 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
 
 ## 锁定的关键性约束

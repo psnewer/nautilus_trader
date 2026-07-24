@@ -16,7 +16,7 @@
 | `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:读取 `anchor_venue` + 逐个 `tradable_venues` 跑归一+匹配 → 生成 pair candidate → 概率校验通过后 publish `MatchedPair` + 注册 `PairRegistry`;dispatcher 显式配置 PMSPORTS anchor + enabled tradable venues |
 | `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;可交易腿与 non-tradable anchor id 分槽登记 |
 | `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue、同 event 的多条腿反推一个事件视图(供算法用) |
-| `MatchEngine` | 普通类(算法平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名 confidence 匹配(`get_similar` 命中数 / 两侧较长 token 数)+ 全候选贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
+| `MatchEngine` | 普通类(保留迁移前的领域匹配算法) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名 confidence 匹配(`get_similar` 命中数 / 两侧较长 token 数)+ 全候选贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
 
 **#34 修正**:`info["competition"]` 是**联赛名**(EPL/NFL/...),**不是** pair_id(老 `MatchedPair.pair_id` 是基于 PM event_id 生成的稳定 ID,是 matching 的产出)。`info` 的 matching key 是**匹配输入**;`pair_id` 由 matching 算出并通过 `PairRegistry` 暴露给下游。
 

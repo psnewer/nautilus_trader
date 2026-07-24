@@ -266,6 +266,8 @@ def test_strategy_evaluator_config_log_evaluations_default():
     cfg = _cfg()
     sc = to_strategy_evaluator_config(cfg)
     assert sc.log_evaluations is False
+    assert str(sc.strategy_id) == "ARB-EVAL"
+    assert sc.order_id_tag == "001"
 
 
 def test_strategy_evaluator_config_log_evaluations_maps_strategy_section():

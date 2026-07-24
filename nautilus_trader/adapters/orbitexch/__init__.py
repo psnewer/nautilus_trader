@@ -35,6 +35,7 @@ from nautilus_trader.adapters.orbitexch.discovery_scraper import (
 )
 from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper
 from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchOrderRequest
 from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
 
 
@@ -52,5 +53,6 @@ __all__ = [
     "OrbitExchScraper",
     # Execution
     "OrbitExchExecutor",
+    "OrbitExchOrderRequest",
     "OrbitExchOddsClient",
 ]

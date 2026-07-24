@@ -149,8 +149,8 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
             return
         await super()._cancel_all_orders(command)
 
-    # 注(#122):PM report 失败容忍已下沉到 base `ArbPolymarketExecutionClient`(mark_dead + 返空,对齐 OE),
-    # 故此处不再需要 skip-only 的 report override。`_connect` 的瞬时失败容忍仍保留(见上)。
+    # PM report 查询失败由 base adapter 恢复异常、Arb client 标 dead 后继续抛,
+    # 故此处不需要 skip-only 的 report override。`_connect` 的瞬时失败容忍仍保留(见上)。
 
 
 class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):

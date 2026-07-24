@@ -172,21 +172,16 @@ async def run(args) -> int:
                 f"market={bet.get('marketId')} selection={bet.get('selectionId')}"
             )
         if exec_client._current_bets and exec_client._executor is not None:
-            from src.arbitrage.common.order_models import Order as _Order
-            from src.arbitrage.common.order_models import Venue as _Venue
-
             print("\n▶ cleanup-only:逐单 cancel_order(按 CURRENT_BETS marketId + offerId)…")
             for offer_id, bet in list(exec_client._current_bets.items()):
-                legacy = _Order(
-                    venue=_Venue.ORBITEXCH,
-                    venue_order_id=str(offer_id),
-                    market_id=str(bet.get("marketId", "")),
-                    selection_id=str(bet.get("selectionId", "")),
+                result = await exec_client._executor.cancel_order(
+                    str(bet.get("marketId", "")),
+                    str(offer_id),
+                    exec_client._page,
                 )
-                result = await exec_client._executor.cancel_order(legacy, exec_client._page)
                 print(
-                    f"    offerId={offer_id} cancel_order success={getattr(result, 'success', None)} "
-                    f"message={getattr(result, 'message', '')}"
+                    f"    offerId={offer_id} cancel_order success={result.get('success')} "
+                    f"message={result.get('message', '')}"
                 )
             await asyncio.sleep(args.settle_wait)
         print("\n▶ cleanup-only:_cancel_all_orders…")

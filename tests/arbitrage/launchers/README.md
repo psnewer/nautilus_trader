@@ -14,15 +14,17 @@
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)
 - ✅ OE data factory 真接 scraper(slice 7A,#46)
-- ✅ MarketMatchingActor + StrategyEvaluator + optional WebGatewayActor 接线;InstrumentRefresher 已退役,发现由 DataClient 原生周期负责
+- ✅ MarketMatchingActor + StrategyEvaluator Strategy + optional WebGatewayActor 接线;InstrumentRefresher 已退役,发现由 DataClient 原生周期负责
 - ✅ PolymarketSettlement 接线(#110:由 NT 连续 position 对账触发;#110 后不再有 `pm_positions_fetcher`)
 - ✅ `is_execution_active` 真接 in-flight 检测(#48)
 
 ## Slice 8A 落地(2026-05-29 #47)
 
-`launchers/arb_node.py:add_actors(node, cfg, pair_registry=)` — node.build 后调用,构造 MarketMatchingActor + StrategyEvaluator,并在 `web.enabled=true` 时额外构造 WebGatewayActor。
+`launchers/arb_node.py:add_actors(node, cfg, pair_registry=)` — node.build 后调用；MarketMatchingActor /
+WebGatewayActor 经 `add_actor` 注册，StrategyEvaluator 经 `add_strategy` 注册。
 
-- ✅ `test_arb_node.py`:默认只装 Matching + Strategy 两个 actor / `web.enabled=true` 额外装 WebGatewayActor / StrategyEvaluator portfolio 取自 kernel / bootstrap_and_build 调 add_actors
+- ✅ `test_arb_node.py`:默认装 1 个 Matching Actor + 1 个 Evaluator Strategy；`web.enabled=true`
+  额外装 WebGatewayActor；StrategyEvaluator portfolio 取自 kernel；bootstrap_and_build 调 add_actors
 
 ## Slice 8A 修正(2026-05-30 #48):Q19 `is_execution_active` 真接(撤旧 stub)
 

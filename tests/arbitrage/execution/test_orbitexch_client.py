@@ -4,7 +4,6 @@
 """
 
 import asyncio
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -184,12 +183,19 @@ def test_modify_order_is_rejected():
 
 
 # ── submit session 门控 + 结果映射(注入 fake _place_via_executor)──
-@dataclass
-class _FakeResult:
-    success: bool
-    order: object = None
-    message: str = ""
-    venue_response: dict | None = None
+def _fake_result(
+    *,
+    success: bool,
+    message: str = "",
+    venue_response: dict | None = None,
+    venue_order_id: str | None = None,
+) -> dict:
+    return {
+        "success": success,
+        "message": message,
+        "venue_response": venue_response or {},
+        "venue_order_id": venue_order_id,
+    }
 
 
 def test_submit_order_rejects_on_executor_failure():
@@ -200,7 +206,7 @@ def test_submit_order_rejects_on_executor_failure():
     c.generate_order_accepted = lambda **k: events.update(acc=True)
 
     async def _fail(order):
-        return _FakeResult(success=False, message="venue rejected")
+        return _fake_result(success=False, message="venue rejected")
     c._place_via_executor = _fail
 
     order = SimpleNamespace(strategy_id="S", instrument_id="I", client_order_id=SimpleNamespace(value="O-1"))
@@ -237,7 +243,7 @@ def test_submit_order_transport_result_keeps_inflight_session():
     c.generate_order_rejected = lambda **kwargs: rejected.append(kwargs)
 
     async def _unknown(order):
-        return _FakeResult(
+        return _fake_result(
             success=False,
             message="connection reset",
             venue_response={"_transport_error": True},
@@ -297,7 +303,7 @@ def test_submit_order_success_registers_pending_accept_not_immediate_ack():
     c.generate_order_rejected = lambda **kwargs: events.update(rejected=kwargs)
 
     async def _place(order):
-        return _FakeResult(success=True, order=SimpleNamespace(venue_order_id="OE-OFFER-1"))
+        return _fake_result(success=True, venue_order_id="OE-OFFER-1")
     c._place_via_executor = _place
 
     order = SimpleNamespace(
@@ -327,9 +333,9 @@ def test_place_via_executor_emits_submitted_before_venue_request():
     calls = []
 
     class _Executor:
-        async def place_order(self, legacy, page):
+        async def place_order(self, request, page):
             calls.append("request")
-            return _FakeResult(success=True, order=legacy)
+            return _fake_result(success=True, venue_order_id="OE-OFFER-1")
 
     c._executor = _Executor()
     c._page = object()
@@ -388,9 +394,10 @@ def test_cancel_order_passes_market_id_from_current_bets():
     captured = {}
 
     class _FakeExecutor:
-        async def cancel_order(self, order, page):
-            captured["order"] = order
-            return SimpleNamespace(success=True, message="ok")
+        async def cancel_order(self, market_id, venue_order_id, page):
+            captured["market_id"] = market_id
+            captured["venue_order_id"] = venue_order_id
+            return _fake_result(success=True)
 
     c._executor = _FakeExecutor()
     c._page = object()
@@ -411,10 +418,8 @@ def test_cancel_order_passes_market_id_from_current_bets():
         venue_order_id=voi,
     )))
 
-    legacy = captured["order"]
-    assert legacy.venue_order_id == "221972467"
-    assert legacy.market_id == inst.market_id
-    assert legacy.selection_id == "8266399"
+    assert captured["venue_order_id"] == "221972467"
+    assert captured["market_id"] == inst.market_id
     assert "canceled" not in captured
 
     c._on_current_bets([])                            # 新快照中订单消失 → 撤单完成
@@ -443,8 +448,8 @@ def test_cancel_order_transport_failure_keeps_pending_cancel():
     rejected = []
 
     class _UnknownExecutor:
-        async def cancel_order(self, legacy, page):
-            return SimpleNamespace(
+        async def cancel_order(self, market_id, venue_order_id, page):
+            return _fake_result(
                 success=False,
                 message="connection reset",
                 venue_response={"_transport_error": True},
@@ -463,6 +468,29 @@ def test_cancel_order_transport_failure_keeps_pending_cancel():
     )))
 
     assert rejected == []
+
+
+def test_cancel_order_business_rejection_preserves_executor_message():
+    c = _client()
+    rejected = []
+
+    class _RejectedExecutor:
+        async def cancel_order(self, market_id, venue_order_id, page):
+            return _fake_result(success=False, message="offer already settled")
+
+    c._executor = _RejectedExecutor()
+    c._page = object()
+    c._begin_cancel_session = lambda nt_order: True
+    c.generate_order_cancel_rejected = lambda *args, **kwargs: rejected.append((args, kwargs))
+
+    _run(c._cancel_order(SimpleNamespace(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1-1-1-None.ORBITEXCH"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=VenueOrderId("111"),
+    )))
+
+    assert rejected[0][0][4] == "offer already settled"
 
 
 def test_cancel_residual_one_reuses_existing_session():
@@ -506,12 +534,12 @@ def test_page_lock_serializes_concurrent_page_ops():
     state = {"in_flight": 0, "max_concurrent": 0}
 
     class _SlowExecutor:
-        async def cancel_order(self, order, page):
+        async def cancel_order(self, market_id, venue_order_id, page):
             state["in_flight"] += 1
             state["max_concurrent"] = max(state["max_concurrent"], state["in_flight"])
             await asyncio.sleep(0.02)        # 制造重叠窗口:无锁则 max_concurrent==2
             state["in_flight"] -= 1
-            return SimpleNamespace(success=True, message="ok")
+            return _fake_result(success=True)
 
     c._executor = _SlowExecutor()
     c._page = object()
@@ -1079,7 +1107,7 @@ def test_cancel_io_timeout_releases_page_lock_and_keeps_pending():
     rejected = []
 
     class _Executor:
-        async def cancel_order(self, order, page):
+        async def cancel_order(self, market_id, venue_order_id, page):
             await asyncio.Event().wait()
 
     c._executor = _Executor()

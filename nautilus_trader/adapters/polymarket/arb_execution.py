@@ -33,49 +33,6 @@ from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 
 
-class _RetryFailureRecorder:
-    """记录 PM 上游 RetryManager 吞掉的查询失败。
-
-    NT 上游 `RetryManager.run()` 失败时返回 None,部分 report 方法随后会把 None 当作空结果继续返回。
-    Arb 层需要把这种"无真实 response"识别为 report 失败 → `mark_*_dead` + 返空(#122 对齐 OE;
-    不再 raise,避免 startup reconciliation 被瞬时失败卡死)。
-
-    ⚠️ 脆弱点:本类经"实例级替换 `self._retry_manager_pool` + monkeypatch 每个 acquired manager 的 `.run`、
-    `finally` 还原"实现。**依赖 order-report 调用与其它走同 pool 的 report 调用不并发重叠**——重叠时
-    全局替换/还原会互相覆盖。当前安全:NT 连续对账循环里同一 client 的各项 check 是同一 loop 迭代内串行
-    `await`。改 NT 上游/引入并发前需复核;更稳的做法是 per-call 传 recorder 而非替换实例属性。
-    """
-
-    def __init__(self, pool, names: set[str]) -> None:
-        self._pool = pool
-        self._names = names
-        self.failures: list[tuple[str, str | None]] = []
-
-    async def acquire(self):
-        manager = await self._pool.acquire()
-        original_run = manager.run
-
-        async def run(name, details, func, *args, **kwargs):
-            result = await original_run(name, details, func, *args, **kwargs)
-            if name in self._names and not manager.result:
-                self.failures.append((name, manager.message))
-            return result
-
-        manager._arb_original_run = original_run
-        manager.run = run
-        return manager
-
-    async def release(self, manager) -> None:
-        original_run = getattr(manager, "_arb_original_run", None)
-        if original_run is not None:
-            manager.run = original_run
-            del manager._arb_original_run
-        await self._pool.release(manager)
-
-    def __getattr__(self, name):
-        return getattr(self._pool, name)
-
-
 def pm_raw_position_to_settlement(item: dict) -> SettlementPosition:
     """#110:PM Data API `/positions` **原始 dict** → settlement 视图(纯映射,可单测)。
     键名按 Data API:`conditionId` / `size` / `negativeRisk` / `redeemable`(见 odds_client `_do_fetch_positions`)。"""
@@ -223,12 +180,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 )
 
     async def generate_order_status_reports(self, command):
-        recorder = _RetryFailureRecorder(
-            self._retry_manager_pool,
-            {"generate_order_status_reports", "generate_fill_reports"},
-        )
-        original_pool = self._retry_manager_pool
-        self._retry_manager_pool = recorder
         try:
             reports = await super().generate_order_status_reports(command)
         except Exception as e:
@@ -241,14 +192,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             if self._log is not None:
                 self._log.warning(f"PM order reports query failed (mark dead, raise): {e!r}")
             raise
-        finally:
-            self._retry_manager_pool = original_pool
-        if recorder.failures:
-            # RetryManager 内部吞掉的失败:同样是"查询失败"而非"无挂单",按 #259 抛出而非返空。
-            self._venue_liveness.mark_order_dead(POLYMARKET)
-            if self._log is not None:
-                self._log.warning(f"PM order reports query failed (mark dead, raise): {recorder.failures!r}")
-            raise RuntimeError(f"PM order status reports failed: {recorder.failures!r}")
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return reports
 
@@ -267,12 +210,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 self._venue_liveness.mark_order_dead(POLYMARKET)
             return report
 
-        recorder = _RetryFailureRecorder(
-            self._retry_manager_pool,
-            {"generate_order_status_report"},
-        )
-        original_pool = self._retry_manager_pool
-        self._retry_manager_pool = recorder
         try:
             report = await super().generate_order_status_report(command)
         except Exception as e:
@@ -280,13 +217,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             if self._log is not None:
                 self._log.warning(f"PM order report query failed (mark dead, raise): {e!r}")
             raise
-        finally:
-            self._retry_manager_pool = original_pool
-        if recorder.failures:
-            self._venue_liveness.mark_order_dead(POLYMARKET)
-            if self._log is not None:
-                self._log.warning(f"PM order report query failed (mark dead, raise): {recorder.failures!r}")
-            raise RuntimeError(f"PM order status report failed: {recorder.failures!r}")
         if report is None:
             self._venue_liveness.mark_order_dead(POLYMARKET)
             return None

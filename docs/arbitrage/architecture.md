@@ -2,7 +2,9 @@
 
 > **定位**:端态架构**总览 + 导航**。本文给高层视图,组件细节在 `architectures/<组件>/architecture.md`。
 > **文档分层**:`refactor.md`(初设 + 决策史 Q1–Q20 + 修订记录)→ 本文及 `architectures/*`(详细设计,面向代码落地)→ `tests/arbitrage/*/README.md`(用例)。
-> 旧微服务架构文档(7 个 `architecture.md`)已于 2026-05-21 删除 —— 系统已从自建微服务迁移到 **NautilusTrader 原生架构**。
+> 旧微服务架构文档(7 个 `architecture.md`)已于 2026-05-21 删除；
+> `src/arbitrage/services/` 代码栈已于 2026-07-23 删除。当前运行时只有
+> **NautilusTrader 原生架构**，旧路径只会出现在决策历史中。
 
 ---
 
@@ -33,7 +35,7 @@ flowchart TB
     end
     subgraph App["应用组件(src/arbitrage)"]
       RF[InstrumentRefresher] ; MA[MarketMatchingActor]
-      ST[ArbitrageStrategy] ; WG[WebGatewayActor]
+      ST[StrategyEvaluator<br/>NT Strategy] ; WG[WebGatewayActor]
     end
   end
   Adapters <--> Engines
@@ -51,7 +53,7 @@ flowchart LR
   RF[InstrumentRefresher] -->|InstrumentsRefreshed| MA[MatchingActor]
   MA -->|MatchedPair| ST[Strategy]
   DATA[(OrderBookDelta)] --> ST
-  ST -->|取机会快照 Q20<br/>信号流水线决策| SUB[submit_order]
+  ST -->|当前状态求值<br/>原生 submit_order| SUB[NT Strategy.submit_order]
   SUB --> RE[ArbitrageRiskEngine 拦截]
   RE -->|pass| EC[ExecutionClient → venue]
   RE -->|deny| ST

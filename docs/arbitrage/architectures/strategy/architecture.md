@@ -9,9 +9,9 @@
 
 | 件 | 基类 / 角色 | 职责 |
 |---|---|---|
-| `StrategyEvaluator` | NT `Actor` | 唯一活体:订触发事件(`OrderBookDelta` / `MatchedPair` / PMS 比赛状态)→ 查 `StrategyRegistry` → 构造当前 `EvalContext` → 并行 evaluate arb+comp 树 → fire action |
+| `StrategyEvaluator` | NT `Strategy` | 唯一运行时策略:订触发事件(`OrderBookDelta` / `MatchedPair` / PMS 比赛状态)→ 查 `StrategyRegistry` → 构造当前 `EvalContext` → 并行 evaluate arb+comp 树 → fire action；所有订单经原生 `submit_order` |
 | `StrategyRegistry` | 普通类 | 按 scope 索引策略;`get_for(pair_id) → Strategy or None`,按**挂载存在锁定**:具体比赛挂了就锁定本 scope,即使没命中也**不降级**(Q21-a) |
-| `Strategy` | dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }` |
+| `Strategy` | 领域 dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }`；仅是配置树，不逐个注册为 NT Strategy |
 | `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: list[Check], actions: list[Action] }` |
 | `BoolExpr` / `StateQuery` | DSL | self_hits 的无状态布尔查询树；叶子直接读取当前 `EvalContext`，支持 AND/OR/NOT 嵌套 |
 | `Check` / `Action` | abstract | `Check.passes(ctx) -> bool`;`async Action.execute(ctx)` 由 Evaluator 按顺序 await |
@@ -35,7 +35,7 @@ flowchart TB
     MP[MatchedPair]
     EXT["PMS SportsGameUpdate"]
   end
-  EV --> EVA[StrategyEvaluator Actor]
+  EV --> EVA[StrategyEvaluator<br/>NT Strategy]
   EVA -->|查 pair_id| PR[(PairRegistry)]
   EVA -->|按 scope 优先级| SR[(StrategyRegistry)]
   SR -->|Strategy or None| EVA
@@ -134,12 +134,12 @@ class StrategyRegistry:
         return self._by_sport.get(sport)
 ```
 
-### 3.4 `StrategyEvaluator`(NT `Actor`,唯一活体)
+### 3.4 `StrategyEvaluator`(NT `Strategy`,唯一运行时策略)
 
-**算法 `evaluate_tree` 是 `condition.py` 的模块级纯函数**(从 Actor 解耦,可全单测;Actor 只做
-orchestration:open-order baseline / gather / fire)。
+**算法 `evaluate_tree` 是 `condition.py` 的模块级纯函数**(与运行时 Strategy 解耦,可全单测；
+Strategy 只做 orchestration:open-order baseline / gather / fire)。
 
-`strategy.enabled=false` 不卸载本 Actor。原因是本 Actor 还承担 `MatchedPair` 后
+`strategy.enabled=false` 不卸载本 Strategy。原因是本 Strategy 还承担 `MatchedPair` 后
 `_ensure_obd_subscribed` 的 OBD 订阅桥职责;卸载会让 PM/OE 盘口不进入 cache。禁用策略时,
 配置 dispatcher 返回空 `StrategyRegistry`,Evaluator 仍订阅 OBD,但 `_route_eval` 查不到策略后 no-op,
 因此不会评估条件树或触发 Action/submit。
@@ -161,13 +161,13 @@ def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
 
 
 # actor.py
-class StrategyEvaluator(Actor):
+class StrategyEvaluator(NTStrategy):
     def __init__(self, config, deps): ...   # deps: pair_registry / strategy_registry / portfolio /
                                             #       is_execution_active / loop
 
     def on_start(self):
         # slice 10d(#52):msgbus 直订 — NT `subscribe_data` 强制 SubscribeData cmd 路由(需 client_id/instrument_id);
-        # MatchedPair 是 Actor-to-Actor 事件(MarketMatchingActor publish),走 msgbus broker。
+        # MatchedPair 是组件间事件(MarketMatchingActor publish),走 msgbus broker。
         self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)
         # OrderBookDeltas 是 venue/instrument-tied,**slice 10d MVP 不预订**(MatchedPair 触发足以验全链路);
         # MatchedPair fire 后按 per-iid 订阅；概率校验通路按 matching 的 managed handoff 契约
@@ -213,7 +213,7 @@ class StrategyEvaluator(Actor):
 ```
 
 `StrategyEvaluator` 的异步派发通过 `_create_task(...)` 统一处理:生产路径使用 NT kernel
-`Actor.register_executor(...)` 注入的运行 loop;`StrategyEvaluator.register_executor(...)` 先调用
+`Actor.register_executor(...)`（`Strategy` 继承自 `Actor`）注入的运行 loop;`StrategyEvaluator.register_executor(...)` 先调用
 NT 原生注册,再把同一个 loop 保存为 Python 侧调度指针。deps 注入的 `loop` 只作为未注册 executor
 的单测 fallback。
 
@@ -414,18 +414,23 @@ legs/candidates,不把未知敞口当成零继续下单。
 5. Strategy 不冻结 sports state。新 sports update 由 per-game topic 触发下一轮评估；
    查询发生时读取当时的 Store 当前值。
 
-### 3.9 slice 10a 落地(#50):`EvalContext.submitter` + 真出单链路
+### 3.9 `EvalContext.submitter` + NT 原生出单链路
 
-**问题**:Action 是 ABC,`execute(ctx)` 默认无法 submit_order(StrategyEvaluator 是 Actor,非 Strategy,无 `self.submit_order` facade)。
+Action 只消费领域 `spec`，不直接依赖 NT Order API。`StrategyEvaluator` 是唯一注册到 Trader 的
+NT `Strategy`，负责把 spec 转成 NT Order，并通过原生 `submit_order` 提交。
 
 **落地**:
 - `EvalContext.submitter: Callable[[dict], Awaitable[None]] | None`(默认 None,Action log-only fallback)
 - `StrategyEvaluator._evaluate_and_fire` 构造 ctx 时 `submitter=self._make_submitter()`
-- `make_submitter(*, cache, msgbus, clock, trader_id, log)` module-level 工厂 → `async def submit(spec)`:
+- `make_submitter(*, cache, order_factory, submit_order, log)` module-level 工厂 → `async def submit(spec)`:
   1. `cache.instrument(iid).{size_precision, price_precision}` 拿精度
-  2. 构 NT `LimitOrder`(`OrderSide.BUY/SELL` from spec / `Quantity` / `Price` / `TimeInForce.GTC` / 随机 `ClientOrderId`)
-  3. 包成 `SubmitOrder` cmd
-  4. **已落地链路(#106)**:`msgbus.send("RiskEngine.execute", cmd)` → NT RiskEngine 逐单检查 → pass 后回 `ExecEngine.execute`;Execution opportunity barrier 等齐本轮 legs 后才 release 到 venue ExecClient。横切协议见 `_cross-cutting/synchronization.md §8.4bis`。
+  2. 经 evaluator 的 NT `order_factory.limit(...)` 构 `LimitOrder`(`OrderSide.BUY/SELL` / `Quantity` / `Price` / `TimeInForce.GTC` / `ARB-*` ClientOrderId / opportunity tags)
+  3. 调 evaluator 绑定的 `Strategy.submit_order(order)`；NT 原生发布 `OrderInitialized`、检查重复
+     `client_order_id`、写 Cache，并构造 `SubmitOrder` 路由到 RiskEngine
+  4. Risk pass 后进入 `ExecEngine`;Execution opportunity barrier 等齐本轮 legs 后才 release 到 venue
+     ExecClient。横切协议见 `_cross-cutting/synchronization.md §8.4bis`。
+- 原生 submit 写入 Cache 时订单仍为 `INITIALIZED`；NT `cache.orders_open()` 不把该状态计为 open，
+  因此本次机会的新腿不会污染评估开始时的 open-order digest，也不会被 barrier 当成 residual。
 - **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, intent?: "arbitrage"|"recovery", opportunity_id?: str, pair_id?: str, leg_key?: str, expected_legs?: list[str]}`
 - `instrument_id` 允许是策略 legs 使用的字符串视图,也允许是 NT 原生 `InstrumentId`;
   `make_submitter` 是边界适配点,统一转成 `InstrumentId` 后再调用 `cache.instrument(...)`
@@ -472,7 +477,9 @@ mock fill 更新 portfolio。限制:skip 模式立即全成,不产生 open order
 cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` 离线覆盖。
 同次 smoke 暴露 OBD 高频下同一机会可重复 fire/重复 mock submit,需后续单独补 strategy 执行保护。
 
-**`StrategyId` 用 fixed literal** `"ARB-EVAL-001"`:StrategyEvaluator 是 Actor 非 Strategy,无独立 StrategyId;统一记账用。
+**`StrategyId` 固定为 `"ARB-EVAL-001"`**:`StrategyEvaluatorConfig` 使用
+`strategy_id="ARB-EVAL"` + `order_id_tag="001"`，由 NT `Strategy` 生成最终 ID。所有 evaluator
+订单的 `order.strategy_id` 与 `SubmitOrder.strategy_id` 均来自该注册策略，不再手写 literal。
 
 ---
 
@@ -587,12 +594,14 @@ sequenceDiagram
 - [x] `Condition` / `EvalResult` dataclass + 抽象 `Check` / `Action`(`condition.py`)+ condition tree 测试(`test_condition.py`)
 - [x] `Strategy` / `ScopeKey` dataclass + `StrategyRegistry`(`registry.py`)+ scope 优先级 + 挂载存在锁定测试(`test_registry.py` / `test_json_loader.py`)
 
-**评估器(NT Actor)**:
-- [x] `StrategyEvaluator(Actor)`(`actor.py`)+ `evaluate_tree` 递归 + `gather(arb,comp)` + 套利优先 fire + OBD 订阅/重评 + per-pair in-flight gate 测试(`test_evaluator.py`)
+**评估器(NT Strategy)**:
+- [x] `StrategyEvaluator(Strategy)`(`actor.py`)+ `evaluate_tree` 递归 + `gather(arb,comp)` + 套利优先 fire + OBD 订阅/重评 + per-pair in-flight gate 测试(`test_evaluator.py`)
+- [x] evaluator 以 `ARB-EVAL-001` 经 Trader `add_strategy` 注册；submitter 使用 NT `order_factory`
+  与 `Strategy.submit_order`，不再手工发送 `RiskEngine.execute`
 - [x] 全状态 `OpportunitySnapshot` 已删除(#266)；Evaluator 记录 open-order digest，Check/Action
   按需读取 live Cache；摘要契约测试见 `tests/arbitrage/common/test_open_orders.py`。
 
-**具体填充(渐进,旧 `services/strategy/` 平移)**:
+**具体填充(已完成；迁移前 services 实现已删除)**:
 - [x] mean_rebate / one_side_rebate / mean_rebate_recovery / require_cross_venue 已落为 `Check` 子类,并由 `tests/arbitrage/strategy/test_check_*.py` 覆盖。旧 `way_rebate` / Portfolio rebate 路径已退役,不再迁移。
 - [x] `place_bets` / `share_limit` / `candi_select` 已落为 `Action` 子类,含 Venue Registry 概率/decimal odds size 换算、candidate 缩放筛选、opportunity metadata、non-tradable anchor fail-closed。覆盖见 `test_action_*.py` / `test_submitter.py`。
 - [x] 配置驱动:`StrategyRegistry` 从 JSON 装载(sport / competition / pair_id 三层),经 `build_strategy_registry` / `to_strategy_registry` 接入 `ArbConfig.strategy`。覆盖见 `test_json_loader.py` / `test_mean_rebate_e2e.py`。
@@ -605,7 +614,7 @@ sequenceDiagram
 - [ ] 通用比分/比赛开始等第三方外部事件 DSL 与具体 publish policy 仍未设计;#250 只锁数据/触发架构。
 
 **集成 + /live-test**:
-- [x] launcher 接 `StrategyEvaluator` Actor + 注册 `StrategyRegistry`(配置加载)+ 通过
+- [x] launcher 以 `add_strategy` 接 `StrategyEvaluator` + 注册 `StrategyRegistry`(配置加载)+ 通过
   `ArbContext` 共享 PairRegistry / PairInFlightGate。覆盖见
   `tests/arbitrage/launchers/test_arb_node.py` 与 `tests/arbitrage/strategy/test_evaluator.py`。
 - [ ] /live-test:小 scope 配置 + 实盘小单跑通 evaluate → submit

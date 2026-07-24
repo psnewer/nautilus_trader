@@ -521,10 +521,9 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 ## 9. 凭证 / 安全(P11 落点)
 
 - 凭证字段 **不进任何 commit-able 文件**(`.gitignore` 已加 `default_config.json` / `.env` / `*.credentials.json`)
-- 旧 `src/arbitrage/services/web_gateway/default_config.json` 含历史明文凭证,**已在 git 历史**,需:
+- 已删除的 legacy WebGateway 配置曾含历史明文凭证，**仍在 git 历史**,需:
   1. 用户**轮换所有凭证**(PM API key / OE 账户密码)
-  2. `git rm --cached <file>` + commit 停止跟踪
-  3. (可选)`git filter-repo` 重写历史
+  2. (可选)`git filter-repo` 重写历史
 - 新 `arb_config.json` schema **不接受**凭证字段从 JSON 注入,loader 在 §5 检测到 JSON 中存在凭证字段时 → `ConfigWarning` 提醒
 
 ---

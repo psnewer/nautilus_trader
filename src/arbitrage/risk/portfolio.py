@@ -2,7 +2,7 @@
 ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / outcome share 等持仓指标。
 
 详细设计:`docs/arbitrage/architectures/risk/architecture.md §3.2 / §4.1 / §4.2`。
-公式平移自旧 `services/risk/position.py`,但**腿来源改为从 NT Cache 的 Position 反推**
+公式使用当前 outcome exposure 契约，**腿来源从 NT Cache 的 Position 反推**
 (不再自维护 _positions dict)。
 
 **pair_id 来源(#34 修正)**:由 matching 算出,经 `PairRegistry` 暴露;本类经 `_resolve_pair_id`

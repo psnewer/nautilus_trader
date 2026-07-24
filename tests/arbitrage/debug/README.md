@@ -1,5 +1,9 @@
 # debug 测试
 
+**旧栈清理(2026-07-23 #271)**:旧 `docs/arbitrage/debug-framework.md` 与
+`src/arbitrage/services/debug/` 已删除。当前设计真理源是
+`docs/arbitrage/architectures/_cross-cutting/debug-injection.md`，本 README 是测试真理源。
+
 对应章节: `refactor.md §6.6 / #38`;详细设计 `architectures/_cross-cutting/debug-injection.md`
 
 **Q11 框架基础落地(2026-05-24 #38)**:`DebugConfig` + `DebugArbitrageLiveRiskEngine.skip_check_size` + bootstrap 接线已落,**17 passed**。

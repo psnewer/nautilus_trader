@@ -16,14 +16,13 @@ OrbitExchExecutionClient —— OE 自写执行客户端(§3.2)。
 
 **离线可测**:`oe_balance_to_account_balances` 纯映射、`_on_general_frame` 路由、`_modify_order`
 拒绝、`_submit_order` session 门控(注入 fake `_place_via_executor`)。
-**live 待验**:真 browser/executor 构造、NT Order→executor 旧 Order 翻译、`CURRENT_BETS` 单 bet
+**live 待验**:真 browser/executor 构造、NT Order→executor 冻结请求翻译、`CURRENT_BETS` 单 bet
 item→`generate_order_*`/report(item schema 待 populated 抓帧)、reports。
 """
 
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
@@ -32,10 +31,12 @@ from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchOrderRequest
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
@@ -65,7 +66,7 @@ def _resolve_future(fut) -> None:
 
 
 def _oe_result_is_transport_unknown(result) -> bool:
-    response = getattr(result, "venue_response", None)
+    response = result.get("venue_response") if isinstance(result, dict) else None
     return isinstance(response, dict) and bool(response.get("_transport_error"))
 
 
@@ -83,8 +84,8 @@ def _coerce_handicap(value) -> float:
     return h
 
 
-def nt_order_to_legacy_order(nt_order, inst):
-    """Gap C(#63)纯映射:NT `Order` + OE `BettingInstrument` → executor 旧 `Order`。
+def nt_order_to_executor_order(nt_order, inst) -> OrbitExchOrderRequest | None:
+    """NT `Order` + OE `BettingInstrument` → executor 无状态请求。
 
     - `market_id`/`selection_id`/`handicap` 取自 OE instrument 属性(缺 → None,调用方判失败)
     - side:NT `BUY`→`BACK` / `SELL`→`LAY`(OE)
@@ -93,25 +94,20 @@ def nt_order_to_legacy_order(nt_order, inst):
     """
     from nautilus_trader.model.enums import OrderSide as _NTOrderSide
 
-    from src.arbitrage.common.order_models import Order as _Order
-    from src.arbitrage.common.order_models import OrderSide as _OrderSide
-    from src.arbitrage.common.order_models import OrderType as _OrderType
-    from src.arbitrage.common.order_models import Venue as _Venue
-
     market_id = str(getattr(inst, "market_id", "") or "")
     selection_id = str(getattr(inst, "selection_id", "") or "")
     if not market_id or not selection_id:
         return None
-    side = _OrderSide.BACK if nt_order.side == _NTOrderSide.BUY else _OrderSide.LAY
-    return _Order(
-        venue=_Venue.ORBITEXCH,
+    side = "BACK" if nt_order.side == _NTOrderSide.BUY else "LAY"
+    return OrbitExchOrderRequest(
+        client_order_id=str(nt_order.client_order_id),
         market_id=market_id,
         selection_id=selection_id,
         handicap=_coerce_handicap(getattr(inst, "selection_handicap", None)),
         side=side,
         price=float(nt_order.price),
         size=float(nt_order.quantity),
-        order_type=_OrderType.GTC,
+        order_type="GTC",
     )
 
 
@@ -466,14 +462,18 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         order = command.order
         try:
             result = await self._place_via_executor(order)
-            if result is None or not result.success:
+            if result is None or not result.get("success"):
                 if result is not None and _oe_result_is_transport_unknown(result):
                     self._log.warning(
                         "OE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
-                        f"client_order_id={order.client_order_id}: {result.message}",
+                        f"client_order_id={order.client_order_id}: {result.get('message')}",
                     )
                     return
-                reason = (result.message if result is not None else "no executor result") or "submit failed"
+                reason = (
+                    result.get("message")
+                    if result is not None
+                    else "no executor result"
+                ) or "submit failed"
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id, instrument_id=order.instrument_id,
                     client_order_id=order.client_order_id, reason=reason,
@@ -483,7 +483,9 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             # ack 不在此处触发(不再是回执即 ack):暂存 offerId -> client_order_id,
             # 等下一条 CURRENT_BETS 帧(不论是否已成交)首次带出这个 offerId 时才 ack,
             # 见 `_on_current_bets`。
-            venue_order_id = str(result.order.venue_order_id or order.client_order_id.value)
+            venue_order_id = str(
+                result.get("venue_order_id") or order.client_order_id.value,
+            )
             self._pending_accept[venue_order_id] = order.client_order_id
         except Exception as e:
             self._log.warning(
@@ -492,15 +494,15 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             )
 
     async def _place_via_executor(self, nt_order):
-        """NT Order → executor 旧 Order(`nt_order_to_legacy_order`)→ `executor.place_order`(Playwright)。
+        """NT Order → 无状态 executor request → `executor.place_order`(Playwright)。
         Gap C(#63):仅**非 skip** 模式触达(SkipExecution `_submit_order` 在 skip 时 mock 不 super)。
         `_executor`/`_page` 由 `_connect` 设(待真接线)。"""
         inst = self._cache.instrument(nt_order.instrument_id)
         if inst is None:
             self._log.error(f"OE place: instrument {nt_order.instrument_id} not in cache")
             return None
-        legacy = nt_order_to_legacy_order(nt_order, inst)
-        if legacy is None:
+        request = nt_order_to_executor_order(nt_order, inst)
+        if request is None:
             self._log.error(f"OE place: {nt_order.instrument_id} missing market_id/selection_id")
             return None
         if self._executor is None:
@@ -513,7 +515,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             ts_event=self._clock.timestamp_ns(),
         )
         return await asyncio.wait_for(
-            self._run_page_write(lambda: self._executor.place_order(legacy, self._page)),
+            self._run_page_write(lambda: self._executor.place_order(request, self._page)),
             timeout=self._order_io_timeout_secs,
         )
 
@@ -534,9 +536,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     ) -> None:
         """Gap C(#63):NT cancel → executor.cancel_order(需 venue_order_id)→ NT canceled/rejected 事件。
         仅非 skip 触达;/live-test 验。"""
-        from src.arbitrage.common.order_models import Order as _Order
-        from src.arbitrage.common.order_models import Venue as _Venue
-
         nt_order = self._cache.order(client_order_id)
         voi = venue_order_id or (nt_order.venue_order_id if nt_order is not None else None)
         now = self._clock.timestamp_ns()
@@ -550,15 +549,14 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             return
         inst = self._cache.instrument(instrument_id)
         bet = self._current_bets.get(str(voi))
-        legacy = _Order(
-            venue=_Venue.ORBITEXCH,
-            venue_order_id=str(voi),
-            market_id=str(getattr(inst, "market_id", "") or (bet or {}).get("marketId", "")),
-            selection_id=str(getattr(inst, "selection_id", "") or (bet or {}).get("selectionId", "")),
+        market_id = str(
+            getattr(inst, "market_id", "") or (bet or {}).get("marketId", ""),
         )
         try:
             result = await asyncio.wait_for(
-                self._run_page_write(lambda: self._executor.cancel_order(legacy, self._page)),
+                self._run_page_write(
+                    lambda: self._executor.cancel_order(market_id, str(voi), self._page),
+                ),
                 timeout=self._order_io_timeout_secs,
             )
         except Exception as e:  # noqa: BLE001 — 结果未知,保留 PENDING_CANCEL 给 NT inflight reconcile
@@ -567,7 +565,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 f"client_order_id={client_order_id}, venue_order_id={voi}: {e!r}",
             )
             return
-        if result is not None and getattr(result, "success", False):
+        if result is not None and result.get("success"):
             self._log.info(
                 f"OE cancel request accepted: client_order_id={client_order_id}, "
                 f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
@@ -576,10 +574,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             if result is not None and _oe_result_is_transport_unknown(result):
                 self._log.warning(
                     "OE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
-                    f"client_order_id={client_order_id}, venue_order_id={voi}: {result.message}",
+                    f"client_order_id={client_order_id}, venue_order_id={voi}: "
+                    f"{result.get('message')}",
                 )
                 return
-            reason = (getattr(result, "message", None) if result is not None else None) or "cancel failed"
+            reason = (result.get("message") if result is not None else None) or "cancel failed"
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
 
     async def _query_order(self, command) -> None:
@@ -614,7 +613,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             return
         result = await self._executor.cancel_all_unmatched(self._page)
-        self._log.info(f"OE cancel_all_unmatched: success={getattr(result, 'success', None)}")
+        self._log.info(f"OE cancel_all_unmatched: success={result.get('success')}")
 
     async def _cancel_residual_one(self, order) -> None:
         """Gap C(#63):撤一条残单 —— 复用 `_cancel_one`(order 是 NT Order)。#105:循环 + exec_count

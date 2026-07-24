@@ -1,5 +1,5 @@
 """
-MatchEngine —— 跨 venue 队名相似度匹配(平移自旧 `services/market_matching/engine.py`)。
+MatchEngine —— 跨 venue 队名相似度匹配。
 
 算法逻辑原样保留(P2 领域 IP 保留):
 1. 按 `(sport, competition)` 完全相等分组

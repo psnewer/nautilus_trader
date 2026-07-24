@@ -10,7 +10,7 @@
   4. `node.add_*_client_factory(...)`               →  enabled data sources + enabled venues
   5. `node.build()`                                  →  factory.create 读 ArbContext 构造 client
   6. `wire_arbitrage_runtime(node, params=...)`     →  注入 ArbRiskParams 到已构造的 Portfolio/RiskEngine
-  7. Actors:MarketMatchingActor + StrategyEvaluator + optional WebGatewayActor
+  7. Components:MarketMatchingActor + StrategyEvaluator Strategy + optional WebGatewayActor
   8. `node.run()` / `node.dispose()`
 
 当前 factory 注册由 Venue/DataSource Registry 驱动;PMSPORTS 是 data source,不是 trading venue。
@@ -65,7 +65,6 @@ from src.arbitrage.config.dispatcher import to_arbitrage_params
 from src.arbitrage.config.dispatcher import to_debug_config
 from src.arbitrage.config.dispatcher import to_market_matching_actor_config
 import src.arbitrage.config.dispatcher as config_dispatcher
-from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
@@ -260,9 +259,9 @@ def add_actors(
     Data factories 已在 `node.build()` 期间构造 DataClient / Provider;周期发现由各
     DataClient 原生 `_update_instruments` 负责,launcher 这里只装配业务 Actor。
 
-    构造 Actor + `node.trader.add_actor`:
+    构造运行组件:
       - `MarketMatchingActor`
-      - `StrategyEvaluator`(`is_execution_active` Q19 桥到 exec client 的 `_execution_active`)
+      - `StrategyEvaluator` Strategy(`is_execution_active` Q19 桥到 exec client 的 `_execution_active`)
 
     `loop` 用 `asyncio.get_event_loop()`。
 
@@ -289,7 +288,7 @@ def add_actors(
     )
 
     # StrategyEvaluator:消费 MatchedPair / OrderBookDeltas + 评估 Strategy 树
-    node.trader.add_actor(
+    node.trader.add_strategy(
         StrategyEvaluator(
             config=to_strategy_evaluator_config(cfg),
             deps=StrategyDeps(

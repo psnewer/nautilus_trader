@@ -1,9 +1,10 @@
-"""Gap C(#63):OE exec `nt_order_to_legacy_order` 纯映射(NT Order → executor 旧 Order)。
+"""OE execution 无状态请求翻译与 payload 映射。
 
 真 `executor.place_order`(Playwright)+ `_connect`(登录/page/WS)经 /live-test 验(真钱,
 skip_execution=false);本文件只测无 Playwright 的翻译逻辑。
 """
 
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
@@ -11,15 +12,14 @@ import pytest
 from nautilus_trader.adapters.orbitexch.execution import bet_order_progress
 from nautilus_trader.adapters.orbitexch.execution import current_bets_to_fills
 from nautilus_trader.adapters.orbitexch.execution import normalize_current_bets_to_usd
-from nautilus_trader.adapters.orbitexch.execution import nt_order_to_legacy_order
+from nautilus_trader.adapters.orbitexch.execution import nt_order_to_executor_order
 from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchOrderRequest
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.instruments.betting import null_handicap
 
 from src.arbitrage.common.execution_config import ExecutionConfig
-from src.arbitrage.common.order_models import Order
-from src.arbitrage.common.order_models import OrderSide as ArbOrderSide
-from src.arbitrage.common.order_models import Venue
 
 
 def _inst(market_id="1-258848983", selection_id="39835947", handicap=None):
@@ -31,34 +31,61 @@ def _inst(market_id="1-258848983", selection_id="39835947", handicap=None):
 
 
 def _nt(side=OrderSide.BUY, price=2.5, qty=10.0):
-    return SimpleNamespace(instrument_id="x.ORBITEXCH", side=side, price=price, quantity=qty)
+    return SimpleNamespace(
+        client_order_id=ClientOrderId("O-1"),
+        instrument_id="x.ORBITEXCH",
+        side=side,
+        price=price,
+        quantity=qty,
+    )
+
+
+def _request(**overrides):
+    values = {
+        "client_order_id": "O-1",
+        "market_id": "1.23",
+        "selection_id": "456",
+        "handicap": 0.0,
+        "side": "BACK",
+        "price": 2.5,
+        "size": 20.0,
+    }
+    values.update(overrides)
+    return OrbitExchOrderRequest(**values)
 
 
 def test_buy_maps_to_back():
-    o = nt_order_to_legacy_order(_nt(side=OrderSide.BUY), _inst())
-    assert o.side.value == "BACK"
+    o = nt_order_to_executor_order(_nt(side=OrderSide.BUY), _inst())
+    assert o.side == "BACK"
     assert o.market_id == "1-258848983" and o.selection_id == "39835947"
     assert o.price == 2.5 and o.size == 10.0
-    assert o.order_type.value == "GTC"
-    assert o.venue.value == "orbitexch"
+    assert o.order_type == "GTC"
+    assert o.client_order_id == "O-1"
 
 
 def test_sell_maps_to_lay():
-    assert nt_order_to_legacy_order(_nt(side=OrderSide.SELL), _inst()).side.value == "LAY"
+    assert nt_order_to_executor_order(_nt(side=OrderSide.SELL), _inst()).side == "LAY"
 
 
 def test_null_handicap_coerced_to_zero():
     """null_handicap(NT sentinel -9999999.0)→ 0.0(match-odds 无 handicap)。"""
-    assert nt_order_to_legacy_order(_nt(), _inst()).handicap == 0.0
+    assert nt_order_to_executor_order(_nt(), _inst()).handicap == 0.0
 
 
 def test_real_handicap_preserved():
-    assert nt_order_to_legacy_order(_nt(), _inst(handicap=2.5)).handicap == 2.5
+    assert nt_order_to_executor_order(_nt(), _inst(handicap=2.5)).handicap == 2.5
 
 
 def test_missing_market_or_selection_returns_none():
-    assert nt_order_to_legacy_order(_nt(), _inst(market_id="")) is None
-    assert nt_order_to_legacy_order(_nt(), _inst(selection_id="")) is None
+    assert nt_order_to_executor_order(_nt(), _inst(market_id="")) is None
+    assert nt_order_to_executor_order(_nt(), _inst(selection_id="")) is None
+
+
+def test_executor_order_request_is_frozen():
+    order = _request()
+
+    with pytest.raises(FrozenInstanceError):
+        order.size = 10.0
 
 
 def test_oe_executor_converts_usd_size_to_gbp_payload():
@@ -81,20 +108,16 @@ def test_oe_executor_converts_usd_size_to_gbp_payload():
             bet_uuid = payload["payload"]["1.23"][0]["betUuid"]
             return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
 
-    order = Order(
-        venue=Venue.ORBITEXCH,
-        market_id="1.23",
-        selection_id="456",
-        side=ArbOrderSide.BACK,
-        price=2.5,
-        size=20.0,
-    )
+    order = _request()
     executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=lambda: 1.25)
 
     result = asyncio.run(executor.place_order(order, _Page()))
 
-    assert result.success is True
+    assert result["success"] is True
+    assert result["venue_order_id"] == "OID-1"
     assert captured["payload"]["1.23"][0]["size"] == 16.0
+    assert not hasattr(executor, "_orders")
+    assert not hasattr(executor, "_venue_orders")
 
 
 def test_oe_executor_preserves_transport_error_marker():
@@ -111,18 +134,11 @@ def test_oe_executor_preserves_transport_error_marker():
         async def evaluate(self, _script, payload):
             return {"error": "Failed to fetch", "_transport_error": True}
 
-    order = Order(
-        venue=Venue.ORBITEXCH,
-        market_id="1.23",
-        selection_id="456",
-        side=ArbOrderSide.BACK,
-        price=2.5,
-        size=20.0,
-    )
+    order = _request()
     result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).place_order(order, _Page()))
 
-    assert result.success is False
-    assert result.venue_response["_transport_error"] is True
+    assert result["success"] is False
+    assert result["venue_response"]["_transport_error"] is True
 
 
 def test_oe_executor_classifies_empty_response_as_transport_unknown():
@@ -139,18 +155,11 @@ def test_oe_executor_classifies_empty_response_as_transport_unknown():
         async def evaluate(self, _script, payload):
             return None
 
-    order = Order(
-        venue=Venue.ORBITEXCH,
-        market_id="1.23",
-        selection_id="456",
-        side=ArbOrderSide.BACK,
-        price=2.5,
-        size=20.0,
-    )
+    order = _request()
     result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).place_order(order, _Page()))
 
-    assert result.success is False
-    assert result.venue_response["_transport_error"] is True
+    assert result["success"] is False
+    assert result["venue_response"]["_transport_error"] is True
 
 
 def test_cancel_all_unmatched_api_failure_has_no_ui_fallback():
@@ -172,8 +181,8 @@ def test_cancel_all_unmatched_api_failure_has_no_ui_fallback():
 
     result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).cancel_all_unmatched(_Page()))
 
-    assert result.success is False
-    assert result.message == "cancel failed"
+    assert result["success"] is False
+    assert result["message"] == "cancel failed"
 
 
 def test_oe_executor_does_not_expose_legacy_take_at_market():

@@ -83,7 +83,7 @@ class EvalResult:
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
     """Q21 主算法:递归求值 condition 嵌套树,**无副作用**(不执行 action)。
 
-    与 `StrategyEvaluator` 解耦:Actor 只做 orchestration(live state / gather / fire),
+    与 `StrategyEvaluator` 解耦:运行时 Strategy 只做 orchestration(live state / gather / fire),
     本函数纯逻辑可全单测。
 
     1. `self_hits.eval(ctx)` False → `EvalResult(hit=False)`

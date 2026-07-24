@@ -1,10 +1,9 @@
 """
 Matching 归一:从 NT instruments(每条腿一个 instrument)反推每 venue 的事件视图。
 
-NormalizedEvent 形态平移自旧 `services/market_matching/normalizer.py`,但
-**输入改为 NT instruments**(读 instrument.info 的 event matching 字段)。
+NormalizedEvent 输入为 NT instruments(读 instrument.info 的 event matching 字段)。
 
-`normalize_team_name`:队名预处理(去 / 去空格),平移自旧 `EventNormalizer.normalize_team_name`,
+`normalize_team_name`:队名预处理(去 / 去空格)，
 独立成模块函数(无需 venue-aware 配置对象,sport/competition 别名由 Provider 在填 info 时已应用)。
 """
 

@@ -962,53 +962,83 @@ def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
     _run(scenario())
 
 
-class _FailingRetryManager:
-    def __init__(self, fail_name: str):
-        self.fail_name = fail_name
-        self.result = True
-        self.message = None
-        self.run_calls = []
+class _FailedReportRetryManager:
+    result = False
+    message = "transport unavailable"
+    last_exception = RuntimeError(message)
 
-    async def run(self, name, details, func, *args, **kwargs):
-        self.run_calls.append(name)
-        if name == self.fail_name:
-            self.result = False
-            self.message = "transport unavailable"
-            return None
-        self.result = True
-        return []
+    async def run(self, *_args, **_kwargs):
+        return None
 
 
-class _FailingRetryPool:
-    def __init__(self, fail_name: str):
-        self.manager = _FailingRetryManager(fail_name)
+class _FailedReportRetryPool:
+    def __init__(self):
+        self.manager = _FailedReportRetryManager()
+        self.released = False
 
     async def acquire(self):
         return self.manager
 
-    async def release(self, _manager):
-        return None
+    async def release(self, manager):
+        assert manager is self.manager
+        self.released = True
 
 
-def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
-    """PM RetryManager 返回 None 时,不能把空 reports 当作 order liveness alive。"""
+@pytest.mark.parametrize(
+    ("method", "command"),
+    [
+        (
+            PolymarketExecutionClient.generate_order_status_reports,
+            SimpleNamespace(instrument_id=None),
+        ),
+        (
+            PolymarketExecutionClient.generate_order_status_report,
+            SimpleNamespace(
+                instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+                client_order_id=ClientOrderId("O-1"),
+                venue_order_id=VenueOrderId("V-1"),
+            ),
+        ),
+        (
+            PolymarketExecutionClient.generate_fill_reports,
+            SimpleNamespace(instrument_id=None, start=None, end=None),
+        ),
+    ],
+)
+def test_polymarket_report_methods_restore_retry_manager_failure(method, command):
+    """三个 report 入口都恢复原异常，并在异常路径归还 manager。"""
 
+    async def scenario():
+        pool = _FailedReportRetryPool()
+        client = SimpleNamespace(
+            _log=_Log(),
+            _retry_manager_pool=pool,
+            _http_client=SimpleNamespace(
+                get_open_orders=lambda **_kwargs: [],
+                get_order=lambda **_kwargs: None,
+                get_trades=lambda **_kwargs: [],
+            ),
+            _maintain_active_market=lambda _instrument_id: _noop_async(),
+        )
+
+        with pytest.raises(RuntimeError, match="transport unavailable"):
+            await method(client, command)
+
+        assert pool.released
+
+    _run(scenario())
+
+
+def test_arb_generate_order_reports_failure_marks_dead(monkeypatch):
     async def fake_super(self, command):
-        retry_manager = await self._retry_manager_pool.acquire()
-        try:
-            await retry_manager.run("generate_order_status_reports", [], None)
-        finally:
-            await self._retry_manager_pool.release(retry_manager)
-        return []
+        raise RuntimeError("transport unavailable")
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
         client._venue_liveness = VenueExecutionLiveness()
-        client._retry_manager_pool = _FailingRetryPool("generate_order_status_reports")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        # #259(修订 #122):retry 吞掉的失败同样是"查询失败"而非"无挂单" → mark_dead + 抛出
-        with pytest.raises(RuntimeError, match="PM order status reports failed"):
+        with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_reports(SimpleNamespace())
 
         assert not client._venue_liveness.order_alive(POLYMARKET)
@@ -1018,64 +1048,21 @@ def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
     _run(scenario())
 
 
-def test_arb_generate_single_order_report_retry_failure_marks_dead(monkeypatch):
-    """single order report 查询失败也必须使 order liveness dead。"""
-
+def test_arb_generate_single_order_report_failure_marks_dead(monkeypatch):
     async def fake_super(self, command, *, retry=True):
-        retry_manager = await self._retry_manager_pool.acquire()
-        try:
-            await retry_manager.run("generate_order_status_report", [], None)
-        finally:
-            await self._retry_manager_pool.release(retry_manager)
-        return None
+        raise RuntimeError("transport unavailable")
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
         client._venue_liveness = VenueExecutionLiveness()
-        client._retry_manager_pool = _FailingRetryPool("generate_order_status_report")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        # #259:三个 report 方法统一为 mark_dead + raise。注意区分「查询失败」(抛)与
-        # 「venue 查无此单」(仍返 None,NT 契约合法值)——见 test_..._returns_none_when_not_found。
-        with pytest.raises(RuntimeError, match="PM order status report failed"):
+        with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_report(SimpleNamespace())
 
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
-
-    _run(scenario())
-
-
-def test_arb_generate_order_reports_fill_retry_failure_marks_dead(monkeypatch):
-    """bulk order reports 内部 fill report 查询失败也必须使 order liveness dead。"""
-
-    async def fake_super(self, command):
-        retry_manager = await self._retry_manager_pool.acquire()
-        try:
-            await retry_manager.run("generate_order_status_reports", [], None)
-        finally:
-            await self._retry_manager_pool.release(retry_manager)
-        retry_manager = await self._retry_manager_pool.acquire()
-        try:
-            await retry_manager.run("generate_fill_reports", [], None)
-        finally:
-            await self._retry_manager_pool.release(retry_manager)
-        return []
-
-    async def scenario():
-        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
-        client._venue_liveness = VenueExecutionLiveness()
-        client._retry_manager_pool = _FailingRetryPool("generate_fill_reports")
-        client._venue_liveness.mark_order_alive(POLYMARKET)
-
-        # #259(修订 #122):bulk 内部 fill 查询失败同样 mark_dead + 抛出
-        with pytest.raises(RuntimeError, match="PM order status reports failed"):
-            await client.generate_order_status_reports(SimpleNamespace())
-
-        assert not client._venue_liveness.order_alive(POLYMARKET)
-
-    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
 
     _run(scenario())
 

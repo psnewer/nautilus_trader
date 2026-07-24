@@ -575,9 +575,9 @@ def _add_actors_setup(monkeypatch, *, pm_provider=None, oe_provider=None):
     return fake_loop
 
 
-def test_add_actors_2_total_matching_and_strategy(monkeypatch):
+def test_add_actors_registers_matching_actor_and_evaluator_strategy(monkeypatch):
     """#58(slice A):InstrumentRefresher 退役(发现迁 DataClient 原生 _update_instruments)→
-    add_actors 只装 MarketMatchingActor + StrategyEvaluator;provider 有无不再影响 actor 数。"""
+    add_actors 装 MarketMatchingActor + StrategyEvaluator Strategy。"""
     pm_prov, oe_prov = MagicMock(name="pm_prov"), MagicMock(name="oe_prov")
     _add_actors_setup(monkeypatch, pm_provider=pm_prov, oe_provider=oe_prov)
     node = MagicMock()
@@ -585,18 +585,20 @@ def test_add_actors_2_total_matching_and_strategy(monkeypatch):
 
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
-    assert node.trader.add_actor.call_count == 2
+    assert node.trader.add_actor.call_count == 1
+    assert node.trader.add_strategy.call_count == 1
 
 
 def test_add_actors_skips_web_gateway_when_disabled(monkeypatch):
-    """web.enabled=false(默认)→ 不构造 WebGatewayActor,仍只 2 个 actor。"""
+    """web.enabled=false(默认)→ 1 actor + 1 strategy。"""
     _add_actors_setup(monkeypatch)
     node = MagicMock()
     node.kernel.portfolio = MagicMock(name="portfolio")
 
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
-    assert node.trader.add_actor.call_count == 2
+    assert node.trader.add_actor.call_count == 1
+    assert node.trader.add_strategy.call_count == 1
 
 
 def test_add_actors_wires_web_gateway_when_enabled(monkeypatch):
@@ -610,7 +612,8 @@ def test_add_actors_wires_web_gateway_when_enabled(monkeypatch):
 
     arb_node.add_actors(node, _cfg(web={"enabled": True}), pair_registry=PairRegistry())
 
-    assert node.trader.add_actor.call_count == 3
+    assert node.trader.add_actor.call_count == 2
+    assert node.trader.add_strategy.call_count == 1
     web_actor = node.trader.add_actor.call_args_list[-1].args[0]
     assert isinstance(web_actor, WebGatewayActor)
     assert web_actor._risk_engine is risk_sentinel
@@ -624,9 +627,7 @@ def test_add_actors_strategy_evaluator_receives_portfolio_from_kernel(monkeypatc
 
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
-    # 最后一个 actor 是 StrategyEvaluator;它内部 _portfolio 是 kernel.portfolio
-    last_call = node.trader.add_actor.call_args_list[-1]
-    strategy_evaluator = last_call.args[0]
+    strategy_evaluator = node.trader.add_strategy.call_args.args[0]
     assert strategy_evaluator._portfolio is portfolio_sentinel
 
 
@@ -676,7 +677,7 @@ def test_add_actors_wires_strategy_evaluator_with_real_is_execution_active(monke
 
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
-    strategy_evaluator = node.trader.add_actor.call_args_list[-1].args[0]
+    strategy_evaluator = node.trader.add_strategy.call_args.args[0]
     assert strategy_evaluator._is_execution_active() is True
     # 切换 client 状态后,callable 再调反映最新
     pm_client._execution_active = False

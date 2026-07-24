@@ -8,11 +8,9 @@ OrbitExch 订单执行器
 2. 撤单:通过 OE API 撤单
 """
 
-import json
 import logging
 import time
-import uuid
-from typing import Any
+from dataclasses import dataclass
 from typing import Callable
 
 from playwright.async_api import Page
@@ -20,15 +18,20 @@ from playwright.async_api import Page
 from nautilus_trader.adapters.orbitexch.web import oe_csrf_token
 
 from src.arbitrage.common.execution_config import ExecutionConfig
-from src.arbitrage.common.order_models import (
-    Order,
-    OrderSide,
-    OrderStatus,
-    OrderType,
-    ExecutionResult,
-    CancelResult,
-    Venue,
-)
+
+
+@dataclass(frozen=True)
+class OrbitExchOrderRequest:
+    """OE executor 的无状态下单请求。订单生命周期只由 NT Cache 管理。"""
+
+    client_order_id: str
+    market_id: str
+    selection_id: str
+    handicap: float
+    side: str
+    price: float
+    size: float
+    order_type: str = "GTC"
 
 
 class OrbitExchExecutor:
@@ -54,10 +57,6 @@ class OrbitExchExecutor:
         # 页面引用 (从 OrbitExchOddsClient 获取)
         self._pages: dict[str, Page] = {}  # competition_id -> Page
 
-        # 订单追踪
-        self._orders: dict[str, Order] = {}  # order_id -> Order
-        self._venue_orders: dict[str, str] = {}  # bet_uuid -> order_id
-
     def set_page(self, competition_id: str, page: Page) -> None:
         """
         设置页面引用
@@ -69,33 +68,28 @@ class OrbitExchExecutor:
         self._pages[competition_id] = page
         self._log.debug(f"Page set for competition: {competition_id}")
 
-    async def place_order(self, order: Order, page: Page | None = None) -> ExecutionResult:
+    async def place_order(
+        self,
+        order: OrbitExchOrderRequest,
+        page: Page | None = None,
+    ) -> dict:
         """
         下单
 
         通过 HTTP POST 请求执行下单。
 
         Args:
-            order: 订单
+            order: 冻结的 OE 下单请求
             page: Playwright 页面 (可选，用于获取 cookies/csrf)
 
         Returns:
             执行结果
         """
-        if order.venue != Venue.ORBITEXCH:
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message=f"Invalid venue: {order.venue}",
-            )
-
         if not page and not self._pages:
-            self._log.error(f"Order {order.order_id} failed: No OrbitExch page available for execution")
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message="No page available for execution",
+            self._log.error(
+                f"Order {order.client_order_id} failed: no OrbitExch execution page",
             )
+            return {"success": False, "message": "No page available for execution"}
 
         # 获取可用页面
         if not page:
@@ -104,14 +98,10 @@ class OrbitExchExecutor:
         # 验证订单数据
         if not order.market_id or not order.selection_id:
             self._log.error(
-                f"Order {order.order_id} failed: missing market_id={order.market_id} "
-                f"or selection_id={order.selection_id}"
+                f"Order {order.client_order_id} failed: missing market_id={order.market_id} "
+                f"or selection_id={order.selection_id}",
             )
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message=f"Missing market_id or selection_id",
-            )
+            return {"success": False, "message": "Missing market_id or selection_id"}
 
         try:
             # order.price 已经是 OrbitExch 的赔率格式（如 2.0 表示 50% 概率）
@@ -127,19 +117,15 @@ class OrbitExchExecutor:
                 self._log.warning(f"Adjusted odds_price to maximum 1000 (was {order.price})")
 
             # 转换方向
-            side = "BACK" if order.side in (OrderSide.BUY, OrderSide.BACK) else "LAY"
+            side = "BACK" if order.side == "BACK" else "LAY"
 
             # 生成唯一的 bet UUID
             bet_uuid = f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{int(time.time() * 1000)}"
 
             fx = self._fx_getter() if self._fx_getter is not None else 1.0
             if fx <= 0:
-                self._log.error(f"Order {order.order_id} failed: invalid fx={fx}")
-                return ExecutionResult(
-                    success=False,
-                    order=order,
-                    message=f"Invalid fx: {fx}",
-                )
+                self._log.error(f"Order {order.client_order_id} failed: invalid fx={fx}")
+                return {"success": False, "message": f"Invalid fx: {fx}"}
             gbp_size = order.size / fx
 
             # 构建请求数据。adapter 外部 order.size 为 USD 口径,OE payload 需要 GBP stake。
@@ -162,7 +148,7 @@ class OrbitExchExecutor:
                 "page": "event",
                 "persistenceType": self.config.orbitexch_default_persistence,
                 "placedUsingEnterKey": False,
-                "fillOrKill": order.order_type == OrderType.FOK,
+                "fillOrKill": order.order_type == "FOK",
             }
 
             payload = {order.market_id: [bet_data]}
@@ -177,9 +163,7 @@ class OrbitExchExecutor:
             # 通过页面上下文发送请求，包含 CSRF token
             csrf_token = await oe_csrf_token(page)
             if not csrf_token:
-                order.status = OrderStatus.REJECTED
-                order.error_message = "CSRF token not found"
-                return ExecutionResult(success=False, order=order, message=order.error_message)
+                return {"success": False, "message": "CSRF token not found"}
 
             response = await page.evaluate(
                 """async ({payload, csrfToken}) => {
@@ -205,9 +189,6 @@ class OrbitExchExecutor:
                 {"payload": payload, "csrfToken": csrf_token},
             )
 
-            order.submitted_at = time.time()
-            order.updated_at = time.time()
-
             # 记录原始响应以便调试
             self._log.info(f"OrbitExch API response: {response}")
 
@@ -218,37 +199,30 @@ class OrbitExchExecutor:
 
             # 检查全局错误
             if not response:
-                order.status = OrderStatus.REJECTED
-                order.error_message = "No response"
-                return ExecutionResult(
-                    success=False,
-                    order=order,
-                    message=order.error_message,
-                    venue_response={"_transport_error": True},
-                )
+                return {
+                    "success": False,
+                    "message": "No response",
+                    "venue_response": {"_transport_error": True},
+                }
 
             if response.get("error"):
-                order.status = OrderStatus.REJECTED
-                order.error_message = response.get("error")
-                self._log.warning(f"Order rejected: {order.error_message}")
-                return ExecutionResult(
-                    success=False,
-                    order=order,
-                    message=order.error_message,
-                    venue_response=response,
-                )
+                message = str(response.get("error"))
+                self._log.warning(f"Order rejected: {message}")
+                return {
+                    "success": False,
+                    "message": message,
+                    "venue_response": response,
+                }
 
             error_code = response.get("code")
             if error_code and error_code != 200:
-                order.status = OrderStatus.REJECTED
-                order.error_message = response.get("message") or f"code={error_code}"
-                self._log.warning(f"Order rejected: {order.error_message}")
-                return ExecutionResult(
-                    success=False,
-                    order=order,
-                    message=order.error_message,
-                    venue_response=response,
-                )
+                message = str(response.get("message") or f"code={error_code}")
+                self._log.warning(f"Order rejected: {message}")
+                return {
+                    "success": False,
+                    "message": message,
+                    "venue_response": response,
+                }
 
             # 检查市场级别响应
             market_response = response.get(order.market_id)
@@ -258,28 +232,24 @@ class OrbitExchExecutor:
                 venue_order_id = offer_ids.get(bet_uuid)
 
                 if venue_order_id:
-                    order.venue_order_id = str(venue_order_id)
+                    venue_order_id = str(venue_order_id)
                 else:
                     # 如果找不到特定 bet_uuid，取第一个
-                    order.venue_order_id = str(list(offer_ids.values())[0]) if offer_ids else bet_uuid
+                    venue_order_id = (
+                        str(list(offer_ids.values())[0])
+                        if offer_ids
+                        else bet_uuid
+                    )
 
-                order.status = OrderStatus.LIVE
-
-                # 保存订单追踪
-                self._orders[order.order_id] = order
-                self._venue_orders[bet_uuid] = order.order_id
-
-                self._log.info(
-                    f"Order placed: venue_order_id={order.venue_order_id}, "
-                    f"status={order.status.value}"
-                )
-
-                return ExecutionResult(
-                    success=True,
-                    order=order,
-                    message="Order placed successfully",
-                    venue_response=response,
-                )
+                self._log.info(f"Order placed: venue_order_id={venue_order_id}")
+                return {
+                    "success": True,
+                    "venue_order_id": venue_order_id,
+                    "message": "Order placed successfully",
+                    "venue_response": response,
+                    "venue_payload": payload,
+                    "bet_uuid": bet_uuid,
+                }
 
             # 市场级别错误
             if market_response:
@@ -287,81 +257,63 @@ class OrbitExchExecutor:
             else:
                 error_msg = f"No response for market {order.market_id}"
 
-            order.status = OrderStatus.REJECTED
-            order.error_message = error_msg
-            self._log.warning(f"Order rejected: {order.error_message}, response={response}")
-
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message=order.error_message,
-                venue_response=(
+            self._log.warning(f"Order rejected: {error_msg}, response={response}")
+            return {
+                "success": False,
+                "message": error_msg,
+                "venue_response": (
                     response
                     if market_response is not None
                     else {**response, "_transport_error": True}
                 ),
-            )
+            }
 
         except Exception as e:
-            order.status = OrderStatus.FAILED
-            order.error_message = str(e)
-            order.updated_at = time.time()
-
             self._log.error(f"Failed to place order: {e}")
+            return {
+                "success": False,
+                "message": str(e),
+                "venue_response": {"_transport_error": True},
+            }
 
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message=str(e),
-                venue_response={"_transport_error": True},
-            )
-
-    async def cancel_order(self, order: Order, page: Page | None = None) -> CancelResult:
+    async def cancel_order(
+        self,
+        market_id: str,
+        venue_order_id: str,
+        page: Page | None = None,
+    ) -> dict:
         """
         撤销订单
 
         通过 API 撤单执行撤单。
 
         Args:
-            order: 订单
+            market_id: OE market ID
+            venue_order_id: OE offer ID
             page: Playwright 页面
 
         Returns:
             撤单结果
         """
         if not page and not self._pages:
-            self._log.error(f"Cancel failed: no page available (order={order.order_id})")
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                message="No page available",
-            )
+            self._log.error(f"Cancel failed: no page available (order={venue_order_id})")
+            return {"success": False, "message": "No page available"}
 
         if not page:
             page = next(iter(self._pages.values()))
 
-        if not order.venue_order_id:
-            self._log.error(f"Cancel failed: no venue_order_id (order={order.order_id})")
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                message="No venue order ID",
-            )
+        if not venue_order_id:
+            self._log.error("Cancel failed: no venue_order_id")
+            return {"success": False, "message": "No venue order ID"}
 
         try:
-            self._log.info(f"Cancelling order: {order.venue_order_id}")
+            self._log.info(f"Cancelling order: {venue_order_id}")
 
-            if not order.market_id:
+            if not market_id:
                 self._log.error(
-                    f"Cancel failed: missing market_id "
-                    f"(order={order.order_id}, venue_order_id={order.venue_order_id})"
+                    f"Cancel failed: missing market_id (venue_order_id={venue_order_id})",
                 )
-                return CancelResult(
-                    success=False,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="Missing market_id for cancel",
-                )
+                return {"success": False, "message": "Missing market_id for cancel"}
 
             cookies = await page.context.cookies()
             cookie_names = {
@@ -394,12 +346,7 @@ class OrbitExchExecutor:
 
             if not csrf_token:
                 self._log.error("Cancel failed: CSRF token not found in cookies")
-                return CancelResult(
-                    success=False,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="CSRF token not found",
-                )
+                return {"success": False, "message": "CSRF token not found"}
             response = await page.evaluate(
                 """async (payload) => {
                             const trace = [];
@@ -450,9 +397,9 @@ class OrbitExchExecutor:
                     "csrfToken": csrf_token,
                     "cookieHeader": cookie_header,
                     "body": {
-                        order.market_id: [
+                        market_id: [
                             {
-                                "offerId": order.venue_order_id,
+                                "offerId": venue_order_id,
                                 "betType": "EXCHANGE",
                             },
                         ],
@@ -468,119 +415,28 @@ class OrbitExchExecutor:
                     )
 
             if response and not response.get("error"):
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = time.time()
+                self._log.info(f"Order cancelled via API: {venue_order_id}")
+                return {
+                    "success": True,
+                    "message": "Order cancelled via API",
+                    "venue_response": response,
+                }
 
-                self._log.info(f"Order cancelled via API: {order.venue_order_id}")
-
-                return CancelResult(
-                    success=True,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="Order cancelled via API",
-                    venue_response=response,
-                )
-
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                venue_order_id=order.venue_order_id,
-                message=response.get("error", "Cancel failed") if response else "Cancel failed",
-                venue_response=response if response else {"_transport_error": True},
-            )
+            return {
+                "success": False,
+                "message": response.get("error", "Cancel failed") if response else "Cancel failed",
+                "venue_response": response if response else {"_transport_error": True},
+            }
 
         except Exception as e:
             self._log.error(f"Failed to cancel order: {e}")
+            return {
+                "success": False,
+                "message": str(e),
+                "venue_response": {"_transport_error": True},
+            }
 
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                venue_order_id=order.venue_order_id,
-                message=str(e),
-                venue_response={"_transport_error": True},
-            )
-
-    async def _cancel_order_legacy(self, order: Order, page: Page | None = None) -> CancelResult:
-        """
-        旧版撤单流程（暂时保留）
-        """
-        if not page and not self._pages:
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                message="No page available",
-            )
-
-        if not page:
-            page = next(iter(self._pages.values()))
-
-        if not order.venue_order_id:
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                message="No venue order ID",
-            )
-
-        try:
-            self._log.info(f"Cancelling order (legacy): {order.venue_order_id}")
-
-            csrf_token = await oe_csrf_token(page)
-            response = await page.evaluate(
-                """async ({betId, csrfToken}) => {
-                    try {
-                        const response = await fetch('/customer/api/cancelBets', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json, text/plain, */*',
-                                'x-csrf-token': csrfToken || '',
-                                'Origin': window.location.origin,
-                                'Referer': window.location.href,
-                            },
-                            body: JSON.stringify({ betIds: [betId] }),
-                            credentials: 'include',
-                        });
-                        return await response.json();
-                    } catch (error) {
-                        return { error: error.message };
-                    }
-                }""",
-                {"betId": order.venue_order_id, "csrfToken": csrf_token},
-            )
-
-            if response and not response.get("error"):
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = time.time()
-
-                self._log.info(f"Order cancelled via API (legacy): {order.venue_order_id}")
-
-                return CancelResult(
-                    success=True,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="Order cancelled via API (legacy)",
-                    venue_response=response,
-                )
-
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                venue_order_id=order.venue_order_id,
-                message=response.get("error", "Cancel failed"),
-                venue_response=response if response else {},
-            )
-
-        except Exception as e:
-            self._log.error(f"Failed to cancel order (legacy): {e}")
-
-            return CancelResult(
-                success=False,
-                order_id=order.order_id,
-                venue_order_id=order.venue_order_id,
-                message=str(e),
-            )
-
-    async def cancel_all_unmatched(self, page: Page | None = None) -> CancelResult:
+    async def cancel_all_unmatched(self, page: Page | None = None) -> dict:
         """通过 OE API 撤销所有未成交订单。
 
         Args:
@@ -590,11 +446,7 @@ class OrbitExchExecutor:
             撤单结果
         """
         if not page and not self._pages:
-            return CancelResult(
-                success=False,
-                order_id="all",
-                message="No page available",
-            )
+            return {"success": False, "message": "No page available"}
 
         if not page:
             page = next(iter(self._pages.values()))
@@ -627,35 +479,21 @@ class OrbitExchExecutor:
 
             if response and not response.get("error"):
                 self._log.info("All unmatched orders cancelled via API")
+                return {
+                    "success": True,
+                    "message": "All unmatched orders cancelled via API",
+                    "venue_response": response,
+                }
 
-                # 清除本地追踪的活跃订单
-                for order in self._orders.values():
-                    if order.status in (OrderStatus.LIVE, OrderStatus.PARTIALLY_FILLED):
-                        order.status = OrderStatus.CANCELLED
-                        order.updated_at = time.time()
-
-                return CancelResult(
-                    success=True,
-                    order_id="all",
-                    message="All unmatched orders cancelled via API",
-                    venue_response=response,
-                )
-
-            return CancelResult(
-                success=False,
-                order_id="all",
-                message=(response or {}).get("error", "Cancel all unmatched failed"),
-                venue_response=response if response else {},
-            )
+            return {
+                "success": False,
+                "message": (response or {}).get("error", "Cancel all unmatched failed"),
+                "venue_response": response if response else {},
+            }
 
         except Exception as e:
             self._log.error(f"Failed to cancel all unmatched: {e}")
-
-            return CancelResult(
-                success=False,
-                order_id="all",
-                message=str(e),
-            )
+            return {"success": False, "message": str(e)}
 
     async def get_current_bets(self, page: Page | None = None) -> list[dict]:
         """

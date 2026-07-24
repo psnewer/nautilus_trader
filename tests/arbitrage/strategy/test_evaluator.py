@@ -172,7 +172,13 @@ def _harness(
         StrategyEvaluatorConfig(log_evaluations=log_evaluations),
         deps,
     )
-    actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
+    actor.register(
+        trader_id=TraderId("T-000"),
+        portfolio=portfolio,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
     return actor, None, pair_reg, strat_reg, loop, active_flag
 
 
@@ -425,6 +431,33 @@ def test_submitter_wired_into_eval_context():
     assert ctx.submitter is not None              # slice 10a:submitter 已注入
     assert callable(ctx.submitter)
     assert ctx.open_orders_digest is not None
+
+
+def test_submitter_uses_native_strategy_submit_order_path():
+    """原生路径必须先写 NT Cache，再把 SubmitOrder 路由到 RiskEngine。"""
+    from nautilus_trader.execution.messages import SubmitOrder
+    from nautilus_trader.model.identifiers import StrategyId
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    actor, *_ = _harness()
+    instrument = oe_instrument("ATP-native-submit", "home")
+    actor.cache.add_instrument(instrument)
+    commands = []
+    actor.msgbus.register(endpoint="RiskEngine.execute", handler=commands.append)
+
+    _run(actor._make_submitter()({
+        "instrument_id": instrument.id,
+        "side": "BUY",
+        "qty": 7.0,
+        "price": 2.0,
+    }))
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, SubmitOrder)
+    assert command.strategy_id == StrategyId("ARB-EVAL-001")
+    assert actor.cache.order(command.order.client_order_id) is command.order
+    assert actor.cache.orders_open(instrument_id=instrument.id) == []
 
 
 # ── 非目标数据类型(无 pair 信息)→ silently no-op ──────────────

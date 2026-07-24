@@ -6,7 +6,8 @@
 
 基于 **NautilusTrader(NT)** 构建的跨市场体育赛事套利系统:**Polymarket**(gamma 发现 + CLOB 下单)↔ **OrbitExch**(Playwright 抓取的博彩交易所)。真实个人账户、真钱交易。
 
-当前在 `refactor/NT` 分支,正从老的 `src/arbitrage/services/`(web_gateway 微服务栈)迁移到 **NT 原生**架构(`nautilus_trader/adapters/` 自写适配器 + `launchers/arb_node.py` 启动)。
+旧 `src/arbitrage/services/` 微服务栈已删除；当前运行时只使用 **NT 原生**架构
+(`nautilus_trader/adapters/` 自写适配器 + `launchers/arb_node.py` 启动)。
 
 ## ⭐ 先读这个
 
@@ -22,7 +23,8 @@
 | 需求说明 | `docs/arbitrage/requirements/` | 行为真理源(按旧服务名组织,语义仍有效) |
 | 数据库设计 | `docs/arbitrage/database-schema.md` | PostgreSQL / Redis |
 | NautilusTrader | `docs/arbitrage/NautilusTrader.md` | 框架说明、组件职责、适配器开发 |
-| 测试架构 | `docs/arbitrage/debug-framework.md` | 实盘/模拟盘测试架构 |
+| Debug 架构 | `docs/arbitrage/architectures/_cross-cutting/debug-injection.md` | Debug 注入与 mock 边界 |
+| Debug 测试 | `tests/arbitrage/debug/README.md` | skip execution / timeline / mock 用例 |
 | **累积知识** | `docs/arbitrage/agent-notes/INDEX.md` | **从 Claude 记忆迁移**:bug 状态 / Gap C 进展 / 工程陷阱 / 协作经验 |
 
 ## 设计文档分层(单一真理源)
