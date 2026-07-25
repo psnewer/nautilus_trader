@@ -128,9 +128,9 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         logging=LoggingConfig(
             log_level="INFO",
             log_component_levels={
-                "ARB-EVAL": "",  # OrderInitialized(INFO)+ OrderDenied(WARN)都压掉
+                "ARB-EVAL": "ERROR",  # OrderInitialized(INFO)+ OrderDenied(WARN)都压掉
                 "StrategyEvaluator": "WARNING",  # SubmitOrder
-                "RiskEngine": "ERROR",  # deny order 只输出 ERROR 以上
+                "RiskEngine": "WARNING",  # deny order 只输出 ERROR 以上
             },
         ),
         exec_engine=LiveExecEngineConfig(
@@ -381,6 +381,13 @@ def bootstrap_and_build(
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
+    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight, config_path=config_path)
+
+    # 8. (#119)控制台启用时 boot 即 HALTED:真金安全默认,操作员经 web 点 Start 才放行。
+    #    web 关闭则无按钮可解除 → 保持 NT 原生 ACTIVE,否则节点永不交易。
+    if cfg.web.enabled and cfg.web.start_halted:
+        node.kernel.risk_engine.set_trading_state(TradingState.HALTED)
+
     return node, venue_liveness, pair_registry
 
 
