@@ -128,7 +128,7 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         logging=LoggingConfig(
             log_level="INFO",
             log_component_levels={
-                "ARB-EVAL": "WARNING",  # OrderInitialized
+                "ARB-EVAL": "",  # OrderInitialized(INFO)+ OrderDenied(WARN)都压掉
                 "StrategyEvaluator": "WARNING",  # SubmitOrder
                 "RiskEngine": "ERROR",  # deny order 只输出 ERROR 以上
             },
@@ -146,6 +146,13 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             # #111:开连续 open/order 对账(全局)—— 周期调 venue `generate_order_status_reports`:
             # PM 用于 order liveness 失败后的自动恢复;OE 健康时只读 CURRENT_BETS 内存,WS stale 时才 reload。
             open_check_interval_secs=cfg.execution.open_check_interval_secs,
+            # 默认 True 时,cache 里 open、venue open 列表里没有的"幽灵单"(已成交/撤但漏了终态事件)
+            # 只 log 不处理,锁与持仓一直不对齐。设 False 打开 `_handle_missing_orders_at_venue`:
+            # 对这些单做逐单 `get_order` 定向查询,拿真实终态关单、清锁、对齐持仓(攒够
+            # open_check_missing_retries 次 retry 后触发,≈25min 慢速兜底)。与 leaves_qty core patch
+            # 互补:后者保证余额随时正确,本项负责最终清掉幽灵单本身。PM 批量查询本就只回 open 单,
+            # 关键在这条 missing 单的定向查询路径。
+            open_check_open_only=False,
             # #110:开连续 position 对账(全局)—— 周期调 venue `generate_position_status_reports`:
             # PM 据此跑 merge/redeem(fire-and-forget),OE 据此刷 venue_position_alive(WS 新鲜则不 reload)。
             position_check_interval_secs=cfg.execution.position_check_interval_secs,
@@ -374,13 +381,6 @@ def bootstrap_and_build(
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
-    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight, config_path=config_path)
-
-    # 8. (#119)控制台启用时 boot 即 HALTED:真金安全默认,操作员经 web 点 Start 才放行。
-    #    web 关闭则无按钮可解除 → 保持 NT 原生 ACTIVE,否则节点永不交易。
-    if cfg.web.enabled and cfg.web.start_halted:
-        node.kernel.risk_engine.set_trading_state(TradingState.HALTED)
-
     return node, venue_liveness, pair_registry
 
 

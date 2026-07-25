@@ -1141,6 +1141,88 @@ def test_accounts_manager_update_balance_locked_with_base_currency_multiple_orde
     assert account.balance_locked(AUD) is None
 
 
+def test_accounts_manager_locks_leaves_qty_not_full_quantity_on_partial_fill():
+    """
+    ARB PATCH regression: a partially-filled open order must lock only its *unfilled*
+    remainder (leaves_qty), not the full order.quantity.
+
+    The fill path already decrements `total` by the filled notional; locking the full
+    quantity here would double-count the filled portion and understate free by that
+    amount (worst case: an order stuck ~100% filled but still open collapses free to ~0).
+    See `AccountsManager._update_balance_locked` (manager.pyx).
+    """
+    # Arrange - multi-currency cash account (PM-style, no base currency)
+    event = AccountState(
+        account_id=AccountId("SIM-001"),
+        account_type=AccountType.CASH,
+        base_currency=None,
+        reported=True,
+        balances=[
+            AccountBalance(
+                Money(1_000_000.00, USD),
+                Money(0.00, USD),
+                Money(1_000_000.00, USD),
+            ),
+        ],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=0,
+        ts_init=0,
+    )
+    account = CashAccount(event)
+
+    cache = Cache()
+    cache.add_account(account)
+    clock = TestClock()
+    manager = AccountsManager(cache, Logger("AccountManager"), clock)
+
+    order_factory = OrderFactory(
+        trader_id=TraderId("TRADER-001"),
+        strategy_id=StrategyId("S-001"),
+        clock=clock,
+    )
+    order = order_factory.limit(
+        instrument_id=AUDUSD_SIM.id,
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_int(100_000),
+        price=Price.from_str("0.75000"),
+    )
+    order.apply(TestEventStubs.order_submitted(order))
+    order.apply(TestEventStubs.order_accepted(order))
+
+    # Sanity: fully unfilled → lock full notional (100,000 * 0.75 = 75,000)
+    manager.update_orders(
+        account=account,
+        instrument=AUDUSD_SIM,
+        orders_open=[order],
+        ts_event=clock.timestamp_ns(),
+    )
+    assert account.balance_locked(USD) == Money(75_000.00, USD)
+
+    # Act: partially fill 60,000 of 100,000 → leaves 40,000 (order stays open)
+    order.apply(
+        TestEventStubs.order_filled(
+            order,
+            instrument=AUDUSD_SIM,
+            last_qty=Quantity.from_int(60_000),
+            last_px=Price.from_str("0.75000"),
+        ),
+    )
+    assert order.is_open
+    assert order.leaves_qty == Quantity.from_int(40_000)
+
+    manager.update_orders(
+        account=account,
+        instrument=AUDUSD_SIM,
+        orders_open=[order],
+        ts_event=clock.timestamp_ns(),
+    )
+
+    # Assert: locked tracks leaves_qty (40,000 * 0.75 = 30,000), NOT full 75,000
+    assert account.balance_locked(USD) == Money(30_000.00, USD)
+
+
 class TestCashAccountPurge:
     def test_purge_account_events_retains_latest_when_all_events_purged(self):
         # Arrange

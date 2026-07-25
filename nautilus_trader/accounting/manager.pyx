@@ -239,10 +239,19 @@ cdef class AccountsManager:
                 # Does not contribute to locked balance
                 continue
 
+            # ARB PATCH: lock the *unfilled* remainder (leaves_qty), not the full
+            # order.quantity. `update_orders` recomputes locked on every order event,
+            # while the fill path already decrements `total` by the filled notional
+            # (see `_update_balance_multi_currency`). Locking the full quantity here
+            # double-counts the filled portion → free = total - locked is understated
+            # by the filled amount for any partially-filled open order (worst case: an
+            # order stuck ~100% filled but still open, e.g. a Polymarket dust residual,
+            # collapses free to ~0). leaves_qty makes locked track only what is still
+            # resting, so free stays correct across the partial-fill window.
             balance_locked = account.calculate_balance_locked(
                 instrument,
                 order.side,
-                order.quantity,
+                order.leaves_qty,
                 order.price if order.has_price_c() else order.trigger_price,
             )
 
