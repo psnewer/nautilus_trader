@@ -205,7 +205,11 @@ def wire_arbitrage_runtime(
     arbitrage_params = arbitrage_params or ArbitrageParams()
     # 优先用 launcher 已经 prepare 进 ArbContext 的那份(execution factory / matching actor / runtime 共享同一对象)
     venue_liveness = venue_liveness or _arb_context.venue_liveness or VenueExecutionLiveness()
-    pair_registry = _arb_context.pair_registry or PairRegistry()
+    # 必须用 `is not None`,不能用 `or`:wire 时 matching 还没跑,共享 PairRegistry 是空的,而
+    # `PairRegistry.__len__==0` 使空实例 falsy → `or` 会把这个"空但共享"的对象丢掉、new 一个空壳,
+    # 于是 exec engine / portfolio 拿到永不被 matching 填充的孤儿 registry(barrier `_residual_check_
+    # instrument_ids` 永远 own-legs 回退 → recovery 机会永久被误判 "pair open orders changed")。
+    pair_registry = _arb_context.pair_registry if _arb_context.pair_registry is not None else PairRegistry()
 
     portfolio = node.kernel.portfolio
     if not isinstance(portfolio, ArbitragePortfolio):
