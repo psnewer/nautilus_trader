@@ -20,7 +20,6 @@ from nautilus_trader.adapters.polymarket.order_fill_tracker import OrderFillTrac
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
@@ -49,7 +48,9 @@ class TestOrderFillTracker:
         )
         assert tracker.contains(vid)
 
-    def test_snap_fill_qty_dust(self, tracker):
+    def test_snap_fill_qty_dust_no_longer_snaps(self, tracker):
+        # Snapping is disabled: even a dust diff on a reduce SELL must NOT snap up,
+        # else the long is oversold into a dust SHORT (probability-venue invariant).
         vid = VenueOrderId("order-1")
         tracker.register(
             venue_order_id=vid,
@@ -60,10 +61,10 @@ class TestOrderFillTracker:
             price_precision=PRICE_PRECISION,
         )
 
-        # Fill is 23.69 (truncated by CLOB), diff = 0.006681 < 0.01 -> snap
+        # Fill is 23.69 (truncated by CLOB), diff = 0.006681 < 0.01 -> still no snap
         fill_qty = Quantity(23.69, SIZE_PRECISION)
-        snapped = tracker.snap_fill_qty(vid, fill_qty)
-        assert snapped == Quantity(23.696681, SIZE_PRECISION)
+        result = tracker.snap_fill_qty(vid, fill_qty)
+        assert result == fill_qty
 
     def test_snap_fill_qty_no_snap_large_diff(self, tracker):
         vid = VenueOrderId("order-1")
@@ -87,7 +88,9 @@ class TestOrderFillTracker:
         result = tracker.snap_fill_qty(vid, fill_qty)
         assert result == fill_qty
 
-    def test_record_fill_accumulates(self, tracker):
+    def test_dust_residual_disabled_no_synthetic_fill(self, tracker):
+        # Synthetic dust fills are disabled: even a sub-threshold residual must NOT
+        # emit a fill, else a reduce SELL is over-sold into a dust SHORT.
         vid = VenueOrderId("order-1")
         tracker.register(
             venue_order_id=vid,
@@ -101,12 +104,9 @@ class TestOrderFillTracker:
         tracker.record_fill(vid, 50.0, 0.55, 1000)
         tracker.record_fill(vid, 49.997714, 0.55, 2000)
 
-        # Dust check: 100.0 - 99.997714 = 0.002286 < 0.01 -> emit
+        # 100.0 - 99.997714 = 0.002286 < 0.01 but no synthetic fill is emitted
         result = tracker.check_dust_residual(vid)
-        assert result is not None
-        dust_qty, dust_px = result
-        assert abs(float(dust_qty) - 0.002286) < 1e-9
-        assert dust_px == Price(0.55, PRICE_PRECISION)
+        assert result is None
 
     def test_check_dust_no_residual(self, tracker):
         vid = VenueOrderId("order-1")
@@ -144,47 +144,6 @@ class TestOrderFillTracker:
         vid = VenueOrderId("unknown")
         result = tracker.check_dust_residual(vid)
         assert result is None
-
-    def test_dust_uses_last_fill_price(self, tracker):
-        vid = VenueOrderId("order-1")
-        tracker.register(
-            venue_order_id=vid,
-            submitted_qty=Quantity(100.0, SIZE_PRECISION),
-            order_side=OrderSide.BUY,
-            instrument_id=INSTRUMENT_ID,
-            size_precision=SIZE_PRECISION,
-            price_precision=PRICE_PRECISION,
-        )
-
-        tracker.record_fill(vid, 99.995, 0.60, 1000)
-
-        result = tracker.check_dust_residual(vid)
-        assert result is not None
-        dust_qty, dust_px = result
-        # Should use last fill price (0.60), not default
-        assert dust_px == Price(0.60, PRICE_PRECISION)
-
-    def test_dust_settlement_removes_entry(self, tracker):
-        vid = VenueOrderId("order-1")
-        tracker.register(
-            venue_order_id=vid,
-            submitted_qty=Quantity(100.0, SIZE_PRECISION),
-            order_side=OrderSide.BUY,
-            instrument_id=INSTRUMENT_ID,
-            size_precision=SIZE_PRECISION,
-            price_precision=PRICE_PRECISION,
-        )
-
-        tracker.record_fill(vid, 99.995, 0.55, 1000)
-
-        # First check returns dust
-        result = tracker.check_dust_residual(vid)
-        assert result is not None
-
-        # Entry should be removed — second check returns None (no duplicate)
-        assert not tracker.contains(vid)
-        result2 = tracker.check_dust_residual(vid)
-        assert result2 is None
 
     def test_capacity_eviction(self, tracker):
         # Insert CAPACITY + 1 orders

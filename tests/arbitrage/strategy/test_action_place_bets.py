@@ -540,9 +540,8 @@ def test_market_order_disabled_uses_original_price():
     bootstrap.reset_arb_context()
 
 
-@pytest.mark.skip(reason="market_order 最差价替换暂时关闭(place_bets 注释掉);恢复替换时同步取消 skip")
 def test_market_order_enabled_uses_worst_back_price():
-    """打开后用 book 内最差 back 价(最低赔率)下单,不是最优价。"""
+    """提交价用 book 内最差 back 价(最低赔率),但 qty 仍按候选最优价算。"""
     bootstrap.reset_arb_context()
     bootstrap.prepare_arb_context(market_order_enabled=True)
     calls = []
@@ -563,14 +562,14 @@ def test_market_order_enabled_uses_worst_back_price():
 
     _run(PlaceBetsAction().execute(ctx))
 
-    assert calls[0]["price"] == 2.0  # worst back(最低赔率),不是最优的 2.5
+    assert calls[0]["price"] == 2.0  # 提交价 = worst back(最低赔率)
+    assert calls[0]["qty"] == 4.0    # qty 按候选最优价 2.5 算:10/2.5(不是按最差价 2.0 算的 5.0)
     bootstrap.reset_arb_context()
 
 
-@pytest.mark.skip(reason="market_order 最差价替换暂时关闭(place_bets 注释掉);恢复替换时同步取消 skip")
 def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
-    """合成 no 腿(exec_instrument_id 重定向):worst price 来自定价 instrument 的 book
-    (ask←lay 列),提交目标仍是 exec_instrument_id,side 仍是 SELL。"""
+    """合成 no 腿(exec_instrument_id 重定向):提交价用定价 instrument book 的 worst lay
+    (ask←lay 列),提交目标仍是 exec_instrument_id,side 仍 SELL;qty 仍按候选最优价算。"""
     bootstrap.reset_arb_context()
     bootstrap.prepare_arb_context(market_order_enabled=True)
     calls = []
@@ -599,8 +598,8 @@ def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
 
     assert calls[0]["instrument_id"] == exec_iid
     assert calls[0]["side"] == "SELL"
-    assert calls[0]["price"] == 2.5  # worst lay(最高赔率),不是最优的 2.0
-    assert calls[0]["qty"] == 4.0    # share_if_wins(10.0) / price(2.5)
+    assert calls[0]["price"] == 2.5  # 提交价 = worst lay(最高赔率)
+    assert calls[0]["qty"] == 5.0    # qty 按候选最优价 2.0 算:10/2.0(不是按最差价 2.5 算的 4.0)
     bootstrap.reset_arb_context()
 
 

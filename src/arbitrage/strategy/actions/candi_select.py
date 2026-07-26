@@ -46,7 +46,7 @@ class CandiSelectAction(Action):
             survivors = _gate_pool(ctx, recovery, group="recovery")
             group = "recovery"
             if survivors:
-                _LOG.info(
+                _LOG.debug(
                     f"CandiSelect: pair={ctx.pair_id} primary group exhausted, "
                     f"fallback to recovery ({len(survivors)} candidate)"
                 )
@@ -60,7 +60,7 @@ class CandiSelectAction(Action):
         ctx.scratch["selected_candidate"] = selected
         ctx.scratch["legs"] = selected.get("legs", [])
 
-        _LOG.info(
+        _LOG.debug(
             f"CandiSelect: pair={ctx.pair_id} group={group} candidates={len(survivors)} "
             f"selected={selected.get('candidate_id', selected.get('candidate_index'))} "
             f"max_candidate_share={_candidate_score(selected):.4f}"

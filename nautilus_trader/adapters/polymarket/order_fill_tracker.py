@@ -18,19 +18,15 @@ Per-order fill tracking with dust detection for the Polymarket adapter.
 
 from __future__ import annotations
 
-import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
-log = logging.getLogger(__name__)
 CAPACITY = 10_000
 
 
@@ -48,7 +44,11 @@ class _OrderFillState:
 
 class OrderFillTracker:
     """
-    Tracks per-order fill accumulation and detects dust residuals.
+    Tracks per-order fill accumulation.
+
+    Dust snapping / synthetic dust fills are disabled (see `snap_fill_qty` and
+    `check_dust_residual`): reported fills always equal actual venue fills, so a
+    reduce SELL can never oversell into a dust SHORT on a probability venue.
     """
 
     def __init__(self) -> None:
@@ -89,20 +89,15 @@ class OrderFillTracker:
 
     def snap_fill_qty(self, venue_order_id: VenueOrderId, fill_qty: Quantity) -> Quantity:
         """
-        Snap a single fill qty to submitted_qty when diff is dust.
+        Return the fill qty unchanged — dust snapping is disabled (both sides).
+
+        On Polymarket (a probability venue) SELLs are reduce-only. Snapping a fill
+        UP to the submitted qty oversells the long into a tiny dust SHORT, which
+        trips the "position cannot be SHORT" invariant. Snapping a BUY up merely
+        manufactures a dust phantom LONG. Either way the actual venue fill is the
+        truth; any residual leaves is settled by the residual-cancel path, never by
+        inflating a reported fill.
         """
-        state = self._orders.get(venue_order_id)
-        if state is None:
-            return fill_qty
-        diff = float(state.submitted_qty) - float(fill_qty)
-        if 0.0 < diff < DUST_SNAP_THRESHOLD:
-            log.info(
-                "Snapping fill qty %s -> %s (dust=%.6f)",
-                fill_qty,
-                state.submitted_qty,
-                diff,
-            )
-            return state.submitted_qty
         return fill_qty
 
     def record_fill(
@@ -126,36 +121,11 @@ class OrderFillTracker:
         venue_order_id: VenueOrderId,
     ) -> tuple[Quantity, Price] | None:
         """
-        Check if an order has a dust residual after all fills.
+        Always returns None — synthetic dust fills are disabled (both sides).
 
-        Returns (dust_qty, fill_px) if a synthetic fill should be emitted, or None
-        otherwise. Removes the entry on dust settlement to prevent duplicate synthetic
-        fills from repeated MATCHED events.
-
+        See `snap_fill_qty`: emitting a synthetic fill to force an order to FILLED
+        over-sells a reduce SELL (→ dust SHORT, invariant violation) / over-buys a
+        BUY by the residual leaves. The leaves is settled by the residual-cancel
+        path instead, so the reported position never exceeds what actually filled.
         """
-        state = self._orders.get(venue_order_id)
-        if state is None:
-            return None
-        leaves = float(state.submitted_qty) - state.cumulative_filled
-        if 0.0 < leaves < DUST_SNAP_THRESHOLD:
-            log.info(
-                "Order %s MATCHED with dust residual %.6f -- "
-                "emitting synthetic fill to reach FILLED",
-                venue_order_id,
-                leaves,
-            )
-            dust_qty = Quantity(leaves, state.size_precision)
-            px = max(0.0, state.last_fill_px)
-            fill_px = Price(px, state.price_precision)
-            # Remove entry — order is settled, prevents duplicate dust fills
-            del self._orders[venue_order_id]
-            return dust_qty, fill_px
-        if leaves >= DUST_SNAP_THRESHOLD:
-            log.info(
-                "Order %s MATCHED with significant residual %.6f (filled %s/%s)",
-                venue_order_id,
-                leaves,
-                state.cumulative_filled,
-                state.submitted_qty,
-            )
         return None

@@ -84,9 +84,7 @@ class PlaceBetsAction(Action):
                     "missing executable price, abort opportunity",
                 )
                 return
-            # 暂时关闭 market_order 最差价替换(OE/SE 赔率更新慢,不用书内最差价替代候选价):
-            # 下单/日志都用替换前的候选价。只注释不删,以后可能恢复。
-            # price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
+            # qty 按候选**最优价** `price` 计算(口径一致:share/payout 按最优赔率)。
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
             if size is None:
                 _LOG.warning(
@@ -94,11 +92,20 @@ class PlaceBetsAction(Action):
                     "missing qty/share_if_wins, abort opportunity",
                 )
                 return
+            # 下单价:market_order 开启时(仅 decimal venue)用书内**最差价**替代最优价保成交;
+            # qty 已按最优价算好、不受影响。日志打候选最优赔率(本意套利赔率);
+            # 实际提交价 = submit_price(NT `Submit LimitOrder @ ...` 也显示它)。
+            submit_price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
+            _LOG.info(
+                f"PlaceBets leg: pair={ctx.pair_id} venue={str(venue).upper()} "
+                f"role={leg.get('claim') or leg.get('role')} "
+                f"best_price={price} submit_price={submit_price} qty={size:.4f}",
+            )
             draft = {
                 "instrument_id": leg.get("exec_instrument_id") or leg["instrument_id"],
                 "side": side,
                 "qty": size,
-                "price": price,
+                "price": submit_price,
                 "venue": str(venue).upper(),
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
