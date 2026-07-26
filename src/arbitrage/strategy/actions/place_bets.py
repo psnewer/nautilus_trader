@@ -84,7 +84,9 @@ class PlaceBetsAction(Action):
                     "missing executable price, abort opportunity",
                 )
                 return
-            price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
+            # 暂时关闭 market_order 最差价替换(OE/SE 赔率更新慢,不用书内最差价替代候选价):
+            # 下单/日志都用替换前的候选价。只注释不删,以后可能恢复。
+            # price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
             if size is None:
                 _LOG.warning(

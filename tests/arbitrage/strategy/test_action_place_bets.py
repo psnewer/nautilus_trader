@@ -4,6 +4,8 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.enums import BookType
@@ -538,6 +540,7 @@ def test_market_order_disabled_uses_original_price():
     bootstrap.reset_arb_context()
 
 
+@pytest.mark.skip(reason="market_order 最差价替换暂时关闭(place_bets 注释掉);恢复替换时同步取消 skip")
 def test_market_order_enabled_uses_worst_back_price():
     """打开后用 book 内最差 back 价(最低赔率)下单,不是最优价。"""
     bootstrap.reset_arb_context()
@@ -564,6 +567,7 @@ def test_market_order_enabled_uses_worst_back_price():
     bootstrap.reset_arb_context()
 
 
+@pytest.mark.skip(reason="market_order 最差价替换暂时关闭(place_bets 注释掉);恢复替换时同步取消 skip")
 def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
     """合成 no 腿(exec_instrument_id 重定向):worst price 来自定价 instrument 的 book
     (ask←lay 列),提交目标仍是 exec_instrument_id,side 仍是 SELL。"""
