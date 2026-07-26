@@ -53,7 +53,7 @@ class CandiSelectAction(Action):
 
         if not survivors:
             ctx.scratch["legs"] = []
-            _LOG.info(f"CandiSelect: pair={ctx.pair_id} no candidates")
+            _LOG.debug(f"CandiSelect: pair={ctx.pair_id} no candidates")
             return
 
         selected = max(survivors, key=_candidate_score)
