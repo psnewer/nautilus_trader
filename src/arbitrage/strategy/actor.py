@@ -177,13 +177,13 @@ class StrategyEvaluator(Strategy):
 
     def on_order_book_deltas(self, deltas) -> None:
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
-        # 只让 PM(概率盘)的 OBD 触发机会评估。OE/SE 赔率更新慢,不让它们驱动机会
+        # 只让 OE/SE(decimal 赔率盘)的 OBD 触发机会评估;PM(概率盘)不驱动机会
         # (避免基于陈旧对侧价触发)。订阅**不动**、book 照常更新(NT 在本回调前已更新),
-        # 这里仅跳过"触发评估"这一步 —— PM 触发时仍读到 OE/SE 的最新盘口。
+        # 这里仅跳过"触发评估"这一步 —— OE/SE 触发时仍读到 PM 的最新盘口。
         iid = getattr(deltas, "instrument_id", None)
         if iid is not None:
             try:
-                if not is_probability_odds_venue(iid.venue.value):
+                if is_probability_odds_venue(iid.venue.value):
                     return
             except (KeyError, AttributeError):
                 pass

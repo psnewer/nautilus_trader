@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -283,6 +284,39 @@ def test_evaluator_injects_sports_store_into_eval_context():
 
     assert action.value is actor._sports_store
     assert action.value is not None
+
+
+# ── OBD 触发闸:只让 OE/SE(decimal)驱动机会评估,PM(probability)不驱动 ──────────
+def _obd(iid_str: str):
+    """最小 OrderBookDeltas 替身:on_order_book_deltas 只读 `.instrument_id`。"""
+    return SimpleNamespace(instrument_id=InstrumentId.from_str(iid_str))
+
+
+def test_obd_from_decimal_venue_triggers_eval():
+    """OE/SE(decimal 赔率盘)的 OBD 触发机会评估。"""
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
+    arb_action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
+
+    actor.on_order_book_deltas(_obd("A.ORBITEXCH"))
+    _run(_drain(loop))
+
+    assert arb_action.calls == 1
+
+
+def test_obd_from_probability_venue_does_not_trigger_eval():
+    """PM(probability 概率盘)的 OBD **不**触发评估(book 照常更新,仅跳过触发)。"""
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
+    arb_action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
+
+    actor.on_order_book_deltas(_obd("H.POLYMARKET"))
+    _run(_drain(loop))
+
+    assert arb_action.calls == 0
+    assert loop.tasks == []                # 连 evaluate task 都没创建
 
 
 # ── eval.2: 无挂载 → no-op,不 fire ───────────────────────────────

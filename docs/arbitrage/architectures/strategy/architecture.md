@@ -54,6 +54,7 @@ flowchart TB
 ```
 
 要点:
+- **OBD 触发闸(2026-07-26,已落地)**:`on_order_book_deltas` 只让 **OE/SE(decimal 赔率盘)** 的 OBD 触发机会评估;**PM(probability 概率盘)的 OBD 不驱动评估**(`is_probability_odds_venue(venue)` 为真即 `return`)。语义边界:**只跳过"触发评估"这一步**——PM 订阅不动、book 照常更新(NT 在本回调前已更新 cache),OE/SE 触发时仍读到 PM 的最新盘口。理由(避免基于陈旧对侧价触发)与决策见 refactor.md 修订记录 #278;测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_*`。⚠️ 此方向 2026-07-26 由"PM 触发/OE-SE 不触发"翻转而来;历史代码/注释若仍称 PM 驱动为过时。
 - evaluate **无副作用**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)
 - **树间取舍(套利优先)#277 起在 `candi_select` 内做**(见 §4.2):顶层只选跑哪条链(arb 命中跑 arb 链,否则 comp 链);arb 命中且 comp 同轮命中时,comp legs 包成 recovery candidate 注入,arb 候选被最小下注门控全部淘汰时同轮落到补救
@@ -383,7 +384,11 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 在读侧二次调 `probability_from_price`;`leg["price"]`(真实下单价)经新增的
 `to_price`(`price_from_probability` 的容错包装)从这个概率换算回来。`worst_ask(book)`
 (同文件)是市价单功能新增的辅助读取——读最深档而非最优档,供 `PlaceBetsAction` 的市价单
-覆盖使用,quote_legs 本身不用。
+覆盖使用,quote_legs 本身不用。市价单最差价覆盖由配置 `market_order_enabled`(默认 `False`)控制:
+False 时 `_apply_market_order_override` 直接返回最优价、不替换(即"OE/SE 不做最差价替换"),True 时
+才用书内最差价保成交。⚠️ 注意 OBD 触发闸翻成 OE/SE 后(#278),padding 作用的 decimal venue 恰是
+**触发腿**;若将来要给**被动腿 PM** 保成交,需把 override 内 venue 判据改为 `is_probability_odds_venue`
+并取被动腿 book,不能只靠置 True。
 `claim/lay_price/exec_instrument_id` 透传只维护一份；三个 Check 只保留各自的组合与阈值算法。
 Recovery 读取持仓时若发现 probability SHORT 等经济投影不变量错误,记录错误并放弃本轮；
 ShareLimit 通过严格 Portfolio 读取持仓，遇到缺 claim 或 probability SHORT 时清空本轮
