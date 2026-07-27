@@ -252,6 +252,22 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             )
         return reports
 
+    async def generate_fill_reports(self, command) -> list:
+        """#279:reconcile 不拉 trades API —— 恒返回 `[]`,对齐 OE/SE。
+
+        PM 的 position 对账走 NT 原生 NET(`_reconcile_position_report_netting`:凭 `/positions`
+        权威净仓 + `avg_px_open` 合成 inferred fill,不需要真 fill),因此 reconcile 完全不必碰
+        trades API。上游会拉真 trades,但那会:① 启动时超时抛异常连坐掀翻整个 ExecutionMassStatus
+        组装(丢弃已到手的权威 position);② 连续对账把持仓拖进"真 fill 挂历史母单(未 cache)→
+        FillReport 早于 OrderStatusReport → 挂不上"的脆弱路径。返 `[]` 两头都避开,与 OE/SE
+        `execution.py::generate_fill_reports` 同构。
+
+        **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg`
+        → `generate_order_filled`)累加,与本方法无关;本方法仅供 reconcile / 从 fill 反建未知订单,
+        后者正是要砍掉的脆弱源。详见 execution architecture §4.3bis (5d) / refactor #279。
+        """
+        return []
+
     async def _refresh_account_state_after_position_reconcile(self) -> None:
         """PM position reconciliation 成功后刷新账户可用余额。
 

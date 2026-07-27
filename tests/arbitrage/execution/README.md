@@ -182,6 +182,12 @@
 - 期望:不因“每次下单”把 alive 置 false;session 生命周期仍由 `PairInFlightGate` + watchdog 管。
 - 验收:只有 stuck/reconcile failure 等真相不可信路径才置 false。
 
+### execution-4.5.8: PM reconcile 纯 NET 快照,不拉 trades API(#279)
+- 背景:重启后 PM 历史持仓(母单已成交、不在 cache);启动 `generate_fill_reports` 拉 trades 超时抛异常曾连坐掀翻整个 mass-status → 权威 position 被丢弃 → cache flat → recovery 误发双开(实盘 nohup 取证)。设计见 execution architecture §4.3bis (5d) / refactor #279。
+- 输入:调用 `ArbPolymarketExecutionClient.generate_fill_reports`;上游 `PolymarketExecutionClient.generate_fill_reports` 被 monkeypatch 成"一调用即抛"。
+- 期望:返回 `[]`,且**不触达上游**(不抛)。position 对账由 `_reconcile_position_report_netting` 凭 `/positions` 权威净仓 NET 合成,不需要真 fill;PM live 成交仍由 USER WS trade 累加,不受影响。
+- 验收:`test_polymarket_client.py::test_arb_generate_fill_reports_returns_empty_without_trades_api`。
+
 ## AccountState accepted 本地预扣(Q17 修订,已落地;#254 起仅 OE/SE)
 
 对应设计:execution §4.5 + risk §3.1。AccountState 统一表达可用余额快照:

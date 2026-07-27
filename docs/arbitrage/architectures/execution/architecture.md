@@ -399,10 +399,17 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `[]`/`None`。`ArbPolymarketExecutionClient` 仅负责捕获该异常后标 order dead 并继续抛出，不再替换
   `_retry_manager_pool` 或 monkeypatch `manager.run`。原因是 NT `generate_mass_status()` 会并发 gather
   order/fill/position reports，全局替换 pool 不具备并发安全前提。OE/SE 已随 #259 对齐为查询失败抛异常。
-- PM `generate_fill_reports` 读取用户历史 trades 时可能遇到当前未加载/未匹配的 instrument;这是目标市场外历史成交的正常跳过路径,只打 DEBUG,不影响 order/position liveness。open-order report 中未知 instrument 仍保留 WARNING,因为它代表当前 venue open-order response 无法映射到 NT instrument。
+- PM `generate_fill_reports` 读取用户历史 trades 时可能遇到当前未加载/未匹配的 instrument;这是目标市场外历史成交的正常跳过路径,只打 DEBUG,不影响 order/position liveness。open-order report 中未知 instrument 仍保留 WARNING,因为它代表当前 venue open-order response 无法映射到 NT instrument。⚠️ 2026-07-27(#279)起 `ArbPolymarketExecutionClient.generate_fill_reports` 恒返回 `[]`(见 (5d)),故本条描述的上游 trades 拉取在 **arb 运行时不再触发**;仅 base PM 适配器(非 arb)仍走原路径。
 - PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None（等价 `max_retries=0`,只执行首次请求）。CLOB 底层 transport 已独立提供一次连接建立重试;更广泛的周期 order 对账重试若要启用,仍须显式配置并意识到会同时影响真钱 submit/cancel。Data API `/positions` 使用另一套 NT `HttpClient`,不在这两个 CLOB retry 层内。
 - `_send_order_event` 漏斗不再写健康状态。NT fabricate 的本地终态只能推进 NT 状态机,不能把 venue 真相置 alive。
 - Risk 从 opportunity `expected_legs` 推导 required venues;任一 required venue `order_alive && position_alive` 不成立则 deny。Strategy/Portfolio 不读 liveness。
+
+**(5d) PM reconcile 与 OE/SE 同构 = position 快照权威 NET,不依赖 trades API(#279,2026-07-27,已落地)**:PM 的 position 对账走 NT 原生 NET 路径(`_reconcile_position_report_netting`:凭 `/positions` 权威净仓 + `avg_px_open` 合成 inferred fill,**不需要真 fill**),与 OE/SE 的 currentBets 快照对账同构。因此 `ArbPolymarketExecutionClient.generate_fill_reports` **恒返回 `[]`**(对齐 OE/SE `execution.py::generate_fill_reports`),使 reconcile **完全不依赖 trades API**:
+- ① **启动 mass-reconcile 不再被 trades 查询连坐**:此前 trades API 超时抛异常会掀翻整个 `ExecutionMassStatus` 组装,连带丢弃**已拿到的权威 position**(见 refactor.md #279 根因日志)。返 `[]` 后 mass-status 正常组装(0 fill)→ `_reconcile_position_report_netting` 按权威净仓 NET 进 cache。
+- ② **连续对账不再走脆弱 fill-attach**:此前拉到真 fill 却指向历史母单(母单未 cache)→ `FillReport received before OrderStatusReport` → 挂不上 → NT core `_process_venue_reported_positions`(无 NET 兜底)卡死。返 `[]` 后不再进该路径。
+- **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg` → `generate_order_filled`)累加,与 `generate_fill_reports`(仅供 reconcile / 从 fill 反建未知订单)无关。
+- **代价**:重启一刻不再从 trades 反建"未知 venue 订单"的逐笔记录;净仓由 position 报表 NET 覆盖,open 单 `filled_qty` 由 order 报表带出(与 OE/SE 一致)。
+- **与 (4)/(5) 的关系**:本改动使 "query 成功 ⟹ cache 已对齐" 成立,故 (5) 里 `mark_position_alive` 挂在 position 查询成功之后**名副其实**(不再有"查询成功但 cache 未对齐"的空窗)。因此**不再单独引入** liveness-outcome 二次判定闸。
 
 **(5c) OE fx 边界(已落地,2026-06-30)**:
 - adapter 外部统一 USD 口径:Strategy 生成的 OE `qty`、Risk 余额/利润门控、Portfolio outcome 指标、NT order/fill/report quantity 都按 USD stake 解释。

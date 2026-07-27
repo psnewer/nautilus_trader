@@ -893,6 +893,24 @@ def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_rec
     _run(scenario())
 
 
+def test_arb_generate_fill_reports_returns_empty_without_trades_api(monkeypatch):
+    """#279:arb PM reconcile 不拉 trades API —— `generate_fill_reports` 恒返回 `[]`,
+    且**不调用上游**(上游拉 trades:启动可超时抛异常连坐 mass-status,连续会把持仓拖进
+    fill 挂历史母单的脆弱路径)。position 对账走纯 NET 快照,不需要真 fill;live 成交走 WS。"""
+
+    async def boom_super(self, command):
+        raise AssertionError("upstream generate_fill_reports must not be called under arb reconcile")
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_fill_reports", boom_super)
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        result = await client.generate_fill_reports(SimpleNamespace())
+        assert result == []
+
+    _run(scenario())
+
+
 def test_run_settlement_does_not_auto_sync_collateral_balance_after_successful_tx():
     class _Settlement:
         async def run(self, _positions):
