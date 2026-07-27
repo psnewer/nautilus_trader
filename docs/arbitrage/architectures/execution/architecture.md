@@ -559,6 +559,19 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 - **验收锚点(低噪声)**:override 每轮对账打一条 INFO `PM position reconcile OK: N report(s), settlement dispatched/skipped (M raw positions)`(生产约 5 分钟一条),作"对账+结算子系统心跳"+ 可见暴露 settlement 是否真接线。
 - ⚠️ **验证边界(2026-06-21)**:live 节点(skip_execution,interval 临时 60s)已实测 NT 连续 position 对账**周期触发 → 调到 override → `mark_position_alive` → dispatch 判定**,锚点稳定每周期一条 ✅。本次补齐 launcher settlement 对象接线与离线单测;**真实链上 merge/redeem 尚未 live 验证**(需要具备可 merge/redeem 持仓 + 用户明确授权,因为会提交 Builder Relayer 链上 tx)。
 
+### 4.7 PM dust 尾量订单终态化(#280,2026-07-27,已落地 live-未验证)
+
+**问题**:下单量精度超过 venue 可撮粒度时(例:recovery `BUY 28.7525`,实成 28.75),尾量 0.0025 永不成交;venue 直接撮完/丢弃这笔单(不给它挂着),但**不发 NT 能消费的终态 WS 事件**。NT 侧订单停在 `PARTIALLY_FILLED`(open),之后该 pair 每来一次机会都被 opportunity barrier 当残单撞 **cancel-only**,而 venue 侧撤单又回 `already canceled or matched`(单已没),`_generate_cancel_event` 只 `awaiting WS event` 空等 → 卡死堵 pair(实盘 nohup 取证)。
+
+**关键区分(#280 定夺)**:老 `check_dust_residual` 发 **synthetic fill** 收口,同时干了两件事——(a) 订单终态、(b) **移动 position**。(b) 正是祸根:reduce-SELL 补 fill 会卖穿成 dust SHORT(概率盘不变量),BUY 补 fill 造 phantom LONG。把它改 no-op 又把 (a) 一起扔了 → 订单再也收不了口。因此**收口订单要保留,移动持仓要禁止**,且**收口要在源头做,不能靠下游症状路径**:
+
+- `check_dust_residual` 收窄为**纯检测**(返回 `< DUST_SNAP_THRESHOLD` 的残量,**无任何副作用、不发 fill**);`snap_fill_qty` 维持 identity(不 inflate fill = 不动仓)。
+- **源头唯一收口点 = fill-handler**(`_handle_user_trade_in_ws_trade_msg`):每笔 WS 成交经 `record_fill` 记完累计后,若 `check_dust_residual` 报有 dust 残量 → **`generate_order_canceled`**(经去重 helper `_generate_cancel_success_event`):订单转终态 CANCELED、`filled_qty` 保持实际成交、**position 一点不动**。BUY/SELL 对称,SELL 不再 SHORT。终态取 CANCELED 而非 FILLED:FILLED 需 `filled==qty`,那必须补会动仓的 fill,故不取。
+  - **为何在 fill-handler**:fill 必经 WS 累加(PM 持仓的唯一累加途径),是**必然触发**的可靠点;不依赖 order 级 UPDATE/MATCHED 事件(其是否对这类挂单发出未确证)。
+  - **同步累计判据**:用 tracker 的 `check_dust_residual`(`record_fill` 同步),不用 `order.leaves_qty`——`generate_order_filled` 经 msgbus 异步 apply,紧接读 leaves 可能未更新。
+- **不设**其它触发口:opportunity barrier 的 `cancel-only` + cancel-response `already canceled or matched` 只是"订单没在源头收口"的**下游症状**(残单被 barrier 撞上 → 撤单 → venue 回已终结)。源头收口后 barrier 根本看不到残单,该链不再发生;故 `_generate_cancel_event` 的 `already matched` 分支与 order UPDATE 的 dust 特判**均不承担收口职责**(前者保持原"等 WS"语义,后者不再特判 dust)。
+- 理由/根因日志见 refactor.md #280;测试见 `test_order_fill_tracker.py::test_check_dust_residual_detects_sub_threshold_leaves` + `test_polymarket_client.py::test_polymarket_realtime_fill_dust_residual_closes_via_cancel`。
+
 ---
 
 ## 5. 与横切的咬合

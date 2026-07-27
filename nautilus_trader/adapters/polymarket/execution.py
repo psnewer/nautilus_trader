@@ -50,7 +50,6 @@ from nautilus_trader.adapters.polymarket.common.constants import VALID_POLYMARKE
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
-from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderStatus
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.parsing import calculate_commission
 from nautilus_trader.adapters.polymarket.common.parsing import make_composite_trade_id
@@ -2006,7 +2005,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             order_id=order_id,
         )
 
-    def _handle_ws_order_msg(self, msg: PolymarketUserOrder, wait_for_ack: bool):  # noqa: C901
+    def _handle_ws_order_msg(self, msg: PolymarketUserOrder, wait_for_ack: bool):
         self._log.debug(f"Handling order message, {wait_for_ack=}")
 
         venue_order_id = msg.venue_order_id()
@@ -2079,35 +2078,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     ts_event=millis_to_nanos(int(msg.timestamp)),
                 )
             case PolymarketEventType.UPDATE:
-                if msg.status == PolymarketOrderStatus.MATCHED:
-                    dust = self._fill_tracker.check_dust_residual(venue_order_id)
-                    if dust is not None:
-                        dust_qty, dust_px = dust
-                        dust_trade_id = TradeId(f"{msg.id[:27]}-dust")
-                        self._log.info(
-                            f"Order {venue_order_id!r} MATCHED with dust residual "
-                            f"{dust_qty} — emitting synthetic fill",
-                        )
-
-                        if order is not None:
-                            self.generate_order_filled(
-                                strategy_id=strategy_id,
-                                instrument_id=instrument_id,
-                                client_order_id=client_order_id,
-                                venue_order_id=venue_order_id,
-                                venue_position_id=None,
-                                trade_id=dust_trade_id,
-                                order_side=order.side,
-                                order_type=order.order_type,
-                                last_qty=dust_qty,
-                                last_px=dust_px,
-                                quote_currency=USDC_POS,
-                                commission=Money(0.0, USDC_POS),
-                                liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
-                                ts_event=millis_to_nanos(int(msg.timestamp)),
-                            )
-                else:
-                    self._log.debug(f"Skipping order update: {msg}")
+                # #280:order UPDATE 不再特判 dust —— dust 尾量收口统一在 fill-handler 源头做
+                # (`_handle_user_trade_in_ws_trade_msg`,唯一可靠触发点:fill 必经 WS 累加)。
+                self._log.debug(f"Skipping order update: {msg}")
             case PolymarketEventType.TRADE:
                 self._log.debug(f"Skipping order trade event: {msg}")
             case _:  # Branch never hit unless code changes (leave in place)
@@ -2200,7 +2173,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         for order_id in filled_user_order_ids:
             self._handle_user_trade_in_ws_trade_msg(msg, trade_id, wait_for_ack, order_id)
 
-    def _handle_user_trade_in_ws_trade_msg(
+    def _handle_user_trade_in_ws_trade_msg(  # noqa: C901
         self,
         msg: PolymarketUserTrade,
         trade_id: TradeId,
@@ -2332,3 +2305,19 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts=ts_event,
         )
         self._record_processed_trade(trade_id, msg.status)
+
+        # #280:dust 尾量**源头收口**。这笔 fill 后累计离下单量只差 <DUST_SNAP_THRESHOLD —— 那点残量
+        # 低于 venue 最小可撮量、不会再成交,venue 会撮完/丢弃这笔单却可能不发 NT 能消费的终态 WS 事件。
+        # 直接本地 cancel 收口(经去重 helper):`generate_order_canceled` 只撤未成交 leaves、**保 filled_qty
+        # = 实际成交、position 不动**。绝不补 synthetic fill —— 补 fill 会动仓(reduce-SELL 卖穿成 dust
+        # SHORT / BUY 造 phantom LONG)。不收口则单卡 PARTIALLY_FILLED,之后每轮机会撞 barrier cancel-only、
+        # 而 venue 撤单又回 already-matched → 堵 pair。用 tracker 的**同步累计**判断,不用 `order.leaves_qty`
+        # (`generate_order_filled` 经 msgbus 异步 apply,此刻可能尚未更新)。
+        if self._fill_tracker.check_dust_residual(venue_order_id) is not None:
+            self._generate_cancel_success_event(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+            )

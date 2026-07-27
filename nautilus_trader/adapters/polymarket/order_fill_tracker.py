@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -46,7 +47,7 @@ class OrderFillTracker:
     """
     Tracks per-order fill accumulation.
 
-    Dust snapping / synthetic dust fills are disabled (see `snap_fill_qty` and
+    Dust snapping / synthetic dust *fills* are disabled (see `snap_fill_qty` and
     `check_dust_residual`): reported fills always equal actual venue fills, so a
     reduce SELL can never oversell into a dust SHORT on a probability venue.
     """
@@ -119,13 +120,23 @@ class OrderFillTracker:
     def check_dust_residual(
         self,
         venue_order_id: VenueOrderId,
-    ) -> tuple[Quantity, Price] | None:
+    ) -> Quantity | None:
         """
-        Always returns None — synthetic dust fills are disabled (both sides).
+        Return the un-filled dust residual (< DUST_SNAP_THRESHOLD), else None.
 
-        See `snap_fill_qty`: emitting a synthetic fill to force an order to FILLED
-        over-sells a reduce SELL (→ dust SHORT, invariant violation) / over-buys a
-        BUY by the residual leaves. The leaves is settled by the residual-cancel
-        path instead, so the reported position never exceeds what actually filled.
+        **Detection only — no side effect, no synthetic fill.** When the venue reports
+        the order terminal (order UPDATE/MATCHED, or a cancel rejected as "already
+        canceled or matched") but a tiny remainder never filled and the venue dropped
+        it, the caller closes the order via `generate_order_canceled` — a terminal
+        event that keeps `filled_qty` at what actually filled and **does not move the
+        position**. That is deliberately NOT a synthetic fill: filling the residual
+        would over-sell a reduce SELL into a dust SHORT (probability-venue invariant)
+        or manufacture a phantom LONG on a BUY. Symmetric for both sides.
         """
+        state = self._orders.get(venue_order_id)
+        if state is None:
+            return None
+        leaves = state.submitted_qty.as_double() - state.cumulative_filled
+        if 0.0 < leaves < DUST_SNAP_THRESHOLD:
+            return Quantity(leaves, state.size_precision)
         return None

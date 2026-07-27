@@ -654,6 +654,9 @@ class _PMFillTracker:
     def record_fill(self, *, venue_order_id, qty, px, ts):
         self.recorded.append((venue_order_id, qty, px, ts))
 
+    def check_dust_residual(self, _venue_order_id):
+        return None  # 这两个用例不测 dust 收口(#280);无残量
+
 
 class _PMTradeMsg:
     id = "trade-1"
@@ -736,6 +739,64 @@ def test_polymarket_realtime_fill_waits_for_confirmed_status():
     assert len(captured) == 1
     assert captured[0]["last_qty"].as_double() == pytest.approx(5.0)
     assert captured[0]["last_px"].as_double() == pytest.approx(0.42)
+
+
+def test_polymarket_realtime_fill_dust_residual_closes_via_cancel():
+    """#280:fill 后累计只差 dust 尾量 → fill-handler 源头本地 cancel 收口,不补 synthetic fill。
+
+    真实 fill 照发(实际成交量),额外经 `_generate_cancel_success_event` 撤掉未成交尾量收口;
+    绝不发第二笔(synthetic)fill —— 那会动仓(reduce-SELL 卖穿成 SHORT / BUY 造 phantom LONG)。
+    """
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(5), inst.make_price(0.42))
+    cache.add_order(order)
+    cache.add_venue_order_id(order.client_order_id, VenueOrderId("PM-OID-1"))
+
+    class _DustTracker(_PMFillTracker):
+        def check_dust_residual(self, _venue_order_id):
+            return 0.002  # 非 None = 检测到 dust 尾量
+
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _fill_tracker=_DustTracker(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    filled = []
+    cancels = []
+    client.generate_order_filled = lambda **kwargs: filled.append(kwargs)
+    client._generate_cancel_success_event = lambda **kwargs: cancels.append(kwargs)
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+
+    client._handle_user_trade_in_ws_trade_msg(
+        _PMTradeMsg(PolymarketTradeStatus.CONFIRMED),
+        trade_id="trade-dust",
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+
+    assert len(filled) == 1                       # 真实 fill 照发(唯一一笔,非 synthetic)
+    assert len(cancels) == 1                      # dust 尾量经本地 cancel 收口
+    assert cancels[0]["client_order_id"] == order.client_order_id
 
 
 def test_polymarket_realtime_maker_fill_uses_maker_order_fields():

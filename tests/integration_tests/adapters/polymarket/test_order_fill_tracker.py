@@ -88,14 +88,15 @@ class TestOrderFillTracker:
         result = tracker.snap_fill_qty(vid, fill_qty)
         assert result == fill_qty
 
-    def test_dust_residual_disabled_no_synthetic_fill(self, tracker):
-        # Synthetic dust fills are disabled: even a sub-threshold residual must NOT
-        # emit a fill, else a reduce SELL is over-sold into a dust SHORT.
+    def test_check_dust_residual_detects_sub_threshold_leaves(self, tracker):
+        # #280: check_dust_residual is DETECTION only — returns the leaves when it's
+        # dust (< threshold). The caller closes the order via cancel (NOT a synthetic
+        # fill), so even a reduce SELL is never over-sold into a dust SHORT.
         vid = VenueOrderId("order-1")
         tracker.register(
             venue_order_id=vid,
             submitted_qty=Quantity(100.0, SIZE_PRECISION),
-            order_side=OrderSide.BUY,
+            order_side=OrderSide.SELL,
             instrument_id=INSTRUMENT_ID,
             size_precision=SIZE_PRECISION,
             price_precision=PRICE_PRECISION,
@@ -104,9 +105,10 @@ class TestOrderFillTracker:
         tracker.record_fill(vid, 50.0, 0.55, 1000)
         tracker.record_fill(vid, 49.997714, 0.55, 2000)
 
-        # 100.0 - 99.997714 = 0.002286 < 0.01 but no synthetic fill is emitted
+        # 100.0 - 99.997714 = 0.002286 < 0.01 -> detected as dust residual (no fill emitted)
         result = tracker.check_dust_residual(vid)
-        assert result is None
+        assert result is not None
+        assert float(result) == pytest.approx(0.002286, abs=1e-6)
 
     def test_check_dust_no_residual(self, tracker):
         vid = VenueOrderId("order-1")
