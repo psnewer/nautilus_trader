@@ -48,6 +48,7 @@ from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import wire_arbitrage_runtime
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 from src.arbitrage.common.venues import enabled_data_sources
 from src.arbitrage.common.venues import enabled_settlement_venues
@@ -359,6 +360,7 @@ def bootstrap_and_build(
         venue_liveness=venue_liveness,
         pair_registry=pair_registry,
         pair_inflight=pair_inflight,    # §7:#261 起仅 strategy 消费(execution 侧接线已删)
+        realized_pnl_ledger=RealizedPnlLedger(),
         debug_config=debug_config,
         arbitrage_params=to_arbitrage_params(cfg),
         pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem

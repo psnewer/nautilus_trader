@@ -210,7 +210,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - position reports 成功但余额刷新失败时,只 warning;reports 原样返回,`pm_position_alive` 保持 true。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_fill_waits_for_confirmed_status` 覆盖实时 trade: `MATCHED` 不产 NT fill,`CONFIRMED` 才按成交量产 fill。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement` 覆盖 position reconcile 成功后余额刷新。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_settles_before_marking_snapshot_alive` 覆盖 position reconcile 成功后余额刷新。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile` 覆盖余额刷新失败不影响 position reconcile。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_balance_query_failure_is_not_retried` 覆盖余额请求失败只调用一次 CLOB client。
 
@@ -252,17 +252,33 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **前置**: 对账那次 `/positions` 原始响应里:condition A 两 outcome 都持仓(可 merge);condition B `redeemable=true`(可 redeem)
 **输入**: NT 连续 position 对账周期到 → `generate_position_status_reports(None)`
 **期望**:
-- 上游 `_fetch_user_positions` 全量拉一次 /positions,stash `_last_raw_positions`(**一次拉喂两用**:报告 + 结算,不另起请求)
-- 拉成功 → `mark_position_alive`;**拉失败 → `mark_position_dead` 并抛**(venue dead)
-- **结算 fire-and-forget + single-flight**:`if _settlement and not _settlement_inflight: create_task(_run_settlement(raw))` —— 不 `await`(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);前一次未完成则本轮跳过
-- `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:`conditionId`/`size`/`negativeRisk`/`redeemable`)→ `PolymarketSettlement.run` → merge/redeem。
+- 上游第一次 `_fetch_user_positions` 拉 `/positions` 并 stash `_last_raw_positions`，仅用于
+  reports 候选与 settlement 输入。
+- settlement 在 report 协程内 await；没有尝试 merge 时返回第一次 reports；一旦尝试
+  merge，无论结果成功或失败，都同轮再拉 `/positions`，只返回第二次 reports，然后拉
+  `/closed-positions` 同步 realized PnL。
+- 最终 reports 拉成功 → `mark_position_alive`；第一次或 merge 后第二次拉失败 →
+  `mark_position_dead` 并抛。
+- `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:
+  `conditionId`/`size`/`negativeRisk`/`redeemable`)→
+  `PolymarketSettlement.run` → merge/redeem。
+- #282:position reconcile 另读 `/closed-positions`，与 current rows 的 `realizedPnl` 按
+  instrument 聚合并写 `RealizedPnlLedger` 基线差；closed 查询失败保留旧基线。
+- merge 成功不另算 condition PnL、不生成 synthetic `OrderFilled`；真实账户样本确认 closed
+  realized 已包含历史 merge，对账前旧持仓也已表达同一 outcome PnL。离线验收见
+  `test_realized_by_instrument_aggregates_current_and_closed_rows`、
+  `test_position_reconcile_sets_external_minus_native_realized_baseline`。
 - `PolymarketContractService` 对标准二元走 `CtfCollateralAdapter + pUSD`,对 negRisk 走 `NegRiskCtfCollateralAdapter`;两者使用 inherited collateral-adapter ABI,negRisk redeem 由 adapter 自行读取调用者 YES/NO 链上余额。不再直接打底层 CTF+USDC.e,避免 merge 后资金停在页面 `Confirm pending deposit / Activate Funds`。
 - 成功 merge/redeem 后当前默认不主动调用 `update_balance_allowance(COLLATERAL)`;切到 collateral adapter+pUSD 后先由 live 验证是否仍需手动同步。代码保留 `_sync_collateral_balance_allowance_after_settlement()` helper,恢复时也不主动 `_update_account_state`。
 - 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
 **验收**:
 - launcher 构造并注入 `PolymarketSettlement`:cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 `PolymarketContractService.initialize()` 成功时接线;失败不阻塞节点启动。
 - **无 `HealthCheckLoop`/`_run_health_check`/独立调度**(静态检查);链上编排在 `PolymarketSettlement`,不内联进 ExecutionClient
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement`:证明 PM override 成功路径会 `mark_position_alive` 并用同一次 `_last_raw_positions` fire-and-forget 触发 settlement。
+- `test_arb_generate_position_reports_settles_before_marking_snapshot_alive`:证明无 merge 尝试时
+  第一次 reports 正常返回并标活。
+- `test_settlement_attempt_refetches_positions_before_returning_reports`:分别以 merge 成功和失败
+  证明严格调用顺序均为 `positions → merge → positions → closed positions → balance`，
+  且只返回第二次 reports。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_run_settlement_does_not_auto_sync_collateral_balance_after_successful_tx`:证明成功 merge/redeem 后当前默认不自动同步 CLOB collateral balance allowance。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_run_settlement_does_not_sync_collateral_balance_without_successful_tx`:证明没有成功 tx 时不触发同步。
 - `tests/arbitrage/settlement/test_contract_offload.py::test_standard_merge_uses_ctf_collateral_adapter_and_pusd`:证明标准 merge 发往 collateral adapter 且使用 pUSD。
@@ -274,7 +290,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 ### ~~pm-adapter-5.health.5: 执行在飞时健康检查 tick 跳过~~ —— 已退役(#110)
 
-> ⚠️ **失效(#110)**:PM 无 HealthCheckLoop,merge/redeem 走 NT 对账。原"健康检查⊥执行"互斥(`_run_health_check` 的 `is_execution_active` 守卫)随之退役 —— 结算 fire-and-forget,不与执行互斥;并发由 single-flight 守卫防重复提交。NT 对账 vs OE 下单的兼容性见 synchronization §8(OE 下单 page.evaluate 与对账互不冲突)。
+> ⚠️ **失效(#110)**:PM 无 HealthCheckLoop,merge/redeem 走 NT 对账。原"健康检查⊥执行"互斥(`_run_health_check` 的 `is_execution_active` 守卫)随之退役。#283 起 settlement 在 position report 协程内 await；同步 SDK IO 已丢线程池，不阻塞 app loop；并发仍由 single-flight 守卫。
 - execution 收到 terminal/timeout 发 `execution.finished` 后,下个 alert 正常执行
 - 断言 PM 健康检查订阅了 `execution.*` 并维护本地 `_execution_active` 镜像
 

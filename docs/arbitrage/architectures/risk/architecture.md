@@ -289,7 +289,11 @@ outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AN
 - 单腿 outcome 归属与 `profit/loss/share` 公式统一委托 venues §4.1;decimal SHORT 不得继续套 BACK 公式。
 - `outcome ∈ pair.outcomes`:所有 binary pair 均为 `{yes,no}`。
 - 不依赖 mark price,只依赖成交落库的 `size/price`;OE/SE `CURRENT_BETS` 的 `size*`/`liability`/`profit*` 字段由 adapter 入站时乘 `fx` 归一为 USD
-- 当前输入是 NT 净 Position;已平仓部分的 realized PnL 不在本轮 outcome exposure 重建范围。
+- open-position 情景部分仍从 NT 净 Position 重建；pair 已实现盈亏另外聚合：
+  `Σ NT instrument realized PnL + Σ reconcile instrument baseline adjustment`，结果等于最近一次
+  PM Data API realized 权威快照。merge 不另加 condition adjustment。
+  该值是已经确定的现金结果，因此同额加到每个 outcome 的 `net_profit`，不改变
+  `liability` 与 `outcome_shares`。共享账本契约见 common §8。
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 

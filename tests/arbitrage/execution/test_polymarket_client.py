@@ -3,8 +3,8 @@
 完整集成(真 ClobClient/ws_auth/Data API、_submit_order/_run_health_check 接线)经 /live-test 验。
 """
 
-import inspect
 import asyncio
+import inspect
 from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -18,11 +18,15 @@ from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 from py_clob_client_v2.exceptions import PolyApiException
 
+from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.arb_execution import _realized_by_instrument
+from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
+from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
-from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
+from nautilus_trader.adapters.polymarket.contract import TxResult
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.execution import polymarket_signed_order_id
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
@@ -30,15 +34,13 @@ from nautilus_trader.adapters.polymarket.http import transport as pm_transport
 from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
 from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeReport
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
-
-from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
-from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
-from nautilus_trader.adapters.polymarket.contract import TxResult
+from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
+from nautilus_trader.adapters.polymarket.settlement import SettlementResult
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.model.enums import LiquiditySide
-from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -46,10 +48,9 @@ from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
-from nautilus_trader.adapters.polymarket.settlement import SettlementResult
-from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -197,6 +198,19 @@ def test_raw_position_to_settlement_maps_fields():
 def test_raw_position_to_settlement_defaults():
     s = pm_raw_position_to_settlement({"conditionId": "0xc", "size": 10.0})
     assert s.neg_risk is False and s.redeemable is False
+
+
+def test_realized_by_instrument_aggregates_current_and_closed_rows():
+    rows = [
+        {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.25"},
+        {"conditionId": "0xc", "asset": "1", "realizedPnl": "-0.25"},
+        {"conditionId": "0xc", "asset": "2", "realizedPnl": "3"},
+    ]
+
+    assert _realized_by_instrument(rows) == {
+        "0xc-1.POLYMARKET": 1.0,
+        "0xc-2.POLYMARKET": 3.0,
+    }
 
 
 def test_polymarket_execution_uses_py_clob_client_v2_surface():
@@ -884,12 +898,14 @@ def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
     assert captured[0]["liquidity_side"] == LiquiditySide.MAKER
 
 
-def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(monkeypatch):
-    """#110:连续 position 对账进入 PM override 后,一次拉喂 report + settlement。"""
+def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(monkeypatch):
+    """没有 merge 尝试时，首次仓位快照可直接进入 NT 并恢复 liveness。"""
+    position_calls = []
     settlement_calls = []
     balance_calls = []
 
     async def fake_super(self, command):
+        position_calls.append(command)
         self._last_raw_positions = [
             {"conditionId": "cond1", "size": "10", "negativeRisk": True, "redeemable": False},
         ]
@@ -898,6 +914,7 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
     class _Settlement:
         async def run(self, positions):
             settlement_calls.append(positions)
+            return SettlementResult()
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
@@ -914,9 +931,6 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
         reports = await client.generate_position_status_reports(SimpleNamespace())
         assert reports == ["report"]
         assert client._venue_liveness.position_alive(POLYMARKET)
-        assert client._settlement_inflight is True
-
-        await asyncio.sleep(0)
         assert client._settlement_inflight is False
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
@@ -924,7 +938,74 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
     _run(scenario())
 
     assert balance_calls == ["balance_refresh"]
+    assert len(position_calls) == 1
     assert settlement_calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
+
+
+@pytest.mark.parametrize("merge_success", [True, False])
+def test_settlement_attempt_refetches_positions_before_returning_reports(
+    monkeypatch,
+    merge_success,
+):
+    """merge 一旦尝试，无论结果如何都重拉 positions，不能把旧 LONG 交给 NT。"""
+    calls = []
+    liveness = VenueExecutionLiveness()
+    responses = [
+        (
+            [{"conditionId": "cond1", "asset": "yes", "size": "10"}],
+            ["pre-report"],
+        ),
+        (
+            [],
+            ["post-report"],
+        ),
+    ]
+
+    async def fake_super(self, command):
+        calls.append("positions")
+        raw, reports = responses.pop(0)
+        self._last_raw_positions = raw
+        return reports
+
+    class _Settlement:
+        async def run(self, positions):
+            calls.append("merge")
+            return SettlementResult(
+                merges=[
+                    TxResult(
+                        success=merge_success,
+                        tx_hash="0xmerge" if merge_success else "",
+                        message="" if merge_success else "reverted",
+                    ),
+                ],
+            )
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = liveness
+        client._settlement = _Settlement()
+        client._settlement_inflight = False
+        client._realized_pnl_ledger = None
+
+        async def refresh_balance():
+            calls.append("balance")
+            return None
+
+        async def sync_realized(raw):
+            calls.append("closed")
+            assert raw == []
+
+        client._update_account_state = refresh_balance
+        client._sync_realized_pnl_after_position_reconcile = sync_realized
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+        assert reports == ["post-report"]
+        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert responses == []
+        assert calls == ["positions", "merge", "positions", "closed", "balance"]
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+    _run(scenario())
 
 
 def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile(monkeypatch):
@@ -1016,6 +1097,40 @@ def test_run_settlement_does_not_sync_collateral_balance_without_successful_tx()
 
         assert client._settlement_inflight is False
         assert calls == []
+
+    _run(scenario())
+
+
+def test_position_reconcile_sets_external_minus_native_realized_baseline():
+    instrument_id = "0xc-1.POLYMARKET"
+
+    async def scenario():
+        ledger = RealizedPnlLedger()
+        client = SimpleNamespace(
+            _realized_pnl_ledger=ledger,
+            account_id=AccountId("POLYMARKET-001"),
+            _cache=SimpleNamespace(
+                positions=lambda **kwargs: [
+                    SimpleNamespace(realized_pnl=SimpleNamespace(as_double=lambda: 0.5)),
+                ],
+            ),
+        )
+
+        async def closed_positions():
+            return [{"conditionId": "0xc", "asset": "1", "realizedPnl": "2.0"}]
+
+        client._fetch_closed_positions = closed_positions
+        sync = ArbPolymarketExecutionClient._sync_realized_pnl_after_position_reconcile.__get__(
+            client,
+        )
+        await sync([
+            {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.0"},
+        ])
+
+        assert ledger.instrument_adjustment(
+            instrument_id,
+            client.account_id,
+        ) == pytest.approx(2.5)
 
     _run(scenario())
 
@@ -1240,7 +1355,6 @@ def test_polymarket_transport_direct_when_unconfigured(monkeypatch):
 def test_relayer_transport_explicit_proxy_or_direct(monkeypatch):
     """#276:relayer SDK requests swap —— 显式 proxy 进 Session,未配置直连且 trust_env=False。"""
     import requests as real_requests
-
     from py_builder_relayer_client.http_helpers import helpers as relayer_helpers
 
     original = relayer_helpers.requests

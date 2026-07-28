@@ -102,6 +102,7 @@ factory 只读取 venue/data-source keyed map;旧 `ctx.pm_*` / `ctx.oe_*` / `ctx
 | `instrument_provider_by_venue` | venue → Data factory 回写 provider 的通用槽位;PM/OE/SE Data factory 已写入 |
 | `browser_manager_by_venue` / `browser_lock_by_venue` | venue → 浏览器共享件的通用槽位;OE/SE factory 读取/写入 browser manager;browser lock 仅 SE exec factory 写(旧 `se_login(..., browser_lock=...)` 兼容入口),discovery 不用锁 |
 | `target_competitions_by_data_source` / `competition_to_sport_by_data_source` | data source → PMSPORTS 目标 competition 与 competition→sport map |
+| `realized_pnl_ledger` | #282:PM Execution reconcile / settlement 写，Portfolio 读的同一份 `RealizedPnlLedger` |
 | `ctx_map_get` / `ctx_map_require` / `ctx_map_set` / `ctx_map_get_or_create` | keyed map 读写 helper;session timeout 等必需项用 `ctx_map_require` fail-fast,provider/browser 等共享件用 `ctx_map_set` 或 `ctx_map_get_or_create` 回写 |
 
 这些字段只承载 factory 注入状态;默认 `venues.sharpexch.enabled=false` 时不改变现有 PM/OE
@@ -154,3 +155,34 @@ runtime 流程。
 - Portfolio 与 recovery 不自行解释 `Position.side`:统一先调用 `outcome_for_position`,再调用
   `leg_economics`。PM NO token 的 LONG 直接归 `no`;decimal LAY 的 SHORT 归二元 complement。
   probability SHORT、未知 side 和非二元 SHORT 返回 `None`,调用方跳过该腿,禁止猜测。
+
+## 8. 已实现盈亏调整账本(`#282`)
+
+`src/arbitrage/common/realized_pnl.py:RealizedPnlLedger` 是 Execution 与 Portfolio 共享的轻量
+进程内账本，不替代 NT 的订单/持仓记账：
+
+- 正常 `OrderFilled` 仍由 NT Position/Portfolio 产生 instrument realized PnL。
+- PM reconcile 写入 `external_realized - native_realized` 的 instrument 基线差，使重启后
+  Data API 历史值与本进程 NT 增量能相加而不重复。
+- PM `/positions + /closed-positions` 的 `realizedPnl` 是对账权威值，已包含 SELL 与历史
+  merge；merge 成功时不另写 condition 调整、不伪造 Fill。
+- Portfolio 经 PairRegistry 聚合 pair 下全部 instrument 的 NT realized 与账本基线差。
+
+账本不保存 position/share/liability，也不接管 FillReport。其详细生产语义见 execution §4.6，
+消费公式见 risk §4.1。
+
+## 9. Pair execution-state 摘要(`#266/#284`)
+
+`src/arbitrage/common/open_orders.py::pair_open_orders_digest` 与
+`src/arbitrage/common/positions.py::pair_positions_digest` 是 Strategy 和 Execution barrier
+共用的纯函数。两者都按 PairRegistry 给出的 instrument 集读取 NT Cache，将业务相关字段投影
+成稳定排序的 JSON 后计算 SHA256，不保存 Order/Position 对象引用。
+
+- order 摘要覆盖订单身份、side/status、quantity/filled/leaves 与 price。
+- position 摘要覆盖 position/account/instrument/strategy 身份、side/quantity、
+  `avg_px_open/avg_px_close/realized_pnl`。
+- position 使用 `cache.positions()` 而非只读 open positions，保证 SELL 全平后的 closed
+  position 变化仍参与比较。
+
+本节只定义 helper 落点与字段；Strategy → metadata → Risk → Execution 的一致性协议和
+fail-closed 时序以 `_cross-cutting/synchronization.md §8.4bis` 为单一真理源。

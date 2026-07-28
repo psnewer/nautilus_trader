@@ -12,6 +12,7 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.risk.portfolio import _Leg
@@ -81,6 +82,36 @@ def test_outcome_exposures_uses_registered_outcomes_even_without_position():
     assert set(exposures.keys()) == {"yes", "no"}
     assert exposures["no"].net_profit == pytest.approx(-40.0)
     assert exposures["no"].liability == pytest.approx(40.0)
+
+
+def test_outcome_exposures_adds_reconciled_realized_pnl_to_all_outcomes():
+    from src.arbitrage.common.pair_registry import PairRegistry
+
+    cache = TestComponentStubs.cache()
+    yes = pm_instrument("match_1", "home", token="yes")
+    yes.info.update({"claim": "yes"})
+    no = pm_instrument("match_1", "home", token="no")
+    no.info.update({"claim": "no"})
+    cache.add_instrument(yes)
+    cache.add_instrument(no)
+
+    registry = PairRegistry()
+    registry.register("match_1", [yes.id, no.id])
+    ledger = RealizedPnlLedger()
+    ledger.replace_instrument_snapshot(
+        "POLYMARKET-001",
+        external_realized={str(yes.id): 2.0},
+        native_realized={str(yes.id): 0.0},
+    )
+    pf = _portfolio(cache=cache)
+    pf.configure_arb(pair_registry=registry, realized_pnl_ledger=ledger)
+    _stub_legs(pf, [_Leg("polymarket", "yes", 10.0, 0.40)])
+
+    exposures = pf.outcome_exposures("match_1")
+
+    assert exposures["yes"].net_profit == pytest.approx(8.0)
+    assert exposures["no"].net_profit == pytest.approx(-2.0)
+    assert exposures["no"].liability == pytest.approx(4.0)
 
 
 def test_outcome_shares_aggregates_by_outcome():

@@ -22,6 +22,7 @@ from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.execution.engine import _OpportunityContext
 from tests.arbitrage.risk._factories import pm_instrument
@@ -80,8 +81,13 @@ class _Ctx:
         opportunity_id: str = "opp-1",
         pair_id: str = "pair-1",
         open_orders_digest: str | None = None,
+        positions_digest: str | None = None,
     ) -> SubmitOrder:
         baseline = open_orders_digest or pair_open_orders_digest(
+            self.cache,
+            [self.instrument.id],
+        )
+        positions_baseline = positions_digest or pair_positions_digest(
             self.cache,
             [self.instrument.id],
         )
@@ -97,6 +103,7 @@ class _Ctx:
                 f"arb:expected_legs={','.join(expected)}",
                 f"arb:intent={intent}",
                 f"arb:open_orders_digest={baseline}",
+                f"arb:positions_digest={positions_baseline}",
             ],
         )
         return SubmitOrder(
@@ -146,6 +153,49 @@ def test_barrier_denies_legacy_opportunity_without_open_orders_baseline():
     second = ctx.submit_cmd("oe:away:1")
     first.order.tags[:] = [tag for tag in first.order.tags if "open_orders_digest" not in tag]
     second.order.tags[:] = [tag for tag in second.order.tags if "open_orders_digest" not in tag]
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
+
+
+def test_barrier_denies_all_legs_when_pair_positions_changed(monkeypatch):
+    ctx = _Ctx()
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+    first = ctx.submit_cmd("pm:home:0", positions_digest="baseline")
+    second = ctx.submit_cmd("oe:away:1", positions_digest="baseline")
+    monkeypatch.setattr(
+        "src.arbitrage.execution.engine.pair_positions_digest",
+        lambda cache, instrument_ids: "changed",
+    )
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
+    assert len(_denied_reasons(denied)) == 2
+    assert "opp-1" not in ctx.engine._arb_opportunities
+
+
+def test_barrier_denies_legacy_opportunity_without_positions_baseline():
+    ctx = _Ctx()
+    first = ctx.submit_cmd("pm:home:0")
+    second = ctx.submit_cmd("oe:away:1")
+    first.order.tags[:] = [tag for tag in first.order.tags if "positions_digest" not in tag]
+    second.order.tags[:] = [tag for tag in second.order.tags if "positions_digest" not in tag]
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
+
+
+def test_barrier_denies_opportunity_when_leg_positions_digests_differ():
+    ctx = _Ctx()
+    first = ctx.submit_cmd("pm:home:0", positions_digest="first")
+    second = ctx.submit_cmd("oe:away:1", positions_digest="second")
 
     ctx.engine._execute_command(first)
     ctx.engine._execute_command(second)

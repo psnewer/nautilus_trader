@@ -26,6 +26,7 @@ from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.portfolio.portfolio import Portfolio
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import outcome_for_position
@@ -99,9 +100,11 @@ class ArbitragePortfolio(Portfolio):
         *,
         share: float = 100.0,
         pair_registry: PairRegistry | None = None,
+        realized_pnl_ledger: RealizedPnlLedger | None = None,
     ) -> None:
         self._arb_share = share
         self._arb_pair_registry = pair_registry  # #34: matching 写,本类读;`_resolve_pair_id` 用
+        self._arb_realized_pnl_ledger = realized_pnl_ledger
 
     # 兜底默认(configure_arb 未调用时)
     @property
@@ -112,12 +115,26 @@ class ArbitragePortfolio(Portfolio):
     def _pair_registry(self) -> PairRegistry | None:
         return getattr(self, "_arb_pair_registry", None)
 
+    @property
+    def _realized_pnl_ledger(self) -> RealizedPnlLedger | None:
+        return getattr(self, "_arb_realized_pnl_ledger", None)
+
     # ── per-pair 指标 ────────────────────────────────────────────────
     def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]:
         """各 outcome 的绝对金额净利润与 liability。Risk 门控只读这个接口。"""
         legs = self._legs_for_pair(pair_id, account_id)
         outcomes = self._outcomes_for_pair(pair_id, legs)
-        return self._compute_outcome_exposures(legs, outcomes=outcomes)
+        exposures = self._compute_outcome_exposures(legs, outcomes=outcomes)
+        realized_pnl = self._realized_pnl_for_pair(pair_id, account_id)
+        if not exposures or abs(realized_pnl) <= 1e-12:
+            return exposures
+        return {
+            outcome: OutcomeExposure(
+                net_profit=exposure.net_profit + realized_pnl,
+                liability=exposure.liability,
+            )
+            for outcome, exposure in exposures.items()
+        }
 
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]:
         """各 outcome 当前持仓 share。Strategy share_limit action 用于计算剩余额度。"""
@@ -148,7 +165,7 @@ class ArbitragePortfolio(Portfolio):
         *,
         outcomes: set[str] | None = None,
     ) -> dict[str, OutcomeExposure]:
-        if not legs:
+        if not legs and not outcomes:
             return {}
         outcomes = outcomes or self._outcomes_from_legs(legs)
 
@@ -158,6 +175,21 @@ class ArbitragePortfolio(Portfolio):
             liability = sum(leg.loss_if_loses() for leg in legs if leg.market_type != outcome)
             result[outcome] = OutcomeExposure(net_profit=profit - liability, liability=liability)
         return result
+
+    def _realized_pnl_for_pair(self, pair_id: str, account_id=None) -> float:
+        registry = self._pair_registry
+        if registry is None:
+            return 0.0
+        ledger = self._realized_pnl_ledger
+        total = 0.0
+        for raw_instrument_id in registry.instrument_ids_for_pair(pair_id):
+            instrument_id = InstrumentId.from_str(str(raw_instrument_id))
+            pnl = self.realized_pnl(instrument_id, account_id)
+            if pnl is not None:
+                total += pnl.as_double()
+            if ledger is not None:
+                total += ledger.instrument_adjustment(instrument_id, account_id)
+        return total
 
     def _outcomes_for_pair(self, pair_id: str, legs: list[_Leg]) -> set[str]:
         outcomes = self._outcomes_from_registry(pair_id)

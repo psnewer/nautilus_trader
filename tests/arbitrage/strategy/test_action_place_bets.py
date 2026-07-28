@@ -139,6 +139,7 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
         "open_orders_digest": None,
+        "positions_digest": None,
         "venue_required_balance": 3.25,
     }]
 
@@ -296,6 +297,7 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
         "open_orders_digest": None,
+        "positions_digest": None,
         "venue_required_balance": 7.0,
     }]
 

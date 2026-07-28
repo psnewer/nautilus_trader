@@ -13,6 +13,7 @@ from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.positions import pair_positions_digest
 
 
 _TIMEOUT_PREFIX = "arb_opp_timeout:"
@@ -90,6 +91,10 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             return
         if meta.open_orders_digest != ctx.meta.open_orders_digest:
             self._deny_order(command.order, "opportunity metadata mismatch: open_orders_digest differs")
+            self._finish(ctx, terminal="denied")
+            return
+        if meta.positions_digest != ctx.meta.positions_digest:
+            self._deny_order(command.order, "opportunity metadata mismatch: positions_digest differs")
             self._finish(ctx, terminal="denied")
             return
         ctx.allowed[meta.leg_key] = command
@@ -171,13 +176,24 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             return
 
         baseline = ctx.meta.open_orders_digest
+        positions_baseline = ctx.meta.positions_digest
         instrument_ids = self._residual_check_instrument_ids(ctx)
         current = pair_open_orders_digest(self._cache, instrument_ids)
-        if baseline is None or current != baseline:
+        current_positions = pair_positions_digest(self._cache, instrument_ids)
+        if (
+            baseline is None
+            or current != baseline
+            or positions_baseline is None
+            or current_positions != positions_baseline
+        ):
             reason = (
                 "opportunity denied: pair open orders changed during evaluation"
-                if baseline is not None
-                else "opportunity denied: missing pair open-orders baseline"
+                if baseline is not None and current != baseline
+                else (
+                    "opportunity denied: pair positions changed during evaluation"
+                    if positions_baseline is not None and current_positions != positions_baseline
+                    else "opportunity denied: missing pair execution-state baseline"
+                )
             )
             self._log.info(
                 f"{reason} opportunity_id={ctx.meta.opportunity_id}, "

@@ -170,7 +170,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 **当前框架边界**:
 - ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由无状态 `StateQuery` 与 AND/OR/NOT 组成，直接读取 `EvalContext`
-- ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 open-order digest
+- ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 order/position digests
 - ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
 **用户域 Check/Action**(slice 9 #49):
@@ -270,6 +270,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 输入: 执行 `PlaceBetsAction.execute(ctx)`。
 - 步骤: 检查两次 submit spec。
 - 期望: 两条 spec 拥有相同 `opportunity_id` / `pair_id=P1`;各自 `leg_key` 不同;`expected_legs` 包含两条真实腿且包含自己。
+- 期望:两条 spec 同时携带本轮相同的 `open_orders_digest/positions_digest`。
 - 验收: 不发送 0 qty 空单;没有真实下单的 outcome 不进入 `expected_legs`。
 - 状态:✅ `test_action_place_bets.py::test_action_calls_submitter_when_present`
 
@@ -411,6 +412,13 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   probability SHORT 等经济投影不变量错误时停止，不按零敞口继续。直接验收用例为
   `test_single_legs_are_cleared_when_portfolio_invariant_is_broken` 与
   `test_recovery_rejects_probability_short_position`。
+
+## #282:Recovery 使用包含 realized PnL 的 Portfolio 净利润
+
+- `test_recovery_uses_portfolio_net_profit_including_realized_pnl`:已有单边持仓时，Portfolio
+  返回的 Data API 对账 SELL/merge realized PnL 会进入当前 rebate 前置门；已达阈值则不再
+  产生补单。
+- target share 仍只取 open positions，不用 realized PnL 虚增 share。
 
 ## #250:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py`)
 

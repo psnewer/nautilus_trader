@@ -224,6 +224,7 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             name=name,
             venue_liveness=ctx.venue_liveness,
             settlement=ctx.pm_settlement,
+            realized_pnl_ledger=ctx.realized_pnl_ledger,
             session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", POLYMARKET),
             # #110:merge/redeem 改由 NT 连续 position 对账驱动;不再需要 positions_fetcher / health_interval。
         )

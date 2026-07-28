@@ -5,7 +5,7 @@ ArbPolymarketExecutionClient —— PM 执行客户端薄子类(Q18c 宿主层)�
 
 = 上游 `PolymarketExecutionClient`(订单 IO / 账户状态 / reports,直接复用)
   + `ArbExecutionSessionMixin`(session / 超时 / execution.* 同步)
-  + `PolymarketSettlement`(#110:merge/redeem,由 **NT 连续 position 对账** 内 fire-and-forget 触发;
+  + `PolymarketSettlement`(#110:merge/redeem,由 **NT 连续 position 对账** 在返回仓位报告前触发;
     **无 HealthCheckLoop** —— PM 健康检查已退役,对齐 OE #109)。
 
 **位置(refactor.md #33 校准)**:本类是 PM venue-coupled 代码 → 住 PM adapter 目录(P9 唯一
@@ -13,29 +13,71 @@ ArbPolymarketExecutionClient —— PM 执行客户端薄子类(Q18c 宿主层)�
 同文件**(`arb_execution.py`)避免 upstream merge 冲突;import 上游类直接子类化。
 
 **验证边界**:真 `ClobClient`/`ws_auth`/Data API 仍靠实盘;离线覆盖纯映射
-`pm_raw_position_to_settlement` 以及 reports override 的 liveness / settlement fire-and-forget 接线。
+`pm_raw_position_to_settlement` 以及 reports override 的 liveness / settlement 两阶段接线。
 """
 
 from __future__ import annotations
 
 import asyncio
 
+import msgspec
+
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
+from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
+from nautilus_trader.adapters.polymarket.settlement import SettlementResult
+from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import QueryOrder
-
+from nautilus_trader.model.identifiers import InstrumentId
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
-from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
-from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
+
+
+def _optional_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _realized_by_instrument(rows: list[dict]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for row in rows:
+        condition_id = str(row.get("conditionId", "") or "")
+        asset_id = str(row.get("asset", "") or "")
+        if not condition_id or not asset_id:
+            continue
+        instrument_id = f"{condition_id}-{asset_id}.POLYMARKET"
+        realized_pnl = _optional_float(row.get("realizedPnl", 0.0))
+        if realized_pnl is None:
+            continue
+        result[instrument_id] = result.get(instrument_id, 0.0) + realized_pnl
+    return result
+
+
+def _native_realized_for_instrument(cache, instrument_id: str, account_id) -> float:
+    total = 0.0
+    for position in cache.positions(
+        instrument_id=InstrumentId.from_str(instrument_id),
+        account_id=account_id,
+    ):
+        pnl = getattr(position, "realized_pnl", None)
+        if pnl is None:
+            continue
+        total += pnl.as_double() if hasattr(pnl, "as_double") else float(pnl)
+    return total
 
 
 def pm_raw_position_to_settlement(item: dict) -> SettlementPosition:
     """#110:PM Data API `/positions` **原始 dict** → settlement 视图(纯映射,可单测)。
-    键名按 Data API:`conditionId` / `size` / `negativeRisk` / `redeemable`(见 odds_client `_do_fetch_positions`)。"""
+    键名按 Data API:`conditionId` / `size` / `negativeRisk` / `redeemable`。"""
     return SettlementPosition(
         condition_id=str(item.get("conditionId", item.get("condition_id", "")) or ""),
         size=float(item.get("size", 0) or 0),
@@ -59,6 +101,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         *,
         venue_liveness: VenueExecutionLiveness,
         settlement: PolymarketSettlement | None = None,
+        realized_pnl_ledger: RealizedPnlLedger | None = None,
         session_timeout_secs: float = 30.0,
     ) -> None:
         super().__init__(
@@ -70,8 +113,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         )
         self._venue_liveness = venue_liveness
         self._settlement = settlement
-        # #110:merge/redeem 改由 NT 连续 position 对账驱动(无 HealthCheckLoop)。
-        # `_settlement_inflight` = single-flight 守卫(链上 tx 数秒,fire-and-forget 不阻塞对账循环,防并发重复提交)。
+        self._realized_pnl_ledger = realized_pnl_ledger
+        # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
+        # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
         self._settlement_inflight = False
 
     async def _submit_order(self, command) -> None:
@@ -149,15 +193,12 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         )
         await self._cancel_order(cmd, session_started=True)
 
-    async def _run_settlement(self, raw_positions: list) -> None:
-        """#110:后台跑 merge/redeem(fire-and-forget,不阻塞 NT 对账循环)。
-        tx 失败仅 log(settlement.run 内吞),不判 venue dead;`finally` 清 single-flight 守卫。"""
+    async def _run_settlement(self, raw_positions: list) -> SettlementResult:
+        """执行 merge/redeem；tx 失败仅记入结果，`finally` 清 single-flight 守卫。"""
         try:
-            await self._settlement.run([pm_raw_position_to_settlement(p) for p in raw_positions])
-            # 2026-07-10:collateral adapter 路径已直接产出 pUSD。先暂停主动 CLOB cache sync,
-            # 由下一轮账户刷新验证是否还需要 update_balance_allowance(COLLATERAL)。
-            # 如需恢复,取消下一行注释即可。
-            # await self._sync_collateral_balance_allowance_after_settlement()
+            return await self._settlement.run(
+                [pm_raw_position_to_settlement(p) for p in raw_positions],
+            )
         finally:
             self._settlement_inflight = False
 
@@ -235,22 +276,90 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             if self._log is not None:
                 self._log.warning(f"PM position reports query failed (mark dead, raise): {e!r}")
             raise
-        self._venue_liveness.mark_position_alive(POLYMARKET)
-        # #110:同一次拉的原始 /positions 跑 merge/redeem —— fire-and-forget + single-flight,不阻塞 NT 对账循环。
         raw = list(getattr(self, "_last_raw_positions", []))
-        dispatch = self._settlement is not None and not self._settlement_inflight
-        if dispatch:
+        merge_refreshed = False
+        if self._settlement is not None and not self._settlement_inflight:
             self._settlement_inflight = True
-            self._loop.create_task(self._run_settlement(raw))
+            result = await self._run_settlement(raw)
+            if result.merges:
+                try:
+                    reports = await super().generate_position_status_reports(command)
+                except Exception as e:
+                    self._venue_liveness.mark_position_dead(POLYMARKET)
+                    if self._log is not None:
+                        self._log.warning(
+                            f"PM post-merge position reports query failed (mark dead, raise): {e!r}",
+                        )
+                    raise
+                raw = list(getattr(self, "_last_raw_positions", []))
+                merge_refreshed = True
+
+        await self._sync_realized_pnl_after_position_reconcile(raw)
         await self._refresh_account_state_after_position_reconcile()
-        # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + venue 标活 + 结算派发决策。
+        self._venue_liveness.mark_position_alive(POLYMARKET)
+        # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + venue 标活 + 结算结果。
         # 守卫 `_log`:离线单测经 `__new__` 绕过 NT init,`_log` 未初始化为 None;生产恒已注入。
         if self._log is not None:
             self._log.info(
                 f"PM position reconcile OK: {len(reports)} report(s), "
-                f"settlement {'dispatched' if dispatch else 'skipped'} ({len(raw)} raw positions)",
+                f"settlement {'merge-refreshed' if merge_refreshed else 'checked'} "
+                f"({len(raw)} raw positions)",
             )
         return reports
+
+    async def _sync_realized_pnl_after_position_reconcile(self, current_positions: list[dict]) -> None:
+        ledger = getattr(self, "_realized_pnl_ledger", None)
+        if ledger is None:
+            return
+        try:
+            closed_positions = await self._fetch_closed_positions()
+        except Exception as exc:  # 保留上一份完整基线，不污染 position reconcile
+            self._log.warning(f"PM realized PnL reconcile skipped: closed positions query failed: {exc!r}")
+            return
+
+        external = _realized_by_instrument([*current_positions, *closed_positions])
+        native = {
+            instrument_id: _native_realized_for_instrument(
+                self._cache,
+                instrument_id,
+                self.account_id,
+            )
+            for instrument_id in external
+        }
+        ledger.replace_instrument_snapshot(
+            self.account_id,
+            external_realized=external,
+            native_realized=native,
+        )
+
+    async def _fetch_closed_positions(self, *, limit: int = 50) -> list[dict]:
+        base_url = (self._config.base_url_data_api or "https://data-api.polymarket.com").rstrip("/")
+        url = f"{base_url}/closed-positions"
+        results: list[dict] = []
+        offset = 0
+        while True:
+            response: HttpResponse = await self._http_client_async.get(
+                url=url,
+                params={
+                    "user": self._user_address,
+                    "limit": str(limit),
+                    "offset": str(offset),
+                    "sortBy": "TIMESTAMP",
+                    "sortDirection": "DESC",
+                },
+            )
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status}: Failed to fetch closed positions")
+            page = msgspec.json.decode(response.body)
+            if not isinstance(page, list) or not page:
+                break
+            results.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
+            if offset > 100000:
+                raise RuntimeError("Closed positions offset exceeded 100000")
+        return results
 
     async def generate_fill_reports(self, command) -> list:
         """#279:reconcile 不拉 trades API —— 恒返回 `[]`,对齐 OE/SE。

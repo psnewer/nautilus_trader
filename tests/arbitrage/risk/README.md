@@ -371,3 +371,10 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - `test_pm_buy_at_minimum_notional_passes`:BUY 5 @ 0.20 恰好 1 USD 放行。
 - `test_pm_sell_does_not_apply_buy_notional_minimum`:SELL 5 @ 0.10 不应用 BUY 金额下限；最小 5 shares 仍由 NT `min_quantity` 处理。
 - `test_pm_buy_minimum_notional_denies_on_real_submit_path`:真实 `SubmitOrder → RiskEngine` 派发产生 deny，且订单不泄漏到 ExecutionEngine。
+
+## #282:pair outcome exposure 纳入已实现盈亏
+
+- `test_outcome_exposures_adds_reconciled_realized_pnl_to_all_outcomes`:Data API instrument
+  基线差同额加到 yes/no `net_profit`；`liability` 与 `outcome_shares` 不变。
+- merge 不使用 condition adjustment：尝试 merge 后同轮重拉
+  `/positions + /closed-positions.realizedPnl`，由权威仓位与 realized 基线接管。

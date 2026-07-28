@@ -71,6 +71,13 @@
 - 期望:barrier 不因 residual 把整次 opportunity 改写为普通 cancel-only;按撤单腿所属设计继续。
 - 验收:撤单腿判定来自显式 metadata/command,不是 residual cancel-only 的内部动作。
 
+### e2e-9d: evaluation 后成交改变仓位时不 release 旧机会
+- 前置:Strategy 已记录 pair 的 `open_orders_digest/positions_digest`，订单通过 Risk、尚未收齐
+  barrier；期间 BUY/SELL/外部成交或 position reconcile 已更新 NT Cache position。
+- 输入:最后一条 risk-pass 腿进入 barrier。
+- 期望:barrier 重算 position digest 发现变化，整组本地 deny，不向任何 venue release。
+- 验收:离线 `test_barrier_denies_all_legs_when_pair_positions_changed` 已覆盖；真实成交窗口 E2E 待验。
+
 ## VenueExecutionLiveness opportunity 门控(代码已落地,E2E 待验,2026-06-15)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + risk §3.1。

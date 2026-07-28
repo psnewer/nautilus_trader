@@ -39,6 +39,7 @@ from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.condition import EvalContext
@@ -82,6 +83,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 leg_key=str(spec["leg_key"]),
                 expected_legs=tuple(str(v) for v in spec["expected_legs"]),
                 open_orders_digest=spec.get("open_orders_digest"),
+                positions_digest=spec.get("positions_digest"),
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
             ))
@@ -338,6 +340,7 @@ class StrategyEvaluator(Strategy):
             return
         instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
         open_orders_digest = pair_open_orders_digest(self.cache, instrument_ids)
+        positions_digest = pair_positions_digest(self.cache, instrument_ids)
         sports_store = self._get_sports_store()
         # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
         # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
@@ -348,6 +351,7 @@ class StrategyEvaluator(Strategy):
             "pair_registry": self._pair_registry,
             "sports_store": sports_store,
             "open_orders_digest": open_orders_digest,
+            "positions_digest": positions_digest,
             "submitter": submitter,
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),

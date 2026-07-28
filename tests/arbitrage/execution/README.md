@@ -48,17 +48,25 @@
 - 验收:撤单腿必须显式表达,不能由 residual cancel-only 内部动作反推。
 - 状态:✅ `test_engine_barrier.py::test_barrier_residual_with_explicit_cancel_leg_releases_normally`
 
-### execution-3.5.7: evaluation 窗口内 pair open orders 变化则整组拒绝
-- 前置:所有腿携带相同 `open_orders_digest`,且已全部 Risk pass。
-- 输入:barrier release 前重算出的 pair-wide digest 与基线不同。
+### execution-3.5.7: evaluation 窗口内 pair orders/positions 变化则整组拒绝
+- 前置:所有腿携带相同 `open_orders_digest/positions_digest`,且已全部 Risk pass。
+- 输入:barrier release 前重算出的任一 pair-wide digest 与基线不同。
 - 期望:不向任何 venue ExecutionClient release；所有暂存腿生成本地 `OrderDenied`。
-- 验收:✅ `test_engine_barrier.py::test_barrier_denies_all_legs_when_pair_open_orders_changed`
+- 验收:✅ `test_engine_barrier.py::test_barrier_denies_all_legs_when_pair_open_orders_changed`、
+  `test_barrier_denies_all_legs_when_pair_positions_changed`
 
-### execution-3.5.8:缺失 open-order baseline 时 fail-closed
-- 前置:旧格式 opportunity 没有 `arb:open_orders_digest`。
+### execution-3.5.8:缺失 order/position baseline 时 fail-closed
+- 前置:旧格式 opportunity 缺少 `arb:open_orders_digest` 或 `arb:positions_digest`。
 - 输入:所有 expected legs 已收齐。
 - 期望:整组拒绝，不为兼容旧 metadata 绕过窗口校验。
-- 验收:✅ `test_engine_barrier.py::test_barrier_denies_legacy_opportunity_without_open_orders_baseline`
+- 验收:✅ `test_engine_barrier.py::test_barrier_denies_legacy_opportunity_without_open_orders_baseline`、
+  `test_barrier_denies_legacy_opportunity_without_positions_baseline`
+
+### execution-3.5.9:同 opportunity 各腿 position baseline 不一致时 fail-closed
+- 前置:两条 risk-pass 腿携带不同 `positions_digest`。
+- 输入:第二条腿进入 barrier。
+- 期望:立即整组拒绝，不使用首腿或末腿摘要覆盖另一条。
+- 验收:✅ `test_engine_barrier.py::test_barrier_denies_opportunity_when_leg_positions_digests_differ`
 
 ## 异常路径置位保证(#105 ①②,已落地代码)
 

@@ -102,7 +102,8 @@ class MeanRebateRecoveryCheck(Check):
         #   current  < 阈值 → 需要补;   repaired >= 阈值 → 补了确实有用。
         # 与 `repaired` 共用同一分母 `target_share`,两个数直接可比、同一把尺子。
         # 放在取盘口候选之前:本判据不需要行情,能早退就早退。
-        current = _outcome_return_rates(existing, sorted(valid_outcomes), target_share)
+        current_net = _current_net_by_outcome(ctx, existing, sorted(valid_outcomes))
+        current = _rates_from_net(current_net, target_share)
         if current and min(current.values()) >= self._min_repaired_rebate:
             return False
 
@@ -112,7 +113,7 @@ class MeanRebateRecoveryCheck(Check):
             return False
 
         recovery_specs = []
-        repaired_legs = list(existing)
+        repair_legs = []
         for role in roles_present:
             missing = target_share - actual_by_role.get(role, 0.0)
             if missing <= _EPS:
@@ -134,7 +135,7 @@ class MeanRebateRecoveryCheck(Check):
                 if key in cand:
                     spec[key] = cand[key]
             recovery_specs.append(spec)
-            repaired_legs.append(_CalcLeg(
+            repair_legs.append(_CalcLeg(
                 cand["venue"],
                 role,
                 qty,
@@ -145,7 +146,8 @@ class MeanRebateRecoveryCheck(Check):
         if not recovery_specs:
             return False
 
-        repaired = _outcome_return_rates(repaired_legs, roles_present, target_share)
+        repaired_net = _add_legs_to_net(current_net, repair_legs, roles_present)
+        repaired = _rates_from_net(repaired_net, target_share)
         if not repaired or min(repaired.values()) < self._min_repaired_rebate:
             return False
 
@@ -218,3 +220,47 @@ def _outcome_return_rates(legs: list[_CalcLeg], roles: list[str], share: float) 
                 net -= leg.loss_if_loses()
         result[outcome] = net / share if share > 0 else 0.0
     return result
+
+
+def _current_net_by_outcome(
+    ctx: EvalContext,
+    existing: list[_CalcLeg],
+    outcomes: list[str],
+) -> dict[str, float]:
+    portfolio = ctx.portfolio
+    if portfolio is not None:
+        exposures = portfolio.outcome_exposures(ctx.pair_id)
+        if exposures:
+            return {
+                outcome: float(exposures[outcome].net_profit)
+                for outcome in outcomes
+                if outcome in exposures
+            }
+    return {
+        outcome: sum(
+            leg.profit_if_wins() if leg.role == outcome else -leg.loss_if_loses()
+            for leg in existing
+        )
+        for outcome in outcomes
+    }
+
+
+def _add_legs_to_net(
+    baseline: dict[str, float],
+    legs: list[_CalcLeg],
+    outcomes: list[str],
+) -> dict[str, float]:
+    return {
+        outcome: baseline.get(outcome, 0.0) + sum(
+            leg.profit_if_wins() if leg.role == outcome else -leg.loss_if_loses()
+            for leg in legs
+        )
+        for outcome in outcomes
+    }
+
+
+def _rates_from_net(net_by_outcome: dict[str, float], share: float) -> dict[str, float]:
+    return {
+        outcome: net / share if share > 0 else 0.0
+        for outcome, net in net_by_outcome.items()
+    }

@@ -465,6 +465,7 @@ def test_submitter_wired_into_eval_context():
     assert ctx.submitter is not None              # slice 10a:submitter 已注入
     assert callable(ctx.submitter)
     assert ctx.open_orders_digest is not None
+    assert ctx.positions_digest is not None
 
 
 def test_submitter_uses_native_strategy_submit_order_path():

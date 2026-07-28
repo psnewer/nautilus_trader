@@ -22,6 +22,7 @@ import nautilus_trader.system.kernel as _kernel
 
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.risk.config import ArbRiskParams
@@ -49,6 +50,7 @@ class ArbContext:
 
     # PM 专属
     pm_settlement: object | None = None
+    realized_pnl_ledger: RealizedPnlLedger | None = None
     # 注(#110):PM merge/redeem 改由 NT 连续 position 对账驱动(无 HealthCheckLoop)→
     # 不再需要 `pm_positions_fetcher` / `pm_health_interval_secs`(已删)。
 
@@ -220,6 +222,7 @@ def wire_arbitrage_runtime(
     portfolio.configure_arb(
         share=arbitrage_params.share,
         pair_registry=pair_registry,
+        realized_pnl_ledger=_arb_context.realized_pnl_ledger,
     )
 
     risk_engine = node.kernel.risk_engine

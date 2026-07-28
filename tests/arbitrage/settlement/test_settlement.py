@@ -6,7 +6,6 @@ contract IO 用 FakeContract 录调用,不上链。
 import asyncio
 
 from nautilus_trader.adapters.polymarket.contract import TxResult
-
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 

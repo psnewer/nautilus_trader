@@ -8,8 +8,8 @@ from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.risk.portfolio import OutcomeExposure
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
-from src.arbitrage.strategy.condition import EvalContext
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -76,6 +76,32 @@ def test_recovery_adds_missing_outcome_to_max_actual_share():
         "claim": "no",
     }]
     assert ctx.scratch["mean_rebate_recovery"]["target_share"] == 5.0
+
+
+def test_recovery_uses_portfolio_net_profit_including_realized_pnl():
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    portfolio = SimpleNamespace(
+        outcome_exposures=lambda pair_id: {
+            "yes": OutcomeExposure(net_profit=5.5, liability=0.0),
+            "no": OutcomeExposure(net_profit=0.5, liability=2.5),
+        },
+    )
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+    )
+    ctx.portfolio = portfolio
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is False
+    assert "legs" not in ctx.scratch
 
 
 def test_recovery_rejects_when_repaired_rebate_below_threshold():

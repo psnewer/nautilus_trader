@@ -28,8 +28,9 @@ class EvalContext:
     cache: object | None = None
     pair_registry: object | None = None
     sports_store: object | None = None
-    # 评估开始时该 pair 的 open-order 摘要；所有腿透传给 Execution barrier release 前比较。
+    # 评估开始时该 pair 的 order/position 摘要；所有腿透传给 Execution barrier release 前比较。
     open_orders_digest: str | None = None
+    positions_digest: str | None = None
     # slice 9(#49):per-eval scratch — Check 算 derived 数据(如 legs)给同 condition 树的 Action 用;
     # per-eval 自动隔离(每次 evaluate 新建 ctx),无 race。只在同 condition 树内 Check→Action 传。
     scratch: dict = field(default_factory=dict)

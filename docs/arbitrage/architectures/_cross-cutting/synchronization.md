@@ -6,7 +6,7 @@
 
 > ⚠️ **失效指针(#105,2026-06-13,历史设计草案)**:§1–7 描述的是**自写 HealthCheckLoop 时代**的同步设计。**#105 决定把健康检查迁移到 NT 原生 reconciliation**,据此:
 > - **`health_check.*` 消息 + Strategy `_hc_running` + strategy⊥健康检查互斥(§1 第二条、§2.1 `_hc_running`、§3 Strategy 行、§7.6)→ ✅ 已退役删除(#108,2026-06-16)**(执行页 reload 撞下单的原始理由随执行页 reconcile 迁移消失;OE 下单 `page.evaluate` 与焦点无关);
-> - **健康检查⊥执行 per-venue 互斥(§1 第一条、§2.1 `_execution_active`、§3 健康检查行)→ ✅ 已退役删除(#108)**;OE `execution.*` ref-count 删。**PM 的 HealthCheckLoop 也已删(#110)**:merge/redeem 改由 NT 连续 position 对账驱动、fire-and-forget,**不再与执行互斥**(并发由 single-flight 守卫);
+> - **健康检查⊥执行 per-venue 互斥(§1 第一条、§2.1 `_execution_active`、§3 健康检查行)→ ✅ 已退役删除(#108)**;OE `execution.*` ref-count 删。**PM 的 HealthCheckLoop 也已删(#110)**:merge/redeem 改由 NT 连续 position 对账驱动；#283/#285 起 report 协程 await settlement，尝试过 merge 后无论成功失败均重拉 positions，再向 NT 返回 reports；同步链上 IO 已丢线程池，不阻塞 app loop，并发由 single-flight 守卫;
 > - **pair_inflight 兜底 `health_check→clear_all`(§7.6)+ max-hold(§7.3)已全部删除(#105 ②,2026-06-15)→ in-flight 出口靠结构保证:opportunity barrier 出口 + session `exec_started`↔watchdog 原子(§7.3)**。
 > 读 §1–7 时务必先读 **§8**(迁移后的现状真理源);§1–7 保留为迁移前设计记录。**2026-06-15 修正**:`leg_settled` 退役,由 §8.5 `VenueExecutionLiveness` 取代;per-pair `PairInFlightGate` 机制本体保留,兜底触发已删除。
 
@@ -282,6 +282,7 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 | `arb:leg_key=<key>` | `Order.tags` | 本轮机会内腿标识,如 `pm_home` / `oe_home` |
 | `arb:expected_legs=a,b,...` | `Order.tags` | 本轮应收齐的真实腿集合,包含自己;不发 0 qty 空单 |
 | `arb:open_orders_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 open-order 基线；同机会所有腿必须相同 |
+| `arb:positions_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 position 基线；同机会所有腿必须相同 |
 | `arb:intent=<intent>` | `Order.tags` | 既有 intent 契约(`arbitrage` / `recovery`) |
 
 > metadata 放 `Order.tags`,不是仅放 `SubmitOrder.params`,因为 Risk deny 时 `_deny_order(order, reason)` 直接拿到的是 `order`;Execution 处理 `OrderDenied` 时也可经 cache 反查 order tags。
@@ -319,7 +320,7 @@ CANCEL_ONLY
   → 走统一 finish outlet
 
 RELEASED
-  pair 当前 open-order digest 与评估基线相同
+  pair 当前 open-order / position digest 均与评估基线相同
   release 所有 pending SubmitOrder 到原生 ExecutionEngine._execute_command
   后续由各 ExecutionClient 独立维护 session 生命周期
 
@@ -338,15 +339,22 @@ BASELINE_DENIED / DENIED / TIMED_OUT
 - 若 residual 存在但 risk-pass legs 中已有显式撤单腿,barrier 不把整次 opportunity 改写为 cancel-only,而按该撤单腿所属语义继续执行;这是为后续显式撤单/补偿动作预留的边界,不是当前普通套利路径。
 - per-client `_begin_session` 的 residual 检查保留为防御性 fallback:无 opportunity metadata、barrier 未接管或非本协议订单仍可在 client 入口退化为单 instrument cancel-only;带完整 metadata 的 opportunity 以 barrier 判定为主,避免跨 venue 半边撤旧半边开新。
 
-**评估窗口 open-order 校验(#266)**:
-- Strategy 不再冻结 order book/position/instrument；只在 evaluation 开始记录 pair-wide
-  open-order digest，并随每条真实腿透传。
+**评估窗口 execution-state 校验(#266/#284)**:
+- Strategy 不冻结 order book/instrument；在 evaluation 开始记录 pair-wide open-order 与
+  position 两份 digest，并随每条真实腿透传。
+- position digest 直接读取 NT `Cache.positions(instrument_id=...)`，投影
+  `position/account/instrument/strategy id + side + quantity + avg_px_open/close + realized_pnl`
+  后排序、序列化、SHA256；不持有会被 cache 原地更新的 `Position` 引用。使用全部 positions
+  而非仅 open positions，SELL 全平后 closed position 的 realized/均价变化也可见。
 - barrier 收齐全部 risk-pass legs 后，先执行既有 residual cancel-only；若未触发，再用同一
-  common helper 对 pair registered instruments 重算 digest。
-- digest 缺失、腿间不同或当前值变化均 fail-closed，整组拒绝。比较只做一次，不能拆到各
+  common helpers 对 pair registered instruments 重算两份 digest。
+- 任一 digest 缺失、腿间不同或当前值变化均 fail-closed，整组拒绝。比较只做一次，不能拆到各
   venue 分支，否则会重新引入腿间时序窗口。
-- 当前边界有意不覆盖 ABA：评估期间外部订单出现并完全成交，比较前 open-order 集合又恢复
-  原值时，digest 无法识别；用户接受该边界，不另加 fill epoch。
+- 两份 digest 都只观察**已经写入 NT Cache** 的状态。链上 merge 正在等待、第二次
+  `/positions` 尚未返回并由 NT reconcile 应用时，position digest 仍是旧值；按用户裁定不为
+  该窗口恢复临时 position liveness，也不另加 settlement epoch。
+- 当前边界有意不覆盖 ABA：评估期间状态变化、比较前又完整恢复同一字段投影时，digest 无法
+  识别；不另加 fill epoch。
 
 **统一出口**:
 - opportunity context 的统一 finish outlet 只负责清 pending、取消 timer,并为尚未 release 的订单生成本地终态。
@@ -501,7 +509,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 - [x] **B2** DataClient HealthCheckLoop **Phase-2 exec reload 关**:`_reload_execution_page` / `health_check_exec_reload_enabled` 已退役,DataClient 只管 competition 页。
 - [x] **B3** NT reconciliation 配置:`reconciliation=True` + `timeout_connection=180s` + `open_check_interval_secs=300`(#111:全局连续 order 对账,驱动 order liveness 恢复;OE 健康时只读 `_current_bets` 内存,WS stale 时才 reload) + `position_check_interval_secs=300`(#110:全局连续 position 对账,驱动 PM merge/redeem 与 venue position liveness) + `inflight` 开(`§4.3bis(7)`)。
 - [x] **B4** `leg_settled` 全面退役:删 funnel mark / `_on_current_bets mark_venue` / Portfolio settled gate / strategy settled pre-check。
-- [x] **B5** 退役 `_hc_running` + `health_check.*` + `execution.*` 健康⊥执行互斥(✅ #108,2026-06-16,见 §8.6 同名条)。查证后删:OE 下单 `page.evaluate` 与焦点无关 + competition reload 在另一张页,strategy⊥健康检查 / 健康⊥执行两层互斥的原始理由(执行页 reload 撞下单)已随执行页 reconcile 迁移消失。PM 的 HealthCheckLoop 后来也删了(#110:merge/redeem 改 NT 连续 position 对账驱动、fire-and-forget,不再有执行互斥)。
+- [x] **B5** 退役 `_hc_running` + `health_check.*` + `execution.*` 健康⊥执行互斥(✅ #108,2026-06-16,见 §8.6 同名条)。查证后删:OE 下单 `page.evaluate` 与焦点无关 + competition reload 在另一张页,strategy⊥健康检查 / 健康⊥执行两层互斥的原始理由(执行页 reload 撞下单)已随执行页 reconcile 迁移消失。PM 的 HealthCheckLoop 后来也删了；#283 的 settlement await 仅挂起 report 协程，不恢复旧健康检查互斥。
 - [x] **B6** `PairInFlightGate` **删 max-hold + clear_all + A5**(✅ #105 ②,2026-06-15,独立于 flag 先行)。原"fired 但一腿 session 都没起(全 deny / cancel-only 丢弃)"的漏:全 deny 由 opportunity barrier 出口 `release_eval` 兜(§8.4bis),cancel-only 丢弃由残单 tracked cancel 的 exec_count 兜(§8.4);二者落地后兜底删除安全。(`execution.*` 消息不退役 —— 仍被 OE DataClient 消费,见 §8.6。)
 
 ### live 验收锚点(flip 后真盘 / mock 验)

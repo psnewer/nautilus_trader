@@ -201,17 +201,19 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 | 字段 | 含义 |
 |---|---|
 | `opportunity_id` | 本轮机会 ID |
-| `pair_id` | 用于 pair-wide residual 检查与 open-order digest 重算 |
+| `pair_id` | 用于 pair-wide residual 检查与 order/position digest 重算 |
 | `expected_legs` | 应收齐的真实腿 key 集合 |
 | `open_orders_digest` | Strategy 评估开始时该 pair open orders 的不可变摘要 |
+| `positions_digest` | Strategy 评估开始时该 pair positions 的不可变摘要 |
 | `allowed` | `leg_key -> SubmitOrder`,尚未 release 到 venue |
 | `terminal` | `None` / `denied` / `timeout` / `released` |
 
 **出口**:
 - `all allowed`:先执行 opportunity-level cancel-only 判定；若不触发，按
-  `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 open-order digest。基线缺失、腿间
-  digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release 任一腿。只有一致时
-  才取消 timer，并把所有 command 逐条交回父类进入各 venue `ExecutionClient`。
+  `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 open-order 与 position digest。
+  任一基线缺失、腿间 digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release
+  任一腿。只有两份摘要都一致时才取消 timer，并把所有 command 逐条交回父类进入各 venue
+  `ExecutionClient`。字段与 cache 可见性边界见同步真理源 §8.4bis。
 - `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order,且本轮 risk-pass legs 中没有显式撤单腿时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。详细条件与“撤单腿”边界见同步真理源 §8.4bis。
 - `denied` / `timeout`:不 release 到 venue;对 `allowed` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
 - `finish outlet`:清 context / 取消 timer，并对尚未执行的 orders 生成本地终态。
@@ -538,26 +540,58 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 
 **三层结构(Q18c;#110 触发改为 NT 连续 position 对账,2026-06-16)**:
 ```
-PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-forget 调)
+PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、再返回 reports)
   └─ PolymarketSettlement(编排:按 condition 分组 / min 取量 / redeemable 门控)
        └─ contract.py:PolymarketContractService(链上 IO:Builder Relayer 调 collateral adapter mergePositions/redeemPositions)
 ```
 > **落地**:编排层 = `nautilus_trader/adapters/polymarket/settlement.py`(`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在同一 adapter 目录。
 
 - **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。该成功路径同时刷新 PM AccountState(`_update_account_state`),用于覆盖 accepted 本地预扣后的保守余额。
-- **一次拉喂两用(省一次 REST)**:`generate_position_status_reports` 内上游 `_fetch_user_positions` 全量拉一次 /positions,上游把**原始响应** stash 到 `_last_raw_positions`(含 `redeemable`/`negativeRisk`/`conditionId`/`size`——NT 规范化 report 丢了这些);override 用 stash 喂 settlement,不再二次拉、不再需要注入 `_positions_fetcher`。
+- **position → settlement → position 时序(#283/#285)**:`generate_position_status_reports` 先由上游
+  `_fetch_user_positions` 拉 `/positions`，把原始响应 stash 到 `_last_raw_positions` 供
+  settlement 判断。若本轮没有尝试 merge，沿用第一次 reports；若 `result.merges` 非空，
+  无论交易结果成功或失败，都在同一轮再调用上游 `generate_position_status_reports`，
+  以第二次 `/positions` 生成最终 reports。
+  第一次 reports 不返回给 NT，避免链上仓位已被 merge 后 Strategy 仍按旧 LONG 规划 SELL。
+  失败回执不能证明 merge 尝试期间仓位未发生变化，因此也不能复用第一次 reports。
+  不再需要注入独立 `_positions_fetcher`。
+- **realized PnL reconcile(#282)**:同一 override 另分页拉 `/closed-positions`，把 current +
+  closed 的 `realizedPnl` 按 `conditionId-asset.POLYMARKET` 聚合。账本保存
+  `Data API realized - NT 当前 instrument realized` 的基线差；后续 CONFIRMED fill 仍只走
+  NT 原生 Position/Portfolio，不能在 adapter 再累计一份。closed 查询失败时保留上次完整基线，
+  不清空账本、不让 position reports 失败。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **路由约束(#276)**:结算 Relayer SDK(`py_builder_relayer_client`,requests)经 `configure_relayer_http_transport(polymarket_proxy_url)` 换显式路由 Session(`trust_env=False`),`PolymarketContractService.initialize` 内配置;与 PM 其余出口同路由,未配置=直连。
-- **liveness**:position reports 拉成功 → `mark_position_alive`;position reports 拉失败(REST 报错/超时)→ `mark_position_dead` 后 **`raise`**(#259 回归 NT 原生,修订 #122 的「返回空」;理由见 §4.3bis(4) 的 #259 注)。position reports 成功但随后余额刷新失败时,只 warning,不改变 position liveness、不丢弃 reports;下一轮 position reconciliation 再重试余额刷新。
-- **结算 fire-and-forget + single-flight(安全关键)**:settlement 是链上 tx(提交 + `contract.wait()` 可能数秒)。两层防阻塞缺一不可:(1)`create_task(_run_settlement(raw))` 把派发从对账方法返回路径上解耦,`_settlement_inflight` 守卫前一次没跑完则本轮跳过(防并发重复提交);(2)**`contract.py` 的 `RelayClient.execute` / `resp.wait()` 是同步阻塞调用**,必须在 `merge_positions`/`redeem_positions` 内经 `loop.run_in_executor(None, ...)` 丢线程池——否则即便 `create_task`,协程跑起来仍会在同步 `.wait()` 处卡死整个 NT loop(data/exec WS + inflight 2s 检测全停)。`create_task` 只解耦调度,不让同步调用变非阻塞;两者都要(2026-06-21 修)。线程池里 `_execute_with_proxy` 对 `derive` 做全局 monkeypatch,由 single-flight + `_run_merges/_run_redeems` 顺序 await 保证同一时刻仅一个在跑,不自相竞争。
+- **liveness**:最终要返回的 position reports 拉成功 → `mark_position_alive`;第一次或 merge
+  后第二次 REST 拉取失败/超时 → `mark_position_dead` 后 **`raise`**(#259)。position reports
+  成功但随后余额刷新失败时，只 warning，不改变 position liveness、不丢弃 reports。
+- **结算 await + single-flight(#283)**:position report 协程必须等待 settlement 返回，才能判断
+  是否需要第二次 `/positions`；不再 `create_task` fire-and-forget。链上同步 SDK 调用仍必须在
+  `contract.py` 经 `loop.run_in_executor(None, ...)` 丢线程池，因此等待 settlement 只挂起当前
+  report 协程，不阻塞 NT app loop、data/exec WS 或 inflight 定时器。`_settlement_inflight`
+  保留用于防并发重复提交；并发 report 看到 settlement 仍在飞时跳过重复结算，使用本轮
+  第一次 positions reports。`_run_merges/_run_redeems` 仍顺序执行。
 - **launcher 接线(2026-06-21 已落地)**:`launchers/arb_node.py` 在 `prepare_arb_context` 前构造 `PolymarketContractService` + `PolymarketSettlement` 并注入 `ctx.pm_settlement`。`execution.cleanup_enabled=false` 或缺 `POLYMARKET_PRIVATE_KEY` / `POLYMARKET_FUNDER` 时跳过 settlement;`PolymarketContractService.initialize()` 失败也只 warning + 注入 None,不阻塞节点启动。`cleanup_merge_enabled` / `cleanup_claim_enabled` 透传给 `PolymarketSettlement`。
-- **merge**:同 condition ≥2 outcome 持仓 → `merge_positions(condition, min(sizes), neg_risk)`;**redeem**:`redeemable=true` → `redeem_positions(condition, neg_risk)`。settlement 不计算链上 token amounts。
+- **merge**:同 condition ≥2 outcome 持仓 →
+  `merge_positions(condition, min(sizes), neg_risk)`。merge 不是 venue order，禁止生成
+  synthetic `OrderFilled`，也不手工计算 condition realized PnL；对账以
+  `/positions + /closed-positions.realizedPnl` 为权威。真实账户样本已确认：三次各 10 share
+  merge 后，两 outcome 的 closed realized 合计等于 `30 - 30×avg_yes - 30×avg_no`。
+  **redeem**:`redeemable=true` →
+  `redeem_positions(condition, neg_risk)`。settlement 不计算链上 token amounts。
 - **链上 target 与 ABI(2026-07-16 修正)**:标准二元调用 `CtfCollateralAdapter(0xAdA100...)`,negRisk 调 `NegRiskCtfCollateralAdapter(0xadA200...)`。后者继承前者的外部 `mergePositions(address,bytes32,bytes32,uint256[],uint256)` / `redeemPositions(address,bytes32,bytes32,uint256[])` ABI，因此两类 target 使用相同 calldata 结构与 pUSD `0xC011...DFB` 参数，只切换 target。negRisk collateral adapter 在 `redeemPositions` 内自行读取调用者当前 YES/NO ERC-1155 余额，再调用旧 NegRiskAdapter；不得对 collateral adapter 使用旧 `redeemPositions(bytes32,uint256[])` ABI。adapter 授权(`CTF.setApprovalForAll(adapter,true)`)不在本轮自动处理,未授权时链上 tx 会 revert,可由页面授权。
-- **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size)),不影响 `VenueExecutionLiveness`。
+- **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size))，
+  不直接改变 `VenueExecutionLiveness`。但只要尝试过 merge，就必须重拉 positions；
+  第二次 positions 查询失败按正常 position reconcile 失败处理并 `mark_position_dead`。
 - **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态由每轮成功的 PM position reconciliation 调 `_update_account_state()` 刷新。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不在 settlement 完成后立即 `_update_account_state`,由下一轮 position reconciliation 覆盖。
-- 结果回流靠下次 reconcile + Portfolio outcome 指标 pull,不发事件、不直接改 cache。
-- **验收锚点(低噪声)**:override 每轮对账打一条 INFO `PM position reconcile OK: N report(s), settlement dispatched/skipped (M raw positions)`(生产约 5 分钟一条),作"对账+结算子系统心跳"+ 可见暴露 settlement 是否真接线。
-- ⚠️ **验证边界(2026-06-21)**:live 节点(skip_execution,interval 临时 60s)已实测 NT 连续 position 对账**周期触发 → 调到 override → `mark_position_alive` → dispatch 判定**,锚点稳定每周期一条 ✅。本次补齐 launcher settlement 对象接线与离线单测;**真实链上 merge/redeem 尚未 live 验证**(需要具备可 merge/redeem 持仓 + 用户明确授权,因为会提交 Builder Relayer 链上 tx)。
+- merge 尝试后第二次 `/positions` 与随后 `/closed-positions` 在同轮分别刷新仓位和
+  realized PnL。settlement 不发 synthetic fill、不直接改 NT Position cache 或 realized 账本。
+- **验收锚点(低噪声)**:override 每轮对账打一条 INFO
+  `PM position reconcile OK: N report(s), settlement checked|merge-refreshed (M raw positions)`
+  (生产约 5 分钟一条)，作对账与结算子系统心跳。
+- ⚠️ **验证边界**:2026-06-21 的 live 节点已验证 NT 连续 position 对账会周期触发
+  override；#283 新增的 `positions → merge → positions → closed positions` 时序当前仅由离线
+  测试锁定，尚未重新做真实链上 merge/redeem live 验证。
 
 ### 4.7 PM dust 尾量订单终态化(#280,2026-07-27,已落地 live-未验证)
 
@@ -581,7 +615,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 | 横切 | 约束 |
 |---|---|
 | Q19 同步(§6.10) | session 发 `execution.*`;pair_inflight 出口由 barrier/session 结构保证 |
-| 挂单窗口校验 | barrier 读取 `open_orders_digest`,release 前以 common helper 重算并比较 |
+| 执行状态窗口校验 | barrier 读取 `open_orders_digest/positions_digest`,release 前以 common helpers 重算并比较 |
 | Q17 余额 | 账户状态本组件维护写 cache;可用余额计算在 Risk |
 | §6.6 Debug | ✅ #40/#93 落地:`SkipExecution{PM,OE}Client`(`src/arbitrage/debug/execution_clients.py`)子类化 `_submit_order`;`is_override_active("skip_execution")` 真时**保留 `_begin_session` / `execution.started/finished` / per-pair gate 生命周期**,只跳真 venue IO,随后 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=USD,commission=0,liquidity=TAKER);`_begin_session` 返回 False(cancel-only)时不 mock fill;否则透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Skip 子类传 `debug=cfg`)。**不实现订单 lifecycle 时序**(Q11.4 `timeline.py` 仅在真需要部分填 / 拒单 / 撤单时序时才做)。`skip_settlement`(健康检查路径不真上链)待后续。详见 `_cross-cutting/debug-injection.md` |
 | §6.7 锁 | 上游 ClobClient 不加外层锁(初版);遇问题再子类化只对写操作加锁 |

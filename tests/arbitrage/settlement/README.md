@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.8`;详细设计 `architectures/execution/architecture.md §4.6`
 
-**落地状态(2026-07-16)**:`PolymarketSettlement` 已实现于 `nautilus_trader/adapters/polymarket/settlement.py`(编排;IO 为同目录 `contract.py`)。`tests/arbitrage/settlement/test_settlement.py` **11 passed**(用 FakeContract 录调用,不上链):merge min 取量 + negRisk 透传 + ≥2 门槛(8.2/8.3)、redeem redeemable 门控 + collateral adapter 自管链上余额(8.4/8.5)、失败仅记录不抛 + 异常吞进 errors(8.7)、空/零持仓 no-op。宿主调度与 liveness 验收见 PM adapter README。
+**落地状态(2026-07-28)**:`PolymarketSettlement` 已实现于 `nautilus_trader/adapters/polymarket/settlement.py`(编排;IO 为同目录 `contract.py`)。离线用例覆盖 merge min 取量、negRisk、redeem、失败/no-op；宿主调度、realized PnL 对账与 liveness 验收见 PM adapter README。
 
 ## 锁定的关键性约束(Q18 + Q18b 修正,2026-05-21)
 
@@ -10,14 +10,20 @@
 - 链上 IO 走 Polymarket 官方 collateral adapter:标准二元 target=`CtfCollateralAdapter`,negRisk target=`NegRiskCtfCollateralAdapter`,collateral 参数为 pUSD。旧的直接 CTF+USDC.e 路径会让资金落到 pending deposit/Activate Funds,不能直接恢复 CLOB buying power。
 - 归属/触发(**#110 修正,2026-06-16;推翻 Q18b 的"PM 健康检查 tick"**): **并入 NT 连续 position 对账**(`LiveExecEngineConfig.position_check_interval_secs=300`),复用对账那次 `/positions` 拉取。**PM 无 HealthCheckLoop**(健康检查彻底退役,对齐 OE #109);**无独立 Actor、无独立调度**。
 - **三层宿主(Q18c;#110 触发改 NT 对账)**:
-  - 宿主/触发 = **PM `ExecutionClient` 薄子类**的 `generate_position_status_reports`(NT 周期调它):上游 `_fetch_user_positions` 拉一次、stash `_last_raw_positions`;override 用 stash 喂结算。
+  - 宿主/触发 = **PM `ExecutionClient` 薄子类**的 `generate_position_status_reports`(NT 周期调它):第一次 `/positions` 的 raw stash 喂结算；尝试过 merge 后，无论成功失败，同轮再拉 `/positions`，只向 NT 返回第二次 reports。
   - 编排 = **`PolymarketSettlement` 普通类**(`nautilus_trader/adapters/polymarket/settlement.py`;非 ExecutionClient 方法)
   - IO = **`contract.py:PolymarketContractService`**(保留)
-  - **结算 fire-and-forget + single-flight**:`create_task(_run_settlement(raw))`,**不 `await`**(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);`_settlement_inflight` 守卫防并发重复提交。本目录用例针对 `PolymarketSettlement`(编排)+ contract IO;宿主触发见 pm-adapter README(pm-adapter-5.health.4)。
-- 结果不作健康判据: `TxResult` 失败仅 log + 下个对账周期重试,**不影响** `VenueExecutionLiveness`。
+  - **结算 await + single-flight(#283)**:report 协程 await `_run_settlement(raw)` 以判断是否需要
+    重拉 positions；同步链上 SDK 已由 `contract.py` 丢线程池，因此不会阻塞 NT app loop。
+    `_settlement_inflight` 仅防并发重复提交。
+- 结果不作健康判据: `TxResult` 失败仅 log + 下个对账周期重试,**不影响** `VenueExecutionLiveness`。成功 merge 不计算 realized PnL、不伪造 OrderFilled。
 - CLOB buying-power cache 同步当前默认关闭:切到 collateral adapter+pUSD 后,PM ExecClient 不主动调用 `update_balance_allowance(COLLATERAL)`。保留宿主 helper 便于 live 证明需要时恢复;本目录只测编排,宿主行为见 PM adapter README。
-- 数据源: **对账那次 PM Data API `/positions` 原始响应**(含 `redeemable`/`negativeRisk`/`conditionId`/`size`);**不能用 NT cache 持仓**(上游翻成 `PositionStatusReport` 时丢了 redeemable 等)。映射 = `pm_raw_position_to_settlement(item: dict)`。
-- 与执行**不互斥**(#110):结算 fire-and-forget、不阻塞对账;OE 下单是 page.evaluate 与对账互不冲突(synchronization §8)。并发由 single-flight 守卫,不靠互斥。
+- 数据源: **对账那次 PM Data API `/positions` 原始响应**(含
+  `redeemable`/`negativeRisk`/`conditionId`/`size`);**不能用 NT cache
+  持仓**(上游翻成 `PositionStatusReport` 时丢了 redeemable 等)。映射 =
+  `pm_raw_position_to_settlement(item: dict)`。
+- 与执行**不互斥**(#110):结算等待只挂起 report 协程，不阻塞 app loop；并发由
+  single-flight 守卫，不靠健康检查互斥。
 - redeem 结算滞后: 由 NT position 对账周期(300s)兜住(每周期检查 `redeemable`),无需事件。
 - 本目录测的是 **merge/redeem 决策逻辑 + contract IO**;**调度/在 tick 内被调用/结果不作健康判据** 的用例见 `tests/arbitrage/adapters/polymarket/README.md` 健康检查段。
 
@@ -61,15 +67,17 @@
 
 ### settlement-8.8: 结果回流不显式 publish
 - 前置: 一次 merge 成功,链上持仓减少
-- 输入: 下一个 PM 健康检查 tick / Data API 拉取
-- 期望: 持仓经 report 通路更新 cache → `portfolio.outcome_exposures/outcome_shares` 调用即反映新持仓
-- 验收: merge/redeem 路径不调 `msgbus.publish` / 不写 cache;不主动触发 Portfolio 指标重算
+- 输入:同一轮 position reconcile 在 merge 返回成功后继续执行
+- 期望:宿主重拉 `/positions`，再拉 `/closed-positions`；最终 reports 走 NT 原生 reconcile
+- 验收: merge/redeem 路径不调 `msgbus.publish` / 不写 NT Position cache / 不造 OrderFilled
 
 ### settlement-8.9: 链上调用不阻塞 event loop(2026-06-21)
-- 前置: `contract.py` 的 `RelayClient.execute` / `resp.wait()` 是**同步阻塞**调用(提交 tx + 等链上确认数秒);settlement 经 `create_task` 跑在 NT event loop 上
+- 前置:`contract.py` 的 `RelayClient.execute` / `resp.wait()` 是**同步阻塞**调用；position
+  report 协程会 await settlement
 - 输入: `merge_positions` / `redeem_positions` 跑期间,并发一个每 10ms tick 的心跳协程
 - 期望: 阻塞调用经 `loop.run_in_executor(None, ...)` 丢线程池;阻塞那 ~0.6s 里心跳持续推进(>10 次)
-- 验收: 心跳计数远超 1(loop 未被冻);若退回直接同步调用,心跳会被饿死。文件 `test_contract_offload.py`。注:`create_task` 只解耦调度,**不**让同步调用变非阻塞,两层防阻塞缺一不可(execution §4.6)
+- 验收:心跳计数远超 1(loop 未被冻)；若退回直接同步调用，心跳会被饿死。文件
+  `test_contract_offload.py`。
 
 ### settlement-8.10: 标准 merge 走 CtfCollateralAdapter + pUSD(2026-07-10)
 - 前置: 标准二元 condition 两 outcome 都持仓
@@ -88,6 +96,15 @@
 - 输入: `contract.redeem_positions(condition_id, neg_risk=true)`
 - 期望: target 为 `NegRiskCtfCollateralAdapter`,calldata 使用 `redeemPositions(address,bytes32,bytes32,uint256[])`;合约自行读取调用者 YES/NO balances
 - 验收: `test_contract_offload.py::test_neg_risk_redeem_uses_inherited_collateral_adapter_abi`
+
+### settlement-8.13: merge 不另造 realized PnL(2026-07-28)
+
+- 前置:同 condition 两 outcome 已在 NT cache，settlement 成功 merge。
+- 输入:同一轮 position reconcile 发现并成功执行 merge。
+- 期望:settlement 不写 Portfolio/ledger；宿主重拉 `/positions` 后才返回 reports，随后拉
+  `/closed-positions` 更新 Data API realized 基线。
+- 验收:代码中无 `MergeRealization` / condition adjustment；PM adapter realized reconcile
+  用例覆盖 `positions → merge → positions → closed positions` 顺序。
 
 ## Debug 相关
 

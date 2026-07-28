@@ -108,6 +108,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "leg_key": "pm:home:0",
         "expected_legs": ("pm:home:0", "oe:away:1"),
         "open_orders_digest": "digest-1",
+        "positions_digest": "positions-1",
     }))
 
     assert submitted[0].tags == [
@@ -117,6 +118,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "arb:expected_legs=pm:home:0,oe:away:1",
         "arb:intent=recovery",
         "arb:open_orders_digest=digest-1",
+        "arb:positions_digest=positions-1",
     ]
 
 
