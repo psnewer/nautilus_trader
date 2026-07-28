@@ -563,6 +563,8 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 
 **问题**:下单量精度超过 venue 可撮粒度时(例:recovery `BUY 28.7525`,实成 28.75),尾量 0.0025 永不成交;venue 直接撮完/丢弃这笔单(不给它挂着),但**不发 NT 能消费的终态 WS 事件**。NT 侧订单停在 `PARTIALLY_FILLED`(open),之后该 pair 每来一次机会都被 opportunity barrier 当残单撞 **cancel-only**,而 venue 侧撤单又回 `already canceled or matched`(单已没),`_generate_cancel_event` 只 `awaiting WS event` 空等 → 卡死堵 pair(实盘 nohup 取证)。
 
+> **源头已由 #281 收紧**:PM `size_increment` 从硬编码 0.000001(精度6)改为 **0.01**(`common/parsing.py`),下单量 `make_qty` 量化到 0.01 → 不再产生 sub-0.01 dust。本节(#280)转为**残余兜底**:即便仍出现尾量(部分成交、venue 取整),也在 fill-handler 源头 cancel 收口。二者:**#281 治源、#280 兜底**。
+
 **关键区分(#280 定夺)**:老 `check_dust_residual` 发 **synthetic fill** 收口,同时干了两件事——(a) 订单终态、(b) **移动 position**。(b) 正是祸根:reduce-SELL 补 fill 会卖穿成 dust SHORT(概率盘不变量),BUY 补 fill 造 phantom LONG。把它改 no-op 又把 (a) 一起扔了 → 订单再也收不了口。因此**收口订单要保留,移动持仓要禁止**,且**收口要在源头做,不能靠下游症状路径**:
 
 - `check_dust_residual` 收窄为**纯检测**(返回 `< DUST_SNAP_THRESHOLD` 的残量,**无任何副作用、不发 fill**);`snap_fill_qty` 维持 identity(不 inflate fill = 不动仓)。
