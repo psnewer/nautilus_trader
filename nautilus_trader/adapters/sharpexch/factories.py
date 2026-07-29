@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from nautilus_trader.cache.cache import Cache
-
-_log = logging.getLogger(__name__)
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
@@ -22,9 +21,11 @@ from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchDiscove
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchSportDetailsRequest
 from nautilus_trader.adapters.sharpexch.execution import SharpExchExecutionClient
 from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
-from nautilus_trader.adapters.sharpexch.web import se_fetch_json_with_browser_context
-from nautilus_trader.adapters.sharpexch.web import se_wait_for_context_csrf_token
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
+from nautilus_trader.adapters.sharpexch.web import se_csrf_token_from_browser_context
+from nautilus_trader.adapters.sharpexch.web import se_fetch_json
+from nautilus_trader.adapters.sharpexch.web import se_wait_for_context_csrf_token
+from nautilus_trader.adapters.sharpexch.web import se_wait_for_page_challenge_resolution
 
 from src.arbitrage.bootstrap import ctx_map_get
 from src.arbitrage.bootstrap import ctx_map_get_or_create
@@ -32,6 +33,9 @@ from src.arbitrage.bootstrap import ctx_map_require
 from src.arbitrage.bootstrap import ctx_map_set
 from src.arbitrage.bootstrap import get_arb_context
 from src.arbitrage.common.venues import SHARPEXCH
+
+
+_log = logging.getLogger(__name__)
 
 
 def _shared_se_browser_manager(ctx, config) -> PlaywrightBrowserManager:
@@ -54,7 +58,7 @@ def _shared_se_browser_lock(ctx) -> asyncio.Lock:
     """SE browser context 级兼容锁。
 
     仅传给 ExecutionClient,兼容旧 `se_login(..., browser_lock=...)` 调用面;
-    discovery 不使用任何锁(context cookie/request 只读)。
+    discovery 不使用任何锁。
     """
 
     return ctx_map_get_or_create(ctx, "browser_lock_by_venue", SHARPEXCH, asyncio.Lock)
@@ -66,32 +70,56 @@ def _shared_se_login_state(ctx) -> SharpExchLoginState:
     return ctx_map_get_or_create(ctx, "browser_login_state_by_venue", SHARPEXCH, SharpExchLoginState)
 
 
-def _se_browser_json_fetcher(browser_manager, config):
-    async def _fetch(request: SharpExchSportDetailsRequest) -> dict:
+def _se_browser_json_fetcher_session(browser_manager, config):
+    @asynccontextmanager
+    async def _session():
         await browser_manager.start()
 
         context = getattr(browser_manager, "context", None)
         if context is None:
             raise RuntimeError("SE browser context not available")
 
-        # 不持 login_state.lock:CSRF 等待/请求对共享 context 只读,持锁反而会把
-        # exec 登录(CSRF 的唯一生产者)挡在锁外直到本侧超时。
+        # 不持 login_state.lock:等待 CSRF 时持锁会把唯一生产者 Exec 登录挡在锁外。
         timeout_ms = int(config.page_timeout)
         await se_wait_for_context_csrf_token(context, timeout_ms=timeout_ms)
-        payload = await se_fetch_json_with_browser_context(
-            context,
-            request.url,
-            params=request.params,
-            body=request.body,
-            timeout_ms=timeout_ms,
-        )
-        if payload.get("ok") and isinstance(payload.get("json"), dict):
-            return payload["json"]
-        raise RuntimeError(
-            f"SE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
-        )
+        page = await browser_manager.create_page("se-discovery")
+        page.set_default_timeout(timeout_ms)
+        page_ready = False
+        try:
+            async def _fetch(request: SharpExchSportDetailsRequest) -> dict:
+                nonlocal page_ready
+                if not page_ready:
+                    # 直接打开 API URL 只为建立稳定的 portal 同源执行上下文。
+                    # GET 返回 405 不影响后续 page-native POST fetch,并避免
+                    # `/customer` SPA 登录后继续导航销毁 execution context。
+                    await page.goto(
+                        request.url,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_ms,
+                    )
+                    await se_wait_for_page_challenge_resolution(page, timeout_ms=timeout_ms)
+                    page_ready = True
+                csrf_token = await se_csrf_token_from_browser_context(context)
+                payload = await se_fetch_json(
+                    page,
+                    request.url,
+                    params=request.params,
+                    body=request.body,
+                    csrf_token=csrf_token,
+                    timeout_ms=timeout_ms,
+                )
+                if payload.get("ok") and isinstance(payload.get("json"), dict):
+                    return payload["json"]
+                raise RuntimeError(
+                    f"SE sport/details failed: status={payload.get('status')} "
+                    f"text={payload.get('text')!r}",
+                )
 
-    return _fetch
+            yield _fetch
+        finally:
+            await browser_manager.close_page("se-discovery")
+
+    return _session
 
 
 class SharpExchLiveDataClientFactory(LiveDataClientFactory):
@@ -118,7 +146,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
             ]
             discovery = SharpExchDiscoveryClient(
                 base_url=config.base_url,
-                json_fetcher=_se_browser_json_fetcher(browser_manager, config),
+                json_fetcher_session=_se_browser_json_fetcher_session(browser_manager, config),
                 target_competitions=target_competitions,
             )
             provider = SharpExchInstrumentProvider(

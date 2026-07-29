@@ -35,10 +35,10 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 ### se-adapter-1.2:API discovery 生成 BettingInstrument
 
-**前置**:fixture 来自 `POST /customer/api/sport/details?page=0&size=60`。
+**前置**:fixture 来自 `POST /customer/api/sport/details?page=0&size=20`。
 **输入**:`SharpExchDiscoveryClient.discover_events()` 返回 market events。
 **期望**:只保留目标 competition 与 `Match Odds`;runner 映射为 `home/draw/away`;Provider 产出 `BettingInstrument`;InstrumentId 为 `{market_id}-{selection_id}.SHARPEXCH`。
-**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher`,并把 `discovery.sharpexch.sports` 原样传入 Provider,且 discovery fetcher 不创建 page、不登录、不导航,只等待共享 browser context 的 `CSRF-TOKEN` 后用 context request 调 `sport/details`;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 matching info 完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测 browser fetcher 同源要求:必须在 customer context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
+**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护,并验证多个 sport 共用一个整轮 fetcher session;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher_session`,并把 `discovery.sharpexch.sports` 原样传入 Provider。该 session 不登录、不持登录锁:等待共享 BrowserContext 的 `CSRF-TOKEN`,创建一张临时 `se-discovery` page,首次导航同源 `sport/details` API URL 建立稳定 origin 并等待 Cloudflare 自动结束,不加载会继续导航的 customer SPA;整轮通过 page-native POST fetch 请求且每次重读 CSRF,成功或异常均关闭 page;`test_probe_script.py` 覆盖 challenge 等待,包括 Cloudflare 自动导航造成 execution context 短暂销毁时继续等待而不提前 fetch;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 matching info 完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测同源要求:必须在 customer context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
 
 ### se-adapter-1.3:SE 最小 stake 元数据
 
@@ -122,7 +122,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:`ArbContext` 已准备 SE discovery config / venue liveness / arbitrage params。
 **输入**:`SharpExchLiveDataClientFactory.create(...)` 与 `ArbSharpExchLiveExecClientFactory.create(...)`。
 **期望**:Data/Exec factory 复用同一个 keyed browser manager;discovery config 缺失时 Data factory 使用 fallback `InstrumentProvider`;discovery config 存在时只从 `discovery_config_by_venue["SHARPEXCH"]` 构造 `SharpExchDiscoveryClient + SharpExchInstrumentProvider` 并按 `fx` 注入 Provider;Exec factory 缺 `venue_liveness` 早失败,缺 `session_timeout_secs_by_venue["SHARPEXCH"]` 也 fail-fast,存在时从 keyed map 注入 session timeout/fx。
-**验收**:已落地。`test_factories.py` 覆盖 discovery 缺失/存在两条 Data factory 分支、discovery 存在时注入 browser `json_fetcher`、Data+Exec 共享 browser manager、discovery fetcher 无锁只读 context CSRF/request、不开 page 不登录(login state lock 仅串行化 exec login)、Provider/Browser/LoginState keyed map 写回、Exec factory 缺 context 早失败、缺 session timeout keyed 值 fail-fast、Exec factory 从 ArbContext keyed map 注入 `venue_liveness` / session timeout / `fx`。`test_arb_node.py` 覆盖 launcher 按 `venues.*.enabled` 注册 runtime:默认 PM+OE,至少两个 runtime venue,PM+SE smoke 不注册 OE,OE+SE 注册 PMSPORTS/OE/SE 且不注册 PM,PM+OE+SE 同时注册三个 tradable venue。
+**验收**:已落地。`test_factories.py` 覆盖 discovery 缺失/存在两条 Data factory 分支、discovery 存在时注入 browser `json_fetcher_session`、Data+Exec 共享 browser manager、discovery session 无锁等待 context CSRF 后创建/关闭独立临时 page、Provider/Browser/LoginState keyed map 写回、Exec factory 缺 context 早失败、缺 session timeout keyed 值 fail-fast、Exec factory 从 ArbContext keyed map 注入 `venue_liveness` / session timeout / `fx`。`test_arb_node.py` 覆盖 launcher 按 `venues.*.enabled` 注册 runtime:默认 PM+OE,至少两个 runtime venue,PM+SE smoke 不注册 OE,OE+SE 注册 PMSPORTS/OE/SE 且不注册 PM,PM+OE+SE 同时注册三个 tradable venue。
 
 ### se-adapter-live.0:独立 zero-order 网站事实 probe
 

@@ -224,6 +224,7 @@ def test_se_fetch_json_passes_timeout_to_browser_context():
             "https://portal.sharpxch.com/customer/api/sport/details",
             params={"page": "0"},
             body={"id": "2"},
+            csrf_token="csrf-token",
             timeout_ms=1234,
         ),
     )
@@ -232,6 +233,27 @@ def test_se_fetch_json_passes_timeout_to_browser_context():
     assert context.arg["timeoutMs"] == 1234
     assert context.arg["params"] == {"page": "0"}
     assert context.arg["body"] == {"id": "2"}
+    assert context.arg["csrfToken"] == "csrf-token"
+
+
+def test_se_wait_for_page_challenge_resolution_waits_until_customer_page(monkeypatch):
+    titles = iter([RuntimeError("navigation"), "Just a moment...", "Customer"])
+
+    class Page:
+        url = "https://portal.sharpxch.com/customer"
+
+        async def title(self):
+            result = next(titles)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(se_web.asyncio, "sleep", no_sleep)
+
+    asyncio.run(se_web.se_wait_for_page_challenge_resolution(Page(), timeout_ms=1000))
 
 
 def test_se_fetch_json_with_browser_context_uses_context_request_and_csrf():

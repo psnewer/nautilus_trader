@@ -12,13 +12,13 @@
 **落地状态(2026-07-08)**:发现路径以 adapter DataClient + Provider 测试为准:
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、matching info、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
 - ✅ `test_orbitexch_discovery_scraper.py`(1.4.i:discovery 独立浏览器注入 document visibility + IntersectionObserver spoof,避免 OE competition 页懒加载只发现首屏 20 场)
-- ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、discovery 不开页不登录而等待共享 BrowserContext `CSRF-TOKEN`、price frame 路由与 DataClient 生命周期。
+- ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、discovery 不登录且等待共享 BrowserContext `CSRF-TOKEN` 后用整轮临时 page-native fetch、price frame 路由与 DataClient 生命周期。
 - ⬜ PM Provider 冷启动 / 字段完整度 / API 失败保 cache 需 Gamma/CLOB live smoke 验;不保留 skipped pytest 空壳。
 - ⬜ DataClient 原生发现 → cache → matching timer → MatchedPair 的全节点路径仍归上层 e2e/live smoke 验;不再以 Refresher/msgbus 事件作为验收对象。
 
 **2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
-**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events/keyset?series_id=...` 写入,不再是旧 enricher seam 待办。
+**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。OE discovery fetcher 不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。SE 保持相同的登录边界,但其 discovery IO 已因 Cloudflare/TLS 差异改为整轮临时 page-native fetch。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events/keyset?series_id=...` 写入,不再是旧 enricher seam 待办。
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
@@ -122,15 +122,15 @@ pyo3 `WebSocketClient`，并复用 PM 显式代理；Gamma discovery、synthetic
 
 ### discovery-1.4.se:SE API discovery + Provider
 
-**前置**:SE `POST /customer/api/sport/details?page={n}&size=60` fixture。
+**前置**:SE `POST /customer/api/sport/details?page={n}&size=20` fixture。
 
 **输入**:`events_from_sport_details(payload)` + `SharpExchInstrumentProvider._build_legs(event)`。
 
 **期望**:
-- `sport_details_request` 为 Tennis/Wimbledon 构造 `POST /customer/api/sport/details?page=0&size=60`,body `id="2"`。
+- `sport_details_request` 为 Tennis/Wimbledon 构造 `POST /customer/api/sport/details?page=0&size=20`,body `id="2"`。
 - `SharpExchDiscoveryClient` 默认不联网;只有显式注入 `sport_details_provider` / `json_fetcher` 时才拉取 payload。
 - `json_fetcher` 路径分页请求,直到短页、空页、下一页无新 `marketId`,或 100 页保护上限。
-- `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher`;该 fetcher 不创建 page、不登录、不导航,只等待共享 BrowserContext 中的 `CSRF-TOKEN`,随后用 context request 执行 `sport/details`。
+- `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher_session`;该 session 不登录、不持登录锁,等待共享 BrowserContext 中的 `CSRF-TOKEN` 后创建一张临时 `se-discovery` page,首次导航同源 `sport/details` API URL 建立稳定 origin并等待 Cloudflare 自动结束,不加载 customer SPA。整个 discovery round 的 sport/page POST 分页复用该 page 的原生 fetch,每次请求重读 CSRF,结束或异常均关闭。
 - 只保留 `Match Odds` market,按目标 competition 过滤。
 - 2 runner 映射 `home/away`;3 runner 映射 `home/draw/away`。
 - Provider 产 `BettingInstrument`,venue 为 `SHARPEXCH`,info 含 matching key。

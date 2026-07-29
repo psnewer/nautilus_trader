@@ -5,11 +5,12 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+from collections.abc import Awaitable
+from collections.abc import Callable
+from collections.abc import Iterable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any
-from typing import Awaitable
-from typing import Callable
-from typing import Iterable
 
 _log = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class SharpExchSportDetailsRequest:
 
 SportDetailsProvider = Callable[[Any], dict | Awaitable[dict]]
 JsonFetcher = Callable[[SharpExchSportDetailsRequest], dict | Awaitable[dict]]
+JsonFetcherSession = Callable[[], AbstractAsyncContextManager[JsonFetcher]]
 
 
 _DEFAULT_SPORT_IDS = {
@@ -75,17 +77,33 @@ class SharpExchDiscoveryClient:
         *,
         base_url: str = "https://portal.sharpxch.com",
         json_fetcher: JsonFetcher | None = None,
+        json_fetcher_session: JsonFetcherSession | None = None,
         target_competitions: Iterable[str] | None = None,
     ) -> None:
         self._sport_details_provider = sport_details_provider
         self._base_url = base_url.rstrip("/")
         self._json_fetcher = json_fetcher
+        self._json_fetcher_session = json_fetcher_session
         self._target_competitions = set(target_competitions or [])
 
     async def discover_events(self, sport_configs: Iterable[Any] | None = None) -> list[SharpExchMarketEvent]:
-        if self._sport_details_provider is None and self._json_fetcher is None:
+        if (
+            self._sport_details_provider is None
+            and self._json_fetcher is None
+            and self._json_fetcher_session is None
+        ):
             _log.warning("SE DiscoveryClient: no provider or fetcher configured")
             return []
+        if self._json_fetcher_session is not None:
+            async with self._json_fetcher_session() as fetcher:
+                return await self._discover_events(sport_configs, fetcher)
+        return await self._discover_events(sport_configs, self._json_fetcher)
+
+    async def _discover_events(
+        self,
+        sport_configs: Iterable[Any] | None,
+        json_fetcher: JsonFetcher | None,
+    ) -> list[SharpExchMarketEvent]:
         events: list[SharpExchMarketEvent] = []
         configs = list(sport_configs or [None])
         for sport_config in configs:
@@ -101,17 +119,23 @@ class SharpExchDiscoveryClient:
                     ),
                 )
                 continue
-            events.extend(await self._discover_events_from_json_fetcher(sport_config))
+            events.extend(await self._discover_events_from_json_fetcher(sport_config, json_fetcher))
         return events
 
-    async def _discover_events_from_json_fetcher(self, sport_config: Any) -> list[SharpExchMarketEvent]:
+    async def _discover_events_from_json_fetcher(
+        self,
+        sport_config: Any,
+        json_fetcher: JsonFetcher | None,
+    ) -> list[SharpExchMarketEvent]:
+        if json_fetcher is None:
+            raise RuntimeError("SE DiscoveryClient has no JSON fetcher")
         page = 0
         size = 20  # SE API max page size
         events: list[SharpExchMarketEvent] = []
         seen_market_ids: set[str] = set()
         while page < _MAX_SPORT_DETAILS_PAGES:
             request = sport_details_request(self._base_url, sport_config, page=page, size=size)
-            payload = self._json_fetcher(request)  # type: ignore[misc]
+            payload = json_fetcher(request)
             if inspect.isawaitable(payload):
                 payload = await payload
 

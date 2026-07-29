@@ -294,10 +294,11 @@ async def se_fetch_json(
     *,
     params: dict | None = None,
     body: dict | None = None,
+    csrf_token: str = "",
     timeout_ms: int = 30000,
 ) -> dict:
     return await context.evaluate(
-        """async ({url, params, body, timeoutMs}) => {
+        """async ({url, params, body, csrfToken, timeoutMs}) => {
             const qs = new URLSearchParams(params || {}).toString();
             let path = url;
             try {
@@ -317,6 +318,7 @@ async def se_fetch_json(
                         'accept': 'application/json, text/plain, */*',
                         'content-type': 'application/json',
                         'x-device': 'DESKTOP',
+                        ...(csrfToken ? {'x-csrf-token': csrfToken} : {}),
                     },
                     body: JSON.stringify(body || {}),
                     signal: controller.signal,
@@ -340,9 +342,29 @@ async def se_fetch_json(
             "url": url,
             "params": params or {},
             "body": body or {},
+            "csrfToken": csrf_token,
             "timeoutMs": max(1, int(timeout_ms)),
         },
     )
+
+
+async def se_wait_for_page_challenge_resolution(page, *, timeout_ms: int) -> None:
+    """等待临时 browser page 上的 Cloudflare challenge 自动完成。"""
+
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000
+    while time.monotonic() < deadline:
+        url = str(getattr(page, "url", "") or "").lower()
+        try:
+            title = (await page.title()).lower()
+        except Exception:  # noqa: BLE001
+            # Cloudflare 自动跳转时 execution context 会短暂销毁;此时仍未稳定,
+            # 不能把读取失败误判为 challenge 已结束。
+            await asyncio.sleep(0.25)
+            continue
+        if "/cdn-cgi/challenge" not in url and "just a moment" not in title:
+            return
+        await asyncio.sleep(0.25)
+    raise TimeoutError(f"SE discovery page stuck on Cloudflare challenge after {timeout_ms}ms")
 
 
 async def se_wait_for_context_csrf_token(context, *, timeout_ms: int) -> str:

@@ -88,7 +88,7 @@ def test_data_factory_constructs_provider_when_discovery_config_present(monkeypa
 
     discovery.assert_called_once_with(
         base_url=cfg.base_url,
-        json_fetcher=ANY,
+        json_fetcher_session=ANY,
         target_competitions=["Men's Wimbledon 2026"],
     )
     provider.assert_called_once()
@@ -101,41 +101,90 @@ def test_data_factory_constructs_provider_when_discovery_config_present(monkeypa
     assert bootstrap.get_arb_context().instrument_provider_by_venue[SHARPEXCH] is provider.return_value
 
 
-def test_browser_json_fetcher_waits_for_context_csrf_without_page_or_login(monkeypatch):
+def test_browser_json_fetcher_session_uses_one_temporary_page_and_native_fetch(monkeypatch):
     calls = []
+
+    class Page:
+        url = "about:blank"
+
+        def set_default_timeout(self, timeout_ms):
+            calls.append(("set_default_timeout", timeout_ms))
+
+        async def goto(self, url, *, wait_until, timeout):
+            self.url = url
+            calls.append(("goto", url, wait_until, timeout))
 
     class BrowserManager:
         context = object()
+        page = Page()
 
         async def start(self):
             calls.append(("start",))
 
         async def create_page(self, name):
-            raise AssertionError("SE discovery must not open a page")
+            calls.append(("create_page", name))
+            return self.page
+
+        async def close_page(self, name):
+            calls.append(("close_page", name))
 
     async def wait_for_csrf(context, *, timeout_ms):
         calls.append(("wait_for_csrf", context is BrowserManager.context, timeout_ms))
 
-    async def fetch_json(context, url, *, params, body, timeout_ms):
-        calls.append(("fetch_json", context is BrowserManager.context, url, params, body, timeout_ms))
+    async def csrf_from_context(context):
+        calls.append(("csrf_from_context", context is BrowserManager.context))
+        return "fresh-csrf"
+
+    async def wait_for_challenge(page, *, timeout_ms):
+        calls.append(("wait_for_challenge", page is BrowserManager.page, timeout_ms))
+
+    async def fetch_json(page, url, *, params, body, csrf_token, timeout_ms):
+        calls.append(
+            (
+                "fetch_json",
+                page is BrowserManager.page,
+                url,
+                params,
+                body,
+                csrf_token,
+                timeout_ms,
+            ),
+        )
         return {"ok": True, "json": {"marketCatalogueList": {"content": []}}}
 
-    def forbidden_login(*args, **kwargs):
-        raise AssertionError("SE discovery must not login")
-
     monkeypatch.setattr(se_factories, "se_wait_for_context_csrf_token", wait_for_csrf)
-    monkeypatch.setattr(se_factories, "se_fetch_json_with_browser_context", fetch_json)
-    monkeypatch.setattr(se_factories, "se_login", forbidden_login, raising=False)
+    monkeypatch.setattr(se_factories, "se_csrf_token_from_browser_context", csrf_from_context)
+    monkeypatch.setattr(se_factories, "se_wait_for_page_challenge_resolution", wait_for_challenge)
+    monkeypatch.setattr(se_factories, "se_fetch_json", fetch_json)
     cfg = type("Cfg", (), {"base_url": "https://portal.sharpxch.com", "page_timeout": 120000})()
-    fetcher = se_factories._se_browser_json_fetcher(BrowserManager(), cfg)
+    session = se_factories._se_browser_json_fetcher_session(BrowserManager(), cfg)
     request = sport_details_request(cfg.base_url, SportConfig(sport="Tennis", competitions=[]))
 
-    result = asyncio.run(fetcher(request))
+    async def _run():
+        async with session() as fetcher:
+            first = await fetcher(request)
+            second = await fetcher(request)
+            return first, second
 
-    assert result == {"marketCatalogueList": {"content": []}}
+    result = asyncio.run(_run())
+
+    assert result == (
+        {"marketCatalogueList": {"content": []}},
+        {"marketCatalogueList": {"content": []}},
+    )
     assert calls == [
         ("start",),
         ("wait_for_csrf", True, 120000),
+        ("create_page", "se-discovery"),
+        ("set_default_timeout", 120000),
+        (
+            "goto",
+            "https://portal.sharpxch.com/customer/api/sport/details",
+            "domcontentloaded",
+            120000,
+        ),
+        ("wait_for_challenge", True, 120000),
+        ("csrf_from_context", True),
         (
             "fetch_json",
             True,
@@ -147,8 +196,70 @@ def test_browser_json_fetcher_waits_for_context_csrf_without_page_or_login(monke
                 "id": "2",
                 "contextFilter": "EVENT_TYPE",
             },
+            "fresh-csrf",
             120000,
         ),
+        ("csrf_from_context", True),
+        (
+            "fetch_json",
+            True,
+            "https://portal.sharpxch.com/customer/api/sport/details",
+            {"page": "0", "size": "20"},
+            {
+                "viewBy": "POPULARITY",
+                "timeFilter": "ALL",
+                "id": "2",
+                "contextFilter": "EVENT_TYPE",
+            },
+            "fresh-csrf",
+            120000,
+        ),
+        ("close_page", "se-discovery"),
+    ]
+
+
+def test_browser_json_fetcher_session_closes_page_on_failure(monkeypatch):
+    calls = []
+
+    class Page:
+        url = "https://portal.sharpxch.com/customer"
+
+        def set_default_timeout(self, _timeout_ms):
+            pass
+
+        async def goto(self, *_args, **_kwargs):
+            pass
+
+    class BrowserManager:
+        context = object()
+
+        async def start(self):
+            pass
+
+        async def create_page(self, name):
+            calls.append(("create_page", name))
+            return Page()
+
+        async def close_page(self, name):
+            calls.append(("close_page", name))
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(se_factories, "se_wait_for_context_csrf_token", noop)
+    monkeypatch.setattr(se_factories, "se_wait_for_page_challenge_resolution", noop)
+    cfg = type("Cfg", (), {"base_url": "https://portal.sharpxch.com", "page_timeout": 120000})()
+    session = se_factories._se_browser_json_fetcher_session(BrowserManager(), cfg)
+
+    async def _run():
+        async with session():
+            raise RuntimeError("discovery failed")
+
+    with pytest.raises(RuntimeError, match="discovery failed"):
+        asyncio.run(_run())
+    assert calls == [
+        ("create_page", "se-discovery"),
+        ("close_page", "se-discovery"),
     ]
 
 

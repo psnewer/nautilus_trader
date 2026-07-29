@@ -4,6 +4,7 @@
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -149,6 +150,42 @@ def test_discovery_client_uses_injected_json_fetcher_and_config_competitions():
     assert events[0].competition == "Men's Wimbledon 2026"
     assert len(calls) == 1
     assert calls[0].body["id"] == "2"
+
+
+def test_discovery_client_keeps_one_fetcher_session_for_all_sports():
+    calls = []
+
+    async def _fetch(request):
+        calls.append(("fetch", request.body["id"]))
+        return _payload_with_market(f"1.{request.body['id']}")
+
+    @asynccontextmanager
+    async def _session():
+        calls.append(("enter",))
+        try:
+            yield _fetch
+        finally:
+            calls.append(("exit",))
+
+    async def _run():
+        client = SharpExchDiscoveryClient(
+            base_url="https://portal.sharpxch.com",
+            json_fetcher_session=_session,
+        )
+        return await client.discover_events([
+            SimpleNamespace(sport="Tennis", competitions=[]),
+            SimpleNamespace(sport="Soccer", competitions=[]),
+        ])
+
+    events = asyncio.run(_run())
+
+    assert len(events) == 2
+    assert calls == [
+        ("enter",),
+        ("fetch", "2"),
+        ("fetch", "1"),
+        ("exit",),
+    ]
 
 
 def test_discovery_client_paginates_json_fetcher_until_short_page():
