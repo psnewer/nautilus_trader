@@ -1,5 +1,21 @@
 # Execution 测试说明
 
+## execution-3.6: 全 venue 市价提交边界
+
+- **前置**:`execution.market_order_enabled` 分别为 `false/true`，Strategy 提交带原计划价的
+  NT `LimitOrder`。
+- **输入**:PM BUY/SELL、OE BACK/LAY、SE BACK/LAY。
+- **步骤**:订单照常经过 Strategy、Risk 和 opportunity barrier，最后进入各
+  ExecutionClient 的服务端提交函数。
+- **期望**:关闭时保留原限价；开启时 PM 使用官方 `MarketOrderArgs` + FOK，BUY amount
+  为计划 `share×price` 成本、SELL amount 为计划 share，BUY 将签名后的 base quantity
+  回写 NT 订单；OE/SE 最终 payload 使用 BACK `1.01`，LAY 使用执行时 NT book 的最差
+  可成交赔率，缺深度回退计划价。Strategy 不读取深度、不改计划价。
+- **验收**:`test_polymarket_client.py::test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary`、
+  `test_market_price.py`、OE/SE `_place_via_executor_market_lay_uses_worst_book_price`、
+  `test_execution_translation.py` 的 OE/SE market payload 参数化用例及
+  `test_action_place_bets.py::test_strategy_keeps_planned_price_for_execution_adapter`。
+
 ## Opportunity execution barrier(#106/#107,已落地代码)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.4bis` + execution §3.5。

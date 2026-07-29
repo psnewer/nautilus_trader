@@ -104,20 +104,20 @@ class OrbitExchExecutor:
             return {"success": False, "message": "Missing market_id or selection_id"}
 
         try:
-            # order.price 已经是 OrbitExch 的赔率格式（如 2.0 表示 50% 概率）
-            # 直接使用，无需转换
-            odds_price = round(order.price, 2) if order.price > 0 else 1.01
-
-            # 验证赔率范围（OrbitExch 通常接受 1.01 - 1000）
-            if odds_price < 1.01:
-                odds_price = 1.01
-                self._log.warning(f"Adjusted odds_price to minimum 1.01 (was {order.price})")
-            elif odds_price > 1000:
-                odds_price = 1000
-                self._log.warning(f"Adjusted odds_price to maximum 1000 (was {order.price})")
-
             # 转换方向
             side = "BACK" if order.side == "BACK" else "LAY"
+            if self.config.market_order_enabled:
+                odds_price = 1.01 if side == "BACK" else round(order.price, 2)
+                odds_price = min(max(odds_price, 1.01), 1000.0)
+            else:
+                # order.price 已经是 OrbitExch 的 decimal 赔率。
+                odds_price = round(order.price, 2) if order.price > 0 else 1.01
+                if odds_price < 1.01:
+                    odds_price = 1.01
+                    self._log.warning(f"Adjusted odds_price to minimum 1.01 (was {order.price})")
+                elif odds_price > 1000:
+                    odds_price = 1000
+                    self._log.warning(f"Adjusted odds_price to maximum 1000 (was {order.price})")
 
             # 生成唯一的 bet UUID
             bet_uuid = f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{int(time.time() * 1000)}"

@@ -106,28 +106,6 @@ def best_ask(book) -> float | None:
     return None
 
 
-def worst_ask(book) -> float | None:
-    """从 NT OrderBook 读最深(最差)ask 档的隐含概率(#256 续,市价单用)。
-
-    `book.asks()` 按价格升序(best 在前),`[-1]` 即最差档。纯 NT book 接口——不支持
-    `best_ask` 那种测试字典 fallback,因为深度语义只有真实 `OrderBook` 才有意义。
-    """
-    fn = getattr(book, "asks", None)
-    if not callable(fn):
-        return None
-    try:
-        levels = fn()
-    except Exception:
-        return None
-    if not levels:
-        return None
-    try:
-        value = levels[-1].price
-        return float(value) if value is not None else None
-    except Exception:
-        return None
-
-
 def to_price(venue: str, probability: float, claim: str = "yes") -> float | None:
     """隐含概率 → 真实价格,`price_from_probability` 的容错包装(#256,取代旧
     `to_probability`——书方向反了,现在读到的已经是概率,要还原回真实赔率/概率)。"""

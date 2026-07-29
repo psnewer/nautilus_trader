@@ -116,8 +116,41 @@ def test_oe_executor_converts_usd_size_to_gbp_payload():
     assert result["success"] is True
     assert result["venue_order_id"] == "OID-1"
     assert captured["payload"]["1.23"][0]["size"] == 16.0
+    assert captured["payload"]["1.23"][0]["price"] == 2.5
     assert not hasattr(executor, "_orders")
     assert not hasattr(executor, "_venue_orders")
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_price"),
+    [("BACK", 1.01), ("LAY", 2.5)],
+)
+def test_oe_market_order_price_is_applied_at_payload_boundary(side, expected_price):
+    import asyncio
+
+    captured = {}
+
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
+    class _Page:
+        def context(self):
+            return _Context()
+
+        async def evaluate(self, _script, payload):
+            captured["payload"] = payload["payload"]
+            bet_uuid = payload["payload"]["1.23"][0]["betUuid"]
+            return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
+
+    executor = OrbitExchExecutor(
+        config=ExecutionConfig(market_order_enabled=True),
+        fx_getter=lambda: 1.0,
+    )
+    result = asyncio.run(executor.place_order(_request(side=side, price=2.5), _Page()))
+
+    assert result["success"] is True
+    assert captured["payload"]["1.23"][0]["price"] == expected_price
 
 
 def test_oe_executor_preserves_transport_error_marker():

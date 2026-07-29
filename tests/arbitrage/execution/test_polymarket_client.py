@@ -15,6 +15,7 @@ import pytest
 from py_clob_client_v2 import ClobClient
 from py_clob_client_v2 import PostOrdersArgs as TopLevelPostOrdersArgs
 from py_clob_client_v2.clob_types import OrderPayload
+from py_clob_client_v2.clob_types import OrderType as PolyOrderType
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 from py_clob_client_v2.exceptions import PolyApiException
 
@@ -300,6 +301,96 @@ def test_arb_pm_accepted_reserve_is_noop():
     )
 
     assert result is None
+
+
+def test_pm_market_order_disabled_delegates_to_upstream_limit(monkeypatch):
+    calls = []
+
+    async def upstream(_self, command, instrument):
+        calls.append((command, instrument))
+
+    monkeypatch.setattr(PolymarketExecutionClient, "_submit_limit_order", upstream)
+    client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+    client._market_order_enabled = False
+    command = SimpleNamespace(order=SimpleNamespace())
+    instrument = SimpleNamespace()
+
+    _run(ArbPolymarketExecutionClient._submit_limit_order(client, command, instrument))
+
+    assert calls == [(command, instrument)]
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_amount", "expected_base_quantity"),
+    [
+        (OrderSide.BUY, 4.0, 9.5),
+        (OrderSide.SELL, 10.0, None),
+    ],
+)
+def test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary(
+    side,
+    expected_amount,
+    expected_base_quantity,
+):
+    captured = {}
+    signed_order = SimpleNamespace(order={"takerAmount": "9500000"})
+
+    def create_market_order(args, *, options):
+        captured["args"] = args
+        captured["options"] = options
+        return signed_order
+
+    async def post_signed_order(
+        order,
+        signed,
+        *,
+        order_type_override,
+        base_quantity=None,
+    ):
+        captured["posted"] = (order, signed, order_type_override, base_quantity)
+
+    order = SimpleNamespace(
+        strategy_id=StrategyId("S-1"),
+        instrument_id=InstrumentId.from_str("0xcond-123.POLYMARKET"),
+        client_order_id=ClientOrderId("O-MARKET"),
+        side=side,
+        quantity=10.0,
+        price=0.4,
+    )
+    client = SimpleNamespace(
+        _market_order_enabled=True,
+        _http_client=SimpleNamespace(create_market_order=create_market_order),
+        _clock=_Clock(),
+        _get_neg_risk_for_instrument=lambda _instrument: True,
+        _register_signed_order_id=lambda *args, **kwargs: captured.setdefault(
+            "registered",
+            (args, kwargs),
+        ),
+        generate_order_submitted=lambda **kwargs: captured.setdefault("submitted", kwargs),
+        _post_signed_order=post_signed_order,
+    )
+    instrument = SimpleNamespace(size_precision=6)
+
+    _run(
+        ArbPolymarketExecutionClient._submit_limit_order(
+            client,
+            SimpleNamespace(order=order),
+            instrument,
+        ),
+    )
+
+    assert captured["args"].token_id == "123"
+    assert captured["args"].amount == pytest.approx(expected_amount)
+    assert captured["args"].side == ("BUY" if side == OrderSide.BUY else "SELL")
+    assert captured["args"].order_type == PolyOrderType.FOK
+    assert captured["options"].neg_risk is True
+    _, posted_signed, posted_type, base_quantity = captured["posted"]
+    assert posted_signed is signed_order
+    assert posted_type == PolyOrderType.FOK
+    if expected_base_quantity is None:
+        assert base_quantity is None
+    else:
+        assert float(base_quantity) == pytest.approx(expected_base_quantity)
 
 
 def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():

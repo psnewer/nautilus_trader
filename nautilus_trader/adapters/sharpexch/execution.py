@@ -10,6 +10,7 @@ import random
 import string
 import time
 from dataclasses import dataclass
+from dataclasses import replace
 
 from nautilus_trader.adapters.sharpexch.message_parser import SharpExchMessageParser
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
@@ -27,6 +28,7 @@ from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.execution.market_price import worst_decimal_lay_price
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 
@@ -93,6 +95,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         fx: float = 1.0,
         browser_lock: asyncio.Lock | None = None,
         login_state: SharpExchLoginState | None = None,
+        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -116,9 +119,13 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._parser = SharpExchMessageParser()
         self._venue_liveness = venue_liveness
         self._fx = float(fx) if fx > 0 else 1.0
+        self._market_order_enabled = bool(market_order_enabled)
         from nautilus_trader.adapters.sharpexch.executor import SharpExchExecutor
 
-        self._executor = SharpExchExecutor(fx_getter=self._current_fx)
+        self._executor = SharpExchExecutor(
+            fx_getter=self._current_fx,
+            market_order_enabled=self._market_order_enabled,
+        )
         self._page = None
         self._ws_handler = None
         self._page_lock = asyncio.Lock()
@@ -331,6 +338,19 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("SE place: executor is not initialized")
             return None
+        if self._market_order_enabled and legacy.side == "LAY":
+            planned_price = legacy.price
+            legacy = replace(
+                legacy,
+                price=worst_decimal_lay_price(
+                    self._cache.order_book(nt_order.instrument_id),
+                    SHARPEXCH,
+                    planned_price,
+                ),
+            )
+            self._log.info(
+                f"SE marketable LAY price: planned={planned_price} submit={legacy.price}",
+            )
         self.generate_order_submitted(
             strategy_id=nt_order.strategy_id,
             instrument_id=nt_order.instrument_id,
@@ -841,6 +861,7 @@ def se_order_to_place_bets_payload(
     timestamp_ms: int | None = None,
     persistence_type: str = "LAPSE",
     uuid_suffix: str | None = None,
+    market_order_enabled: bool = False,
 ) -> tuple[dict, str]:
     """SE legacy order → `/customer/api/placeBets` payload。
 
@@ -856,7 +877,10 @@ def se_order_to_place_bets_payload(
         alphabet = string.ascii_lowercase + string.digits
         uuid_suffix = "".join(random.choice(alphabet) for _ in range(5))
 
-    odds_price = _clamp_odds_price(order.price)
+    if market_order_enabled:
+        odds_price = 1.01 if order.side == "BACK" else _clamp_odds_price(order.price)
+    else:
+        odds_price = _clamp_odds_price(order.price)
     venue_size = round(order.size, 2)
     bet_uuid = (
         f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{timestamp_ms}-{uuid_suffix}"

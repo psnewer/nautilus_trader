@@ -178,9 +178,9 @@
                                 <div class="col-md-4"><label class="form-label small">position_check_interval_secs</label><input type="number" step="any" class="form-control form-control-sm" id="e-pos-int" placeholder="300"></div>
                             </div>
                             <div class="row">
-                                <div class="col-12"><small class="text-muted fw-bold">市价单(decimal venue:OE/SE)</small></div>
+                                <div class="col-12"><small class="text-muted fw-bold">全 Venue 市价提交</small></div>
                                 <div class="col-md-3"><label class="form-label small">market_order_enabled</label><div class="form-check"><input type="checkbox" class="form-check-input" id="e-market-order"></div></div>
-                                <div class="col-9 col-md-9 text-muted small align-self-center">打开后 OE/SE 下单用书内最差价(保证成交);缺深度时退回原限价。改动需重启生效。</div>
+                                <div class="col-9 col-md-9 text-muted small align-self-center">打开后 PM 使用官方 FOK 市价单（BUY 按计划成本、SELL 按计划 share）；OE/SE BACK 使用 1.01，LAY 使用当前盘口最差赔率。改动需重启生效。</div>
                             </div>
                         </div></div></div>
                     <!-- Risk config(删 global_sl/health/返水率面板/持仓 死面板)-->

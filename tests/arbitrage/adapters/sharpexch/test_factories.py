@@ -202,6 +202,7 @@ def test_exec_factory_create_with_context_returns_client():
         venue_liveness=liveness,
         session_timeout_secs_by_venue={SHARPEXCH: 45.0},
         arbitrage_params=ArbitrageParams(fx=1.25),
+        market_order_enabled=True,
     )
 
     client = se_factories.ArbSharpExchLiveExecClientFactory.create(
@@ -212,4 +213,5 @@ def test_exec_factory_create_with_context_returns_client():
     assert client._venue_liveness is liveness
     assert client._session_timeout_ns == int(45.0 * 1e9)
     assert client._current_fx() == 1.0
+    assert client._executor._market_order_enabled is True
     assert client._browser_manager is bootstrap.get_arb_context().browser_manager_by_venue[SHARPEXCH]

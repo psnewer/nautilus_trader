@@ -198,6 +198,7 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
             venue_liveness=ctx.venue_liveness,
             session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", ORBITEXCH),
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
+            market_order_enabled=ctx.market_order_enabled,
         )
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.execution_clients import SkipExecutionOrbitExchClient

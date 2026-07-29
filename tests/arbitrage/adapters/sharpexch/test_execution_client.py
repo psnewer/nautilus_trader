@@ -30,7 +30,14 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from tests.arbitrage.adapters.sharpexch.test_provider import _event
 
 
-def _client(*, liveness=None, browser_manager=None, browser_lock=None, config=None):
+def _client(
+    *,
+    liveness=None,
+    browser_manager=None,
+    browser_lock=None,
+    config=None,
+    market_order_enabled=False,
+):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     return SharpExchExecutionClient(
@@ -43,6 +50,7 @@ def _client(*, liveness=None, browser_manager=None, browser_lock=None, config=No
         config=config or SharpExchExecClientConfig(username="u", password="p"),
         venue_liveness=liveness,
         browser_lock=browser_lock,
+        market_order_enabled=market_order_enabled,
     )
 
 
@@ -60,13 +68,13 @@ def _instrument(role="home"):
     return next(inst for inst in provider._build_legs(_event()) if inst.info["selection_role"] == role)
 
 
-def _order(client, inst, *, qty=7.0, price=1.01):
+def _order(client, inst, *, qty=7.0, price=1.01, side=OrderSide.BUY):
     factory = OrderFactory(
         trader_id=TraderId("T-000"),
         strategy_id=StrategyId("S-000"),
         clock=client._clock,
     )
-    return factory.limit(inst.id, OrderSide.BUY, inst.make_qty(qty), inst.make_price(price))
+    return factory.limit(inst.id, side, inst.make_qty(qty), inst.make_price(price))
 
 
 class FakeSharpExchPage:
@@ -389,6 +397,43 @@ def test_place_via_executor_translates_nt_order_and_passes_page():
     assert legacy.price == pytest.approx(2.34)
     assert captured["page"] is page
     assert calls == ["submitted", "request"]
+
+
+def test_place_via_executor_market_lay_uses_worst_book_price():
+    from nautilus_trader.adapters.sharpexch.data import se_runner_to_book_deltas
+    from nautilus_trader.model.book import OrderBook
+    from nautilus_trader.model.enums import BookType
+
+    client = _client(market_order_enabled=True)
+    inst = _instrument("away")
+    client._cache.add_instrument(inst)
+    book = OrderBook(inst.id, BookType.L2_MBP)
+    book.apply_deltas(
+        se_runner_to_book_deltas(
+            inst.id,
+            {
+                "back": [{"price": 2.1, "size": 10}],
+                "lay": [{"price": 2.0, "size": 10}, {"price": 4.0, "size": 10}],
+            },
+            1,
+        ),
+    )
+    client._cache.add_order_book(book)
+    order = _order(client, inst, qty=12.0, price=2.0, side=OrderSide.SELL)
+    captured = {}
+
+    class Executor:
+        async def place_order(self, legacy_order, passed_page):
+            captured["order"] = legacy_order
+            return {"success": True, "venue_order_id": "SE-OFFER-1", "message": "ok"}
+
+    client._executor = Executor()
+    client._page = object()
+    client.generate_order_submitted = lambda **kwargs: None
+
+    _run(client._place_via_executor(order))
+
+    assert captured["order"].price == pytest.approx(4.0)
 
 
 def test_place_via_executor_timeout_releases_page_lock():

@@ -19,13 +19,9 @@ import asyncio
 import logging
 import math
 
-from src.arbitrage.bootstrap import get_arb_context
 from src.arbitrage.common.opportunity import new_opportunity_id
-from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
-from src.arbitrage.strategy.checks.quote_legs import to_price
-from src.arbitrage.strategy.checks.quote_legs import worst_ask
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.leg_plan import as_instrument_id as _as_instrument_id
@@ -56,16 +52,18 @@ class PlaceBetsAction(Action):
             _LOG.debug(f"PlaceBets: pair={ctx.pair_id} no legs (Check 未写),skip")
             return
 
-        rate = ctx.scratch.get("mean_rebate_rate")
         # #277:胜出 candidate 自带 intent(recovery 候选经 arb 链胜出时必须以 recovery 提交,
         # 保住 Risk 的 profit-gates 豁免);无标记时用本 Action 配置值。
         selected = ctx.scratch.get("selected_candidate") or {}
+        mean_rate = ctx.scratch.get("mean_rebate_rate")
+        strategy = str(selected.get("strategy") or ("mean_rebate" if mean_rate is not None else "unknown"))
+        rate = selected.get("rate", mean_rate)
         intent = str(selected.get("intent") or self._intent)
         submitter = ctx.submitter      # slice 10a:None → log-only fallback;否则真出单
         mode = "submit" if submitter is not None else "smoke"
         _LOG.info(
             f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} "
-            f"mean_rebate_rate={rate}",
+            f"strategy={strategy} rate={rate}",
         )
         opportunity_id = new_opportunity_id()
         drafts = []
@@ -92,20 +90,16 @@ class PlaceBetsAction(Action):
                     "missing qty/share_if_wins, abort opportunity",
                 )
                 return
-            # 下单价:market_order 开启时(仅 decimal venue)用书内**最差价**替代最优价保成交;
-            # qty 已按最优价算好、不受影响。日志打候选最优赔率(本意套利赔率);
-            # 实际提交价 = submit_price(NT `Submit LimitOrder @ ...` 也显示它)。
-            submit_price = _apply_market_order_override(leg, venue, price, ctx, self._price_overrides)
             _LOG.info(
                 f"PlaceBets leg: pair={ctx.pair_id} venue={str(venue).upper()} "
                 f"role={leg.get('claim') or leg.get('role')} "
-                f"best_price={price} submit_price={submit_price} qty={size:.4f}",
+                f"price={price} qty={size:.4f}",
             )
             draft = {
                 "instrument_id": leg.get("exec_instrument_id") or leg["instrument_id"],
                 "side": side,
                 "qty": size,
-                "price": submit_price,
+                "price": price,
                 "venue": str(venue).upper(),
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
@@ -145,51 +139,6 @@ class PlaceBetsAction(Action):
                     f"role={draft['role']} venue={draft['venue']} qty={spec['qty']:.4f} "
                     f"price={spec['price']}",
                 )
-
-
-def _apply_market_order_override(
-    leg: dict,
-    venue: str,
-    price: float,
-    ctx,
-    price_overrides: dict[str, float],
-) -> float:
-    """decimal venue(OE/SE)市价单开关(#256 续):打开时用书内最差价替代限价,保证成交
-    而非最优价。显式 `price_overrides`(调试/临时覆盖)优先于市价单,不被此处替换;
-    缺深度(查不到 worst price)时退回原限价,不报错、不阻断下单。
-
-    读取 `leg["instrument_id"]`(quote_legs 定价所用的原始 instrument,3-way 合成 no 腿的
-    `exec_instrument_id` 重定向只影响提交目标,不影响这里的定价来源)对应的 book,取
-    `worst_ask` 的隐含概率,用与 `quote_legs_by_outcome` 相同的 `quote_claim` 换算回真实价格。
-    """
-    venue_key = str(venue).upper()
-    if venue_key in price_overrides:
-        return price
-    try:
-        if not is_decimal_odds_venue(venue):
-            return price
-    except KeyError:
-        return price
-    if not get_arb_context().market_order_enabled:
-        return price
-    if ctx.cache is None:
-        return price
-    instrument_id = leg.get("instrument_id")
-    iid = _as_instrument_id(instrument_id)
-    book = ctx.cache.order_book(iid)
-    if book is None:
-        return price
-    worst_probability = worst_ask(book)
-    if worst_probability is None or worst_probability <= 0:
-        return price
-    instrument = ctx.cache.instrument(iid)
-    info = getattr(instrument, "info", None) or {}
-    quote_claim = str(info.get("quote_claim") or "yes").lower()
-    worst_price = to_price(venue, worst_probability, quote_claim)
-    if worst_price is None or worst_price <= 0:
-        return price
-    return worst_price
-
 
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:
     """配置里的 venue key 统一转大写,便于临时 live 验证覆盖。"""

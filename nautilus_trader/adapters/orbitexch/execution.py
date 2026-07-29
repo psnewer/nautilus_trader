@@ -23,6 +23,7 @@ item→`generate_order_*`/report(item schema 待 populated 抓帧)、reports。
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
@@ -41,6 +42,7 @@ from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessagePa
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.execution.market_price import worst_decimal_lay_price
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 ORBITEXCH = "ORBITEXCH"
@@ -289,6 +291,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         venue_liveness: VenueExecutionLiveness,
         session_timeout_secs: float = 30.0,
         fx: float = 1.0,
+        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -313,6 +316,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._parser = OrbitExchMessageParser()
         self._executor = None
         self._fx = float(fx) if fx > 0 else 1.0
+        self._market_order_enabled = bool(market_order_enabled)
         self._page = None
         self._ws_handler = None
         self._bet_fill_seq: dict = {}   # offerId → 成交序号(trade_id 唯一)
@@ -392,7 +396,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if "/customer/" not in (self._page.url or ""):  # 持久化 profile 未登录 → 填表单
             await self._login()
         await self._wait_for_initial_business_state()
-        self._executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=self._current_fx)
+        self._executor = OrbitExchExecutor(
+            config=ExecutionConfig(market_order_enabled=self._market_order_enabled),
+            fx_getter=self._current_fx,
+        )
         self._executor.set_page("default", self._page)
         if not self._balance_reported:
             # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
@@ -508,6 +515,19 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("OE place: executor 未初始化(_connect 未接线 / 非 live)")
             return None
+        if self._market_order_enabled and request.side == "LAY":
+            planned_price = request.price
+            request = replace(
+                request,
+                price=worst_decimal_lay_price(
+                    self._cache.order_book(nt_order.instrument_id),
+                    ORBITEXCH,
+                    planned_price,
+                ),
+            )
+            self._log.info(
+                f"OE marketable LAY price: planned={planned_price} submit={request.price}",
+            )
         self.generate_order_submitted(
             strategy_id=nt_order.strategy_id,
             instrument_id=nt_order.instrument_id,

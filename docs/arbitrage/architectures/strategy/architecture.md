@@ -379,20 +379,17 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share，目标为最大实际 share；当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure，包含 Data API 对账恢复的 SELL/merge 已实现盈亏；对缺口 outcome 取当前 best ask 最便宜 venue，写 recovery legs。position outcome/金额统一委托 venues §4.1 |
 | `ShareLimitModification(max_leg_share=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | #277 起**所有链**(arb + comp)都插在 `place_bets` 之前,内部三步:① **最小下注门控** —— 候选池 = 本树 `candidates`(缺失时把 `legs` 包成单 candidate)+ evaluator 注入的 `recovery_candidates`;逐腿按与 place_bets 共用的 `leg_plan` 解析 side/price/qty,对**实际提交 instrument**(`exec_instrument_id` 优先)检查 `min_quantity` / `min_notional`(经 `notional_value`,与 NT 原生口径一致)/ BUY `min_buy_notional`;任一腿不过整 candidate 淘汰(低于限额是常态 → DEBUG 留痕;字段/价格解析异常 → WARNING,循 #260)。② **套利优先分组** —— 本树组有幸存者就只在本组选,全灭才落 recovery 组(recovery 组通常单 candidate,选择平凡;recovery 永不参与 arb 组的 share 比较)。③ **组内选择(逻辑不变)** —— 取 legs 内最大 `share_if_wins` 最高者,写 `ctx.scratch["selected_candidate"]`(含 intent 标记)和 `ctx.scratch["legs"]`;全池皆空时清空 legs |
-| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage")` | `src/arbitrage/strategy/actions/place_bets.py` | 通用“语义腿→实际订单”边界。只有带执行重定向的 decimal 合成腿转 `SELL@lay`。probability BUY 在执行 Action 时读取 live Cache 的互斥 LONG 仓位与 instrument constraints，优先展开为 SELL 减仓 + BUY 剩余量。市价覆盖读取 live book。全部转换后才生成实际 `leg_key/expected_legs`，并把同一 `open_orders_digest/positions_digest` 与 per-venue 整组资金需求写入所有真实腿 metadata。不做 FX；窗口内订单或仓位变化由 Execution barrier 收口。**intent(#277)**:优先读 `ctx.scratch["selected_candidate"]["intent"]`,缺失才用自身配置 —— recovery candidate 经 arb 链胜出时必须以 `intent=recovery` 提交,否则丢失 Risk 对 recovery 的 profit-gates 豁免。leg→side/price/qty 基础解析与 instrument constraints 读取抽在 `strategy/leg_plan.py` 与门控共用一份 |
+| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage")` | `src/arbitrage/strategy/actions/place_bets.py` | 通用“语义腿→实际订单”边界。只有带执行重定向的 decimal 合成腿转 `SELL@lay`。probability BUY 在执行 Action 时读取 live Cache 的互斥 LONG 仓位与 instrument constraints，优先展开为 SELL 减仓 + BUY 剩余量。Strategy 始终保留计划价，不读取深度、不判断 `market_order_enabled`；市价语义只由各 Execution adapter 在最终服务端提交边界转换。全部转换后才生成实际 `leg_key/expected_legs`，并把同一 `open_orders_digest/positions_digest` 与 per-venue 整组资金需求写入所有真实腿 metadata。不做 FX；窗口内订单或仓位变化由 Execution barrier 收口。**intent(#277)**:优先读 `ctx.scratch["selected_candidate"]["intent"]`,缺失才用自身配置 —— recovery candidate 经 arb 链胜出时必须以 `intent=recovery` 提交,否则丢失 Risk 对 recovery 的 profit-gates 豁免。leg→side/price/qty 基础解析与 instrument constraints 读取抽在 `strategy/leg_plan.py` 与门控共用一份 |
 
 `mean_rebate`、`one_side_rebate` 与 `mean_rebate_recovery` 的行情候选腿统一由
 `src/arbitrage/strategy/checks/quote_legs.py::quote_legs_by_outcome` 构造。⚠️ 2026-07-20/21
 (#256)起,`best_ask(book)` 读到的直接就是隐含概率(decimal venue 的 book 写侧已按
 `quote_claim` 换算,见 `docs/arbitrage/architectures/data/architecture.md` §2/§3.1),不再
 在读侧二次调 `probability_from_price`;`leg["price"]`(真实下单价)经新增的
-`to_price`(`price_from_probability` 的容错包装)从这个概率换算回来。`worst_ask(book)`
-(同文件)是市价单功能新增的辅助读取——读最深档而非最优档,供 `PlaceBetsAction` 的市价单
-覆盖使用,quote_legs 本身不用。市价单最差价覆盖由配置 `market_order_enabled`(默认 `False`)控制:
-False 时 `_apply_market_order_override` 直接返回最优价、不替换(即"OE/SE 不做最差价替换"),True 时
-才用书内最差价保成交。⚠️ 注意 OBD 触发闸翻成 OE/SE 后(#278),padding 作用的 decimal venue 恰是
-**触发腿**;若将来要给**被动腿 PM** 保成交,需把 override 内 venue 判据改为 `is_probability_odds_venue`
-并取被动腿 book,不能只靠置 True。
+`to_price`(`price_from_probability` 的容错包装)从这个概率换算回来。Strategy 不再用
+OrderBook 最深档覆盖计划价，也不读取 `market_order_enabled`。该开关属于 Execution 配置，
+由 PM/OE/SE adapter 在最终服务端提交前完成 venue-specific 转换；详细契约见
+`docs/arbitrage/architectures/execution/architecture.md` §3.6。
 `claim/lay_price/exec_instrument_id` 透传只维护一份；三个 Check 只保留各自的组合与阈值算法。
 Recovery 读取持仓时若发现 probability SHORT 等经济投影不变量错误,记录错误并放弃本轮；
 ShareLimit 通过严格 Portfolio 读取持仓，遇到缺 claim 或 probability SHORT 时清空本轮
@@ -460,7 +457,9 @@ NT `Strategy`，负责把 spec 转成 NT Order，并通过原生 `submit_order` 
 - 冷启动安全:`cache.instrument(iid)` 返 None → warning + skip,不 raise
 
 **PlaceBetsAction.execute 双路径**(slice 10a):
-- `ctx.submitter` 非 None → `await submitter(spec)` 真出单(log `PlaceBets[submit]`)
+- `ctx.submitter` 非 None → `await submitter(spec)` 真出单(log `PlaceBets[submit]`)；汇总日志从
+  `selected_candidate` 记录实际 `strategy/rate`，mean_rebate 的 legs-only 候选回退读取
+  `mean_rebate_rate`
 - `ctx.submitter` None → log-only fallback(log `PlaceBets[smoke]` + `would submit: ...`)
 - size 计算优先级不变。decimal 合成 no 以 `exec_instrument_id != instrument_id` 判定并转 `SELL @ lay/bid`;逻辑 `claim=no` 本身不触发转换。转换/拆单后才建立实际 barrier legs。
 - non-tradable guard:若上游误把 `.PMSPORTS` anchor 或其它 `tradable=false` / `anchor=true` leg 写进 `ctx.scratch["legs"]`,整次 opportunity fail-closed,不生成任何 submit spec。

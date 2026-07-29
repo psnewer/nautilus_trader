@@ -73,8 +73,8 @@ class ArbContext:
     # Web Arbitrage 运行时默认值:share/max_leg_share/fx。OE adapter 用 fx 做边界换汇。
     arbitrage_params: ArbitrageParams | None = None
 
-    # decimal venue(OE/SE)市价单开关(#256 续,`execution.market_order_enabled` 启动时定
-    # 一份快照,重启生效;`PlaceBetsAction` 读取,详见 strategy 相关 architecture.md)。
+    # 全 venue 市价单开关；启动时冻结并由 execution factory 注入各 ExecutionClient。
+    # 最终转换发生在 adapter 向服务端提交前，Strategy 不读取。
     market_order_enabled: bool = False
 
 

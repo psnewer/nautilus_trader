@@ -364,7 +364,7 @@ def bootstrap_and_build(
         debug_config=debug_config,
         arbitrage_params=to_arbitrage_params(cfg),
         pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem
-        market_order_enabled=cfg.execution.market_order_enabled,  # #256 续:on_restart,重启生效
+        market_order_enabled=cfg.execution.market_order_enabled,  # #286:on_restart,重启生效
         **to_arb_context_init_kwargs(cfg),
     )
 

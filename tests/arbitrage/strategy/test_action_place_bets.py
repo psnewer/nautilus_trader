@@ -4,13 +4,6 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
-import pytest
-
-from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
-from nautilus_trader.model.book import OrderBook
-from nautilus_trader.model.enums import BookType
-from nautilus_trader.model.identifiers import InstrumentId
-from src.arbitrage import bootstrap
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.leg_plan import compute_size as _compute_size
 from src.arbitrage.strategy.condition import EvalContext
@@ -64,9 +57,44 @@ def test_action_logs_each_leg(caplog):
         _run(PlaceBetsAction().execute(ctx))
 
     msgs = [r.message for r in caplog.records]
-    assert any("PlaceBets[smoke]" in m and "legs=2" in m for m in msgs)
+    assert any(
+        "PlaceBets[smoke]" in m
+        and "legs=2" in m
+        and "strategy=mean_rebate" in m
+        and "rate=0.15" in m
+        for m in msgs
+    )
     assert any("H.POLYMARKET" in m and "qty=22.5000" in m for m in msgs)
     assert any("A.ORBITEXCH" in m and "qty=9.0000" in m for m in msgs)
+
+
+def test_action_summary_logs_selected_one_side_rebate_candidate(caplog):
+    ctx = EvalContext(pair_id="p")
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "yes",
+            "price": 0.4,
+            "prob": 0.4,
+            "share_if_wins": 22.5,
+        },
+    ]
+    ctx.scratch["selected_candidate"] = {
+        "strategy": "one_side_rebate",
+        "rate": 0.12,
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
+        _run(PlaceBetsAction().execute(ctx))
+
+    assert any(
+        "PlaceBets[smoke]" in record.message
+        and "strategy=one_side_rebate" in record.message
+        and "rate=0.12" in record.message
+        for record in caplog.records
+    )
 
 
 # ── slice 10a(#50):submitter 接通 ─────────────────────────────────
@@ -502,113 +530,8 @@ def test_action_aborts_when_leg_is_non_tradable_anchor(caplog):
     assert any("non-tradable anchor" in r.message for r in caplog.records)
 
 
-# ── #256 续:market_order_enabled 最差价覆盖 ─────────────────────────
-
-def _oe_book_with_depth(iid_str: str, *, back, lay, claim: str = "yes") -> OrderBook:
-    """经真实 `oe_runner_to_book_deltas` 构造多档 book(概率编码,claim 决定 ask/bid 换位)。"""
-    iid = InstrumentId.from_str(iid_str)
-    runner = {
-        "back": [{"price": p, "size": 10.0} for p in back],
-        "lay": [{"price": p, "size": 10.0} for p in lay],
-    }
-    deltas = oe_runner_to_book_deltas(iid, runner, ts_init_ns=1000, claim=claim)
-    book = OrderBook(iid, BookType.L2_MBP)
-    book.apply_deltas(deltas)
-    return book
-
-
-def test_market_order_disabled_uses_original_price():
-    """默认关闭:即使 book 有更深档位,提交价仍是 Check 算出的原始限价(最优价)。"""
-    bootstrap.reset_arb_context()
-    calls = []
-
-    async def fake_submitter(spec: dict) -> None:
-        calls.append(spec)
-
-    iid = "A.ORBITEXCH"
-    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    ctx = live_context(
-        instrument_ids=[iid], books={iid: book},
-        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
-    )
-    ctx.scratch["legs"] = [
-        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
-    ]
-
-    _run(PlaceBetsAction().execute(ctx))
-
-    assert calls[0]["price"] == 2.5
-    bootstrap.reset_arb_context()
-
-
-def test_market_order_enabled_uses_worst_back_price():
-    """提交价用 book 内最差 back 价(最低赔率),但 qty 仍按候选最优价算。"""
-    bootstrap.reset_arb_context()
-    bootstrap.prepare_arb_context(market_order_enabled=True)
-    calls = []
-
-    async def fake_submitter(spec: dict) -> None:
-        calls.append(spec)
-
-    iid = "A.ORBITEXCH"
-    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    ctx = live_context(
-        instrument_ids=[iid], books={iid: book},
-        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
-    )
-    ctx.scratch["legs"] = [
-        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
-    ]
-
-    _run(PlaceBetsAction().execute(ctx))
-
-    assert calls[0]["price"] == 2.0  # 提交价 = worst back(最低赔率)
-    assert calls[0]["qty"] == 4.0    # qty 按候选最优价 2.5 算:10/2.5(不是按最差价 2.0 算的 5.0)
-    bootstrap.reset_arb_context()
-
-
-def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
-    """合成 no 腿(exec_instrument_id 重定向):提交价用定价 instrument book 的 worst lay
-    (ask←lay 列),提交目标仍是 exec_instrument_id,side 仍 SELL;qty 仍按候选最优价算。"""
-    bootstrap.reset_arb_context()
-    bootstrap.prepare_arb_context(market_order_enabled=True)
-    calls = []
-
-    async def fake_submitter(spec: dict) -> None:
-        calls.append(spec)
-
-    quote_iid = "ANO.ORBITEXCH"
-    exec_iid = "A.ORBITEXCH"
-    book = _oe_book_with_depth(quote_iid, back=[2.6, 2.7], lay=[2.5, 2.0], claim="no")
-    ctx = live_context(
-        instrument_ids=[quote_iid], books={quote_iid: book},
-        infos={quote_iid: {
-            "selection_role": "away", "claim": "no", "quote_claim": "no",
-            "exec_instrument_id": exec_iid,
-        }},
-        submitter=fake_submitter,
-    )
-    ctx.scratch["legs"] = [
-        {"instrument_id": quote_iid, "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.0, "prob": 0.5, "share_if_wins": 10.0,
-         "claim": "no", "lay_price": 2.0, "exec_instrument_id": exec_iid},
-    ]
-
-    _run(PlaceBetsAction().execute(ctx))
-
-    assert calls[0]["instrument_id"] == exec_iid
-    assert calls[0]["side"] == "SELL"
-    assert calls[0]["price"] == 2.5  # 提交价 = worst lay(最高赔率)
-    assert calls[0]["qty"] == 5.0    # qty 按候选最优价 2.0 算:10/2.0(不是按最差价 2.5 算的 4.0)
-    bootstrap.reset_arb_context()
-
-
-def test_market_order_missing_depth_falls_back_to_original_price():
-    """打开但该 instrument 还没收到过赔率帧(live cache 无 book)→ 退回原限价,不报错。"""
-    bootstrap.reset_arb_context()
-    bootstrap.prepare_arb_context(market_order_enabled=True)
+def test_strategy_keeps_planned_price_for_execution_adapter():
+    """Strategy 不解释市价开关，只把计划价格原样交给 execution adapter。"""
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
@@ -623,54 +546,6 @@ def test_market_order_missing_depth_falls_back_to_original_price():
     _run(PlaceBetsAction().execute(ctx))
 
     assert calls[0]["price"] == 2.5
-    bootstrap.reset_arb_context()
-
-
-def test_market_order_explicit_price_override_takes_precedence():
-    """显式 price_overrides(调试/live probe)优先于市价单开关,不被替换。"""
-    bootstrap.reset_arb_context()
-    bootstrap.prepare_arb_context(market_order_enabled=True)
-    calls = []
-
-    async def fake_submitter(spec: dict) -> None:
-        calls.append(spec)
-
-    iid = "A.ORBITEXCH"
-    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
-    ctx = live_context(
-        instrument_ids=[iid], books={iid: book},
-        infos={iid: {"selection_role": "away"}}, submitter=fake_submitter,
-    )
-    ctx.scratch["legs"] = [
-        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
-    ]
-
-    _run(PlaceBetsAction(price_overrides={"orbitexch": 1000.0}).execute(ctx))
-
-    assert calls[0]["price"] == 1000.0
-    bootstrap.reset_arb_context()
-
-
-def test_market_order_does_not_apply_to_probability_venue():
-    """开关只对 decimal venue 生效;PM 腿价格不受影响。"""
-    bootstrap.reset_arb_context()
-    bootstrap.prepare_arb_context(market_order_enabled=True)
-    calls = []
-
-    async def fake_submitter(spec: dict) -> None:
-        calls.append(spec)
-
-    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
-    ctx.scratch["legs"] = [
-        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
-         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 10.0},
-    ]
-
-    _run(PlaceBetsAction().execute(ctx))
-
-    assert calls[0]["price"] == 0.4
-    bootstrap.reset_arb_context()
 
 
 # ── #277:intent 优先读 selected_candidate ────────────────────────

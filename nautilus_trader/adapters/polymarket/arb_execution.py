@@ -21,8 +21,12 @@ from __future__ import annotations
 import asyncio
 
 import msgspec
+from py_clob_client_v2 import MarketOrderArgs
+from py_clob_client_v2 import PartialCreateOrderOptions
+from py_clob_client_v2.clob_types import OrderType as PolyOrderType
 
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
+from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_token_id
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
@@ -32,7 +36,10 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import QueryOrder
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -103,6 +110,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         settlement: PolymarketSettlement | None = None,
         realized_pnl_ledger: RealizedPnlLedger | None = None,
         session_timeout_secs: float = 30.0,
+        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop, http_client, msgbus, cache, clock,
@@ -114,9 +122,56 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._venue_liveness = venue_liveness
         self._settlement = settlement
         self._realized_pnl_ledger = realized_pnl_ledger
+        self._market_order_enabled = bool(market_order_enabled)
         # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
         # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
         self._settlement_inflight = False
+
+    async def _submit_limit_order(self, command, instrument) -> None:
+        """按 execution 开关在最终 PM 出站边界选择普通限价或官方市价单。"""
+        if not self._market_order_enabled:
+            await super()._submit_limit_order(command, instrument)
+            return
+
+        order = command.order
+        amount = (
+            float(order.quantity) * float(order.price)
+            if order.side == OrderSide.BUY
+            else float(order.quantity)
+        )
+        order_args = MarketOrderArgs(
+            token_id=get_polymarket_token_id(order.instrument_id),
+            amount=amount,
+            side=order_side_to_str(order.side),
+            order_type=PolyOrderType.FOK,
+        )
+        neg_risk = self._get_neg_risk_for_instrument(instrument)
+        options = PartialCreateOrderOptions(neg_risk=neg_risk)
+        signed_order = await asyncio.to_thread(
+            self._http_client.create_market_order,
+            order_args,
+            options=options,
+        )
+
+        self._register_signed_order_id(order, signed_order, neg_risk=neg_risk)
+        self.generate_order_submitted(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            ts_event=self._clock.timestamp_ns(),
+        )
+
+        base_quantity = None
+        if order.side == OrderSide.BUY:
+            taker_amount = int(signed_order.order["takerAmount"])
+            base_quantity = Quantity(taker_amount / 1e6, instrument.size_precision)
+
+        await self._post_signed_order(
+            order,
+            signed_order,
+            order_type_override=PolyOrderType.FOK,
+            base_quantity=base_quantity,
+        )
 
     async def _submit_order(self, command) -> None:
         # #261:session 已由 mixin 的同步 `submit_order` 建立(派生态不能有空窗),此处不再建。

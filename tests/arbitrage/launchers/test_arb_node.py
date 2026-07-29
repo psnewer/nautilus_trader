@@ -373,7 +373,7 @@ def test_bootstrap_populates_arb_context():
     assert not hasattr(ctx, "oe_health_interval_secs")
     assert not hasattr(ctx, "pm_positions_fetcher")
     assert ctx.pm_settlement is settlement
-    assert ctx.market_order_enabled is True  # #256 续:cfg.execution.market_order_enabled 透传
+    assert ctx.market_order_enabled is True  # #286:cfg.execution.market_order_enabled 透传
 
 
 def test_bootstrap_populates_sharpexch_context_when_enabled():

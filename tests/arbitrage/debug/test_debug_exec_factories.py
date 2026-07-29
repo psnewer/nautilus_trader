@@ -54,11 +54,13 @@ def test_pm_exec_factory_uses_production_when_no_debug(monkeypatch):
     bootstrap.prepare_arb_context(
         venue_liveness=MagicMock(),
         session_timeout_secs_by_venue={POLYMARKET: 45.0},
+        market_order_enabled=True,
     )
     pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
     assert prod.called and not dbg.called
     assert prod.call_args.kwargs["session_timeout_secs"] == 45.0
+    assert prod.call_args.kwargs["market_order_enabled"] is True
 
 
 def test_pm_exec_factory_requires_session_timeout_keyed_value(monkeypatch):
@@ -100,11 +102,13 @@ def test_oe_exec_factory_uses_production_when_no_debug(monkeypatch):
     bootstrap.prepare_arb_context(
         venue_liveness=MagicMock(),
         session_timeout_secs_by_venue={ORBITEXCH: 45.0},
+        market_order_enabled=True,
     )
     oe_factories.ArbOrbitExchLiveExecClientFactory.create(**_oe_args())
 
     assert prod.called and not dbg.called
     assert prod.call_args.kwargs["session_timeout_secs"] == 45.0
+    assert prod.call_args.kwargs["market_order_enabled"] is True
 
 
 def test_oe_exec_factory_uses_skip_when_debug_enabled(monkeypatch):

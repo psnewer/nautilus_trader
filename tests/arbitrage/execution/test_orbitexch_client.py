@@ -28,7 +28,7 @@ from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positio
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
 
 
-def _client(*, config=None):
+def _client(*, config=None, market_order_enabled=False):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     liveness = VenueExecutionLiveness()
@@ -41,6 +41,7 @@ def _client(*, config=None):
         instrument_provider=InstrumentProvider(),
         config=config or OrbitExchExecClientConfig(username="u", password="p"),
         venue_liveness=liveness,
+        market_order_enabled=market_order_enabled,
     )
 
 
@@ -344,6 +345,51 @@ def test_place_via_executor_emits_submitted_before_venue_request():
     _run(c._place_via_executor(order))
 
     assert calls == ["submitted", "request"]
+
+
+def test_place_via_executor_market_lay_uses_worst_book_price():
+    from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.book import OrderBook
+    from nautilus_trader.model.enums import BookType
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client(market_order_enabled=True)
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
+    c._cache.add_instrument(inst)
+    book = OrderBook(inst.id, BookType.L2_MBP)
+    book.apply_deltas(
+        oe_runner_to_book_deltas(
+            inst.id,
+            {
+                "back": [{"price": 2.1, "size": 10}],
+                "lay": [{"price": 2.0, "size": 10}, {"price": 4.0, "size": 10}],
+            },
+            1,
+        ),
+    )
+    c._cache.add_order_book(book)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    ).limit(inst.id, OrderSide.SELL, inst.make_qty(7), inst.make_price(2.0))
+    captured = {}
+
+    class _Executor:
+        async def place_order(self, request, page):
+            captured["request"] = request
+            return _fake_result(success=True, venue_order_id="OE-OFFER-1")
+
+    c._executor = _Executor()
+    c._page = object()
+    c.generate_order_submitted = lambda **kwargs: None
+
+    _run(c._place_via_executor(order))
+
+    assert captured["request"].price == pytest.approx(4.0)
 
 
 def test_place_via_executor_timeout_releases_page_lock():

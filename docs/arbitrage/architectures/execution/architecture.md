@@ -221,6 +221,32 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 
 **timeout**:使用 NT 原生 clock `set_time_alert_ns` / `cancel_timer`;只覆盖 Risk decision 收齐窗口,不替代 §4.2 per-session venue timeout。
 
+### 3.6 市价提交边界
+
+顶层 `execution.market_order_enabled` 是所有 tradable venue 共用的启动配置。Factory 在创建
+PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportunity barrier 始终处理
+原计划的 NT `LimitOrder`，不读取该开关、不按 OrderBook 深度改价。只有订单已经通过上述链路、
+即将调用 venue 服务端接口时，adapter 才做最后一次 venue-specific 转换：
+
+- **Polymarket**：关闭时沿用 GTC limit；开启时使用官方
+  `create_market_order(MarketOrderArgs)` 并以 FOK 提交。PM 原生 `amount` 口径按 side
+  区分：BUY 传计划成本 `计划 share × 计划 price`（USDC），SELL 传计划 share。BUY
+  签名后从 `signed_order.order["takerAmount"]` 取得本次市价单预计 base quantity，并通过
+  上游 `_post_signed_order(..., base_quantity=...)` 发出 `OrderUpdated`，使 NT 本地订单数量
+  和 fill tracker 对齐实际可成交 share；不得使用极端价格的 `OrderArgs` 模拟 BUY 市价，
+  否则签名的 makerAmount 会按极端价格放大，价格改善将产生超出计划数量的 shares。
+  签名、neg-risk、确定性 order hash、submitted/accepted/rejected 事件仍复用上游 PM
+  ExecutionClient。
+- **OrbitExch / SharpExch**：关闭时 payload 使用计划 decimal odds；开启时只在最终
+  `placeBets` payload 把 BACK price 设为 `1.01`；LAY 从真实执行 instrument 的 NT book
+  `bids()` 最后一档读取当前最差 LAY 深度，再经 Venue Registry 还原成 decimal odds。
+  缺 book/深度或换算失败时保留 Strategy 计划 LAY 价，绝不退到固定 `100`。side 和 stake
+  不变。该转换不伪装为 PM FOK，也不改变入站 CURRENT_BETS 的真实成交价。
+
+Strategy 始终记录并提交计划 price/qty；OE/SE LAY 深度只在 ExecutionClient 最终 page write
+前读取。显式 debug `price_overrides` 仍只负责构造计划订单；开启市价提交后，最终 venue
+payload 仍按本节规则转换。
+
 ---
 
 ## 4. 机制

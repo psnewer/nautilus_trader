@@ -53,7 +53,7 @@ def test_default_empty_json(cfg_path):
 
 
 def test_execution_market_order_enabled_default_and_override(cfg_path):
-    """#256 续:decimal venue 市价单开关默认关闭,execution 段可显式打开。"""
+    """#286:全 venue 市价提交开关默认关闭,execution 段可显式打开。"""
     cfg_path.write_text("{}")
     cfg = load_arb_config(cfg_path)
     assert cfg.execution.market_order_enabled is False

@@ -181,6 +181,7 @@ class RiskSectionConfig(ConfigStruct):
 
 class ExecutionSectionConfig(ConfigStruct):
     tracking_timeout_sec:          float = 30.0
+    market_order_enabled:          bool = False
     # #110:health_check_interval_sec 已删(PM 无 HealthCheckLoop;merge/redeem 走 NT position 对账)
     cleanup_enabled:               bool = True
     cleanup_merge_enabled:         bool = True
@@ -193,6 +194,11 @@ class DebugSectionConfig(ConfigStruct):
     overrides:  dict = {}      # {name: {enabled, value}}
     mock_data:  dict = {}      # {id: {category, enabled, data, conditions, priority}}
 ```
+
+`execution.market_order_enabled` 是 PM/OE/SE 共用的启动参数，不是 venue-local 配置。它由
+ExecutionClient factory 注入各 adapter，并且只在最终服务端提交边界生效；Strategy 不读取
+该值。关闭时三家均按计划限价提交，开启时按 execution architecture §3.6 转成各 venue 的
+市价语义。Web 修改该启动参数后仍需按现有 restart-required 机制重启节点才会作用于新 client。
 
 > 第二阶段 venue 插拔化不改变第一版 JSON 形态:`venues.polymarket/orbitexch/sharpexch`
 > 仍是显式字段。PMSPORTS 这种 data-only source 不再放进 `venues.*`,而是通过
@@ -296,7 +302,7 @@ def load_arb_config(path: str | Path) -> ArbConfig:
 或单个 venue section 显式写成非 object → `ConfigError`;凭证缺失不在 loader 阶段 raise,dispatcher 对 OE/SE
 `username/password` 转为空串,由下游 BrowserManager / login 流程触发明确错误。
 
-**未知字段拒绝(2026-07-02)**:`risk.share` / `risk.max_leg_share` / `risk.fx` 不再迁移也不静默忽略;旧 `risk.execution_enabled` / `risk.health_check_interval_sec` / `risk.match_overrides`、顶层 `discovery.enabled` / `matching.enabled` / `risk.enabled` / `execution.enabled`、旧 `execution.tracking_check_interval_sec` / `execution.max_failure_retries` / `execution.staleness_timeout_sec`、旧 PM `user_address` / `eoa_address`、旧 `strategy.signals`,以及 OE/SE 旧 `api_url` / `zoom_level` / `page_refresh_sec` / `cdp_url` / `default_persistence` / `default_order_type` / `discount` / `take_off` / `market_order_enabled` / `supported_market_types` 也已从当前 NT schema 删除。它们和其它多余字段一样由 `ConfigStruct(forbid_unknown_fields=True)` 统一报 schema mismatch。新配置与 Web 写回均只使用顶层 `arbitrage` 段,`RiskSectionConfig` 只保留真正风控字段。
+**未知字段拒绝(2026-07-02)**:`risk.share` / `risk.max_leg_share` / `risk.fx` 不再迁移也不静默忽略;旧 `risk.execution_enabled` / `risk.health_check_interval_sec` / `risk.match_overrides`、顶层 `discovery.enabled` / `matching.enabled` / `risk.enabled` / `execution.enabled`、旧 `execution.tracking_check_interval_sec` / `execution.max_failure_retries` / `execution.staleness_timeout_sec`、旧 PM `user_address` / `eoa_address`、旧 `strategy.signals`,以及 OE/SE 旧 `api_url` / `zoom_level` / `page_refresh_sec` / `cdp_url` / `default_persistence` / `default_order_type` / `discount` / `take_off` / venue-local `market_order_enabled` / `supported_market_types` 也已从当前 NT schema 删除。它们和其它多余字段一样由 `ConfigStruct(forbid_unknown_fields=True)` 统一报 schema mismatch。市价开关现只允许顶层 `execution.market_order_enabled`。新配置与 Web 写回均只使用顶层 `arbitrage` 段,`RiskSectionConfig` 只保留真正风控字段。
 
 ---
 

@@ -74,6 +74,25 @@ def test_place_bets_payload_keeps_usd_size():
     assert "fillOrKill" not in bet
 
 
+@pytest.mark.parametrize(
+    ("side", "expected_price"),
+    [("BACK", 1.01), ("LAY", 2.5)],
+)
+def test_market_order_price_is_applied_at_place_bets_boundary(side, expected_price):
+    order = nt_order_to_legacy_order(
+        _nt(side=OrderSide.BUY if side == "BACK" else OrderSide.SELL, price=2.5),
+        _inst(),
+    )
+    payload, _ = se_order_to_place_bets_payload(
+        order,
+        fx=1.0,
+        timestamp_ms=123456,
+        market_order_enabled=True,
+    )
+
+    assert payload["1.259502313"][0]["price"] == expected_price
+
+
 def test_place_bets_payload_rejects_bad_fx():
     order = nt_order_to_legacy_order(_nt(), _inst())
     with pytest.raises(ValueError, match="Invalid fx"):
