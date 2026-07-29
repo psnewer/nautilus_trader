@@ -110,8 +110,14 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 >
 > 发现链路(每 competition 一次请求):
 > 1. `GET /sports` → 每 competition:`sport`(如 `atp`)+ `series` id + **`ordering`**(home/away);按 `ArbContext.target_competitions_by_data_source["PMSPORTS"]` 过滤目标 competition。
-> 2. `GET /events?series_id={id}&closed=false&active=true&limit=500` → **一次拉全本 series 的 H2H 比赛**(每 event **内嵌** `teams`+`markets`,含主赛事,无需二跳 `/events?id=`)。
+> 2. `GET /events/keyset?series_id={id}&closed=false&active=true&limit=20` → 按
+>    `next_cursor → after_cursor` **游标分页拉全本 series 的 H2H 比赛**(每 event **内嵌**
+>    `teams`+`markets`,含主赛事,无需二跳 `/events?id=`)。PM 与 PMSPORTS 共用
+>    `common.gamma_markets.fetch_gamma_events_keyset`；任意一页请求、解码或 schema 校验失败，
+>    整个 series 本轮返回0，不暴露半截结果，下轮周期重试并保留 cache last-good。
 >    - 旧版(#55)用 `/series/{id}` 只内嵌截断的 ~10 条 events → **漏主赛事**;默认 `limit=20` 是页面"懒加载"同源根因 → 调大即全量。
+>    - 旧 `/events?limit=500` 自 2026-05-01 sunset，单响应约3 MB，经代理回源时偶发
+>      `error decoding response body`；keyset 每页20条避免单个大响应，并遵循 Gamma 当前接口。
 >    - **`series_slug` 不通用**:只 atp/wta 的 series slug 恰好 == league slug;足球/棒球查 == 0,故必须走 `/sports` 取 series **id**。
 > 3. 每 event 筛 `markets` 内 `sportsMarketType == "moneyline"` 建 instrument(其余 tennis/soccer props 跳过)。
 >
@@ -123,7 +129,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > - **sport**:`ArbContext.competition_to_sport_by_data_source["PMSPORTS"]` 查表(config 派生)。
 > - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。
 >
-> **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
+> **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断，当前由 `/events/keyset?series_id=` 游标分页取全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
 > **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。BUY 还要求 `quantity × price >= 1 USD`,SELL 无此金额下限；解析层把该侧别约束写成 `info["min_buy_notional"]=1.0`,不写 `BinaryOption.min_notional`，避免 NT 对 SELL 误用金额下限。
 

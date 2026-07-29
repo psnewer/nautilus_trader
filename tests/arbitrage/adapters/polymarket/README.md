@@ -17,7 +17,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 | 文件 | 范围 |
 |---|---|
-| `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
+| `test_arb_provider.py` / `test_gamma_keyset.py` | **#55/#57/#289** series-based 发现：前者覆盖 teams/title/role 纯映射；后者覆盖 `/events/keyset` 多页聚合、旧 limit/offset 清理、游标传递、非法 schema 与重复 cursor fail-closed |
 | `test_sports.py` | **#60/#127/#273** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`)：解析、状态管线、per-game 订阅、NT 原生 `WebSocketClient` 接线与 app-level pong。Sports WS 显式复用 PM proxy，初连后台重试、连接后由 NT client 断线重连；协议层 ping/pong 由 NT client 处理。**映射键 `game_id`** == gamma `event["gameId"]`；eviction 由 `ended` 驱动(matching,见 matching README) |
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
@@ -41,9 +41,9 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 ### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 已落地)
 **落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖纯函数;`test_debug_data_factories.py` 覆盖 provider 回写 `instrument_provider_by_venue["POLYMARKET"]`)
 - 评估结果:**上游 info=market_info(gamma dict)缺 matching key** → 走"子类化 PolymarketInstrumentProvider 补"路径
-- `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order,再按 series 调 `/events?series_id=...` 拉内嵌 teams + markets。
+- `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order,再按 series 调 `/events/keyset?series_id=...` 游标分页拉内嵌 teams + markets；PMSPORTS 共用同一分页 helper。
 - `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`;`start_ts` 不写入 matching info。
-- 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入;完整 Gamma HTTP 路径仍由 live smoke 验。
+- 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入；`test_gamma_keyset.py` 覆盖分页协议；真实 Gamma keyset 完整性仍由 live smoke 验。
 
 ### pm-adapter-1.3: PM 最小下单 share 映射
 
@@ -120,8 +120,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **步骤**:Factory 把开关注入 Arb PM ExecutionClient；订单通过通用校验后进入
 `_submit_limit_order`。
 **期望**:关闭时委托上游 limit 提交；开启时构造 `MarketOrderArgs` 并以 FOK 提交。BUY
-`amount=10×0.40=4 USDC`，SELL `amount=10 shares`；BUY 从签名订单 `takerAmount`
-取得 base quantity 并通过 `OrderUpdated` 对齐 NT 本地订单数量。不得把 BUY 的 10 shares
+`amount=10×0.40=4 USDC`，SELL `amount=10 shares`；BUY 从 SDK 真实 `SignedOrderV2` 的扁平
+`takerAmount` 字段取得 base quantity，并通过 `OrderUpdated` 对齐 NT 本地订单数量。不得把 BUY 的 10 shares
 直接作为极端价格限价单的 size，避免扩大为约 10 USDC 的实际支出。
 **验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_market_order_disabled_delegates_to_upstream_limit` /
 `test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary`。

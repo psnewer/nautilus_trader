@@ -1738,7 +1738,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         base_quantity = None
 
         if order.is_quote_quantity and order.side == OrderSide.BUY:
-            taker_amount = int(signed_order.order["takerAmount"])
+            taker_amount = int(signed_order.takerAmount)
             base_qty_value = taker_amount / 1e6
             base_quantity = Quantity(base_qty_value, instrument.size_precision)
 

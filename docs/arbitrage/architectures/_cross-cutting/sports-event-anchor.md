@@ -19,7 +19,7 @@
 **目标**:
 
 - 保留现有 PM discovery。`POLYMARKET` 仍继续产出可交易 PM `BinaryOption` instruments。
-- `PMSPORTS` 新增 discovery:复用公开 Gamma `/sports` + `/events?series_id=...` 拉比赛事件。
+- `PMSPORTS` 新增 discovery:复用公开 Gamma `/sports` + `/events/keyset?series_id=...` 游标分页拉比赛事件。
 - `PMSPORTS` 产出 `.PMSPORTS` synthetic instruments,只表达比赛事件/生命周期 anchor,不表达可交易腿。
 - Matching 从旧 `PM tradable instruments × enabled tradable venues` 迁到
   `PMSPORTS event anchor × enabled tradable venues`。
@@ -102,7 +102,7 @@ account   = None
 1. Discovery:
    - 拉公开 Gamma `/sports`。
    - 按配置目标 competitions 过滤。
-   - 拉 `/events?series_id=...&closed=false&active=true&limit=...`。
+   - 拉 `/events/keyset?series_id=...&closed=false&active=true&limit=20`，沿 cursor 取全量。
    - 生成 `.PMSPORTS` synthetic event instruments 并送入 DataEngine/Cache。
 
 2. Lifecycle:

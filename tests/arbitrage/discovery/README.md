@@ -18,7 +18,7 @@
 
 **2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
-**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
+**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events/keyset?series_id=...` 写入,不再是旧 enricher seam 待办。
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
@@ -145,7 +145,7 @@ competitions 默认继承 `discovery.polymarket.sports`;dispatcher 写入
 `target_competitions_by_data_source["PMSPORTS"]`;只有 PMSPORTS 目标需要和 PM
 tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`。
 
-**输入**:PMSPORTS discovery 拉公开 Gamma `/sports` + `/events?series_id=...`。
+**输入**:PMSPORTS discovery 拉公开 Gamma `/sports` + `/events/keyset?series_id=...`。
 
 **期望**:
 - 每场比赛产出一个 `{game_id}.PMSPORTS` synthetic instrument。
@@ -162,7 +162,7 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ### discovery-7B.1(slice 7B,#53/#57):PM moneyline provider 写 matching info
 
-**前置**: `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order，再走 `/events?series_id=...` 拉内嵌 teams + markets;`_load_moneyline_market` 创建每个 PM token 后补 matching info。
+**前置**:`ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order，再走 `/events/keyset?series_id=...` 游标分页拉内嵌 teams + markets;`_load_moneyline_market` 创建每个 PM token 后补 matching info。
 
 **输入**: PM Gamma event + moneyline market(含 `teams`/`ticker`/`markets[].sportsMarketType=moneyline` / `clobTokenIds` / `outcomes`)。
 
@@ -183,10 +183,13 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 **期望**:
 - 先调 Gamma `/sports`,按目标 competition 找到 series id 与 ordering。
-- 再调 `/events?series_id={id}&closed=false&active=true&limit=500`,一次拉该 series 内嵌 teams + markets。
+- 再调 `/events/keyset?series_id={id}&closed=false&active=true&limit=20`，沿
+  `next_cursor → after_cursor` 拉完该 series 内嵌 teams + markets；PM/PMSPORTS 共用 helper。
+- 任意一页失败或 schema/cursor 非法时，本轮该 series 整体失败，不向 Provider 返回部分 events。
 - 只取 `sportsMarketType=moneyline` 主市场生成 PM 可交易 legs;不再走上游 `event_slug_builder` 或全量 `_load_all_using_gamma_markets`。
 
-**验收**: `_load_moneyline_market` 离线测试锁定 info 写入;完整 Gamma HTTP 路径仍由 live smoke 验。
+**验收**:`test_gamma_keyset.py` 锁定分页/失败边界；`_load_moneyline_market` 离线测试锁定
+info 写入；完整 Gamma HTTP 路径仍由 live smoke 验。
 
 ---
 

@@ -38,6 +38,7 @@ from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 
 
 DEFAULT_GAMMA_BASE_URL = os.getenv("GAMMA_API_URL", "https://gamma-api.polymarket.com")
+DEFAULT_EVENTS_KEYSET_PAGE_LIMIT = 20
 
 
 def _normalize_base_url(base_url: str | None) -> str:
@@ -129,6 +130,66 @@ async def fetch_gamma_json(
             f"Gamma request failed: {resp.status} for url {url} with params {params} and body {body}",
         )
     return msgspec.json.decode(resp.body)
+
+
+async def fetch_gamma_events_keyset(
+    http_client: HttpClient,
+    filters: dict[str, Any],
+    *,
+    base_url: str | None = None,
+    page_limit: int = DEFAULT_EVENTS_KEYSET_PAGE_LIMIT,
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """
+    通过 Gamma events keyset 接口完整读取一组 events。
+
+    每页先完整解码后才加入结果；任意页失败直接抛错，由 Provider 保留 last-good，
+    不向下游暴露半截 discovery 快照。
+    """
+    if page_limit <= 0:
+        raise ValueError("page_limit must be positive")
+
+    endpoint = f"{_normalize_base_url(base_url)}/events/keyset"
+    base_params = {
+        key: value
+        for key, value in filters.items()
+        if key not in {"limit", "offset", "after_cursor"}
+    }
+    base_params["limit"] = page_limit
+
+    events: list[dict[str, Any]] = []
+    after_cursor: str | None = None
+    seen_cursors: set[str] = set()
+
+    while True:
+        params = dict(base_params)
+        if after_cursor is not None:
+            params["after_cursor"] = after_cursor
+        payload = await fetch_gamma_json(
+            http_client,
+            endpoint,
+            params,
+            timeout=timeout,
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("Gamma events keyset returned a non-object response")
+
+        page = payload.get("events")
+        if not isinstance(page, list):
+            raise RuntimeError("Gamma events keyset response missing events list")
+        if not all(isinstance(event, dict) for event in page):
+            raise RuntimeError("Gamma events keyset response contains a non-object event")
+        events.extend(page)
+
+        cursor = payload.get("next_cursor")
+        if cursor in (None, ""):
+            return events
+        if not isinstance(cursor, str):
+            raise RuntimeError("Gamma events keyset returned an invalid next_cursor")
+        if cursor in seen_cursors:
+            raise RuntimeError("Gamma events keyset repeated next_cursor")
+        seen_cursors.add(cursor)
+        after_cursor = cursor
 
 
 async def _request_markets_page(

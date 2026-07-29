@@ -231,7 +231,8 @@ PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportun
 - **Polymarket**：关闭时沿用 GTC limit；开启时使用官方
   `create_market_order(MarketOrderArgs)` 并以 FOK 提交。PM 原生 `amount` 口径按 side
   区分：BUY 传计划成本 `计划 share × 计划 price`（USDC），SELL 传计划 share。BUY
-  签名后从 `signed_order.order["takerAmount"]` 取得本次市价单预计 base quantity，并通过
+  签名后从 SDK `SignedOrderV1/V2` 的扁平字段 `signed_order.takerAmount` 取得本次市价单预计
+  base quantity，并通过
   上游 `_post_signed_order(..., base_quantity=...)` 发出 `OrderUpdated`，使 NT 本地订单数量
   和 fill tracker 对齐实际可成交 share；不得使用极端价格的 `OrderArgs` 模拟 BUY 市价，
   否则签名的 makerAmount 会按极端价格放大，价格改善将产生超出计划数量的 shares。

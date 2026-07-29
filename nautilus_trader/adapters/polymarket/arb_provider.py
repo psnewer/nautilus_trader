@@ -7,7 +7,7 @@ ArbPolymarketInstrumentProvider —— PM 端市场发现 + matching info 补全
 
 设计见 `docs/arbitrage/architectures/discovery/architecture.md §3.2`。
 
-**#57 简化(单次 series_id 全量查询;撤掉 #55 的 /series/{id} 截断跳)**:
+**#57/#289(series_id 全量查询;撤掉 #55 的 /series/{id} 截断跳)**:
 #55 链路漏主赛事 —— 根因是 `/series/{id}?closed=false` **只内嵌截断的 ~10 条 events**(默认页
 又被 `limit=20` 截,与页面"懒加载"同源)。改 `load_all_async` 整体 override:
 
@@ -15,12 +15,12 @@ ArbPolymarketInstrumentProvider —— PM 端市场发现 + matching info 补全
   /sports                          → 每 competition:`sport`(如 "atp")+ series id + ordering
     └─ 按 ArbContext.target_competitions_by_data_source["PMSPORTS"] 过滤
     └─ ordering(home/away)是 **competition 特异**属性(ATP=home / MLB=away),决定 2-way outcomes 排列
-  /events?series_id={id}&closed=false&active=true&limit=500
-    └─ 一次拉全本 series 的 H2H 比赛(含主赛事;每 event **内嵌** teams + markets,无需二次 /events?id=)
+  /events/keyset?series_id={id}&closed=false&active=true
+    └─ 游标分页拉全本 series 的 H2H 比赛(含主赛事;每 event **内嵌** teams + markets,无需二次 /events?id=)
     └─ 每 event 筛 markets 内 sportsMarketType == "moneyline"
 
   注:series_slug 不通用(只 atp/wta 的 series slug 恰好 == league slug;足球/棒球查 == 0),故仍走
-      /sports 取 series id;`/events?series_id=` 内嵌 teams,所以不再二跳 /events?id=。
+      /sports 取 series id;`/events/keyset?series_id=` 内嵌 teams,所以不再二跳 /events?id=。
 
 队名(权威源 event["teams"]:name + ordering + abbreviation;缺则 fallback `_parse_team_names(title)`)。
   **不用** outcomes 顺序当队名(3-way 是 Yes/No;2-way 顺序随 competition ordering 翻)。
@@ -40,8 +40,8 @@ matching info:home/away←teams;selection_role←slug+ordering;competition←con
 from __future__ import annotations
 
 import re
-from typing import Any
 
+from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_events_keyset
 from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_json
 from nautilus_trader.adapters.polymarket.common.gamma_markets import (
     normalize_gamma_market_to_clob_format,
@@ -50,10 +50,6 @@ from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
-
-# 一次性拉满本 series 的比赛(ATP ~70、足球 ~100);避开默认 limit=20 的"懒加载"截断。
-_EVENTS_PAGE_LIMIT = 500
-
 
 # ─── 队名解析(平移旧 scraper.py:_parse_team_names）────────────────────────
 
@@ -244,17 +240,23 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
     async def _load_series(
         self, client, series_id: str, comp_name: str, sport: str, ordering: str,
     ) -> int:
-        # 一次拉全本 series 的 H2H 比赛(每 event 内嵌 teams + markets,含主赛事)。
-        # 旧版用 /series/{id} 只拿到截断的 ~10 条 → 漏主赛事;默认 limit=20 是页面"懒加载"同源根因。
-        events = await self._fetch_json(
-            client, f"{_GAMMA_BASE}/events",
-            params={
-                "series_id": series_id,
-                "closed": "false",
-                "active": "true",
-                "limit": _EVENTS_PAGE_LIMIT,
-            },
-        )
+        # 旧 /events 单个大响应已 deprecated，经代理回源时还会偶发传输解码失败。
+        try:
+            events = await fetch_gamma_events_keyset(
+                client,
+                {
+                    "series_id": series_id,
+                    "closed": "false",
+                    "active": "true",
+                },
+                base_url=_GAMMA_BASE,
+            )
+        except Exception as e:
+            self._log.error(
+                "PM discovery fetch failed "
+                f"{_GAMMA_BASE}/events/keyset series_id={series_id}: {e}",
+            )
+            return 0
         count = 0
         for event in events or []:
             if event.get("closed") or not event.get("active", True):

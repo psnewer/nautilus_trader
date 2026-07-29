@@ -18,6 +18,9 @@ from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import OrderType as PolyOrderType
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 from py_clob_client_v2.exceptions import PolyApiException
+from py_clob_client_v2.order_utils.model.order_data_v2 import SignedOrderV2
+from py_clob_client_v2.order_utils.model.side import Side as PolySide
+from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import _realized_by_instrument
@@ -333,7 +336,20 @@ def test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary(
     expected_base_quantity,
 ):
     captured = {}
-    signed_order = SimpleNamespace(order={"takerAmount": "9500000"})
+    signed_order = SignedOrderV2(
+        salt="1",
+        maker="0x" + "1" * 40,
+        signer="0x" + "2" * 40,
+        tokenId="123",
+        makerAmount="4000000",
+        takerAmount="9500000",
+        side=PolySide.BUY,
+        signatureType=SignatureTypeV2.EOA,
+        timestamp="1",
+        metadata="0x" + "0" * 64,
+        builder="0x" + "0" * 64,
+        signature="0x" + "3" * 130,
+    )
 
     def create_market_order(args, *, options):
         captured["args"] = args

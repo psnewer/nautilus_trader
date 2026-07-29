@@ -38,10 +38,10 @@ from typing import Any
 import pandas as pd
 import pyarrow as pa
 
-from nautilus_trader.adapters.polymarket.arb_provider import _EVENTS_PAGE_LIMIT
 from nautilus_trader.adapters.polymarket.arb_provider import _GAMMA_BASE
 from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
 from nautilus_trader.adapters.polymarket.arb_provider import _teams_from_event
+from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_events_keyset
 from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_gamma_json
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
@@ -120,16 +120,23 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
         self._log.info(f"PMSPORTS discovery: loaded {count} anchor instrument(s)")
 
     async def _load_series(self, client, series_id: str, comp_name: str, sport: str) -> int:
-        events = await self._fetch_json(
-            client,
-            f"{_GAMMA_BASE}/events",
-            params={
-                "series_id": series_id,
-                "closed": "false",
-                "active": "true",
-                "limit": _EVENTS_PAGE_LIMIT,
-            },
-        )
+        try:
+            events = await fetch_gamma_events_keyset(
+                client,
+                {
+                    "series_id": series_id,
+                    "closed": "false",
+                    "active": "true",
+                },
+                base_url=_GAMMA_BASE,
+            )
+        except Exception as e:
+            # 保持发现失败 fail-soft，下轮再试；provider 保留 last-good。
+            self._log.warning(
+                "PMSPORTS discovery fetch failed "
+                f"{_GAMMA_BASE}/events/keyset series_id={series_id}: {e}",
+            )
+            return 0
         count = 0
         for event in events or []:
             if event.get("closed") or not event.get("active", True):

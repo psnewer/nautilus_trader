@@ -163,7 +163,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
 
         base_quantity = None
         if order.side == OrderSide.BUY:
-            taker_amount = int(signed_order.order["takerAmount"])
+            taker_amount = int(signed_order.takerAmount)
             base_quantity = Quantity(taker_amount / 1e6, instrument.size_precision)
 
         await self._post_signed_order(
