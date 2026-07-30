@@ -40,16 +40,16 @@
 
 ### execution-3.5.4: barrier timeout 关闭 opportunity 并 zero-session finish
 - 前置:第一腿已 pending,缺少另一条 expected leg。
-- 输入:触发 `arb_opp_timeout:{opportunity_id}`。
+- 输入:触发 `arb_group_timeout:submit:{opportunity_id}`。
 - 期望:pending leg 不进 ExecutionClient,本地发 `OrderDenied`,pair gate 释放。
 - 验收:`test_barrier_timeout_blocks_pending_leg_and_releases_pair_gate` 覆盖。
 
-### execution-3.5.5: all risk-pass 后若同 pair 有 residual 且无撤单腿,整次 opportunity cancel-only
-- 前置:两条 `SubmitOrder` 带同一 `opportunity_id`;同一 `pair_id` 的任一 registered instrument 有 residual open order;本轮 risk-pass legs 不含显式撤单腿。
+### execution-3.5.5: all risk-pass 后若同 pair 有 residual,整次 opportunity cancel-only
+- 前置:两条 `SubmitOrder` 带同一 `opportunity_id`;同一 `pair_id` 的任一 registered instrument 有 residual open order。
 - 输入:两条订单均经 Risk pass 回到 barrier。
 - 期望:barrier 不 release 任一新 submit 到 PM/OE ExecutionClient;PM residual 进入 tracked cancel;PM/OE 两条新 submit 都收到本地 deny/reject。
 - 验收:不会出现“PM 撤旧、OE 同轮又开新单”的半边执行;live 验收锚点为 `Opportunity cancel-only: residual open orders present`。
-- 状态:✅ `test_engine_barrier.py::test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_leg`
+- 状态:✅ `test_engine_barrier.py::test_barrier_cancel_only_blocks_all_new_submits_when_residual_exists`
 
 ### execution-3.5.5a: 单腿 opportunity 也按 pair-wide 范围检查 residual
 - 前置:本轮 opportunity 的 `expected_legs` 只有一条 PM leg;`PairRegistry.instrument_ids_for_pair(pair_id)` 返回同 pair 的其它 PM/OE instruments;其中一个非 expected instrument 有 residual open order。
@@ -57,12 +57,26 @@
 - 期望:barrier 仍发现同 pair 其它 instrument 的 residual,整次 opportunity cancel-only,不 release 新 submit。
 - 验收:`test_engine_barrier.py::test_barrier_residual_check_is_pair_wide_even_for_single_leg_opportunity` 覆盖。
 
-### execution-3.5.6: residual 存在但 risk-pass legs 含显式撤单腿时不改写为整次 cancel-only
-- 前置:同一 opportunity 已收齐 risk-pass legs,其中至少一条 leg 由 metadata/command 明确标记为撤单腿。
-- 输入:某 instrument 仍存在 residual open order。
-- 期望:barrier 不按普通 residual 规则丢弃整次 opportunity;后续按显式撤单腿语义执行。
-- 验收:撤单腿必须显式表达,不能由 residual cancel-only 内部动作反推。
-- 状态:✅ `test_engine_barrier.py::test_barrier_residual_with_explicit_cancel_leg_releases_normally`
+### execution-3.5.6: grouped CancelOrder 收齐后才统一 release
+- 前置:同一 pair 两条 open order 已由 Strategy 置为 `PENDING_CANCEL`，两条
+  `CancelOrder` 携带相同 `opportunity_id/expected_cancels`。
+- 输入:第一条先进入 ExecutionEngine，第二条随后进入。
+- 期望:第一条到达时任何 ExecutionClient 均未收到撤单；第二条到达后两条标准
+  `CancelOrder` 按组内顺序 release。
+- 状态:✅ `test_engine_barrier.py::test_cancel_barrier_waits_until_all_commands_before_release`
+
+### execution-3.5.6a:Submit/Cancel 复用同一 group registry 与全局闸
+- 前置:一个 submit group 已在共享 registry 中等待 sibling。
+- 输入:新的 grouped CancelOrder 依次到达。
+- 期望:cancel group 作为“已有其它 execution”被整组拒绝；不存在第二套 cancel registry。
+- 状态:✅ `test_engine_barrier.py::test_cancel_group_is_blocked_by_pending_submit_group`
+
+### execution-3.5.6b: grouped CancelOrder busy/timeout fail-closed
+- 输入:组首条进入时已有 execution session，或只到达部分命令直到 barrier timeout。
+- 期望:不调用 venue；已到达命令收到标准 `OrderCancelRejected`，NT 可回退
+  `PENDING_CANCEL`。
+- 状态:✅ `test_cancel_barrier_rejects_group_when_other_execution_is_active` /
+  `test_cancel_barrier_timeout_rejects_arrived_commands`
 
 ### execution-3.5.7: evaluation 窗口内 pair orders/positions 变化则整组拒绝
 - 前置:所有腿携带相同 `open_orders_digest/positions_digest`,且已全部 Risk pass。
@@ -119,6 +133,13 @@
 - 输入:先收到该订单的 `OrderFilled`,再收到 `OrderCanceled`。
 - 期望:fill 事件不结束 cancel session;只有 `OrderCanceled` / `OrderCancelRejected` / timeout 能结束 cancel session。
 - 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal`。
+
+### execution-4.2.4a: cancel_order 同步建 session
+- 前置:stub NT 基类 `cancel_order` 记录下发。
+- 输入:显式 grouped/普通 `CancelOrder` 从 ExecutionEngine release 到 client。
+- 期望:`cancel_order` 返回时 cancel session 已存在，adapter 收到
+  `arb_cancel_session_started=True`，不得在异步 `_cancel_order` 中重复建 session。
+- 验收:`test_session.py::test_cancel_track_marks_execution_active_before_dispatch`。
 
 ### execution-4.2.5: cancel-only 残单撤单进入同一 watchdog / exec_count
 - 前置:strategy 已持有 pair in-flight;同 pair 有两条 residual open order。

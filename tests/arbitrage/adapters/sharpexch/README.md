@@ -181,6 +181,13 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **输入**:调用 residual cancel。
 **期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
 
+### se-adapter-5.inflight.4:grouped CancelOrder 复用同步预建 session
+**前置**:Execution grouped cancel barrier release 显式 SE CancelOrder。
+**输入**:command params 含 `arb_cancel_session_started=True`。
+**期望/验收**:`_cancel_order` 将标记传给 `_cancel_one(session_started=True)`，不重复 begin；
+CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口由
+`test_session.py::test_cancel_track_marks_execution_active_before_dispatch` 覆盖。
+
 ## 2026-07-19:debug 工厂接线修复 + 持久 profile(实盘验证)
 
 - `SharpExchLiveDataClientFactory` 补 debug 分支(返回 `DebugSharpExchDataClient`,对齐 OE/PM);

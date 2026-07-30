@@ -75,6 +75,7 @@ class _Base:
         self.account_states = []
         self._loop = asyncio.new_event_loop()
         self._submit_order_dispatched = []
+        self._cancel_order_dispatched = []
 
     def _send_order_event(self, event):
         self.sent.append(event)  # 充当 NT 基类 super()._send_order_event
@@ -82,6 +83,9 @@ class _Base:
     def submit_order(self, command):
         # 充当 NT 基类 `LiveExecutionClient.submit_order`(生产里是 create_task(_submit_order))
         self._submit_order_dispatched.append(command.order.client_order_id)
+
+    def cancel_order(self, command):
+        self._cancel_order_dispatched.append(command.client_order_id)
 
     def generate_order_rejected(self, *, strategy_id, instrument_id, client_order_id, reason, ts_event):
         self.rejected.append((client_order_id, reason))
@@ -141,6 +145,23 @@ def test_submit_track_marks_execution_active():
     assert client._begin_session(_cmd(order)) is True
     assert client._execution_active
     assert published == []                               # #108:不再 publish execution.started
+
+
+def test_cancel_track_marks_execution_active_before_dispatch():
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    order = _order(factory, pm)
+    cache.add_order(order)
+    command = SimpleNamespace(
+        client_order_id=order.client_order_id,
+        params={},
+    )
+
+    client.cancel_order(command)
+
+    assert client._execution_active
+    assert client._cancel_order_dispatched == [order.client_order_id]
+    assert command.params["arb_cancel_session_started"] is True
 
 
 # ── cancel-only(残留挂单 → 撤 + reject + 丢弃）────────────────────

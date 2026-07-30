@@ -17,7 +17,7 @@
 ## 预期用例
 
 - e2e-1: 完整套利会话(从 instrument 加载到双腿成交)在 paper trading 上的端到端验证
-- e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual 且 risk-pass legs 中没有显式撤单腿 → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit。测试输入 leg 必须已带 `share_if_wins/qty`,Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
+- e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit。显式补偿撤单使用同一 grouped-command barrier 的 CancelOrder policy，不伪造成 SubmitOrder 腿。测试输入 leg 必须已带 `share_if_wins/qty`,Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
 - e2e-3: 单腿成交另一腿失败时的专门 recovery 状态机(后议,不属于当前主流程闭环)
 - e2e-4: 启动重连 reconciliation(Cache 状态与 venue 一致)
 - e2e-5: 多 MatchedPair 并发处理
@@ -45,7 +45,7 @@
 
 ### e2e-8: barrier timeout 使用 NT clock 并走统一出口
 - 前置: barrier 收到一条 risk-pass leg,缺少另一个 expected leg。
-- 输入: 用 `TestClock.advance_time(...)` 触发 `arb_opp_timeout:{opportunity_id}`。
+- 输入: 用 `TestClock.advance_time(...)` 触发 `arb_group_timeout:submit:{opportunity_id}`。
 - 步骤: 检查 pending leg 未进入 ExecutionClient,收到本地 `OrderDenied`。
 - 期望: timeout 等同 opportunity denied,取消 timer 并清 context。
 - 验收: timeout 只覆盖 Risk decision 收齐窗口;release 后不影响 per-session venue watchdog。
@@ -59,17 +59,17 @@
 - 验收: pass / deny / timeout 三条路径都由同一个 outlet 释放 `pair_inflight`。
 
 ### e2e-9b: residual cancel-only 必须在 opportunity barrier 层协调两 venue
-- 前置:PM+OE 两腿同一 `opportunity_id`,两条 risk-pass;PM instrument 有 residual open order,OE instrument 无 residual;本轮 risk-pass legs 无显式撤单腿。
+- 前置:PM+OE 两腿同一 `opportunity_id`,两条 risk-pass;PM instrument 有 residual open order,OE instrument 无 residual。
 - 输入:barrier 收齐两腿。
 - 步骤:观察 PM/OE ExecutionClient 调用。
 - 期望:PM residual 被撤;OE 新 submit 不进入 OE ExecutionClient;PM 新 submit 也不进入 PM ExecutionClient。
 - 验收:同一 opportunity 不允许一边 cancel-only、一边 submit+track。
 
-### e2e-9c: residual + 显式撤单腿不触发普通整次 cancel-only
-- 前置:同一 opportunity risk-pass legs 中包含显式撤单腿,且某 instrument 有 residual。
-- 输入:barrier 收齐 legs。
-- 期望:barrier 不因 residual 把整次 opportunity 改写为普通 cancel-only;按撤单腿所属设计继续。
-- 验收:撤单腿判定来自显式 metadata/command,不是 residual cancel-only 的内部动作。
+### e2e-9c: spread cancel 跨 venue 命令经共享 barrier 的 CancelOrder policy
+- 前置:spread cancel 命中，目标 pair 在 PM/OE/SE 中有两条以上 open order。
+- 输入:Strategy 为每条订单发出共享 `opportunity_id/expected_cancels` 的标准 CancelOrder。
+- 期望:命令未收齐前任何 venue 不收到撤单；收齐后统一 release，各 venue 独立确认终态。
+- 验收:busy/timeout 不触达 venue且 `OrderCancelRejected` 回退本地状态；不宣称 venue 原子完成。
 
 ### e2e-9d: evaluation 后成交改变仓位时不 release 旧机会
 - 前置:Strategy 已记录 pair 的 `open_orders_digest/positions_digest`，订单通过 Risk、尚未收齐

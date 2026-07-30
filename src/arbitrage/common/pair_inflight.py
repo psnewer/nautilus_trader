@@ -13,7 +13,7 @@
 - 生命周期 **恰好等于评估 task 的生命周期**:`_dispatch_eval` `try_enter` ↔ `_on_eval_done`
   **无条件** `release`。没有跨组件交接,就没有"该不该释放"的判据,也就没有可漏的出口。
 - **全局 ≤1 执行**改由 `ArbLiveExecutionEngine` barrier 单点判定,只读派生态
-  (`_arb_opportunities` 非墓碑 ctx + 各 client `_execution_active`),无 token、无出口。
+  (`_arb_command_groups` 非墓碑 ctx + 各 client `_execution_active`),无 token、无出口。
 
 所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。
 本类纯内存、无时钟依赖、无兜底猜测。

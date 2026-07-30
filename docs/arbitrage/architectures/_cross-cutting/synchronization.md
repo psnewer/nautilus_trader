@@ -168,14 +168,14 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 调 `_other_execution_in_flight()`,为真则整个机会丢弃(`_deny_order` 各腿;不重试不排队,
 下一个 OBD tick 重评,同 cancel-only 既有纪律)。
 
-**两个派生源**(都不需要释放,故不可能泄漏):
+**两个派生源**(都由现存状态派生,不维护独立布尔锁):
 
 | 源 | 覆盖 |
 |---|---|
-| `_arb_opportunities` 中的**非墓碑** ctx(`terminal is None`) | Risk pass → barrier 等腿 → `_release` |
+| `_arb_command_groups` 中的**非墓碑** ctx(`terminal is None`) | 统一覆盖 SubmitOrder 等腿与 tagged CancelOrder 等撤单命令 |
 | 任一 exec client 的 `_execution_active`(= `len(_active_sessions) > 0`) | session 建立 → 终态/超时(含撤单 session) |
 
-**为什么不需要锁**:所有 `SubmitOrder` 经 `LiveExecutionEngine` 的单 `asyncio.Queue`、
+**为什么不需要锁**:所有 `SubmitOrder` / `CancelOrder` 经 `LiveExecutionEngine` 的单 `asyncio.Queue`、
 单 task 逐条 `_execute_command`,**构造上串行**,判定天然原子。
 
 **为什么不需要 `opportunity_id` 参数**:只在 `ctx is None`(全新机会)时调用,故在飞的执行必然不是它的
@@ -184,15 +184,15 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 **承重前提(两条,改动时必须重新核对)**:
 1. `ctx is None` ⟺ 全新机会 ⟹ 在飞执行必非它的(依赖上面三个出口都 pop);
-2. **每条被 release 的腿必须同步产生 session** —— 故 `ArbExecutionSessionMixin.submit_order` 覆盖 NT
-   同步入口,先 `_begin_session` 再交 NT `create_task` 做 venue IO(对齐 `_cancel_residual_orders` 的既有写法,
-   顺带消除下单/撤单的顺序不对称)。否则 `_release` pop ctx 之后到 session 出现之间派生态为空,
+2. **每条被 release 的 submit/cancel 必须同步产生 session** —— 故
+   `ArbExecutionSessionMixin.submit_order` / `cancel_order` 都覆盖 NT 同步入口，先建立对应 session，
+   再交 NT `create_task` 做 venue IO。否则 barrier pop ctx 之后到 session 出现之间派生态为空,
    而队列非空时 `await queue.get()` 不让出控制权,`[A1,A2,B1,B2]` 会让两个机会**双双执行**。
 
 **墓碑(`terminal="denied"`)**:被拒的机会照常建 ctx 并 **arm timer**,只是标 `terminal` ——
 使后到的腿命中 `ctx.terminal is not None` 分支被立刻拒,避免「B1 被拒 → A 执行结束 → B2 另建 ctx 空等 2s」
-挡住合法新机会。`ctx.denied`(**独立于 `allowed`**;后者会被 `_finish` 遍历 `_deny_order`,混用会重复拒单)
-集齐 `expected` 即提前 pop。**barrier timer 保留为结构保证** —— 某腿可能根本没发出
+挡住合法新机会。`ctx.terminal_keys`(**独立于 `commands`**;后者会被 finish 遍历生成本地失败终态,
+混用会重复拒单)集齐 `expected` 即提前 close。**barrier timer 保留为结构保证** —— 某腿可能根本没发出
 (`make_submitter` 的 `cache.instrument is None` 分支),`denied` 永远凑不齐时只能靠 timer。
 提前清理是路径,timer 是保证;**只留路径会漏**。
 `_other_execution_in_flight` 必须跳过墓碑,否则墓碑自己会挡住别人。
@@ -308,14 +308,13 @@ Execution barrier 以领域消息为主消费 deny;若需要容错,也可从 `Or
 
 ```text
 OPEN
-  risk-pass leg 到达 → pending.allowed[leg_key] = SubmitOrder
+  risk-pass leg 到达 → pending.commands[leg_key] = SubmitOrder
   risk-denied leg 到达 → DENIED
   expected_legs 全部 pass → CANCEL_ONLY、BASELINE_DENIED 或 RELEASED
   barrier timeout → TIMED_OUT
 
 CANCEL_ONLY
   任一 risk-pass leg 的 instrument 有 residual open order
-  且本轮 risk-pass legs 中没有显式撤单腿
   → 撤 residual,丢弃本轮所有新 submit
   → 走统一 finish outlet
 
@@ -332,12 +331,34 @@ BASELINE_DENIED / DENIED / TIMED_OUT
 
 **opportunity-level cancel-only(已落地代码 + 离线单测,2026-06-19)**:
 - 归属在 `ArbLiveExecutionEngine` barrier,判定点在 `expected_legs` 全部 Risk pass 之后、release 到任何 venue `ExecutionClient` 之前。
-- 触发条件是:① 任一 risk-pass leg 对应 instrument 在 NT cache 中存在 residual open order;② 本轮 risk-pass legs 中**没有显式撤单腿**。两者同时成立时,整次 opportunity 判定为 cancel-only。
-- “risk-pass legs”指 barrier 已暂存的 `allowed` commands;“撤单腿”必须由 command/metadata 明确表达,当前落地识别 `arb:intent=cancel` / `cancel-only` / `cancel_only`,不能把 barrier 自己即将触发的 residual cancel 反推为撤单腿。当前普通套利 `SubmitOrder` 不带撤单腿,因此 live 验证中“PM residual → PM 撤旧、OE 又开新单”的现象应改为“PM 撤旧、OE 新单也丢弃”。
+- 触发条件是任一 risk-pass leg 对应 instrument 在 NT cache 中存在 residual open order；整次 opportunity 判定为 cancel-only。
+- submit group 的 `commands` 中只有真实 `SubmitOrder`。显式补偿撤单使用下述
+  CancelOrder policy，
+  不再伪造 `arb:intent=cancel` 的下单腿，也不能绕过 residual cancel-only。
 - cancel-only 触发后,barrier 不调用 `super()._execute_command` release 任何新 submit;它按 residual 所在 instrument 调用对应 execution client 的 residual cancel 能力,复用 `ArbExecutionSessionMixin._cancel_residual_orders(...)` 的 tracked cancel session。
 - 对本轮所有新 submit 生成本地 deny/reject 结果,reason 指向 `opportunity cancel-only: residual open orders present`;这些新 submit 不排队、不延后,Strategy 下一轮重新评估后再决定是否重发。
-- 若 residual 存在但 risk-pass legs 中已有显式撤单腿,barrier 不把整次 opportunity 改写为 cancel-only,而按该撤单腿所属语义继续执行;这是为后续显式撤单/补偿动作预留的边界,不是当前普通套利路径。
 - per-client `_begin_session` 的 residual 检查保留为防御性 fallback:无 opportunity metadata、barrier 未接管或非本协议订单仍可在 client 入口退化为单 instrument cancel-only;带完整 metadata 的 opportunity 以 barrier 判定为主,避免跨 venue 半边撤旧半边开新。
+
+**共享 grouped-command barrier 与 CancelOrder policy(#296,已落地代码 + 离线单测,2026-07-30)**:
+- SubmitOrder 与 tagged CancelOrder 共用同一个 `_arb_command_groups` registry、同一种
+  `CommandGroupContext`、同一套 create/add/terminal-key/close 操作和
+  `arb_group_timeout:{kind}:{group_id}` timer。`kind=submit/cancel` 只选择不同业务 policy，
+  不维护第二套 barrier 状态机。
+- `spread_cancel_recovery` 胜出后，Strategy 重读该 pair 全部 open orders，并逐单调用 NT
+  `Strategy.cancel_order(order, params=...)`。同组命令共享 `opportunity_id / pair_id /
+  expected_cancels`，每条以 `client_order_id` 作为 `cancel_key`。
+- CancelOrder policy 位于 `ArbLiveExecutionEngine`，不经过 Risk，也不复用 SubmitOrder
+  residual cancel-only。它只拦截带 `arb_cancel_opportunity` 参数的 `CancelOrder`；
+  未标记的人工/运维撤单保持 NT 原生直通。
+- 收齐 `expected_cancels` 后，按确定顺序把每条原生 `CancelOrder` 释放给对应
+  ExecutionClient。Strategy 在发命令时已把订单推进到 `PENDING_CANCEL`；若同一时刻已有
+  execution、metadata 不一致或 barrier timeout，则对已到达命令生成标准
+  `OrderCancelRejected`，由 NT 状态机回退撤单请求状态。
+- release 时若某目标订单已被其它事件推进为 closed，跳过该目标的 venue 请求，其余目标照常
+  release。每条实际释放的撤单由 `ArbExecutionSessionMixin.cancel_order` 同步建立独立
+  cancel session，随后仍由 PM/OE/SE 各自的终态事件或 watchdog 收口。
+- grouped barrier 保证的是“同组撤单命令全部就绪后才开始向 venue 派发”，不是交易所侧原子
+  撤单；release 后仍可能出现某 venue 成功、另一 venue 拒绝或超时。
 
 **评估窗口 execution-state 校验(#266/#284)**:
 - Strategy 不冻结 order book/instrument；在 evaluation 开始记录 pair-wide open-order 与

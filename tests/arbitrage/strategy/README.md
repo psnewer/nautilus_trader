@@ -486,7 +486,9 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - `test_action_place_bets.py::test_action_cancels_when_selected_recovery_candidate_carries_request`:
   spread cancel 作为 recovery candidate 经 `candi_select` 胜出后仍走撤单而非下单。
 - `test_evaluator.py::test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders`:
-  Action 执行时重新读取并逐单发 NT CancelOrder，只覆盖目标 pair，跨 venue 全撤。
+  Action 执行时重新读取目标 pair 全部 open orders；逐单发 NT CancelOrder，并为所有命令
+  写入相同 `opportunity_id/expected_cancels`，由 Execution grouped cancel barrier 收齐后
+  跨 venue 统一 release。
 - `test_evaluator.py::test_both_hit_injects_spread_cancel_as_recovery_candidate`:同轮两树命中时，
   标准 legs 与撤单元数据一起进入 recovery candidate；不在 evaluator 层静默丢弃。
 - `test_action_candi_select.py::test_recovery_survivor_wins_even_if_primary_share_larger`:

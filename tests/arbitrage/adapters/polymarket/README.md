@@ -517,3 +517,14 @@ matching/strategy README 的接线用例(经 NT per-game topic 路由到 consume
 **期望/验收**:PMSPORTS 使用 NT pyo3 `WebSocketClient`;dispatcher 将 PM `proxy_url` 透传给
 Sports config;禁用客户端主动 heartbeat;app-level `ping` 经同一 client 回复 `pong`。
 初连失败由后台 task 每 5s 重试，连接成功后的断线重连归 NT client。
+
+### pm-adapter-exec.cancel.grouped:grouped cancel 复用同步预建 session
+
+**前置**:Execution grouped CancelOrder barrier 已收齐并 release PM 撤单命令。
+**输入**:command params 含 mixin 写入的 `arb_cancel_session_started=True`。
+**期望/验收**:`ArbPolymarketExecutionClient` 把该标记透传给上游 PM `_cancel_order`，
+不重复 `_begin_cancel_session`；真实 CLOB cancel 与 USER CANCELLATION 终态路径不变。
+通用同步入口由 `tests/arbitrage/execution/test_session.py::
+test_cancel_track_marks_execution_active_before_dispatch` 覆盖；PM 已预建 session 仍触达 venue
+由 `test_polymarket_client.py::test_polymarket_residual_cancel_reaches_venue_despite_active_session`
+覆盖。

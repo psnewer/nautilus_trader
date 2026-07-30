@@ -12,6 +12,7 @@ from uuid import uuid4
 
 TAG_PREFIX = "arb:"
 RISK_LEG_DENIED_TOPIC = "risk.opportunity.leg_denied"
+CANCEL_OPPORTUNITY_PARAM = "arb_cancel_opportunity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,14 @@ class OpportunityMeta:
     positions_digest: str | None = None
     intent: str = "arbitrage"
     venue_required_balance: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CancelOpportunityMeta:
+    opportunity_id: str
+    pair_id: str
+    cancel_key: str
+    expected_cancels: tuple[str, ...]
 
 
 def new_opportunity_id() -> str:
@@ -78,6 +87,42 @@ def meta_from_order(order) -> OpportunityMeta | None:
 def order_intent(order) -> str:
     values = _tag_values(getattr(order, "tags", None) or [])
     return values.get("intent", "arbitrage")
+
+
+def cancel_params_from_meta(meta: CancelOpportunityMeta) -> dict[str, object]:
+    return {
+        CANCEL_OPPORTUNITY_PARAM: {
+            "opportunity_id": meta.opportunity_id,
+            "pair_id": meta.pair_id,
+            "cancel_key": meta.cancel_key,
+            "expected_cancels": list(meta.expected_cancels),
+        },
+    }
+
+
+def cancel_meta_from_command(command) -> CancelOpportunityMeta | None:
+    params = getattr(command, "params", None) or {}
+    raw = params.get(CANCEL_OPPORTUNITY_PARAM)
+    if not isinstance(raw, dict):
+        return None
+    opportunity_id = str(raw.get("opportunity_id") or "")
+    pair_id = str(raw.get("pair_id") or "")
+    cancel_key = str(raw.get("cancel_key") or "")
+    expected = tuple(str(value) for value in (raw.get("expected_cancels") or ()) if value)
+    if (
+        not opportunity_id
+        or not pair_id
+        or not cancel_key
+        or cancel_key not in expected
+        or len(expected) != len(set(expected))
+    ):
+        return None
+    return CancelOpportunityMeta(
+        opportunity_id=opportunity_id,
+        pair_id=pair_id,
+        cancel_key=cancel_key,
+        expected_cancels=expected,
+    )
 
 
 def _tag_values(tags) -> dict[str, str]:

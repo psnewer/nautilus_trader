@@ -36,6 +36,9 @@ from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import CancelOpportunityMeta
+from src.arbitrage.common.opportunity import cancel_params_from_meta
+from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
@@ -475,7 +478,7 @@ class StrategyEvaluator(Strategy):
         )
 
     def _make_pair_order_canceler(self):
-        """返同步 callable：执行时重读该 pair 的 open orders，经 NT CancelOrder 逐单撤销。"""
+        """返同步 callable：重读 pair open orders，并作为同组 NT CancelOrder 送入 barrier。"""
         def cancel(pair_id: str) -> int:
             seen = set()
             orders = []
@@ -489,8 +492,24 @@ class StrategyEvaluator(Strategy):
                         continue
                     seen.add(key)
                     orders.append(order)
+            expected = tuple(
+                str(getattr(order, "client_order_id", "") or "")
+                for order in orders
+            )
+            opportunity_id = new_opportunity_id()
             for order in orders:
-                self.cancel_order(order)
+                cancel_key = str(getattr(order, "client_order_id", "") or "")
+                self.cancel_order(
+                    order,
+                    params=cancel_params_from_meta(
+                        CancelOpportunityMeta(
+                            opportunity_id=opportunity_id,
+                            pair_id=pair_id,
+                            cancel_key=cancel_key,
+                            expected_cancels=expected,
+                        ),
+                    ),
+                )
             return len(orders)
 
         return cancel

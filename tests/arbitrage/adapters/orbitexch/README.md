@@ -511,6 +511,13 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **输入**:调用 residual cancel。
 **期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
 
+### oe-adapter-5.inflight.4:grouped CancelOrder 复用同步预建 session
+**前置**:Execution grouped cancel barrier release 显式 OE CancelOrder。
+**输入**:command params 含 `arb_cancel_session_started=True`。
+**期望/验收**:`_cancel_order` 将标记传给 `_cancel_one(session_started=True)`，不重复 begin；
+CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口由
+`test_session.py::test_cancel_track_marks_execution_active_before_dispatch` 覆盖。
+
 ## #251:退订归零关 competition 页(`test_data_client_step2.py`)
 
 - `test_unregister_routing_returns_orphaned_page_key`:同页两 market 退订第一个不孤儿;退订

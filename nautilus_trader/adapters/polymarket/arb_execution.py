@@ -43,6 +43,7 @@ from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from src.arbitrage.execution.session import cancel_session_started
 
 
 def _optional_float(value) -> float | None:
@@ -126,6 +127,10 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
         # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
         self._settlement_inflight = False
+
+    async def _cancel_order(self, command: CancelOrder, *, session_started: bool = False) -> None:
+        session_started = session_started or cancel_session_started(command)
+        await super()._cancel_order(command, session_started=session_started)
 
     async def _submit_limit_order(self, command, instrument) -> None:
         """按 execution 开关在最终 PM 出站边界选择普通限价或官方市价单。"""

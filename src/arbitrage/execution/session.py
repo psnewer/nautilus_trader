@@ -8,7 +8,7 @@ ArbExecutionSessionMixin —— PM 子类 / OE 客户端共用的执行 session 
   cancel-only(撤残留 + 丢弃当次 submit,reject 让 strategy 下轮重发)vs submit+track。
 - **tracking 超时**(§4.2):NT clock 绝对超时,terminal 抢先取消;超时即结束 session 不补救。
 - **同步**(§3.4 / §6.10):`_execution_active` = 在飞 session 数 > 0。**#261 起它是全局 ≤1 执行的
-  派生源之一**(另一个是 barrier 的 `_arb_opportunities`),由 `ArbLiveExecutionEngine` 在新机会入场时
+  派生源之一**(另一个是 barrier 的 `_arb_command_groups`),由 `ArbLiveExecutionEngine` 在新机会入场时
   读取;strategy 侧 `is_execution_active` 前置只用于省算力,不承担正确性。
   **#108**:`execution.*` 消息已退役(健康⊥执行互斥删除,无消费者)。
   **#261**:本类不再参与 pair 闸 —— 闸已收窄为 strategy 单层(评估串行)。
@@ -39,6 +39,11 @@ _SUBMIT_TERMINAL = (OrderCanceled, OrderRejected, OrderExpired)
 _CANCEL_TERMINAL = (OrderCanceled, OrderCancelRejected, OrderRejected, OrderExpired)
 
 _TIMEOUT_PREFIX = "arb_exec_timeout:"
+CANCEL_SESSION_STARTED_PARAM = "arb_cancel_session_started"
+
+
+def cancel_session_started(command) -> bool:
+    return bool((getattr(command, "params", None) or {}).get(CANCEL_SESSION_STARTED_PARAM))
 
 
 class ArbExecutionSessionMixin:
@@ -62,7 +67,7 @@ class ArbExecutionSessionMixin:
     def submit_order(self, command) -> None:
         """覆盖 NT 同步入口,**同步**建 session 后再交 NT `create_task` 做 venue IO。
 
-        #261:barrier 的全局 ≤1 执行判定读派生态(`_arb_opportunities` + `_execution_active`)。
+        #261:barrier 的全局 ≤1 执行判定读派生态(`_arb_command_groups` + `_execution_active`)。
         若 session 留在 `_submit_order` 协程里建,`_release` pop 掉 ctx 之后到 session 出现之间
         派生态为空 —— 而队列非空时 `await queue.get()` 不让出控制权,submit 任务插不进来,
         于是 `[A1,A2,B1,B2]` 这样的连续命令会让 A、B **双双执行**。
@@ -74,6 +79,21 @@ class ArbExecutionSessionMixin:
         if not self._begin_session(command):
             return                      # cancel-only:已 reject 本单,不再下发
         super().submit_order(command)   # NT:create_task(self._submit_order(command))
+
+    def cancel_order(self, command) -> None:
+        """同步建立 cancel session，再由 NT LiveExecutionClient 创建 venue IO task。"""
+        order = self._cache.order(command.client_order_id)
+        if order is None:
+            super().cancel_order(command)
+            return
+        if not self._begin_cancel_session(order):
+            return
+        command.params[CANCEL_SESSION_STARTED_PARAM] = True
+        try:
+            super().cancel_order(command)
+        except Exception:
+            self._end_session(order.client_order_id)
+            raise
 
     # ── session 入口(由上面的 `submit_order` 同步调用)──────────────────
     def _begin_session(self, command) -> bool:

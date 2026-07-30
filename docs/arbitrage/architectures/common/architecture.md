@@ -17,12 +17,19 @@
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
 | `order_intent(order)` | Risk 读取 `arb:intent`,默认 `arbitrage` |
 | `RISK_LEG_DENIED_TOPIC` | `risk.opportunity.leg_denied` topic 常量 |
+| `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels`;描述一组应同步进入 ExecutionClient 的标准撤单命令 |
+| `cancel_params_from_meta(meta)` / `cancel_meta_from_command(command)` | Strategy 经 `CancelOrder.params["arb_cancel_opportunity"]` 写入、Execution barrier 读取 grouped cancel metadata |
 
 **约束**:
-- metadata 的权威载体是 `Order.tags`,不是 `SubmitOrder.params`,因为 Risk deny 和 Execution barrier 都以 `order` 为入口。
+- 下单 metadata 的权威载体是 `Order.tags`,不是 `SubmitOrder.params`,因为 Risk deny 和 SubmitOrder barrier 都以 `order` 为入口。
+- grouped cancel 不伪造 Order/tag,也不经过 Risk；其 metadata 权威载体是进程内
+  `CancelOrder.params["arb_cancel_opportunity"]`。未带该字段的普通 `CancelOrder` 保持 NT 原生直通。
+- `expected_cancels` 必须是非空、无重复的 `client_order_id` 集合，并包含本命令的
+  `cancel_key`；格式无效时 fail-closed 为 `OrderCancelRejected`。
 - `expected_legs` 只包含真实下单腿;不发送 0 qty 空单。
 - 同一 opportunity 的所有真实腿必须携带相同 `open_orders_digest`。
-- common 模块只负责解析 / 构造,不维护 opportunity 状态;状态机归 Execution barrier。
+- common 模块只负责解析 / 构造,不维护 opportunity 状态；SubmitOrder 与 CancelOrder 共用的
+  grouped-command 状态机归 Execution barrier。
 
 `src/arbitrage/common/open_orders.py::pair_open_orders_digest(cache, instrument_ids)` 是 Strategy
 记录与 Execution 重算基线的唯一实现。摘要只包含当前 open orders 的不可变字段：

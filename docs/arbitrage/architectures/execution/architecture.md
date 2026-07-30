@@ -10,7 +10,7 @@
 
 | 组件 | 基类 | 职责 |
 |---|---|---|
-| **ArbLiveExecutionEngine** | NT `LiveExecutionEngine` 薄子类 | opportunity execution barrier:Risk pass 后暂存同机会 legs,等齐/deny/timeout 后决定 release 或 zero-session finish;统一释放 `pair_inflight` |
+| **ArbLiveExecutionEngine** | NT `LiveExecutionEngine` 薄子类 | 单一 grouped-command barrier；SubmitOrder/CancelOrder 共用收齐、timer、墓碑和关闭状态机，再按 kind 执行各自 policy |
 | **PM ExecutionClient** | 上游 `PolymarketExecutionClient` **薄子类** | 订单 IO(CLOB,上游现成)+ 账户状态(事件驱动)+ reconcile reports + **PM 健康检查**(report 对账 + merge/redeem settlement)+ `VenueExecutionLiveness` 写入 |
 | **OE ExecutionClient** | 自写 `LiveExecutionClient` | 订单 IO(Playwright 提交)+ **订单帧解析**(现 stub→实写)+ 账户状态(WS 余额帧)+ reconcile reports + `VenueExecutionLiveness` 写入 |
 | `PolymarketSettlement` | 普通类 | merge/redeem 编排(被 PM 健康检查调用,见 §4.6) |
@@ -185,37 +185,48 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 - **PM 健康检查 tick**:开头 `if _execution_active: 跳过`;否则 publish `health_check.started`→ 跑 → `finally` publish `health_check.finished`。
 - 单 asyncio loop 串行,置位/清位纪律见 §6.10。
 
-### 3.5 `ArbLiveExecutionEngine` opportunity barrier(已落地代码,待 live 验证)
+### 3.5 `ArbLiveExecutionEngine` grouped-command barrier(已落地代码,待 live 验证)
 
 > 横切协议真理源见 `_cross-cutting/synchronization.md §8.4bis`;本节只写 execution 侧接口和出口。
 
-`ArbLiveExecutionEngine` 通过 `bootstrap.install_arbitrage_engines()` 替换 `nautilus_trader.system.kernel.LiveExecutionEngine`,方式同 `ArbitrageLiveRiskEngine`。该类不改 NT `SubmitOrderList` 语义,只在单条 `SubmitOrder` 经过 Risk pass 回到 `ExecEngine.execute` 时检查 opportunity metadata。metadata 解析复用 `src/arbitrage/common/opportunity.py`。
+`ArbLiveExecutionEngine` 通过 `bootstrap.install_arbitrage_engines()` 替换
+`nautilus_trader.system.kernel.LiveExecutionEngine`,方式同 `ArbitrageLiveRiskEngine`。
+该类不改 NT `SubmitOrderList` 语义；SubmitOrder 与带 metadata 的 CancelOrder 共用一套
+grouped-command 状态机，metadata 解析复用 `src/arbitrage/common/opportunity.py`。
 
 **输入**:
 - `ExecEngine.execute(SubmitOrder)`:Risk pass 后的真实腿;若 order 无 `arb:opportunity_id`,直接 `super()._execute_command(command)`。
+- `ExecEngine.execute(CancelOrder)`:若 params 带有效 `arb_cancel_opportunity`，进入 grouped
+  cancel barrier；未带标记或 params 为空时保持 NT 原生直通，带标记但 metadata 非法时
+  fail-closed 为标准 `OrderCancelRejected`。
 - `risk.opportunity.leg_denied`:Risk deny 的领域消息;Execution barrier 以该消息关闭对应 opportunity。
-- NT clock alert:`arb_opp_timeout:{opportunity_id}`。
+- NT clock alert:`arb_group_timeout:{kind}:{group_id}`；submit/cancel 共用 callback 与关闭路径。
 
-**context 字段**:
+**共享 context 字段**:
 
 | 字段 | 含义 |
 |---|---|
-| `opportunity_id` | 本轮机会 ID |
+| `kind` | `submit` / `cancel`，只用于选择业务 policy |
+| `group_id` | 本轮机会 ID |
 | `pair_id` | 用于 pair-wide residual 检查与 order/position digest 重算 |
-| `expected_legs` | 应收齐的真实腿 key 集合 |
-| `open_orders_digest` | Strategy 评估开始时该 pair open orders 的不可变摘要 |
-| `positions_digest` | Strategy 评估开始时该 pair positions 的不可变摘要 |
-| `allowed` | `leg_key -> SubmitOrder`,尚未 release 到 venue |
+| `expected` | 应收齐的 command key 集合 |
+| `commands` | 已到达但尚未 release 的 `key -> SubmitOrder/CancelOrder` |
+| `terminal_keys` | 已生成本地失败终态的 key；墓碑收齐后可提前关闭 |
+| `meta` | submit 为 `OpportunityMeta`，cancel 为 `CancelOpportunityMeta` |
 | `terminal` | `None` / `denied` / `timeout` / `released` |
 
-**出口**:
+**SubmitOrder policy 出口**:
 - `all allowed`:先执行 opportunity-level cancel-only 判定；若不触发，按
   `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 open-order 与 position digest。
   任一基线缺失、腿间 digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release
   任一腿。只有两份摘要都一致时才取消 timer，并把所有 command 逐条交回父类进入各 venue
   `ExecutionClient`。字段与 cache 可见性边界见同步真理源 §8.4bis。
-- `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order,且本轮 risk-pass legs 中没有显式撤单腿时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。详细条件与“撤单腿”边界见同步真理源 §8.4bis。
-- `denied` / `timeout`:不 release 到 venue;对 `allowed` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
+- `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。显式补偿撤单使用同一 grouped-command barrier 的 CancelOrder policy，详细边界见同步真理源 §8.4bis。
+- `denied` / `timeout`:不 release 到 venue;对 `commands` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
+
+**CancelOrder policy 出口**:
+- `all arrived`:逐条交回父类执行标准 `CancelOrder`；已有 execution、
+  metadata 不一致或 timeout 时生成标准 `OrderCancelRejected`，不调用 venue。
 - `finish outlet`:清 context / 取消 timer，并对尚未执行的 orders 生成本地终态。
   `PairInFlightGate` 自 #261 起只属于 Strategy evaluation task，不由 barrier/session 释放。
 
@@ -258,8 +269,18 @@ payload 仍按本节规则转换。
 |---|---|---|---|
 | **cancel-only** | submit 时 instrument 上有**残留挂单** | 为每条残留单建立 cancel session,发撤单请求,**丢弃**当次 submit | NT `OrderCanceled` / `OrderCancelRejected` **或** timeout |
 | **submit+track** | submit 时无残留 | 下单 → 追踪 | terminal(FILLED/CANCELED/REJECTED/EXPIRED)**或** timeout |
+| **explicit cancel** | grouped-command barrier 的 cancel policy release，或普通 NT CancelOrder 直通 | `cancel_order` 同步建立 session，再由 NT 创建 venue IO task | `OrderCanceled` / `OrderCancelRejected` / `OrderRejected` / `OrderExpired` **或** timeout |
 
-- 对带完整 opportunity metadata 的套利,首选 §3.5 barrier 统一做 opportunity-level cancel-only:收齐所有 risk-pass legs 后,若同 pair 任一 registered instrument 有 residual 且 risk-pass legs 中没有显式撤单腿,则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。检查范围是 pair-wide,不是仅本次 `expected_legs`。
+`ArbExecutionSessionMixin.cancel_order` 在调用 NT `LiveExecutionClient.cancel_order` 前同步建立
+cancel session，并通过仅供 adapter 内部使用的 command param 标记“session 已建立”；PM/OE/SE
+真实 `_cancel_order` 路径不得再次 `_begin_cancel_session`。这保证 grouped barrier 移除 context
+后，`_execution_active` 已经可见，不留下下一机会穿透的空窗。
+
+- 对带完整 opportunity metadata 的套利,首选 §3.5 barrier 统一做 opportunity-level
+  cancel-only:收齐所有 risk-pass legs 后,若同 pair 任一 registered instrument 有 residual,
+  则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。显式补偿撤单是标准
+  `CancelOrder`,走同一 grouped-command barrier 的 cancel policy,不作为 SubmitOrder 撤单腿绕过本规则。
+  检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
 - cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求,**不释放 session**;释放只能来自 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected`,或 30s watchdog 超时。撤单在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。

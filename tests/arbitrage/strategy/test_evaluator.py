@@ -423,6 +423,10 @@ def test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders():
 
     assert canceler("p") == 2
     assert {call.args[0].client_order_id for call in fake.cancel_order.call_args_list} == {"A", "B"}
+    params = [call.kwargs["params"]["arb_cancel_opportunity"] for call in fake.cancel_order.call_args_list]
+    assert len({item["opportunity_id"] for item in params}) == 1
+    assert {item["cancel_key"] for item in params} == {"A", "B"}
+    assert all(set(item["expected_cancels"]) == {"A", "B"} for item in params)
 
 
 def test_arb_and_comp_evaluation_scratch_is_isolated():

@@ -44,6 +44,7 @@ from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from src.arbitrage.execution.session import cancel_session_started
 
 ORBITEXCH = "ORBITEXCH"
 
@@ -543,6 +544,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         await self._cancel_one(
             command.strategy_id, command.instrument_id,
             command.client_order_id, command.venue_order_id,
+            session_started=cancel_session_started(command),
         )
 
     async def _cancel_one(

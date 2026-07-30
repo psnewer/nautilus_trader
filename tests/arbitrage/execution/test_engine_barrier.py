@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Quantity
@@ -22,9 +25,11 @@ from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import CancelOpportunityMeta
+from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
-from src.arbitrage.execution.engine import _OpportunityContext
+from src.arbitrage.execution.engine import _CommandGroupContext
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -115,6 +120,31 @@ class _Ctx:
             ts_init=self.clock.timestamp_ns(),
         )
 
+    def cancel_cmd(
+        self,
+        cancel_key: str,
+        expected=("cancel-a", "cancel-b"),
+        opportunity_id: str = "cancel-opp-1",
+        pair_id: str = "pair-1",
+    ) -> CancelOrder:
+        return CancelOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=self.instrument.id,
+            client_order_id=ClientOrderId(cancel_key),
+            venue_order_id=None,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params=cancel_params_from_meta(
+                CancelOpportunityMeta(
+                    opportunity_id=opportunity_id,
+                    pair_id=pair_id,
+                    cancel_key=cancel_key,
+                    expected_cancels=tuple(expected),
+                ),
+            ),
+        )
+
 
 def test_barrier_waits_until_all_legs_pass_before_release():
     ctx = _Ctx()
@@ -126,6 +156,70 @@ def test_barrier_waits_until_all_legs_pass_before_release():
 
     ctx.engine._execute_command(second)
     assert len(ctx.client.commands) == 2
+
+
+def test_cancel_barrier_waits_until_all_commands_before_release():
+    ctx = _Ctx()
+    first = ctx.cancel_cmd("cancel-a")
+    second = ctx.cancel_cmd("cancel-b")
+
+    ctx.engine._execute_command(first)
+    assert len(ctx.client.commands) == 0
+
+    ctx.engine._execute_command(second)
+    assert ctx.client.commands == [first, second]
+
+
+def test_cancel_barrier_rejects_group_when_other_execution_is_active(monkeypatch):
+    ctx = _Ctx()
+    ctx.client._execution_active = True
+    rejected = []
+    monkeypatch.setattr(
+        ctx.engine,
+        "_reject_cancel",
+        lambda command, reason: rejected.append((command.client_order_id.value, reason)),
+    )
+
+    ctx.engine._execute_command(ctx.cancel_cmd("cancel-a"))
+    ctx.engine._execute_command(ctx.cancel_cmd("cancel-b"))
+
+    assert [item[0] for item in rejected] == ["cancel-a", "cancel-b"]
+    assert len(ctx.client.commands) == 0
+
+
+def test_cancel_group_is_blocked_by_pending_submit_group(monkeypatch):
+    ctx = _Ctx()
+    rejected = []
+    monkeypatch.setattr(
+        ctx.engine,
+        "_reject_cancel",
+        lambda command, reason: rejected.append((command.client_order_id.value, reason)),
+    )
+    ctx.engine._execute_command(ctx.submit_cmd("pm:home:0"))
+
+    ctx.engine._execute_command(ctx.cancel_cmd("cancel-a"))
+    ctx.engine._execute_command(ctx.cancel_cmd("cancel-b"))
+
+    assert [item[0] for item in rejected] == ["cancel-a", "cancel-b"]
+    assert ("submit", "opp-1") in ctx.engine._arb_command_groups
+    assert ("cancel", "cancel-opp-1") not in ctx.engine._arb_command_groups
+
+
+def test_cancel_barrier_timeout_rejects_arrived_commands(monkeypatch):
+    ctx = _Ctx()
+    rejected = []
+    monkeypatch.setattr(
+        ctx.engine,
+        "_reject_cancel",
+        lambda command, reason: rejected.append((command.client_order_id.value, reason)),
+    )
+    ctx.engine._execute_command(ctx.cancel_cmd("cancel-a"))
+
+    timer = SimpleNamespace(name="arb_group_timeout:cancel:cancel-opp-1")
+    ctx.engine._on_group_timeout(timer)
+
+    assert rejected == [("cancel-a", "cancel opportunity barrier timeout")]
+    assert ("cancel", "cancel-opp-1") not in ctx.engine._arb_command_groups
 
 
 def test_barrier_denies_all_legs_when_pair_open_orders_changed(monkeypatch):
@@ -144,7 +238,7 @@ def test_barrier_denies_all_legs_when_pair_open_orders_changed(monkeypatch):
 
     assert len(ctx.client.commands) == 0
     assert len(_denied_reasons(denied)) == 2
-    assert "opp-1" not in ctx.engine._arb_opportunities
+    assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
 
 
 def test_barrier_denies_legacy_opportunity_without_open_orders_baseline():
@@ -176,7 +270,7 @@ def test_barrier_denies_all_legs_when_pair_positions_changed(monkeypatch):
 
     assert len(ctx.client.commands) == 0
     assert len(_denied_reasons(denied)) == 2
-    assert "opp-1" not in ctx.engine._arb_opportunities
+    assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
 
 
 def test_barrier_denies_legacy_opportunity_without_positions_baseline():
@@ -229,13 +323,15 @@ def test_barrier_timeout_blocks_pending_leg():
     first = ctx.submit_cmd("pm:home:0")
 
     ctx.engine._execute_command(first)
-    ctx.engine._on_opportunity_timeout(type("Evt", (), {"name": "arb_opp_timeout:opp-1"})())
+    ctx.engine._on_group_timeout(
+        type("Evt", (), {"name": "arb_group_timeout:submit:opp-1"})(),
+    )
 
     assert len(ctx.client.commands) == 0
     assert denied
 
 
-def test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_leg():
+def test_barrier_cancel_only_blocks_all_new_submits_when_residual_exists():
     ctx = _Ctx()
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
@@ -309,7 +405,10 @@ def test_barrier_residual_check_is_pair_wide_even_for_single_leg_opportunity():
     )
     fake_engine._client_for_instrument = lambda instrument_id: ctx.client
     fake_engine._find_client_for_command = lambda command: ctx.client
-    barrier_ctx = _OpportunityContext(
+    barrier_ctx = _CommandGroupContext(
+        kind="submit",
+        group_id="opp-1",
+        pair_id="pair-1",
         meta=OpportunityMeta(
             opportunity_id="opp-1",
             pair_id="pair-1",
@@ -317,28 +416,12 @@ def test_barrier_residual_check_is_pair_wide_even_for_single_leg_opportunity():
             expected_legs=("pm:away:0",),
         ),
         expected={"pm:away:0"},
-        allowed={"pm:away:0": allowed},
+        commands={"pm:away:0": allowed},
     )
 
     residuals = ArbLiveExecutionEngine._opportunity_residuals(fake_engine, barrier_ctx)
 
     assert residuals == [(ctx.client, residual_instrument.id, [residual])]
-
-
-def test_barrier_residual_with_explicit_cancel_leg_releases_normally():
-    ctx = _Ctx()
-    first = ctx.submit_cmd("pm:home:0", intent="cancel")
-    second = ctx.submit_cmd("oe:away:1")
-    residual = ctx.submit_cmd("pm:home:0").order
-    ctx.engine._opportunity_residuals = (
-        lambda barrier_ctx: [(ctx.client, ctx.instrument.id, [residual])]
-    )
-
-    ctx.engine._execute_command(first)
-    ctx.engine._execute_command(second)
-
-    assert len(ctx.client.commands) == 2
-    assert ctx.client.residual_cancels == []
 
 
 # ── #261:全局 ≤1 执行(barrier 单点 + 纯派生态)──────────────────────
@@ -389,14 +472,14 @@ def test_tombstone_denies_late_legs_and_pops_when_complete():
     ctx = _Ctx()
     ctx.client._execution_active = True
     ctx.engine._execute_command(ctx.submit_cmd("pm:home:0", opportunity_id="opp-2"))
-    assert ctx.engine._arb_opportunities["opp-2"].terminal == "denied"
+    assert ctx.engine._arb_command_groups[("submit", "opp-2")].terminal == "denied"
 
     ctx.client._execution_active = False                              # 执行结束
     ctx.engine._execute_command(ctx.submit_cmd("oe:away:1", opportunity_id="opp-2"))
 
     # 后到腿没有另建 ctx、没有被放行;墓碑已随 denied 集齐被清掉
     assert len(ctx.client.commands) == 0
-    assert "opp-2" not in ctx.engine._arb_opportunities
+    assert ("submit", "opp-2") not in ctx.engine._arb_command_groups
 
 
 def test_tombstone_does_not_block_a_legitimate_new_opportunity():
@@ -404,7 +487,7 @@ def test_tombstone_does_not_block_a_legitimate_new_opportunity():
     ctx = _Ctx()
     ctx.client._execution_active = True
     ctx.engine._execute_command(ctx.submit_cmd("pm:home:0", opportunity_id="opp-2"))
-    assert ctx.engine._arb_opportunities["opp-2"].terminal == "denied"   # 墓碑还在
+    assert ctx.engine._arb_command_groups[("submit", "opp-2")].terminal == "denied"
 
     ctx.client._execution_active = False
     assert ctx.engine._other_execution_in_flight() is False             # 墓碑不算在飞
@@ -416,12 +499,12 @@ def test_tombstone_is_reclaimed_by_barrier_timer_when_legs_never_complete():
     ctx = _Ctx()
     ctx.client._execution_active = True
     ctx.engine._execute_command(ctx.submit_cmd("pm:home:0", opportunity_id="opp-2"))
-    assert "opp-2" in ctx.engine._arb_opportunities                     # 只到了一条腿
+    assert ("submit", "opp-2") in ctx.engine._arb_command_groups
 
-    ctx.engine._on_opportunity_timeout(
-        type("Evt", (), {"name": "arb_opp_timeout:opp-2"})(),
+    ctx.engine._on_group_timeout(
+        type("Evt", (), {"name": "arb_group_timeout:submit:opp-2"})(),
     )
-    assert "opp-2" not in ctx.engine._arb_opportunities
+    assert ("submit", "opp-2") not in ctx.engine._arb_command_groups
 
 
 def test_new_opportunity_allowed_once_nothing_in_flight():
@@ -443,7 +526,7 @@ def test_leg_denied_before_sibling_ctx_leaves_no_orphan():
 
     #263 前:`ctx is None → return` 丢弃拒单;sibling 腿随后建 ctx 成孤儿,占住全局执行槽
     直到 barrier 超时(#261 后阻断所有机会 → deny 风暴)。这里验证 sibling 腿到达时被立即拒、
-    且机会即时清出 `_arb_opportunities`(denied 集齐),不占槽。
+    且机会即时清出 `_arb_command_groups`(denied 集齐),不占槽。
     """
     ctx = _Ctx()
     denied = []
@@ -459,7 +542,7 @@ def test_leg_denied_before_sibling_ctx_leaves_no_orphan():
         "reason": "NOTIONAL_LESS_THAN_MIN",
     })
     # 墓碑已建、在等 sibling,但对全局闸不算"在执行"
-    assert "opp-1" in ctx.engine._arb_opportunities
+    assert ("submit", "opp-1") in ctx.engine._arb_command_groups
     assert ctx.engine._other_execution_in_flight() is False
 
     # sibling(过 Risk 的那条腿)随后到 barrier
@@ -468,7 +551,7 @@ def test_leg_denied_before_sibling_ctx_leaves_no_orphan():
 
     assert len(ctx.client.commands) == 0                 # sibling 没下到 venue
     assert denied                                        # sibling 被拒
-    assert "opp-1" not in ctx.engine._arb_opportunities  # denied 集齐 → 墓碑即时清,不占槽
+    assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
 
 
 def test_leg_denied_tombstone_reclaimed_by_timer_when_sibling_never_arrives():
@@ -482,12 +565,12 @@ def test_leg_denied_tombstone_reclaimed_by_timer_when_sibling_never_arrives():
         "client_order_id": "x",
         "reason": "risk blocked",
     })
-    assert "opp-1" in ctx.engine._arb_opportunities      # 墓碑在等 sibling
+    assert ("submit", "opp-1") in ctx.engine._arb_command_groups
 
-    ctx.engine._on_opportunity_timeout(
-        type("Evt", (), {"name": "arb_opp_timeout:opp-1"})(),
+    ctx.engine._on_group_timeout(
+        type("Evt", (), {"name": "arb_group_timeout:submit:opp-1"})(),
     )
-    assert "opp-1" not in ctx.engine._arb_opportunities  # timer 回收
+    assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
 
 
 def test_leg_denied_without_expected_legs_cleans_immediately():
@@ -500,4 +583,4 @@ def test_leg_denied_without_expected_legs_cleans_immediately():
         "client_order_id": "x",
         "reason": "risk blocked",
     })
-    assert "opp-1" not in ctx.engine._arb_opportunities  # 没 expected → 立即清
+    assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
