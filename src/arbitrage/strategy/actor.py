@@ -88,6 +88,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 positions_digest=spec.get("positions_digest"),
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
+                enable_timeout=bool(spec.get("enable_timeout", False)),
             ))
         order = order_factory.limit(
             instrument_id=iid,

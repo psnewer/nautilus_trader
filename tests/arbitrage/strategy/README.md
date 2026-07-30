@@ -283,6 +283,16 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 验收: Risk deny 时只拿到 order 也能发布结构化 opportunity deny 消息。
 - 状态:✅ `test_submitter.py::test_submit_writes_opportunity_metadata_tags`
 
+### strategy-4.31: PlaceBetsAction 可声明 ACK 后结束 execution tracking
+- 前置:`PlaceBetsAction(enable_timeout=true)` 生成多腿 submit spec。
+- 期望:每条真实腿都携带 `enable_timeout=true`；缺省 Action 不增加该 spec/tag 字段；
+  非 boolean 配置 fail-fast。
+- 期望:submitter 将真值编码为 `arb:enable_timeout=true`，metadata 解码后保持真值。
+- 验收:✅ `test_action_place_bets.py::test_action_enable_timeout_is_written_to_every_submit_spec` /
+  `test_action_rejects_non_boolean_enable_timeout`，
+  `test_submitter.py::test_submit_writes_opportunity_metadata_tags`，
+  `tests/arbitrage/common/test_opportunity.py::test_opportunity_meta_round_trips_enable_timeout`。
+
 **Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
 

@@ -173,6 +173,7 @@ def test_action_calls_submitter_when_present(caplog):
     assert calls[0]["leg_key"] != calls[1]["leg_key"]
     assert tuple(calls[0]["expected_legs"]) == tuple(calls[1]["expected_legs"])
     assert calls[0]["leg_key"] in calls[0]["expected_legs"]
+    assert "enable_timeout" not in calls[0]
     # OE leg:size=22.5/2.5=9.0,price=2.5
     assert calls[1]["instrument_id"] == "A.ORBITEXCH"
     assert calls[1]["qty"] == 9.0
@@ -182,6 +183,43 @@ def test_action_calls_submitter_when_present(caplog):
     assert any("PlaceBets[submit]" in m for m in msgs)
     # log-only fallback "would submit" 不应出现
     assert not any("would submit" in m for m in msgs)
+
+
+def test_action_enable_timeout_is_written_to_every_submit_spec():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "home",
+            "price": 0.4,
+            "share_if_wins": 22.5,
+        },
+        {
+            "instrument_id": "A.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "BUY",
+            "role": "away",
+            "price": 2.5,
+            "share_if_wins": 22.5,
+        },
+    ]
+
+    _run(PlaceBetsAction(enable_timeout=True).execute(ctx))
+
+    assert len(calls) == 2
+    assert all(spec["enable_timeout"] is True for spec in calls)
+
+
+def test_action_rejects_non_boolean_enable_timeout():
+    with pytest.raises(ValueError, match="enable_timeout must be a boolean"):
+        PlaceBetsAction(enable_timeout="true")
 
 
 def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():

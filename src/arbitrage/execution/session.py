@@ -30,6 +30,7 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
+from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
@@ -145,6 +146,7 @@ class ArbExecutionSessionMixin:
             alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
             callback=self._on_session_timeout,
         )
+        meta = meta_from_order(order) if kind == "submit" else None
         self._active_sessions[coid] = {
             "kind": kind,
             "qty": order.quantity.as_double(),
@@ -153,6 +155,7 @@ class ArbExecutionSessionMixin:
             "filled": 0.0,
             "instrument_id": instrument_id,
             "venue_order_id": getattr(order, "venue_order_id", None),
+            "enable_timeout": bool(meta is not None and meta.enable_timeout),
         }
         # #261:session 不参与 pair 闸(闸已收窄为 strategy 评估串行),故也不再需要 `pair_id`
         # —— 原先它只喂 `exec_started/exec_finished`,随之成为无消费者的死字段,一并删除。
@@ -169,12 +172,21 @@ class ArbExecutionSessionMixin:
         kind = sess.get("kind", "submit")
         if kind == "submit" and isinstance(event, OrderAccepted):
             self._reserve_available_balance_for_accepted_order(event, sess)
+            end_on_ack = bool(sess.get("enable_timeout"))
             self._log.info(
                 "Execution session accepted: "
                 f"client_order_id={event.client_order_id}, "
                 f"venue_order_id={event.venue_order_id}, "
-                f"instrument_id={event.instrument_id}; tracking continues until terminal/timeout",
+                f"instrument_id={event.instrument_id}; "
+                + (
+                    "tracking ends on ack"
+                    if end_on_ack
+                    else "tracking continues until terminal/timeout"
+                ),
             )
+            if end_on_ack:
+                self._end_session(event.client_order_id)
+                return
         if kind == "cancel":
             terminal = isinstance(event, _CANCEL_TERMINAL)
         else:

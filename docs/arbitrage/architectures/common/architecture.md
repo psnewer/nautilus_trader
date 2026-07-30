@@ -11,7 +11,7 @@
 
 | API | 用途 |
 |---|---|
-| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / open_orders_digest / intent / venue_required_balance`；digest 是 Strategy 评估开始时该 pair 的 open-order 基线 |
+| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / open_orders_digest / positions_digest / intent / venue_required_balance / enable_timeout`；两个 digest 是 Strategy 评估开始时该 pair 的订单/仓位基线；`enable_timeout` 缺省 `false`，只在 `true` 时写 tag |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
@@ -28,6 +28,8 @@
   `cancel_key`；格式无效时 fail-closed 为 `OrderCancelRejected`。
 - `expected_legs` 只包含真实下单腿;不发送 0 qty 空单。
 - 同一 opportunity 的所有真实腿必须携带相同 `open_orders_digest`。
+- `enable_timeout=true` 写为 `arb:enable_timeout=true`；字段缺失或其它值均按 `false`，
+  保持旧订单兼容。该字段只提供给 submit execution session，Risk 不改变门控。
 - common 模块只负责解析 / 构造,不维护 opportunity 状态；SubmitOrder 与 CancelOrder 共用的
   grouped-command 状态机归 Execution barrier。
 

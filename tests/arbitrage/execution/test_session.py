@@ -23,6 +23,8 @@ from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from src.arbitrage.execution.session import accepted_order_reserved_notional
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
@@ -128,8 +130,14 @@ def _harness(timeout_secs=30.0):
     return client, clock, cache, published, factory
 
 
-def _order(factory, instrument, qty=10, *, side=OrderSide.BUY, price=0.4):
-    return factory.limit(instrument.id, side, Quantity.from_int(qty), instrument.make_price(price))
+def _order(factory, instrument, qty=10, *, side=OrderSide.BUY, price=0.4, tags=None):
+    return factory.limit(
+        instrument.id,
+        side,
+        Quantity.from_int(qty),
+        instrument.make_price(price),
+        tags=tags,
+    )
 
 
 def _cmd(order):
@@ -194,6 +202,34 @@ def test_accepted_keeps_session_active(caplog):
     assert client._execution_active                       # accepted 非终态,session 仍在
     assert "Execution session accepted" in caplog.text
     assert str(order.client_order_id) in caplog.text
+
+
+def test_enable_timeout_ends_session_on_accepted(caplog):
+    caplog.set_level(logging.INFO, logger="session-test")
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    order = _order(
+        factory,
+        pm,
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-1",
+                pair_id="pair-1",
+                leg_key="pm:home:0",
+                expected_legs=("pm:home:0",),
+                enable_timeout=True,
+            ),
+        ),
+    )
+    client._begin_session(_cmd(order))
+
+    accepted = TestEventStubs.order_accepted(order)
+    client._send_order_event(accepted)
+
+    assert client.sent == [accepted]
+    assert not client._execution_active
+    assert "tracking ends on ack" in caplog.text
 
 
 def test_accepted_reserves_probability_venue_available_balance():

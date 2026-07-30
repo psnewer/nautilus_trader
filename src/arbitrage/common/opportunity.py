@@ -25,6 +25,7 @@ class OpportunityMeta:
     positions_digest: str | None = None
     intent: str = "arbitrage"
     venue_required_balance: float | None = None
+    enable_timeout: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         tags.append(f"{TAG_PREFIX}positions_digest={meta.positions_digest}")
     if meta.venue_required_balance is not None:
         tags.append(f"{TAG_PREFIX}venue_required_balance={meta.venue_required_balance}")
+    if meta.enable_timeout:
+        tags.append(f"{TAG_PREFIX}enable_timeout=true")
     return tags
 
 
@@ -77,6 +80,7 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
         positions_digest=values.get("positions_digest"),
         intent=values.get("intent", "arbitrage"),
         venue_required_balance=required_balance,
+        enable_timeout=values.get("enable_timeout", "").lower() == "true",
     )
 
 

@@ -35,6 +35,18 @@ def test_opportunity_meta_without_venue_total_remains_compatible():
     assert meta_from_tags(tags_from_meta(meta)) == meta
 
 
+def test_opportunity_meta_round_trips_enable_timeout():
+    meta = OpportunityMeta(
+        opportunity_id="opp-1",
+        pair_id="pair-1",
+        leg_key="pm:home:0",
+        expected_legs=("pm:home:0",),
+        enable_timeout=True,
+    )
+
+    assert meta_from_tags(tags_from_meta(meta)) == meta
+
+
 def test_cancel_opportunity_meta_round_trips_through_command_params():
     meta = CancelOpportunityMeta(
         opportunity_id="cancel-opp-1",
