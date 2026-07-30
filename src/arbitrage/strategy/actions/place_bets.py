@@ -10,7 +10,7 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
     #277 起优先读 `ctx.scratch["selected_candidate"]["intent"]`(recovery 候选经 arb 链胜出时不丢豁免)。
-  - enable_timeout=true 时经 opportunity metadata 通知 Execution session 在 ACK 后结束追踪。
+  - enable_timeout=false 时经 opportunity metadata 通知 Execution session 在 ACK 后结束追踪。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -44,9 +44,9 @@ class PlaceBetsAction(Action):
         qty_overrides: dict[str, float] | None = None,
         intent: str = "arbitrage",
         spread: float | None = None,
-        enable_timeout: bool = False,
+        enable_timeout: bool | None = None,
     ) -> None:
-        if not isinstance(enable_timeout, bool):
+        if enable_timeout is not None and not isinstance(enable_timeout, bool):
             raise ValueError("enable_timeout must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
@@ -137,8 +137,8 @@ class PlaceBetsAction(Action):
                 "positions_digest": ctx.positions_digest,
                 "venue_required_balance": required_by_venue[draft["venue"]],
             }
-            if self._enable_timeout:
-                spec["enable_timeout"] = True
+            if self._enable_timeout is not None:
+                spec["enable_timeout"] = self._enable_timeout
             prepared.append((draft, spec))
 
         if submitter is not None:

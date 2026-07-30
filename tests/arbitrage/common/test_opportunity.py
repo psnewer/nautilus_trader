@@ -41,7 +41,7 @@ def test_opportunity_meta_round_trips_enable_timeout():
         pair_id="pair-1",
         leg_key="pm:home:0",
         expected_legs=("pm:home:0",),
-        enable_timeout=True,
+        enable_timeout=False,
     )
 
     assert meta_from_tags(tags_from_meta(meta)) == meta

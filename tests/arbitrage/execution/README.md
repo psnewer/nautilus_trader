@@ -128,15 +128,17 @@
   + `test_submit_order_cancel_only_does_not_dispatch`
   + OE/SE `test_submit_order_builds_session_before_dispatch`。
 
-### execution-4.2.5: enable_timeout=true 时 ACK 后结束 submit session
-- 前置:订单带完整 opportunity metadata，且 `arb:enable_timeout=true`。
+### execution-4.2.5: enable_timeout=false 时 ACK 后结束 submit session
+- 前置:订单带完整 opportunity metadata，且 `arb:enable_timeout=false`。
 - 输入:session 收到 `OrderAccepted`。
-- 期望:`OrderAccepted` 仍先正常上送，accepted 余额处理保持原顺序；随后取消 watchdog、
+- 期望:`OrderAccepted` 仍先正常上送，accepted 余额 hook 保持原顺序（PM no-op，
+  OE/SE 本地预扣）；随后取消 watchdog、
   清该 submit session并释放 `_execution_active`。订单本身不被撤销或伪造终态，后续成交
   继续走 NT 标准事件管道。
-- 对照:字段缺失/false 时 ACK 后 session 仍 active，继续等全成、失败终态或 timeout；
+- 对照:字段缺失/true 时 ACK 后 session 仍 active，继续等全成、失败终态或 timeout；
   cancel session 不受该字段影响。
-- 验收:✅ `test_session.py::test_enable_timeout_ends_session_on_accepted` /
+- 验收:✅ `test_session.py::test_disabled_timeout_ends_session_on_accepted` /
+  `test_enabled_timeout_keeps_session_active_on_accepted` /
   `test_accepted_keeps_session_active`。
 
 ### execution-4.2.4: cancel session 只由撤单终态收口

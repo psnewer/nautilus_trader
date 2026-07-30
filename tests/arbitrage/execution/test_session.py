@@ -204,8 +204,35 @@ def test_accepted_keeps_session_active(caplog):
     assert str(order.client_order_id) in caplog.text
 
 
-def test_enable_timeout_ends_session_on_accepted(caplog):
+def test_disabled_timeout_ends_session_on_accepted(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    order = _order(
+        factory,
+        pm,
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-1",
+                pair_id="pair-1",
+                leg_key="pm:home:0",
+                expected_legs=("pm:home:0",),
+                enable_timeout=False,
+            ),
+        ),
+    )
+    client._begin_session(_cmd(order))
+
+    accepted = TestEventStubs.order_accepted(order)
+    client._send_order_event(accepted)
+
+    assert client.sent == [accepted]
+    assert not client._execution_active
+    assert "tracking ends on ack" in caplog.text
+
+
+def test_enabled_timeout_keeps_session_active_on_accepted():
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home")
     cache.add_instrument(pm)
@@ -224,12 +251,9 @@ def test_enable_timeout_ends_session_on_accepted(caplog):
     )
     client._begin_session(_cmd(order))
 
-    accepted = TestEventStubs.order_accepted(order)
-    client._send_order_event(accepted)
+    client._send_order_event(TestEventStubs.order_accepted(order))
 
-    assert client.sent == [accepted]
-    assert not client._execution_active
-    assert "tracking ends on ack" in caplog.text
+    assert client._execution_active
 
 
 def test_accepted_reserves_probability_venue_available_balance():

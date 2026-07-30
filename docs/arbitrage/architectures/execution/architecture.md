@@ -325,9 +325,10 @@ def _on_session_timeout(self, event):
 ```
 - **绝对超时**:partial / OrderAccepted **不重置** timer。
 - **Action 可选 ACK 收口(#298)**:submit session 建立时从 `Order.tags` 的
-  `OpportunityMeta.enable_timeout` 冻结策略。缺失/`false` 时仍按上一条等待；
-  `true` 时收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并执行既有 accepted
-  余额处理，再调用 `_end_session` 取消 watchdog、释放 `_execution_active`。这不撤单、
+  `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；
+  显式 `false` 时收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有
+  accepted 余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`
+  取消 watchdog、释放 `_execution_active`。这不撤单、
   不把订单改成终态；后续 fill/order 事件仍由 ExecutionClient → ExecEngine 标准路径处理。
   cancel session 不消费该字段。
 - 全局唯一超时配置(per-venue 不分);cancel session 超时仅 log warning,不补撤、不重试。

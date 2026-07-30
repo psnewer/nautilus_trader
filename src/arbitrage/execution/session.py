@@ -155,7 +155,7 @@ class ArbExecutionSessionMixin:
             "filled": 0.0,
             "instrument_id": instrument_id,
             "venue_order_id": getattr(order, "venue_order_id", None),
-            "enable_timeout": bool(meta is not None and meta.enable_timeout),
+            "enable_timeout": meta.enable_timeout if meta is not None else None,
         }
         # #261:session 不参与 pair 闸(闸已收窄为 strategy 评估串行),故也不再需要 `pair_id`
         # —— 原先它只喂 `exec_started/exec_finished`,随之成为无消费者的死字段,一并删除。
@@ -172,7 +172,7 @@ class ArbExecutionSessionMixin:
         kind = sess.get("kind", "submit")
         if kind == "submit" and isinstance(event, OrderAccepted):
             self._reserve_available_balance_for_accepted_order(event, sess)
-            end_on_ack = bool(sess.get("enable_timeout"))
+            end_on_ack = sess.get("enable_timeout") is False
             self._log.info(
                 "Execution session accepted: "
                 f"client_order_id={event.client_order_id}, "

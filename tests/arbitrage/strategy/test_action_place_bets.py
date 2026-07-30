@@ -185,7 +185,7 @@ def test_action_calls_submitter_when_present(caplog):
     assert not any("would submit" in m for m in msgs)
 
 
-def test_action_enable_timeout_is_written_to_every_submit_spec():
+def test_action_disabled_timeout_is_written_to_every_submit_spec():
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
@@ -211,10 +211,10 @@ def test_action_enable_timeout_is_written_to_every_submit_spec():
         },
     ]
 
-    _run(PlaceBetsAction(enable_timeout=True).execute(ctx))
+    _run(PlaceBetsAction(enable_timeout=False).execute(ctx))
 
     assert len(calls) == 2
-    assert all(spec["enable_timeout"] is True for spec in calls)
+    assert all(spec["enable_timeout"] is False for spec in calls)
 
 
 def test_action_rejects_non_boolean_enable_timeout():
