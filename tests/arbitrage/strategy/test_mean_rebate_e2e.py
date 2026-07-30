@@ -211,3 +211,29 @@ def test_recovery_tree_config_builds_with_recovery_intent():
 
     assert strategy is not None
     assert isinstance(strategy.compensation_tree.actions[0], PlaceBetsAction)
+
+
+def test_place_bets_spread_param_loads_from_strategy_json():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_spread": {
+                    "arbitrage_tree": {
+                        "checktion": {
+                            "type": "mean_rebate",
+                            "params": {"min_rate": 0.01},
+                        },
+                        "actions": [{"type": "place_bets", "params": {"spread": 0.02}}],
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_spread"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    action = strategy.arbitrage_tree.actions[0]
+    assert isinstance(action, PlaceBetsAction)
+    assert action._spread == 0.02

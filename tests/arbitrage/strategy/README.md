@@ -178,7 +178,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；缺 live state、缺 claim、缺 order book、非正价格、非正 share 均 fail-fast
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
-- ✅ `test_action_place_bets.py`:基础 size/override/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价且不读取 `market_order_enabled`，市价转换留给 Execution adapter 的最终提交边界
+- ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价且不读取 `market_order_enabled`，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`(12,#277 扩展):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs / **最小下注门控**:低于 `min_quantity` 的高分 candidate 先淘汰不参与选择、PM BUY 低于 `min_buy_notional`(qty×price)淘汰、OE `min_notional` 按 **stake 口径**(NT `notional_value`=qty×multiplier,qty×price 会误判)、双腿任一腿不过整 candidate 淘汰 / **套利优先分组**:primary 有幸存者时 recovery 分数再大也不参与、primary 全灭同轮落 recovery(selected 带 `intent=recovery`)、两池全灭清空 legs / **legs-only 包装**(mean_rebate/comp 链):`legs` 包成单 candidate 走同一路径、低于限额清空、无 candidates 无 legs 纯 no-op
@@ -284,6 +284,13 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 **Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
+
+### strategy-4.29:PlaceBetsAction spread 限价偏移
+- **.1**:`spread=0.02` 时最终 BUY price 减 0.02、SELL price 加 0.02，qty 不变
+- **.2**:PM 越界价格裁剪到 `[tick, 1-tick]`；decimal 越界裁剪到 `[1.01, 1000]`
+- **.3**:负数、`>=1`、NaN、Infinity 配置 fail-fast
+- **.4**:PM 互斥库存拆为 SELL+BUY 后再应用 spread，两条子单 qty 保持原 sizing 结果
+- **.5**:per-venue `venue_required_balance` 使用 spread 后的最终价格
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链

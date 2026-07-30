@@ -41,10 +41,12 @@ class PlaceBetsAction(Action):
         price_overrides: dict[str, float] | None = None,
         qty_overrides: dict[str, float] | None = None,
         intent: str = "arbitrage",
+        spread: float | None = None,
     ) -> None:
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
+        self._spread = _normalize_spread(spread)
 
     async def execute(self, ctx: EvalContext) -> None:
         legs = ctx.scratch.get("legs", [])
@@ -106,6 +108,8 @@ class PlaceBetsAction(Action):
             }
             drafts.extend(_expand_probability_inventory(draft, leg, ctx))
 
+        _apply_spread_to_drafts(drafts, self._spread, ctx)
+
         expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
         required_by_venue = _required_balance_by_venue(drafts)
         prepared = []
@@ -145,6 +149,64 @@ def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]
     if not raw:
         return {}
     return {str(k).upper(): float(v) for k, v in raw.items()}
+
+
+def _normalize_spread(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    spread = float(value)
+    if not math.isfinite(spread) or not 0 <= spread < 1:
+        raise ValueError(f"spread must be a finite probability in [0, 1), got {value!r}")
+    return spread
+
+
+def _apply_spread_to_drafts(drafts: list[dict], spread: float, ctx: EvalContext) -> None:
+    if spread <= 0:
+        return
+    for draft in drafts:
+        original = float(draft["price"])
+        draft["price"] = _price_with_spread(draft, spread, ctx.cache)
+        _LOG.info(
+            f"PlaceBets spread: pair={ctx.pair_id} venue={draft['venue']} "
+            f"side={draft['side']} original_price={original} "
+            f"limit_price={draft['price']} spread={spread}",
+        )
+
+
+def _price_with_spread(draft: dict, spread: float, cache) -> float:
+    side = str(draft["side"]).upper()
+    price = float(draft["price"])
+    adjusted = price - spread if side == "BUY" else price + spread
+    minimum, maximum = _limit_price_bounds(
+        cache,
+        draft["instrument_id"],
+        draft["venue"],
+    )
+    return min(max(adjusted, minimum), maximum)
+
+
+def _limit_price_bounds(cache, instrument_id, venue: str) -> tuple[float, float]:
+    instrument = cache.instrument(_as_instrument_id(instrument_id)) if cache is not None else None
+    minimum = _numeric_value(getattr(instrument, "min_price", None))
+    maximum = _numeric_value(getattr(instrument, "max_price", None))
+
+    if is_probability_odds_venue(venue):
+        increment = _numeric_value(getattr(instrument, "price_increment", None)) or 0.01
+        lower = minimum if minimum is not None else increment
+        upper = maximum if maximum is not None else 1.0 - increment
+        return lower, upper
+
+    return minimum if minimum is not None else 1.01, maximum if maximum is not None else 1000.0
+
+
+def _numeric_value(value) -> float | None:
+    if value is None:
+        return None
+    for method in ("as_double", "as_decimal"):
+        converter = getattr(value, method, None)
+        if callable(converter):
+            return float(converter())
+    return float(value)
 
 
 def _draft_leg_key(draft: dict) -> str:

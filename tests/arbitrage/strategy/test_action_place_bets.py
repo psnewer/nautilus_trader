@@ -4,9 +4,11 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
-from src.arbitrage.strategy.leg_plan import compute_size as _compute_size
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.leg_plan import compute_size as _compute_size
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -139,6 +141,116 @@ def test_action_calls_submitter_when_present(caplog):
     assert any("PlaceBets[submit]" in m for m in msgs)
     # log-only fallback "would submit" 不应出现
     assert not any("would submit" in m for m in msgs)
+
+
+def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "yes",
+            "price": 0.4,
+            "qty": 10.0,
+        },
+        {
+            "instrument_id": "A.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "SELL",
+            "role": "no",
+            "price": 2.5,
+            "qty": 3.0,
+        },
+    ]
+
+    _run(PlaceBetsAction(spread=0.02).execute(ctx))
+
+    assert [(call["side"], call["qty"], call["price"]) for call in calls] == [
+        ("BUY", 10.0, 0.38),
+        ("SELL", 3.0, 2.52),
+    ]
+
+
+def test_action_spread_clamps_prices_to_venue_extremes():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "PBUY.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "yes",
+            "price": 0.01,
+            "qty": 5.0,
+        },
+        {
+            "instrument_id": "PSELL.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "SELL",
+            "role": "no",
+            "price": 0.99,
+            "qty": 5.0,
+        },
+        {
+            "instrument_id": "OBUY.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "BUY",
+            "role": "yes",
+            "price": 1.01,
+            "qty": 7.0,
+        },
+        {
+            "instrument_id": "OSELL.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "SELL",
+            "role": "no",
+            "price": 1000.0,
+            "qty": 7.0,
+        },
+    ]
+
+    _run(PlaceBetsAction(spread=0.1).execute(ctx))
+
+    assert [call["price"] for call in calls] == [0.01, 0.99, 1.01, 1000.0]
+
+
+def test_action_spread_prefers_instrument_price_bounds():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    instrument = SimpleNamespace(min_price=0.05, max_price=0.95, price_increment=0.01)
+    cache = SimpleNamespace(instrument=lambda _: instrument)
+    ctx = EvalContext(pair_id="p", cache=cache, submitter=fake_submitter)
+    ctx.scratch["legs"] = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "yes",
+        "price": 0.06,
+        "qty": 5.0,
+    }]
+
+    _run(PlaceBetsAction(spread=0.1).execute(ctx))
+
+    assert calls[0]["price"] == 0.05
+
+
+@pytest.mark.parametrize("spread", [-0.01, 1.0, float("inf"), float("nan")])
+def test_action_rejects_invalid_probability_spread(spread):
+    with pytest.raises(ValueError, match="spread must be"):
+        PlaceBetsAction(spread=spread)
 
 
 def test_action_uses_leg_qty_when_check_precomputes_size():
@@ -404,6 +516,19 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
     }
     assert calls[0]["venue_required_balance"] == 8.0
     assert calls[1]["venue_required_balance"] == 8.0
+
+
+def test_probability_inventory_split_applies_spread_after_sizing():
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60))
+
+    _run(PlaceBetsAction(spread=0.01).execute(ctx))
+
+    assert [(c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("SELL", 60.0, 0.81),
+        ("BUY", 40.0, 0.19),
+    ]
+    assert calls[0]["venue_required_balance"] == 7.6
+    assert calls[1]["venue_required_balance"] == 7.6
 
 
 def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
