@@ -297,7 +297,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
 
 ### strategy-4.29:PlaceBetsAction spread 限价偏移
-- **.1**:`spread=0.02` 时最终 BUY price 减 0.02、SELL price 加 0.02，qty 不变
+- **.1**:`spread=0.02` 时最终订单先转成 YES 隐含概率，BUY 概率减 0.02、SELL 概率加
+  0.02，再反算为 venue 价格；PM 价格因此直接加减，OE/SE decimal 赔率按倒数关系变化，
+  qty 不变
 - **.2**:PM 越界价格裁剪到 `[tick, 1-tick]`；decimal 越界裁剪到 `[1.01, 1000]`
 - **.3**:负数、`>=1`、NaN、Infinity 配置 fail-fast
 - **.4**:PM 互斥库存拆为 SELL+BUY 后再应用 spread，两条子单 qty 保持原 sizing 结果
@@ -488,9 +490,10 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 ## strategy-4.30:one_side_rebate 近价挂单撤单补偿
 
-- `test_check_spread_cancel_recovery.py`:无挂单或价差未达阈值不命中；PM BUY 挂单与当前
-  ask 满足严格 `< spread` 时写标准 legs + 显式 pair 撤单意图；decimal 合成 NO 的真实
-  `SELL@lay` 按执行 instrument/side 对齐当前 lay ask；非法 spread fail-fast。
+- `test_check_spread_cancel_recovery.py`:无挂单或概率差未达阈值不命中；PM BUY 挂单与当前
+  ask 的 outcome exposure probability 差满足严格 `< spread` 时写标准 legs + 显式 pair
+  撤单意图；decimal 合成 NO 的真实 `SELL@lay` 按执行 instrument/side 转成补集概率后
+  比较（即使原始赔率差大于 spread 也可因概率差命中）；非法 spread fail-fast。
 - `test_action_place_bets.py::test_action_cancel_request_cancels_pair_without_submitting`:
   `PlaceBetsAction` 消费撤单意图时调用 pair canceler，绝不调用 submitter。
 - `test_action_place_bets.py::test_action_cancels_when_selected_recovery_candidate_carries_request`:

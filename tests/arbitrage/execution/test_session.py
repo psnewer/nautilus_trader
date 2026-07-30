@@ -232,6 +232,35 @@ def test_disabled_timeout_ends_session_on_accepted(caplog):
     assert "tracking ends on ack" in caplog.text
 
 
+def test_disabled_timeout_ack_only_ends_own_execution_client_session():
+    pm_client, clock, pm_cache, _, factory = _harness()
+    se_cache = _FakeCache()
+    se_client = FakeSessionClient(clock, pm_client._msgbus, se_cache, 30.0)
+    pm = pm_instrument("match_1", "home")
+    se = se_instrument("match_1", "away")
+    pm_cache.add_instrument(pm)
+    se_cache.add_instrument(se)
+    tags = tags_from_meta(
+        OpportunityMeta(
+            opportunity_id="opp-1",
+            pair_id="pair-1",
+            leg_key="unused",
+            expected_legs=("unused",),
+            enable_timeout=False,
+        ),
+    )
+    pm_order = _order(factory, pm, tags=tags)
+    se_order = _order(factory, se, price=2.0, tags=tags)
+    pm_client._begin_session(_cmd(pm_order))
+    se_client._begin_session(_cmd(se_order))
+
+    pm_client._send_order_event(TestEventStubs.order_accepted(pm_order))
+
+    assert not pm_client._execution_active
+    assert se_client._execution_active
+    assert se_order.client_order_id in se_client._active_sessions
+
+
 def test_enabled_timeout_keeps_session_active_on_accepted():
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home")

@@ -59,7 +59,7 @@ def test_matches_open_buy_order_close_to_current_ask():
     }]
 
 
-def test_decimal_synthetic_no_sell_compares_against_current_lay_ask():
+def test_decimal_synthetic_no_sell_compares_probability_difference():
     ctx = live_context(
         books={
             "H.ORBITEXCH": _Book(probability_from_price(ORBITEXCH, 1.85)),
@@ -74,13 +74,16 @@ def test_decimal_synthetic_no_sell_compares_against_current_lay_ask():
                 "exec_instrument_id": "H.ORBITEXCH",
             },
         },
-        orders=[_order("H.ORBITEXCH", "SELL", 1.885)],
+        orders=[_order("H.ORBITEXCH", "SELL", 1.91)],
     )
 
     assert SpreadCancelRecoveryCheck(spread=0.01).passes(ctx) is True
     match = ctx.scratch["cancel_pair_orders"]["matches"][0]
     assert match["ask_price"] == pytest.approx(1.88)
-    assert match["difference"] == pytest.approx(0.005)
+    assert abs(match["order_price"] - match["ask_price"]) == pytest.approx(0.03)
+    assert match["order_probability"] == pytest.approx(1.0 - 1.0 / 1.91)
+    assert match["ask_probability"] == pytest.approx(1.0 - 1.0 / 1.88)
+    assert match["difference"] == pytest.approx(abs(1.0 / 1.88 - 1.0 / 1.91))
     assert ctx.scratch["legs"][0]["exec_instrument_id"] == "H.ORBITEXCH"
     assert ctx.scratch["legs"][0]["qty"] == 10.0
     assert ctx.scratch["legs"][0]["share_if_wins"] == pytest.approx(18.8)

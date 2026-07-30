@@ -410,11 +410,14 @@ def test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders():
         "A.ORBITEXCH": [second],
         "X.SHARPEXCH": [outside],
     }
+
+    def orders_open(*, instrument_id):
+        assert isinstance(instrument_id, InstrumentId)
+        return orders.get(str(instrument_id), [])
+
     fake = SimpleNamespace(
         _pair_registry=pair_registry,
-        cache=SimpleNamespace(
-            orders_open=lambda *, instrument_id: orders.get(str(instrument_id), []),
-        ),
+        cache=SimpleNamespace(orders_open=orders_open),
         cancel_order=MagicMock(),
     )
 

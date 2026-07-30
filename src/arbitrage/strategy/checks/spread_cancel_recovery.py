@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from src.arbitrage.common.venues import leg_economics
+from src.arbitrage.common.venues import order_exposure_probability
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Check
@@ -40,7 +41,13 @@ class SpreadCancelRecoveryCheck(Check):
                 if order_price is None or current_leg is None:
                     continue
                 ask_price = float(current_leg["ask_price"])
-                difference = abs(order_price - ask_price)
+                venue = str(current_leg["leg"]["venue"])
+                try:
+                    order_probability = order_exposure_probability(venue, order_price, side)
+                    ask_probability = order_exposure_probability(venue, ask_price, side)
+                except (KeyError, ZeroDivisionError):
+                    continue
+                difference = abs(order_probability - ask_probability)
                 if difference >= self._spread:
                     continue
                 quantity = _number(getattr(order, "quantity", None))
@@ -52,6 +59,8 @@ class SpreadCancelRecoveryCheck(Check):
                     "side": side,
                     "order_price": order_price,
                     "ask_price": ask_price,
+                    "order_probability": order_probability,
+                    "ask_probability": ask_probability,
                     "difference": difference,
                 })
                 leg = dict(current_leg["leg"])

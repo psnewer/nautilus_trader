@@ -138,6 +138,7 @@
 - 对照:字段缺失/true 时 ACK 后 session 仍 active，继续等全成、失败终态或 timeout；
   cancel session 不受该字段影响。
 - 验收:✅ `test_session.py::test_disabled_timeout_ends_session_on_accepted` /
+  `test_disabled_timeout_ack_only_ends_own_execution_client_session` /
   `test_enabled_timeout_keeps_session_active_on_accepted` /
   `test_accepted_keeps_session_active`。
 

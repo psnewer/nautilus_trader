@@ -24,6 +24,8 @@ import math
 from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
+from src.arbitrage.common.venues import price_from_probability
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.leg_plan import as_instrument_id as _as_instrument_id
@@ -208,13 +210,21 @@ def _apply_spread_to_drafts(drafts: list[dict], spread: float, ctx: EvalContext)
 def _price_with_spread(draft: dict, spread: float, cache) -> float:
     side = str(draft["side"]).upper()
     price = float(draft["price"])
-    adjusted = price - spread if side == "BUY" else price + spread
+    venue = draft["venue"]
     minimum, maximum = _limit_price_bounds(
         cache,
         draft["instrument_id"],
-        draft["venue"],
+        venue,
     )
-    return min(max(adjusted, minimum), maximum)
+    probability = probability_from_price(venue, price, "yes")
+    adjusted = probability - spread if side == "BUY" else probability + spread
+    probability_bounds = (
+        probability_from_price(venue, minimum, "yes"),
+        probability_from_price(venue, maximum, "yes"),
+    )
+    adjusted = min(max(adjusted, min(probability_bounds)), max(probability_bounds))
+    adjusted_price = price_from_probability(venue, adjusted, "yes")
+    return min(max(adjusted_price, minimum), maximum)
 
 
 def _limit_price_bounds(cache, instrument_id, venue: str) -> tuple[float, float]:

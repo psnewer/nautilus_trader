@@ -29,6 +29,7 @@ from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.trading.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
@@ -473,10 +474,15 @@ class StrategyEvaluator(Strategy):
         def cancel(pair_id: str) -> int:
             seen = set()
             orders = []
-            for instrument_id in sorted(
+            for raw_instrument_id in sorted(
                 self._pair_registry.instrument_ids_for_pair(pair_id),
                 key=str,
             ):
+                instrument_id = (
+                    raw_instrument_id
+                    if isinstance(raw_instrument_id, InstrumentId)
+                    else InstrumentId.from_str(str(raw_instrument_id))
+                )
                 for order in self.cache.orders_open(instrument_id=instrument_id) or ():
                     key = str(getattr(order, "client_order_id", "") or id(order))
                     if key in seen:

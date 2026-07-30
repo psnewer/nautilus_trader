@@ -246,13 +246,22 @@ def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
             "price": 2.5,
             "qty": 3.0,
         },
+        {
+            "instrument_id": "H.SHARPEXCH",
+            "venue": "SHARPEXCH",
+            "side": "BUY",
+            "role": "yes",
+            "price": 2.5,
+            "qty": 4.0,
+        },
     ]
 
     _run(PlaceBetsAction(spread=0.02).execute(ctx))
 
     assert [(call["side"], call["qty"], call["price"]) for call in calls] == [
         ("BUY", 10.0, 0.38),
-        ("SELL", 3.0, 2.52),
+        ("SELL", 3.0, pytest.approx(1.0 / 0.42)),
+        ("BUY", 4.0, pytest.approx(1.0 / 0.38)),
     ]
 
 
@@ -285,7 +294,7 @@ def test_action_spread_clamps_prices_to_venue_extremes():
             "venue": "ORBITEXCH",
             "side": "BUY",
             "role": "yes",
-            "price": 1.01,
+            "price": 1000.0,
             "qty": 7.0,
         },
         {
@@ -293,14 +302,14 @@ def test_action_spread_clamps_prices_to_venue_extremes():
             "venue": "ORBITEXCH",
             "side": "SELL",
             "role": "no",
-            "price": 1000.0,
+            "price": 1.01,
             "qty": 7.0,
         },
     ]
 
     _run(PlaceBetsAction(spread=0.1).execute(ctx))
 
-    assert [call["price"] for call in calls] == [0.01, 0.99, 1.01, 1000.0]
+    assert [call["price"] for call in calls] == [0.01, 0.99, 1000.0, 1.01]
 
 
 def test_action_spread_prefers_instrument_price_bounds():
