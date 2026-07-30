@@ -1,6 +1,6 @@
 """
 StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 → 查 StrategyRegistry
-→ 基于当前 EvalContext 并行 evaluate arb+comp → fire(套利优先)。
+→ 基于当前 EvalContext 并行 evaluate arb+comp → fire(补偿候选优先)。
 
 设计见 `docs/arbitrage/architectures/strategy/architecture.md §3.5 / §4`。
 
@@ -9,7 +9,7 @@ StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 
 - `_extract_evaluation_target(data)` —— 拿到 (pair_id, sport, competition);MatchedPair 直读,
   其它 event 经 PairRegistry + instrument.info 反查
 - `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + 挂单基线 + asyncio.gather
-  并行 evaluate + 套利优先 fire(actions 走 `await`,异常落进本 task)
+  并行 evaluate + 补偿候选优先 fire(actions 走 `await`,异常落进本 task)
 - `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口,**无条件释放**(#261)
 
 **evaluate 无副作用 / fire 在顶层**:`evaluate_tree` 返 EvalResult,本类决定 fire arb 还是 comp。
@@ -353,6 +353,7 @@ class StrategyEvaluator(Strategy):
             "open_orders_digest": open_orders_digest,
             "positions_digest": positions_digest,
             "submitter": submitter,
+            "pair_order_canceler": self._make_pair_order_canceler(),
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
         }
@@ -372,20 +373,22 @@ class StrategyEvaluator(Strategy):
                 f"comp_hit={comp_res.hit}, "
                 f"comp_actions={comp_actions_str}",
             )
-        # #277:树间取舍(Q21 套利优先语义不变)下移至 candi_select。顶层只决定跑哪条链:
+        # 树间取舍下移至 candi_select。顶层只决定跑哪条链:
         # arb 命中 → 跑 arb 链,comp 同轮命中时把 comp legs 包成 recovery candidate 注入
-        # (candi_select 在 arb 候选被最小下注门控全部淘汰时同轮落到补救);仅 comp 命中 → comp 链。
+        # (candi_select 先选通过门控的补偿候选,补偿全灭才落套利);仅 comp 命中 → comp 链。
         # `await` 而非 `create_task`:让 action 链的异常落进本 task,由 `_on_eval_done` 打出来,
         # 而不是变成无上下文的 asyncio "Task exception was never retrieved"。
         if arb_res.hit and arb_res.pending_actions:
             if comp_res.hit and comp_res.pending_actions and comp_ctx.scratch.get("legs"):
-                arb_ctx.scratch["recovery_candidates"] = [
-                    {
-                        "candidate_id": "recovery",
-                        "intent": "recovery",
-                        "legs": comp_ctx.scratch["legs"],
-                    },
-                ]
+                recovery_candidate = {
+                    "candidate_id": "recovery",
+                    "intent": "recovery",
+                    "legs": comp_ctx.scratch["legs"],
+                }
+                cancel_request = comp_ctx.scratch.get("cancel_pair_orders")
+                if cancel_request:
+                    recovery_candidate["cancel_pair_orders"] = cancel_request
+                arb_ctx.scratch["recovery_candidates"] = [recovery_candidate]
             if self._log_evaluations:
                 self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
             await self._execute_actions(arb_res.pending_actions, arb_ctx)
@@ -470,6 +473,27 @@ class StrategyEvaluator(Strategy):
             submit_order=self.submit_order,
             log=self._log,
         )
+
+    def _make_pair_order_canceler(self):
+        """返同步 callable：执行时重读该 pair 的 open orders，经 NT CancelOrder 逐单撤销。"""
+        def cancel(pair_id: str) -> int:
+            seen = set()
+            orders = []
+            for instrument_id in sorted(
+                self._pair_registry.instrument_ids_for_pair(pair_id),
+                key=str,
+            ):
+                for order in self.cache.orders_open(instrument_id=instrument_id) or ():
+                    key = str(getattr(order, "client_order_id", "") or id(order))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    orders.append(order)
+            for order in orders:
+                self.cancel_order(order)
+            return len(orders)
+
+        return cancel
 
     # ── 提取评估目标(支持 OrderBookDeltas / MatchedPair / 其它)──────
     def _extract_evaluation_target(self, data) -> tuple[str, str | None, str | None] | None:

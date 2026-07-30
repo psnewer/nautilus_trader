@@ -1,4 +1,4 @@
-"""CandiSelectAction:最小下注门控 → 套利优先分组 → 组内 max leg share 选择(#277)。"""
+"""CandiSelectAction:最小下注门控 → 补偿优先分组 → 组内 max leg share 选择。"""
 
 import asyncio
 from decimal import Decimal
@@ -174,40 +174,43 @@ def test_min_bet_gate_drops_whole_candidate_when_any_leg_fails():
     assert ctx.scratch["legs"] == []
 
 
-# ── #277:套利优先分组 + recovery 落地 ─────────────────────────────
+# ── 补偿优先分组 + recovery 落地 ──────────────────────────────────
 
-def test_primary_survivor_wins_even_if_recovery_share_larger():
+def test_recovery_survivor_wins_even_if_primary_share_larger():
     cache = _Cache({"H.POLYMARKET": _pm_instrument()})
     ctx = EvalContext(pair_id="p", cache=cache)
     ctx.scratch["candidates"] = [
-        {"candidate_id": "arb", "legs": [_pm_leg(qty=10.0, share=10.0)]},
+        {"candidate_id": "arb", "legs": [_pm_leg(qty=99.0, share=99.0)]},
     ]
     ctx.scratch["recovery_candidates"] = [
         {"candidate_id": "recovery", "intent": "recovery",
-         "legs": [_pm_leg(qty=99.0, share=99.0)]},
-    ]
-
-    _run(CandiSelectAction().execute(ctx))
-
-    assert ctx.scratch["selected_candidate"]["candidate_id"] == "arb"
-
-
-def test_primary_all_gated_falls_back_to_recovery_same_round():
-    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
-    ctx = EvalContext(pair_id="p", cache=cache)
-    ctx.scratch["candidates"] = [
-        {"candidate_id": "arb_tiny", "legs": [_pm_leg(qty=3.0, share=100.0)]},
-    ]
-    recovery_legs = [_pm_leg(qty=8.0, share=8.0)]
-    ctx.scratch["recovery_candidates"] = [
-        {"candidate_id": "recovery", "intent": "recovery", "legs": recovery_legs},
+         "legs": [_pm_leg(qty=10.0, share=10.0)]},
     ]
 
     _run(CandiSelectAction().execute(ctx))
 
     assert ctx.scratch["selected_candidate"]["candidate_id"] == "recovery"
-    assert ctx.scratch["selected_candidate"]["intent"] == "recovery"
-    assert ctx.scratch["legs"] == recovery_legs
+
+
+def test_recovery_all_gated_falls_back_to_primary_same_round():
+    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
+    ctx = EvalContext(pair_id="p", cache=cache)
+    primary_legs = [_pm_leg(qty=8.0, share=8.0)]
+    ctx.scratch["candidates"] = [
+        {"candidate_id": "arb", "legs": primary_legs},
+    ]
+    ctx.scratch["recovery_candidates"] = [
+        {
+            "candidate_id": "recovery_tiny",
+            "intent": "recovery",
+            "legs": [_pm_leg(qty=3.0, share=100.0)],
+        },
+    ]
+
+    _run(CandiSelectAction().execute(ctx))
+
+    assert ctx.scratch["selected_candidate"]["candidate_id"] == "arb"
+    assert ctx.scratch["legs"] == primary_legs
 
 
 def test_recovery_also_gated_all_pools_exhausted_clears_legs():

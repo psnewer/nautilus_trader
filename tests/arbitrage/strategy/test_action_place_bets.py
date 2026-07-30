@@ -45,6 +45,47 @@ def test_action_log_only_no_raise_when_no_legs(caplog):
     # 没下单 log(只 debug 级别 skip)
 
 
+def test_action_cancel_request_cancels_pair_without_submitting():
+    canceled = []
+
+    async def fail_submit(_spec):
+        raise AssertionError("撤单分支不得提交新订单")
+
+    ctx = EvalContext(
+        pair_id="p",
+        submitter=fail_submit,
+        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 3,
+    )
+    ctx.scratch["cancel_pair_orders"] = {"reason": "spread_cancel_recovery"}
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert canceled == ["p"]
+
+
+def test_action_cancels_when_selected_recovery_candidate_carries_request():
+    canceled = []
+
+    async def fail_submit(_spec):
+        raise AssertionError("撤单 candidate 胜出后不得提交新订单")
+
+    ctx = EvalContext(
+        pair_id="p",
+        submitter=fail_submit,
+        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 2,
+    )
+    ctx.scratch["selected_candidate"] = {
+        "candidate_id": "recovery",
+        "cancel_pair_orders": {"reason": "spread_cancel_recovery"},
+        "legs": [{"instrument_id": "H.POLYMARKET"}],
+    }
+    ctx.scratch["legs"] = ctx.scratch["selected_candidate"]["legs"]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert canceled == ["p"]
+
+
 def test_action_logs_each_leg(caplog):
     ctx = EvalContext(pair_id="p")    # submitter=None → log-only fallback
     ctx.scratch["legs"] = [

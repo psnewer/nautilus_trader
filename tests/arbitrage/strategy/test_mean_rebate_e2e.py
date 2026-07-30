@@ -26,7 +26,9 @@ from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
+from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.condition import evaluate_tree
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -37,6 +39,7 @@ def _registry():
     _reset_for_tests()
     register_check("mean_rebate", MeanRebateCheck)
     register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
+    register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_action("place_bets", PlaceBetsAction)
     yield
     _reset_for_tests()
@@ -211,6 +214,39 @@ def test_recovery_tree_config_builds_with_recovery_intent():
 
     assert strategy is not None
     assert isinstance(strategy.compensation_tree.actions[0], PlaceBetsAction)
+
+
+def test_spread_cancel_and_mean_recovery_build_as_or_expression():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "recovery_or": {
+                    "arbitrage_tree": {
+                        "checktion": {"type": "mean_rebate", "params": {"min_rate": 0.30}},
+                    },
+                    "compensation_tree": {
+                        "checktion": {
+                            "OR": [
+                                {"type": "spread_cancel_recovery", "params": {"spread": 0.01}},
+                                {
+                                    "type": "mean_rebate_recovery",
+                                    "params": {"min_repaired_rebate": -0.05},
+                                },
+                            ],
+                        },
+                        "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}],
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "recovery_or"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    assert isinstance(strategy.compensation_tree.checktion, OrCheckExpr)
+    assert isinstance(strategy.compensation_tree.checktion.exprs[0], SpreadCancelRecoveryCheck)
 
 
 def test_place_bets_spread_param_loads_from_strategy_json():

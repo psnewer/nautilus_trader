@@ -40,6 +40,8 @@ class EvalContext:
     # `await ctx.submitter(spec)` 提交;`None` 时 Action 应 log-only fallback。
     # `spec` schema:{instrument_id, side: "BUY"|"SELL", qty: float, price: float}
     submitter: object | None = None  # Callable[[dict], Awaitable[None]] | None;运行时类型避循环 import
+    # spread_cancel_recovery 命中后由 PlaceBetsAction 调用；实现必须走 NT 原生 CancelOrder。
+    pair_order_canceler: object | None = None  # Callable[[str], int] | None
     # ShareLimitModification 等 Action 需要读取持仓数据计算 remaining
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
     # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。

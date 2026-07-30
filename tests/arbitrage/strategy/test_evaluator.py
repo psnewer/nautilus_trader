@@ -1,4 +1,4 @@
-"""StrategyEvaluator —— Q21 完整集成:on_data → 查 → live state → 并行 evaluate → 套利优先 fire。
+"""StrategyEvaluator —— Q21 完整集成:on_data → 查 → live state → 并行 evaluate → 候选选择。
 
 对应用例:strategy-4.framework.eval.{1-5}
 """
@@ -127,6 +127,19 @@ class _SetScratchLegsCheck(Check):
 
     def passes(self, ctx):
         ctx.scratch["legs"] = list(self._legs)
+        return True
+
+
+class _SetCancelRequestCheck(Check):
+    def passes(self, ctx):
+        ctx.scratch["cancel_pair_orders"] = {"reason": "spread_cancel_recovery"}
+        ctx.scratch["legs"] = [{
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "price": 0.5,
+            "qty": 8.0,
+            "share_if_wins": 8.0,
+        }]
         return True
 
 
@@ -374,7 +387,7 @@ def test_log_evaluations_enabled_covers_skip_paths():
     assert loop.tasks == []
 
 
-# ── eval.4: Q21 套利优先 — arb 命中 + comp 命中 → 只 fire arb ────
+# ── eval.4:arb 链作为统一候选选择与 Action 执行宿主 ────────────────
 def test_arb_hit_blocks_comp_action():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     arb_action = _RecordingAction("arb")
@@ -384,7 +397,32 @@ def test_arb_hit_blocks_comp_action():
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 1
-    assert comp_action.calls == 0                     # 套利赢
+    assert comp_action.calls == 0
+
+
+def test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders():
+    first = SimpleNamespace(client_order_id="A")
+    second = SimpleNamespace(client_order_id="B")
+    outside = SimpleNamespace(client_order_id="OUT")
+    pair_registry = PairRegistry()
+    pair_registry.register("p", ["H.POLYMARKET", "A.ORBITEXCH"])
+    orders = {
+        "H.POLYMARKET": [first],
+        "A.ORBITEXCH": [second],
+        "X.SHARPEXCH": [outside],
+    }
+    fake = SimpleNamespace(
+        _pair_registry=pair_registry,
+        cache=SimpleNamespace(
+            orders_open=lambda *, instrument_id: orders.get(str(instrument_id), []),
+        ),
+        cancel_order=MagicMock(),
+    )
+
+    canceler = StrategyEvaluator._make_pair_order_canceler(fake)
+
+    assert canceler("p") == 2
+    assert {call.args[0].client_order_id for call in fake.cancel_order.call_args_list} == {"A", "B"}
 
 
 def test_arb_and_comp_evaluation_scratch_is_isolated():
@@ -465,6 +503,7 @@ def test_submitter_wired_into_eval_context():
     ctx = captured[0]
     assert ctx.submitter is not None              # slice 10a:submitter 已注入
     assert callable(ctx.submitter)
+    assert callable(ctx.pair_order_canceler)
     assert ctx.open_orders_digest is not None
     assert ctx.positions_digest is not None
 
@@ -879,6 +918,43 @@ def test_both_hit_injects_recovery_candidates_into_arb_ctx():
     assert capture.recovery == [
         {"candidate_id": "recovery", "intent": "recovery", "legs": comp_legs},
     ]
+
+
+def test_both_hit_injects_spread_cancel_as_recovery_candidate():
+    actor, _, _, strat_reg, loop, _ = _harness()
+    capture = _CaptureRecoveryAction()
+    comp_action = _RecordingAction("comp")
+    arb_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_StubCheck(True)),
+        actions=[capture],
+    )
+    comp_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_SetCancelRequestCheck()),
+        actions=[comp_action],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
+
+    actor.on_data(_mp())
+    _run(_drain(loop))
+
+    assert comp_action.calls == 0
+    assert capture.recovery == [{
+        "candidate_id": "recovery",
+        "intent": "recovery",
+        "legs": [{
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "price": 0.5,
+            "qty": 8.0,
+            "share_if_wins": 8.0,
+        }],
+        "cancel_pair_orders": {"reason": "spread_cancel_recovery"},
+    }]
 
 
 def test_arb_hit_comp_miss_no_recovery_injection():

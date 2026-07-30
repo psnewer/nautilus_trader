@@ -2,6 +2,7 @@
 PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整计划腿),经 Venue Registry 按 odds model 算 size:
+  - `ctx.scratch["cancel_pair_orders"]` 存在时不构造订单，调用 EvalContext 的 NT pair 撤单回调后返回
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
   - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
@@ -49,6 +50,9 @@ class PlaceBetsAction(Action):
         self._spread = _normalize_spread(spread)
 
     async def execute(self, ctx: EvalContext) -> None:
+        if _execute_cancel_request(ctx):
+            return
+
         legs = ctx.scratch.get("legs", [])
         if not legs:
             _LOG.debug(f"PlaceBets: pair={ctx.pair_id} no legs (Check 未写),skip")
@@ -143,6 +147,27 @@ class PlaceBetsAction(Action):
                     f"role={draft['role']} venue={draft['venue']} qty={spec['qty']:.4f} "
                     f"price={spec['price']}",
                 )
+
+
+def _execute_cancel_request(ctx: EvalContext) -> bool:
+    selected = ctx.scratch.get("selected_candidate") or {}
+    request = selected.get("cancel_pair_orders") or ctx.scratch.get("cancel_pair_orders")
+    if not request:
+        return False
+    canceler = ctx.pair_order_canceler
+    if canceler is None:
+        _LOG.info(
+            f"PlaceBets[cancel-smoke]: pair={ctx.pair_id} "
+            f"reason={request.get('reason')} orders=0",
+        )
+        return True
+    count = canceler(ctx.pair_id)
+    _LOG.info(
+        f"PlaceBets[cancel]: pair={ctx.pair_id} "
+        f"reason={request.get('reason')} orders={count}",
+    )
+    return True
+
 
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:
     """配置里的 venue key 统一转大写,便于临时 live 验证覆盖。"""

@@ -7,8 +7,8 @@ CandiSelectAction —— 门控 + 树间取舍 + 组内选择(#277)。
    解析 side/price/qty,对实际提交 instrument(`exec_instrument_id` 优先)检查
    `min_quantity` / `min_notional`(经 `notional_value`,与 NT 原生口径一致)/
    BUY `min_buy_notional`;任一腿不过整 candidate 淘汰。
-2. **套利优先分组**:本树组有幸存者就只在本组选,全灭才落 recovery 组;
-   recovery 永不参与本树组的 share 比较。
+2. **补偿优先分组**:`recovery_candidates` 有幸存者时只在补偿组选；补偿组全灭才落
+   本树的套利组。两组不混合比较 share。
 3. **组内选择(逻辑不变)**:legs 内最大 `share_if_wins` 最高者胜出,写
    `ctx.scratch["selected_candidate"]`(含 intent 标记)和 `ctx.scratch["legs"]`。
 
@@ -32,7 +32,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class CandiSelectAction(Action):
-    """最小下注门控 → 套利优先分组 → 组内 max leg share 选择。"""
+    """最小下注门控 → 补偿优先分组 → 组内 max leg share 选择。"""
 
     async def execute(self, ctx: EvalContext) -> None:
         primary = _primary_pool(ctx)
@@ -40,15 +40,15 @@ class CandiSelectAction(Action):
         if primary is None and not recovery:
             return
 
-        survivors = _gate_pool(ctx, primary or [], group="primary")
-        group = "primary"
-        if not survivors and recovery:
-            survivors = _gate_pool(ctx, recovery, group="recovery")
-            group = "recovery"
-            if survivors:
+        survivors = _gate_pool(ctx, recovery, group="recovery")
+        group = "recovery"
+        if not survivors:
+            survivors = _gate_pool(ctx, primary or [], group="primary")
+            group = "primary"
+            if survivors and recovery:
                 _LOG.debug(
-                    f"CandiSelect: pair={ctx.pair_id} primary group exhausted, "
-                    f"fallback to recovery ({len(survivors)} candidate)"
+                    f"CandiSelect: pair={ctx.pair_id} recovery group exhausted, "
+                    f"fallback to primary ({len(survivors)} candidate)"
                 )
 
         if not survivors:
