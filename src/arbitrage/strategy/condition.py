@@ -1,19 +1,21 @@
 """
-Condition / Check / Action / EvalResult —— condition 嵌套树的核心类型(Q21)。
+Condition / CheckExpr / Check / Action / EvalResult —— condition 嵌套树的核心类型(Q21)。
 
 evaluate 流程(`StrategyEvaluator._evaluate_tree`):
   1. `self_hits.eval(ctx)` False → 返 EvalResult(hit=False)
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
-  3. 叶子(sub_conditions 空)→ all(checktion).passes → 返 (hit=True, pending_actions=actions)
+  3. 叶子(sub_conditions 空)→ checktion.eval(ctx) → 返 (hit=True, pending_actions=actions)
 
-**evaluate 无副作用**:返 `EvalResult { hit, pending_actions }`,**fire 由顶层做**(让套利/补救
-并行 evaluate 后,套利结果决定补救是否 fire)。actions 依次串行执行(如 ShareLimitModification → PlaceBetsAction)。
+**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`,**fire 由顶层做**(让套利/补救
+并行 evaluate 后,套利结果决定补救是否 fire)。Check 可向本树独占的 `ctx.scratch` 写派生结果；
+actions 依次串行执行(如 ShareLimitModification → PlaceBetsAction)。
 """
 
 from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -44,12 +46,89 @@ class EvalContext:
     strategy_defaults: dict = field(default_factory=dict)
 
 
-class Check(ABC):
-    """决策核查(Q21):checktion 是 list[Check],AND 关系,全过才算通过。"""
+class CheckExpr(ABC):
+    """带 `scratch` 事务语义的决策核查表达式。"""
+
+    @abstractmethod
+    def eval(self, ctx: EvalContext) -> bool:
+        """按配置顺序同步求值，并只提交命中分支的 `scratch`。"""
+
+
+class Check(CheckExpr):
+    """决策核查叶子；失败或异常时回滚本叶子产生的 `scratch`。"""
 
     @abstractmethod
     def passes(self, ctx: EvalContext) -> bool:
-        """返 True 通过;空 checktion list 默认通过(`all([])==True`)。"""
+        """返回本核查是否通过。"""
+
+    def eval(self, ctx: EvalContext) -> bool:
+        before = deepcopy(ctx.scratch)
+        try:
+            passed = bool(self.passes(ctx))
+        except Exception:
+            _restore_scratch(ctx, before)
+            raise
+        if not passed:
+            _restore_scratch(ctx, before)
+        return passed
+
+
+class AndCheckExpr(CheckExpr):
+    """全部命中才命中；按顺序短路，空 AND 默认命中。"""
+
+    def __init__(self, *exprs: CheckExpr) -> None:
+        self.exprs = exprs
+
+    def eval(self, ctx: EvalContext) -> bool:
+        before = deepcopy(ctx.scratch)
+        try:
+            for expr in self.exprs:
+                if not expr.eval(ctx):
+                    _restore_scratch(ctx, before)
+                    return False
+        except Exception:
+            _restore_scratch(ctx, before)
+            raise
+        return True
+
+
+class OrCheckExpr(CheckExpr):
+    """首个命中分支即命中；失败分支不留下 `scratch`，空 OR 默认不命中。"""
+
+    def __init__(self, *exprs: CheckExpr) -> None:
+        self.exprs = exprs
+
+    def eval(self, ctx: EvalContext) -> bool:
+        before = deepcopy(ctx.scratch)
+        for expr in self.exprs:
+            _restore_scratch(ctx, before)
+            try:
+                if expr.eval(ctx):
+                    return True
+            except Exception:
+                _restore_scratch(ctx, before)
+                raise
+        _restore_scratch(ctx, before)
+        return False
+
+
+class NotCheckExpr(CheckExpr):
+    """反转子表达式结果；被否定表达式的 `scratch` 永不提交。"""
+
+    def __init__(self, expr: CheckExpr) -> None:
+        self.expr = expr
+
+    def eval(self, ctx: EvalContext) -> bool:
+        before = deepcopy(ctx.scratch)
+        try:
+            return not self.expr.eval(ctx)
+        finally:
+            _restore_scratch(ctx, before)
+
+
+def _restore_scratch(ctx: EvalContext, snapshot: dict) -> None:
+    ctx.scratch.clear()
+    ctx.scratch.update(snapshot)
 
 
 class Action(ABC):
@@ -64,12 +143,12 @@ class Action(ABC):
 class Condition:
     """condition 嵌套树节点。
 
-    评估顺序:`self_hits` → `sub_conditions`(若非空,互斥)/ 叶子的 `checktion`(AND)→ `actions`。
+    评估顺序:`self_hits` → `sub_conditions`(若非空,互斥)/ 叶子的 `checktion` 表达式→ `actions`。
     """
 
     self_hits: BoolExpr
     sub_conditions: list[Condition] = field(default_factory=list)
-    checktion: list[Check] = field(default_factory=list)     # 空 list = 默认通过
+    checktion: CheckExpr = field(default_factory=AndCheckExpr)  # 空 AND = 默认通过
     actions: list[Action] = field(default_factory=list)       # 依次执行; 空 list = no-op(仍 hit=True)
 
 
@@ -82,14 +161,14 @@ class EvalResult:
 
 
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
-    """Q21 主算法:递归求值 condition 嵌套树,**无副作用**(不执行 action)。
+    """Q21 主算法:递归求值 condition 嵌套树，生成本树 scratch，但不执行 action。
 
     与 `StrategyEvaluator` 解耦:运行时 Strategy 只做 orchestration(live state / gather / fire),
     本函数纯逻辑可全单测。
 
     1. `self_hits.eval(ctx)` False → `EvalResult(hit=False)`
     2. `sub_conditions` 非空 → 递归(互斥,命中即停;全 miss 返 False)
-    3. 叶子(`sub_conditions` 空)→ `all(check.passes for check in checktion)`(空 list 默认通过)
+    3. 叶子(`sub_conditions` 空)→ `checktion.eval(ctx)`(空 AND 默认通过)
        → `EvalResult(hit=True, pending_actions=actions)`(空 actions 时上层不执行)
     """
     if not cond.self_hits.eval(ctx):
@@ -102,6 +181,6 @@ def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
                 return res                            # 互斥:命中即停
         return EvalResult(hit=False)
 
-    if all(check.passes(ctx) for check in cond.checktion):
+    if cond.checktion.eval(ctx):
         return EvalResult(hit=True, pending_actions=cond.actions)
     return EvalResult(hit=False)

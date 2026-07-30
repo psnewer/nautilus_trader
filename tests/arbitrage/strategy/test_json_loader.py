@@ -15,9 +15,13 @@ from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.check_action_registry import register_state_query
 from src.arbitrage.strategy.condition import Action
+from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Check
+from src.arbitrage.strategy.condition import NotCheckExpr
+from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.json_loader import bool_expr_from_json
+from src.arbitrage.strategy.json_loader import check_expr_from_json
 from src.arbitrage.strategy.json_loader import condition_from_json
 from src.arbitrage.strategy.json_loader import strategy_from_json
 
@@ -127,6 +131,46 @@ def test_state_query_unknown_field_is_rejected():
         bool_expr_from_json({"type": "context_value", "params": {"key": "a"}, "extra": True})
 
 
+# ─── check_expr_from_json ────────────────────────────────────────
+
+def test_check_expression_leaf():
+    expr = check_expr_from_json({"type": "pass", "params": {"label": "leaf"}})
+    assert isinstance(expr, _PassCheck)
+    assert expr.label == "leaf"
+
+
+def test_nested_check_expression():
+    expr = check_expr_from_json({
+        "AND": [
+            {"type": "pass"},
+            {"OR": [
+                {"type": "fail"},
+                {"NOT": {"type": "fail"}},
+            ]},
+        ],
+    })
+    assert isinstance(expr, AndCheckExpr)
+    assert isinstance(expr.exprs[1], OrCheckExpr)
+    assert isinstance(expr.exprs[1].exprs[1], NotCheckExpr)
+    assert expr.eval(_ctx()) is True
+
+
+def test_empty_check_expression_defaults_to_true():
+    expr = check_expr_from_json(None)
+    assert isinstance(expr, AndCheckExpr)
+    assert expr.eval(_ctx()) is True
+
+
+def test_check_expression_list_format_is_rejected():
+    with pytest.raises(StrategyConfigError, match="must be dict"):
+        check_expr_from_json([{"type": "pass"}])
+
+
+def test_unknown_check_expression_key_raises():
+    with pytest.raises(StrategyConfigError, match="unknown checktion expression key"):
+        check_expr_from_json({"XOR": []})
+
+
 # ─── condition_from_json ──────────────────────────────────────────
 
 def test_empty_condition_defaults_to_truthy_pass():
@@ -140,7 +184,7 @@ def test_empty_condition_defaults_to_truthy_pass():
 def test_self_hits_false_blocks_evaluation():
     c = condition_from_json({
         "self_hits": {"type": "context_value", "params": {"key": "disabled"}},
-        "checktion": [{"type": "pass"}],
+        "checktion": {"type": "pass"},
     })
     assert evaluate_tree(c, _ctx(disabled=False)).hit is False
 
@@ -148,7 +192,7 @@ def test_self_hits_false_blocks_evaluation():
 def test_self_hits_true_with_passing_check_fires_action():
     c = condition_from_json({
         "self_hits": {"type": "context_value", "params": {"key": "live"}},
-        "checktion": [{"type": "pass"}],
+        "checktion": {"type": "pass"},
         "actions": [{"type": "noop", "params": {"label": "fire"}}],
     })
     res = evaluate_tree(c, _ctx(live=True))
@@ -160,7 +204,7 @@ def test_self_hits_true_with_passing_check_fires_action():
 
 def test_failing_check_short_circuits():
     c = condition_from_json({
-        "checktion": [{"type": "pass"}, {"type": "fail"}],
+        "checktion": {"AND": [{"type": "pass"}, {"type": "fail"}]},
         "actions": [{"type": "noop"}],
     })
     res = evaluate_tree(c, _ctx())
@@ -192,7 +236,7 @@ def test_sub_conditions_all_miss():
 
 def test_unknown_check_type_in_condition_raises():
     with pytest.raises(StrategyConfigError, match="unknown check type"):
-        condition_from_json({"checktion": [{"type": "nope"}]})
+        condition_from_json({"checktion": {"type": "nope"}})
 
 
 def test_unknown_action_type_in_condition_raises():
@@ -225,8 +269,8 @@ def test_actions_array_format():
 
 def test_strategy_with_both_trees():
     spec = {
-        "arbitrage_tree": {"checktion": [{"type": "pass"}], "actions": [{"type": "noop"}]},
-        "compensation_tree": {"checktion": [{"type": "fail"}]},
+        "arbitrage_tree": {"checktion": {"type": "pass"}, "actions": [{"type": "noop"}]},
+        "compensation_tree": {"checktion": {"type": "fail"}},
     }
     s = strategy_from_json("s1", spec, scope_key="sport:Tennis")
     assert s.scope_key == "sport:Tennis"
@@ -241,7 +285,7 @@ def test_strategy_with_both_trees():
 
 def test_strategy_missing_compensation_uses_noop_never_hit():
     """compensation_tree 缺 → 永 False(OrExpr() 空 OR)。"""
-    spec = {"arbitrage_tree": {"checktion": []}}
+    spec = {"arbitrage_tree": {"checktion": {}}}
     s = strategy_from_json("s2", spec, scope_key="sport:Soccer")
     res = evaluate_tree(s.compensation_tree, _ctx())
     assert res.hit is False

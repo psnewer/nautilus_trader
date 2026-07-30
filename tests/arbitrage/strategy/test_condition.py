@@ -2,10 +2,13 @@
 
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
+from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import EvalResult
+from src.arbitrage.strategy.condition import NotCheckExpr
+from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.condition import evaluate_tree
 
 
@@ -18,12 +21,15 @@ class _ConstantQuery(StateQuery):
 
 
 class _RecordingCheck(Check):
-    def __init__(self, returns: bool) -> None:
+    def __init__(self, returns: bool, *, label: str | None = None) -> None:
         self._returns = returns
+        self._label = label
         self.calls = 0
 
     def passes(self, ctx):
         self.calls += 1
+        if self._label is not None:
+            ctx.scratch["selected"] = self._label
         return self._returns
 
 
@@ -46,7 +52,7 @@ def _leaf(
 ) -> Condition:
     return Condition(
         self_hits=_ConstantQuery(self_true),
-        checktion=checks or [],
+        checktion=AndCheckExpr(*(checks or [])),
         actions=[action] if action else [],
     )
 
@@ -86,14 +92,14 @@ def test_sub_conditions_all_miss_returns_no_hit():
     assert evaluate_tree(root, _ctx()) == EvalResult(hit=False, pending_actions=[])
 
 
-def test_leaf_checktion_all_pass_returns_pending_actions():
+def test_leaf_checktion_and_all_pass_returns_pending_actions():
     action = _NeverExecutedAction()
     cond = _leaf(True, [_RecordingCheck(True), _RecordingCheck(True)], action)
     assert evaluate_tree(cond, _ctx()) == EvalResult(hit=True, pending_actions=[action])
     assert action.calls == 0
 
 
-def test_leaf_empty_checktion_default_pass():
+def test_leaf_empty_checktion_and_default_pass():
     action = _NeverExecutedAction()
     res = evaluate_tree(_leaf(True, action=action), _ctx())
     assert res.hit and res.pending_actions == [action]
@@ -108,6 +114,49 @@ def test_leaf_one_check_fails_returns_no_hit():
     cond = _leaf(True, [_RecordingCheck(True), _RecordingCheck(False)], action)
     assert evaluate_tree(cond, _ctx()) == EvalResult(hit=False, pending_actions=[])
     assert action.calls == 0
+
+
+def test_checktion_or_commits_only_first_successful_branch():
+    failed = _RecordingCheck(False, label="failed")
+    passed = _RecordingCheck(True, label="passed")
+    skipped = _RecordingCheck(True, label="skipped")
+    ctx = _ctx()
+    cond = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=OrCheckExpr(failed, passed, skipped),
+    )
+
+    assert evaluate_tree(cond, ctx).hit is True
+    assert ctx.scratch == {"selected": "passed"}
+    assert failed.calls == 1
+    assert passed.calls == 1
+    assert skipped.calls == 0
+
+
+def test_checktion_and_failure_rolls_back_prior_success():
+    ctx = _ctx()
+    ctx.scratch["baseline"] = True
+    cond = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(
+            _RecordingCheck(True, label="passed"),
+            _RecordingCheck(False, label="failed"),
+        ),
+    )
+
+    assert evaluate_tree(cond, ctx).hit is False
+    assert ctx.scratch == {"baseline": True}
+
+
+def test_checktion_not_never_commits_child_scratch():
+    ctx = _ctx()
+    cond = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=NotCheckExpr(_RecordingCheck(False, label="discarded")),
+    )
+
+    assert evaluate_tree(cond, ctx).hit is True
+    assert ctx.scratch == {}
 
 
 def test_nested_two_levels_inner_sub_hits():

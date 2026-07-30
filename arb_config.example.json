@@ -95,17 +95,19 @@
       "mean_rebate": {
         "arbitrage_tree": {
           "self_hits": {},
-          "checktion": [
-            {
-              "type": "mean_rebate",
-              "params": {
-                "min_rate": -1
+          "checktion": {
+            "AND": [
+              {
+                "type": "mean_rebate",
+                "params": {
+                  "min_rate": -1
+                }
+              },
+              {
+                "type": "require_cross_venue"
               }
-            },
-            {
-              "type": "require_cross_venue"
-            }
-          ],
+            ]
+          },
           "actions": [
             {
               "type": "share_limit"
@@ -129,14 +131,12 @@
           ]
         },
         "compensation_tree": {
-          "checktion": [
-            {
-              "type": "mean_rebate_recovery",
-              "params": {
-                "min_repaired_rebate": 0.1
-              }
+          "checktion": {
+            "type": "mean_rebate_recovery",
+            "params": {
+              "min_repaired_rebate": 0.1
             }
-          ],
+          },
           "actions": [
             {
               "type": "candi_select"

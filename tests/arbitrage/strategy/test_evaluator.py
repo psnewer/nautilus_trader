@@ -23,6 +23,7 @@ from src.arbitrage.strategy.actor import _RuntimeDeps
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
+from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.registry import Strategy
@@ -133,12 +134,12 @@ def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) 
     """构造一个策略,arb/comp 树各一叶子,通过无状态查询控制命中。"""
     arb_tree = Condition(
         self_hits=_ConstantQuery(arb_hit),
-        checktion=[_StubCheck(True)],
+        checktion=AndCheckExpr(_StubCheck(True)),
         actions=[arb_action] if arb_action else [],
     )
     comp_tree = Condition(
         self_hits=_ConstantQuery(comp_hit),
-        checktion=[_StubCheck(True)],
+        checktion=AndCheckExpr(_StubCheck(True)),
         actions=[comp_action] if comp_action else [],
     )
     return Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree)
@@ -266,7 +267,7 @@ def test_evaluator_injects_sports_store_into_eval_context():
     action = _CaptureSportsStoreAction()
     arb_tree = Condition(
         self_hits=AndExpr(),
-        checktion=[_StubCheck(True)],
+        checktion=AndCheckExpr(_StubCheck(True)),
         actions=[action],
     )
     strat_reg.register_pair(
@@ -400,12 +401,12 @@ def test_arb_and_comp_evaluation_scratch_is_isolated():
     ]
     arb_tree = Condition(
         self_hits=_ConstantQuery(True),
-        checktion=[_SetScratchLegsCheck(arb_legs)],
+        checktion=AndCheckExpr(_SetScratchLegsCheck(arb_legs)),
         actions=[arb_action],
     )
     comp_tree = Condition(
         self_hits=_ConstantQuery(True),
-        checktion=[_SetScratchLegsCheck(comp_legs)],
+        checktion=AndCheckExpr(_SetScratchLegsCheck(comp_legs)),
         actions=[comp_action],
     )
     strat_reg.register_pair(
@@ -859,11 +860,11 @@ def test_both_hit_injects_recovery_candidates_into_arb_ctx():
     comp_legs = [{"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET",
                   "role": "yes", "price": 0.5, "qty": 8.0}]
     arb_tree = Condition(
-        self_hits=_ConstantQuery(True), checktion=[_StubCheck(True)], actions=[capture],
+        self_hits=_ConstantQuery(True), checktion=AndCheckExpr(_StubCheck(True)), actions=[capture],
     )
     comp_tree = Condition(
         self_hits=_ConstantQuery(True),
-        checktion=[_SetScratchLegsCheck(comp_legs)],
+        checktion=AndCheckExpr(_SetScratchLegsCheck(comp_legs)),
         actions=[comp_action],
     )
     strat_reg.register_pair(

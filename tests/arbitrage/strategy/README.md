@@ -33,10 +33,10 @@ strategy 参数(min_rebate / price / size / share_scaler 等)是具体 `Check`/`
 
 ```python
 prod = Strategy(scope_key="sport:Soccer",
-                arbitrage_tree=Condition(..., checktion=[RebateCheck(min_rate=0.05)],
+                arbitrage_tree=Condition(..., checktion=AndCheckExpr(RebateCheck(min_rate=0.05)),
                                           action=PMSubmitAction(...)))
 dbg  = Strategy(scope_key="sport:Soccer",
-                arbitrage_tree=Condition(..., checktion=[RebateCheck(min_rate=-10.0)],
+                arbitrage_tree=Condition(..., checktion=AndCheckExpr(RebateCheck(min_rate=-10.0)),
                                           action=PMSubmitAction(price_override=0.01, size_scaler=0.001)))
 strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 ```
@@ -329,13 +329,23 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.5**:嵌套 `AND(a, OR(b, NOT(c)))` 求值正确
 - **.6**:空 AND=True，空 OR=False
 
-### strategy-4.framework.cond.{1-6}:Condition 树评估(EvalResult)
+### strategy-4.framework.cond.{1-9}:Condition 树评估(EvalResult)
 - **.1**:self_hits=False → `EvalResult(hit=False, action=None)`
 - **.2**:self_hits=True、有 sub_conditions、第一个 sub 命中 → 返该 sub 的 EvalResult(后续不跑)
 - **.3**:self_hits=True、有 sub_conditions、全没命中 → `EvalResult(hit=False)`
-- **.4**:叶子节点(sub_conditions 空)、checktion 全过、actions 非空 → `EvalResult(hit=True, pending_actions=actions)`(不执行 action)
-- **.5**:叶子、checktion 空 list → 默认通过
+- **.4**:叶子节点(sub_conditions 空)、checktion AND 全过、actions 非空 → `EvalResult(hit=True, pending_actions=actions)`(不执行 action)
+- **.5**:叶子、checktion 空 AND → 默认通过
 - **.6**:叶子、actions 为空 → 仍 `hit=True`(`pending_actions=[]` 上层无事可 fire)
+- **.7**:checktion OR 按配置顺序短路，只提交首个成功分支的 `scratch`
+- **.8**:checktion AND 后项失败，回滚前项已写入的 `scratch`
+- **.9**:checktion NOT 只反转结果，不提交子表达式的 `scratch`
+
+### strategy-4.framework.check-expr.{1-5}:CheckExpr JSON
+- **.1**:单个 `{"type": ...}` 解析为 Check 叶子
+- **.2**:`AND(Check, OR(Check, NOT(Check)))` 可递归解析并正确求值
+- **.3**:缺失 / `null` / `{}` 解析为空 AND=True
+- **.4**:旧数组格式 fail-fast，不保留第二套配置 schema
+- **.5**:未知操作符、错误 value 类型或叶子未知字段抛 `StrategyConfigError`
 
 ### strategy-4.framework.reg.{1-4}:StrategyRegistry scope 优先级 + 挂载锁定
 - **.1**:只挂 sport → 找该 sport 下任意 pair 都返该策略

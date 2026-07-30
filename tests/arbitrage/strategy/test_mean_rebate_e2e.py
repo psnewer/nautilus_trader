@@ -63,9 +63,7 @@ def _build_mean_rebate_strategy():
                 "mean_rebate": {
                     "arbitrage_tree": {
                         "self_hits": {},
-                        "checktion": [
-                            {"type": "mean_rebate", "params": {"min_rate": 0.05}},
-                        ],
+                        "checktion": {"type": "mean_rebate", "params": {"min_rate": 0.05}},
                         "actions": [{"type": "place_bets"}],
                     },
                 },
@@ -164,9 +162,7 @@ def test_no_arb_below_threshold_no_action(caplog):
                 "mr_strict": {
                     "arbitrage_tree": {
                         "self_hits": {},
-                        "checktion": [
-                            {"type": "mean_rebate", "params": {"min_rate": 0.30}},
-                        ],
+                        "checktion": {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         "actions": [{"type": "place_bets"}],
                     },
                 },
@@ -194,15 +190,14 @@ def test_recovery_tree_config_builds_with_recovery_intent():
                 "mr_recovery": {
                     "arbitrage_tree": {
                         "self_hits": {},
-                        "checktion": [
-                            {"type": "mean_rebate", "params": {"min_rate": 0.30}},
-                        ],
+                        "checktion": {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         "actions": [{"type": "place_bets"}],
                     },
                     "compensation_tree": {
-                        "checktion": [
-                            {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}},
-                        ],
+                        "checktion": {
+                            "type": "mean_rebate_recovery",
+                            "params": {"min_repaired_rebate": -0.05},
+                        },
                         "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}],
                     },
                 },

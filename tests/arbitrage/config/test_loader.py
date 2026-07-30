@@ -88,7 +88,7 @@ def test_full_json_parses(cfg_path):
         "strategy": {
             "strategies": {
                 "tennis_prematch": {
-                    "arbitrage_tree": {"self_hits": None, "sub_conditions": [], "checktion": [], "actions": []},
+                    "arbitrage_tree": {"self_hits": None, "sub_conditions": [], "checktion": {}, "actions": []},
                 },
             },
             "bindings": [{"scope": "competition:ATP", "strategy_id": "tennis_prematch"}],

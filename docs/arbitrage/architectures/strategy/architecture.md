@@ -12,9 +12,10 @@
 | `StrategyEvaluator` | NT `Strategy` | 唯一运行时策略:订触发事件(`OrderBookDelta` / `MatchedPair` / PMS 比赛状态)→ 查 `StrategyRegistry` → 构造当前 `EvalContext` → 并行 evaluate arb+comp 树 → fire action；所有订单经原生 `submit_order` |
 | `StrategyRegistry` | 普通类 | 按 scope 索引策略;`get_for(pair_id) → Strategy or None`,按**挂载存在锁定**:具体比赛挂了就锁定本 scope,即使没命中也**不降级**(Q21-a) |
 | `Strategy` | 领域 dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }`；仅是配置树，不逐个注册为 NT Strategy |
-| `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: list[Check], actions: list[Action] }` |
+| `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: CheckExpr, actions: list[Action] }` |
 | `BoolExpr` / `StateQuery` | DSL | self_hits 的无状态布尔查询树；叶子直接读取当前 `EvalContext`，支持 AND/OR/NOT 嵌套 |
-| `Check` / `Action` | abstract | `Check.passes(ctx) -> bool`;`async Action.execute(ctx)` 由 Evaluator 按顺序 await |
+| `CheckExpr` / `Check` | DSL / abstract | checktion 的有副作用布尔树；`Check.passes(ctx) -> bool` 为叶子，支持 AND/OR/NOT 嵌套及 `scratch` 事务 |
+| `Action` | abstract | `async Action.execute(ctx)` 由 Evaluator 按顺序 await |
 | `EvalContext` | dataclass | 每轮评估上下文；Strategy 随用随读 live Cache，只冻结评估开始时的 pair order/position digests 并透传 Execution |
 
 **职责边界(继承自前期锁定)**:
@@ -55,7 +56,8 @@ flowchart TB
 
 要点:
 - **OBD 触发闸(2026-07-26,已落地)**:`on_order_book_deltas` 只让 **OE/SE(decimal 赔率盘)** 的 OBD 触发机会评估;**PM(probability 概率盘)的 OBD 不驱动评估**(`is_probability_odds_venue(venue)` 为真即 `return`)。语义边界:**只跳过"触发评估"这一步**——PM 订阅不动、book 照常更新(NT 在本回调前已更新 cache),OE/SE 触发时仍读到 PM 的最新盘口。理由(避免基于陈旧对侧价触发)与决策见 refactor.md 修订记录 #278;测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_*`。⚠️ 此方向 2026-07-26 由"PM 触发/OE-SE 不触发"翻转而来;历史代码/注释若仍称 PM 驱动为过时。
-- evaluate **无副作用**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做
+- evaluate **不执行 Action**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做；
+  Check 只可写本树独占的 per-eval `ctx.scratch`
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)
 - **树间取舍(套利优先)#277 起在 `candi_select` 内做**(见 §4.2):顶层只选跑哪条链(arb 命中跑 arb 链,否则 comp 链);arb 命中且 comp 同轮命中时,comp legs 包成 recovery candidate 注入,arb 候选被最小下注门控全部淘汰时同轮落到补救
 - order/position digests 不是对象快照；它们只用于 Execution release 前检测评估窗口内订单或
@@ -85,14 +87,14 @@ class AndExpr(BoolExpr):  # 同 OrExpr / NotExpr
 `StateQuery` 与 `Check` 分开注册：前者只能查询状态并返回 bool；后者属于机会核查，可向
 `ctx.scratch` 写本轮派生数据。框架不维护任何 signal 状态。
 
-### 3.2 `Condition` / `Check` / `Action`
+### 3.2 `Condition` / `CheckExpr` / `Check` / `Action`
 
 ```python
 @dataclass
 class Condition:
     self_hits: BoolExpr                        # 当前状态 guard
     sub_conditions: list["Condition"] = field(default_factory=list)   # 子组合互斥
-    checktion: list["Check"] = field(default_factory=list)            # 决策核查(AND,空 list = 默认通过)
+    checktion: CheckExpr = field(default_factory=AndCheckExpr)         # 空 AND = 默认通过
     actions: list["Action"] = field(default_factory=list)              # 命中后按顺序执行
 
 @dataclass
@@ -100,14 +102,32 @@ class EvalResult:
     hit: bool
     pending_actions: list["Action"] = field(default_factory=list)
 
-class Check(ABC):
+class CheckExpr(ABC):
+    @abstractmethod
+    def eval(self, ctx: "EvalContext") -> bool: ...
+
+class Check(CheckExpr):
     @abstractmethod
     def passes(self, ctx: "EvalContext") -> bool: ...
+
+class AndCheckExpr(CheckExpr): ...  # 同 OrCheckExpr / NotCheckExpr
 
 class Action(ABC):
     @abstractmethod
     async def execute(self, ctx: "EvalContext") -> None: ...
 ```
+
+`CheckExpr` 与 `BoolExpr` 使用相同的 AND/OR/NOT 认知模型，但不能共用实现：
+`StateQuery` 是纯查询，`Check` 会把 `legs/candidates` 等派生结果写入 `ctx.scratch`。
+`CheckExpr` 因而规定以下事务语义：
+
+- 所有节点同步执行，并按配置顺序短路，不并行调用 Check。
+- Check 叶子返回 False 或抛异常时，回滚本叶子对 `scratch` 的修改。
+- AND 任一子表达式失败时，回滚整个 AND；全部成功才提交所有顺序产物。因此
+  `mean_rebate AND require_cross_venue` 的后者能读取前者生成的 legs。
+- OR 的失败分支均从进入 OR 时的同一份 `scratch` 求值；首个成功分支提交并短路，
+  后续分支不执行。
+- NOT 只取反布尔结果，无论子表达式命中与否都丢弃其 `scratch` 修改。
 
 ### 3.3 `Strategy` / `StrategyRegistry`
 
@@ -158,7 +178,7 @@ def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
             if res.hit:
                 return res            # 互斥:命中即停(Q21)
         return EvalResult(hit=False)
-    if all(c.passes(ctx) for c in cond.checktion):
+    if cond.checktion.eval(ctx):
         return EvalResult(hit=True, pending_actions=cond.actions)
     return EvalResult(hit=False)
 
@@ -323,10 +343,11 @@ build_check({"type": name, "params": {...}})   # → cls(**params);未注册/参
 build_action(...)                              # 同上;旧 action share 等未知参数 fail-fast
 ```
 
-**JSON loader**(`src/arbitrage/strategy/json_loader.py`):3 个递归解析 + 1 个 registry 装配。
+**JSON loader**(`src/arbitrage/strategy/json_loader.py`):递归解析 + registry 装配。
 
 ```python
 bool_expr_from_json(spec)        # StateQuery spec 或 {"AND"|"OR"|"NOT": ...} → BoolExpr
+check_expr_from_json(spec)       # Check spec 或 {"AND"|"OR"|"NOT": ...} → CheckExpr
 condition_from_json(spec)        # 递归 sub_conditions / checktion / actions
 strategy_from_json(id, spec, scope_key)  # 组装 Strategy
 build_strategy_registry(cfg.strategy)    # bindings → StrategyRegistry
@@ -334,6 +355,7 @@ build_strategy_registry(cfg.strategy)    # bindings → StrategyRegistry
 
 **缺值兜底**(Q21 必填字段):
 - `self_hits` 缺 / None → `AndExpr()`(空 AND = vacuous truth,让下游决定 hit)
+- `checktion` 缺 / None / `{}` → `AndCheckExpr()`(空 AND，默认通过)
 - `compensation_tree` 缺 / None → 永 False no-op `Condition(self_hits=OrExpr())`(空 OR,从不 fire)
 
 **scope 字符串格式**:`pair:<id>`(或别名 `pair_id:<id>`)/ `competition:<name>` / `sport:<name>`。
@@ -472,9 +494,10 @@ NT `Strategy`，负责把 spec 转成 NT Order，并通过原生 `submit_order` 
 ```json
 {
   "compensation_tree": {
-    "checktion": [
-      {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}}
-    ],
+    "checktion": {
+      "type": "mean_rebate_recovery",
+      "params": {"min_repaired_rebate": -0.05}
+    },
     "actions": [
       {"type": "place_bets", "params": {"intent": "recovery"}}
     ]
@@ -632,6 +655,8 @@ sequenceDiagram
   `self_hits` 叶子直接查询 `EvalContext`，无 SignalStore。覆盖见 `test_bool_expr.py` /
   `test_json_loader.py` / `test_check_action_registry.py`。
 - [x] `Condition` / `EvalResult` dataclass + 抽象 `Check` / `Action`(`condition.py`)+ condition tree 测试(`test_condition.py`)
+- [x] `CheckExpr` / `AndCheckExpr` / `OrCheckExpr` / `NotCheckExpr`；checktion 支持
+  AND/OR/NOT 顺序短路，未采用分支的 `scratch` 事务回滚
 - [x] `Strategy` / `ScopeKey` dataclass + `StrategyRegistry`(`registry.py`)+ scope 优先级 + 挂载存在锁定测试(`test_registry.py` / `test_json_loader.py`)
 
 **评估器(NT Strategy)**:

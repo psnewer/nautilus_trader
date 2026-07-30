@@ -3,9 +3,10 @@ Strategy JSON loader(slice 5,Q25)—— JSON 描述 → Q21 in-memory 对象。
 
 设计见 `docs/arbitrage/architectures/_cross-cutting/configuration.md §7`。
 
-3 个递归解析函数 + 1 个装配函数 + 1 个 registry builder:
+4 个递归解析函数 + 1 个装配函数 + 1 个 registry builder:
 
   bool_expr_from_json(spec)    → BoolExpr             递归 {AND/OR/NOT/StateQuery}
+  check_expr_from_json(spec)   → CheckExpr            递归 {AND/OR/NOT/Check}
   condition_from_json(spec)    → Condition            递归 sub_conditions
   strategy_from_json(...)      → Strategy             arbitrage_tree + compensation_tree
   build_strategy_registry(cfg) → StrategyRegistry     消费 ArbConfig.strategy.{strategies, bindings}
@@ -25,13 +26,18 @@ from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
 from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
+from src.arbitrage.strategy.condition import AndCheckExpr
+from src.arbitrage.strategy.condition import CheckExpr
 from src.arbitrage.strategy.condition import Condition
+from src.arbitrage.strategy.condition import NotCheckExpr
+from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
 
 
 # 默认值兜底(模块级常量,避免每次 new)
 _DEFAULT_SELF_HITS = AndExpr()      # 空 AND → True(self_hits 缺时让下游决定)
+_DEFAULT_CHECKTION = AndCheckExpr()  # 空 AND → True(checktion 缺时默认通过)
 _DEFAULT_NEVER_HIT = OrExpr()       # 空 OR → False(compensation 缺时永不 fire)
 _NOOP_COMPENSATION_TREE = Condition(self_hits=_DEFAULT_NEVER_HIT)
 
@@ -80,6 +86,48 @@ def bool_expr_from_json(spec) -> BoolExpr:
     )
 
 
+def check_expr_from_json(spec) -> CheckExpr:
+    """Check / {"AND": [...]} / {"OR": [...]} / {"NOT": <sub>} 递归。"""
+    if spec is None or spec == {} or spec == "":
+        return _DEFAULT_CHECKTION
+
+    if not isinstance(spec, dict):
+        raise StrategyConfigError(
+            f"checktion expression must be dict, got {type(spec).__name__}: {spec!r}",
+        )
+
+    if "type" in spec:
+        unknown = set(spec) - {"type", "params"}
+        if unknown:
+            raise StrategyConfigError(
+                f"check spec has unknown fields: {sorted(unknown)}",
+            )
+        return build_check(spec)
+
+    keys = list(spec.keys())
+    if len(keys) != 1:
+        raise StrategyConfigError(
+            f"checktion expression must have exactly one of AND/OR/NOT, or be a check, got {keys}",
+        )
+    key = keys[0]
+    val = spec[key]
+
+    if key == "AND":
+        if not isinstance(val, list):
+            raise StrategyConfigError(f"checktion AND value must be list, got {val!r}")
+        return AndCheckExpr(*[check_expr_from_json(child) for child in val])
+    if key == "OR":
+        if not isinstance(val, list):
+            raise StrategyConfigError(f"checktion OR value must be list, got {val!r}")
+        return OrCheckExpr(*[check_expr_from_json(child) for child in val])
+    if key == "NOT":
+        return NotCheckExpr(check_expr_from_json(val))
+
+    raise StrategyConfigError(
+        f"unknown checktion expression key '{key}' (expected AND/OR/NOT or a registered check)",
+    )
+
+
 def condition_from_json(spec) -> Condition:
     """递归解 Condition 树。
 
@@ -87,7 +135,7 @@ def condition_from_json(spec) -> Condition:
       {
         "self_hits":      <bool_expr_spec> | None,
         "sub_conditions": [<condition_spec>, ...],
-        "checktion":      [{"type": ..., "params": {...}}, ...],
+        "checktion":      <check_expr_spec> | None,
         "actions":        [{"type": ..., "params": {...}}, ...],  # 依次执行
       }
     """
@@ -103,10 +151,7 @@ def condition_from_json(spec) -> Condition:
         raise StrategyConfigError(f"sub_conditions must be list, got {sub_specs!r}")
     sub_conditions = [condition_from_json(s) for s in sub_specs]
 
-    check_specs = spec.get("checktion") or []
-    if not isinstance(check_specs, list):
-        raise StrategyConfigError(f"checktion must be list, got {check_specs!r}")
-    checktion = [build_check(c) for c in check_specs]
+    checktion = check_expr_from_json(spec.get("checktion"))
 
     actions_spec = spec.get("actions") or []
     if not isinstance(actions_spec, list):

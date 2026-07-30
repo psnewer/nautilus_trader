@@ -245,7 +245,12 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
         "arbitrage_tree": {
           "self_hits": {},
           "sub_conditions": [],
-          "checktion": [{"type": "rebate_check", "params": {"min_rate": 0.03}}],
+          "checktion": {
+            "AND": [
+              {"type": "rebate_check", "params": {"min_rate": 0.03}},
+              {"type": "require_cross_venue"}
+            ]
+          },
           "actions": [{"type": "place_bet", "params": {}}]
         },
         "compensation_tree": null
@@ -487,7 +492,13 @@ def bool_expr_from_json(spec) -> BoolExpr:
 `self_hits` 缺失、`null` 或 `{}` 时为空 AND，默认通过。框架不再维护 SignalStore；
 StateQuery 每次直接读取当前 `EvalContext`。
 
-### 7.3 Condition JSON 解析(`src/arbitrage/strategy/condition.py` 扩展)
+### 7.3 CheckExpr / Condition JSON 解析
+
+`checktion` 是单一 Check 表达式，不是数组。叶子为
+`{"type": "<check>", "params": {...}}`，组合节点沿用
+`{"AND": [...]}` / `{"OR": [...]}` / `{"NOT": <sub>}`。缺失、`null` 或 `{}` 表示空
+AND，默认通过。求值同步、按配置顺序短路；只有最终命中分支对 `ctx.scratch` 的修改会提交，
+具体事务语义以 strategy §3.2 为准。
 
 ```python
 def condition_from_json(spec: dict | None) -> Condition | None:
@@ -495,7 +506,7 @@ def condition_from_json(spec: dict | None) -> Condition | None:
       {
         "self_hits": <bool_expr> | None,
         "sub_conditions": [<spec>, <spec>, ...],   # 递归
-        "checktion":  [{"type": ..., "params": ...}, ...],
+        "checktion":  <check_expr> | None,
         "actions":    [{"type": ..., "params": ...}, ...],
       }
     """

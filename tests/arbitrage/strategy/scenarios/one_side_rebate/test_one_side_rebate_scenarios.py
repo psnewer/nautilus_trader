@@ -16,6 +16,7 @@ from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.condition import Action
+from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Condition
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
@@ -114,12 +115,12 @@ def test_existing_position_with_arb_and_recovery_fires_arbitrage_first():
     comp_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
     arb_tree = Condition(
         self_hits=AndExpr(),
-        checktion=[OneSideRebateCheck(min_rate=0.09, share=100.0)],
+        checktion=AndCheckExpr(OneSideRebateCheck(min_rate=0.09, share=100.0)),
         actions=[_MarkerAction("arbitrage")],
     )
     comp_tree = Condition(
         self_hits=AndExpr(),
-        checktion=[MeanRebateRecoveryCheck(min_repaired_rebate=0.04)],
+        checktion=AndCheckExpr(MeanRebateRecoveryCheck(min_repaired_rebate=0.04)),
         actions=[_MarkerAction("recovery")],
     )
 
@@ -138,12 +139,12 @@ def test_existing_position_with_recovery_only_fires_compensation():
     comp_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
     arb_tree = Condition(
         self_hits=AndExpr(),
-        checktion=[OneSideRebateCheck(min_rate=0.20, share=100.0)],
+        checktion=AndCheckExpr(OneSideRebateCheck(min_rate=0.20, share=100.0)),
         actions=[_MarkerAction("arbitrage")],
     )
     comp_tree = Condition(
         self_hits=AndExpr(),
-        checktion=[MeanRebateRecoveryCheck(min_repaired_rebate=0.04)],
+        checktion=AndCheckExpr(MeanRebateRecoveryCheck(min_repaired_rebate=0.04)),
         actions=[_MarkerAction("recovery")],
     )
 
