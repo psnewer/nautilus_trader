@@ -55,7 +55,7 @@ flowchart TB
 ```
 
 要点:
-- **OBD 触发闸(2026-07-26,已落地)**:`on_order_book_deltas` 只让 **OE/SE(decimal 赔率盘)** 的 OBD 触发机会评估;**PM(probability 概率盘)的 OBD 不驱动评估**(`is_probability_odds_venue(venue)` 为真即 `return`)。语义边界:**只跳过"触发评估"这一步**——PM 订阅不动、book 照常更新(NT 在本回调前已更新 cache),OE/SE 触发时仍读到 PM 的最新盘口。理由(避免基于陈旧对侧价触发)与决策见 refactor.md 修订记录 #278;测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_*`。⚠️ 此方向 2026-07-26 由"PM 触发/OE-SE 不触发"翻转而来;历史代码/注释若仍称 PM 驱动为过时。
+- **OBD 触发(2026-07-30,已落地)**:`on_order_book_deltas` 不按 venue 类型过滤；PM(probability)与 OE/SE(decimal)的已订阅 OBD 都可触发机会评估。NT 在回调前已更新对应 order book cache，Evaluator 继续复用 `instrument_id → PairRegistry → pair_id` 路由及 per-pair 串行门控。修订理由见 refactor.md #297；测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_triggers_eval`。
 - evaluate **不执行 Action**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做；
   Check 只可写本树独占的 per-eval `ctx.scratch`
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)

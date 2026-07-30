@@ -300,7 +300,7 @@ def test_evaluator_injects_sports_store_into_eval_context():
     assert action.value is not None
 
 
-# ── OBD 触发闸:只让 OE/SE(decimal)驱动机会评估,PM(probability)不驱动 ──────────
+# ── OBD 触发:所有 tradable venue 均可驱动机会评估 ─────────────────────────
 def _obd(iid_str: str):
     """最小 OrderBookDeltas 替身:on_order_book_deltas 只读 `.instrument_id`。"""
     return SimpleNamespace(instrument_id=InstrumentId.from_str(iid_str))
@@ -319,8 +319,8 @@ def test_obd_from_decimal_venue_triggers_eval():
     assert arb_action.calls == 1
 
 
-def test_obd_from_probability_venue_does_not_trigger_eval():
-    """PM(probability 概率盘)的 OBD **不**触发评估(book 照常更新,仅跳过触发)。"""
+def test_obd_from_probability_venue_triggers_eval():
+    """PM(probability 概率盘)的 OBD 同样触发机会评估。"""
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
     arb_action = _RecordingAction("arb")
@@ -329,8 +329,7 @@ def test_obd_from_probability_venue_does_not_trigger_eval():
     actor.on_order_book_deltas(_obd("H.POLYMARKET"))
     _run(_drain(loop))
 
-    assert arb_action.calls == 0
-    assert loop.tasks == []                # 连 evaluate task 都没创建
+    assert arb_action.calls == 1
 
 
 # ── eval.2: 无挂载 → no-op,不 fire ───────────────────────────────

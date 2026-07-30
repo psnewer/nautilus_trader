@@ -205,9 +205,9 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_evaluator.py` +1 `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:PMSPORTS anchor id 不触发 OBD 订阅。
 - ✅ 旧 PM/OE projection 字段已从 `MatchedPair` schema 删除;Strategy 当前只消费 `tradable_instrument_ids`,不再有 projection fallback 分支需要覆盖。
 
-**OBD 触发闸方向(2026-07-26 #278):只让 OE/SE 驱动评估,PM 不驱动**(设计见 strategy architecture §2 要点)。订阅/book 更新不受影响,仅"触发评估"一步按 venue 过滤。
+**OBD 触发(2026-07-30 #297):所有 tradable venue 均可驱动评估**(设计见 strategy architecture §2 要点)。PM/OE/SE 的订阅与 book 更新路径不变，OBD 到达后统一按 instrument 路由到 pair。
 - ✅ `test_evaluator.py` `test_obd_from_decimal_venue_triggers_eval`:OE/SE(decimal)的 OBD → 评估 fire 1 次。
-- ✅ `test_evaluator.py` `test_obd_from_probability_venue_does_not_trigger_eval`:PM(probability)的 OBD → 不 fire,连 evaluate task 都不创建。
+- ✅ `test_evaluator.py` `test_obd_from_probability_venue_triggers_eval`:PM(probability)的 OBD → 评估 fire 1 次。
 
 **PMSPORTS event anchor 部分落地(#127/#129)**:当 MatchedPair 包含 `.PMSPORTS` anchor ids 时,
 `_ensure_obd_subscribed` 已只消费 `tradable_instrument_ids`,跳过 `.PMSPORTS`。Strategy live
