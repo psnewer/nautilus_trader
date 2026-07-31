@@ -27,6 +27,7 @@ from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.venues import normalize_order_price
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -880,9 +881,10 @@ def se_order_to_place_bets_payload(
         uuid_suffix = "".join(random.choice(alphabet) for _ in range(5))
 
     if market_order_enabled:
-        odds_price = 1.01 if order.side == "BACK" else _clamp_odds_price(order.price)
+        planned_price = 1.01 if order.side == "BACK" else order.price
     else:
-        odds_price = _clamp_odds_price(order.price)
+        planned_price = order.price
+    odds_price = normalize_order_price(SHARPEXCH, planned_price, order.side)
     venue_size = round(order.size, 2)
     bet_uuid = (
         f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{timestamp_ms}-{uuid_suffix}"
@@ -1228,12 +1230,3 @@ def _coerce_handicap(value) -> float:
     if handicap != handicap or handicap == float(null_handicap()):
         return 0.0
     return handicap
-
-
-def _clamp_odds_price(price: float) -> float:
-    odds_price = round(price, 2) if price > 0 else 1.01
-    if odds_price < 1.01:
-        return 1.01
-    if odds_price > 1000:
-        return 1000
-    return odds_price

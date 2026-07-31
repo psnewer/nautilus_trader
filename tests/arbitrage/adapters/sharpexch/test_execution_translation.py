@@ -66,7 +66,7 @@ def test_place_bets_payload_keeps_usd_size():
     assert bet["selectionId"] == 111
     assert bet["handicap"] == 0
     assert bet["side"] == "BACK"
-    assert bet["price"] == 2.35
+    assert bet["price"] == 2.36
     assert bet["size"] == pytest.approx(20.0)
     assert bet["persistenceType"] == "LAPSE"
     assert bet["page"] == "competition"
@@ -89,6 +89,17 @@ def test_market_order_price_is_applied_at_place_bets_boundary(side, expected_pri
         timestamp_ms=123456,
         market_order_enabled=True,
     )
+
+    assert payload["1.259502313"][0]["price"] == expected_price
+
+
+@pytest.mark.parametrize(
+    ("side", "expected_price"),
+    [(OrderSide.BUY, 2.46), (OrderSide.SELL, 2.44)],
+)
+def test_place_bets_payload_normalizes_to_segmented_odds_tick(side, expected_price):
+    order = nt_order_to_legacy_order(_nt(side=side, price=2.45), _inst())
+    payload, _ = se_order_to_place_bets_payload(order, fx=1.0, timestamp_ms=123456)
 
     assert payload["1.259502313"][0]["price"] == expected_price
 

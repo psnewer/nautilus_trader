@@ -18,6 +18,7 @@ from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import is_venue_enabled
 from src.arbitrage.common.venues import leg_economics
+from src.arbitrage.common.venues import normalize_order_price
 from src.arbitrage.common.venues import order_exposure_probability
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import outcome_for_position
@@ -179,6 +180,49 @@ def test_order_exposure_probability(venue, side, price, expected):
 )
 def test_order_required_balance(venue, side, quantity, price, expected):
     assert order_required_balance(venue, quantity, price, side) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+@pytest.mark.parametrize(
+    ("price", "buy_expected", "sell_expected"),
+    [
+        (1.015, 1.02, 1.01),
+        (2.45, 2.46, 2.44),
+        (3.02, 3.05, 3.00),
+        (4.05, 4.10, 4.00),
+        (6.10, 6.20, 6.00),
+        (10.25, 10.50, 10.00),
+        (20.50, 21.00, 20.00),
+        (31.00, 32.00, 30.00),
+        (52.00, 55.00, 50.00),
+        (105.00, 110.00, 100.00),
+    ],
+)
+def test_decimal_order_price_uses_segmented_tick_ladder(
+    venue,
+    price,
+    buy_expected,
+    sell_expected,
+):
+    assert normalize_order_price(venue, price, "BUY") == buy_expected
+    assert normalize_order_price(venue, price, "SELL") == sell_expected
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+@pytest.mark.parametrize("price", [1.01, 2.00, 3.00, 4.00, 6.00, 10.00, 20.00, 30.00, 50.00, 100.00, 1000.00])
+def test_decimal_order_price_preserves_valid_band_boundaries(venue, price):
+    assert normalize_order_price(venue, price, "BACK") == price
+    assert normalize_order_price(venue, price, "LAY") == price
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+def test_decimal_order_price_clamps_to_venue_bounds(venue):
+    assert normalize_order_price(venue, 0.5, "SELL") == 1.01
+    assert normalize_order_price(venue, 1200.0, "BUY") == 1000.0
+
+
+def test_probability_order_price_does_not_use_decimal_tick_ladder():
+    assert normalize_order_price(POLYMARKET, 0.425, "BUY") == 0.425
 
 
 def test_polymarket_helpers_use_probability_share_semantics():

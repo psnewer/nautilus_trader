@@ -18,6 +18,7 @@ from playwright.async_api import Page
 from nautilus_trader.adapters.orbitexch.web import oe_csrf_token
 
 from src.arbitrage.common.execution_config import ExecutionConfig
+from src.arbitrage.common.venues import normalize_order_price
 
 
 @dataclass(frozen=True)
@@ -107,17 +108,15 @@ class OrbitExchExecutor:
             # 转换方向
             side = "BACK" if order.side == "BACK" else "LAY"
             if self.config.market_order_enabled:
-                odds_price = 1.01 if side == "BACK" else round(order.price, 2)
-                odds_price = min(max(odds_price, 1.01), 1000.0)
+                planned_price = 1.01 if side == "BACK" else order.price
             else:
                 # order.price 已经是 OrbitExch 的 decimal 赔率。
-                odds_price = round(order.price, 2) if order.price > 0 else 1.01
-                if odds_price < 1.01:
-                    odds_price = 1.01
+                planned_price = order.price if order.price > 0 else 1.01
+                if planned_price < 1.01:
                     self._log.warning(f"Adjusted odds_price to minimum 1.01 (was {order.price})")
-                elif odds_price > 1000:
-                    odds_price = 1000
+                elif planned_price > 1000:
                     self._log.warning(f"Adjusted odds_price to maximum 1000 (was {order.price})")
+            odds_price = normalize_order_price("ORBITEXCH", planned_price, side)
 
             # 生成唯一的 bet UUID
             bet_uuid = f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{int(time.time() * 1000)}"

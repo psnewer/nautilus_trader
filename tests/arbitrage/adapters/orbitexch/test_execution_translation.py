@@ -153,6 +153,35 @@ def test_oe_market_order_price_is_applied_at_payload_boundary(side, expected_pri
     assert captured["payload"]["1.23"][0]["price"] == expected_price
 
 
+@pytest.mark.parametrize(
+    ("side", "expected_price"),
+    [("BACK", 2.46), ("LAY", 2.44)],
+)
+def test_oe_payload_normalizes_to_segmented_odds_tick(side, expected_price):
+    import asyncio
+
+    captured = {}
+
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
+    class _Page:
+        def context(self):
+            return _Context()
+
+        async def evaluate(self, _script, payload):
+            captured["payload"] = payload["payload"]
+            bet_uuid = payload["payload"]["1.23"][0]["betUuid"]
+            return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
+
+    executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=lambda: 1.0)
+    result = asyncio.run(executor.place_order(_request(side=side, price=2.45), _Page()))
+
+    assert result["success"] is True
+    assert captured["payload"]["1.23"][0]["price"] == expected_price
+
+
 def test_oe_executor_preserves_transport_error_marker():
     import asyncio
 

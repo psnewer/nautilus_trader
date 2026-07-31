@@ -304,6 +304,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **.3**:负数、`>=1`、NaN、Infinity 配置 fail-fast
 - **.4**:PM 互斥库存拆为 SELL+BUY 后再应用 spread，两条子单 qty 保持原 sizing 结果
 - **.5**:per-venue `venue_required_balance` 使用 spread 后的最终价格
+- **.6**:Action 保留 spread 反算后的计划价格，不重复执行 OE/SE 分段赔率量化；合法档位只由
+  Execution adapter 在最终 `placeBets` payload 边界保证
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链

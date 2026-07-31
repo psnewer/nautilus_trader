@@ -253,7 +253,9 @@ PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportun
   `placeBets` payload 把 BACK price 设为 `1.01`；LAY 从真实执行 instrument 的 NT book
   `bids()` 最后一档读取当前最差 LAY 深度，再经 Venue Registry 还原成 decimal odds。
   缺 book/深度或换算失败时保留 Strategy 计划 LAY 价，绝不退到固定 `100`。side 和 stake
-  不变。该转换不伪装为 PM FOK，也不改变入站 CURRENT_BETS 的真实成交价。
+  不变。最终 payload price 无论来自计划限价还是市价转换，都经 Venue Registry
+  `normalize_order_price` 按 OE/SE 共用分段梯度做防御性量化；不再自行两位小数四舍五入。
+  该转换不伪装为 PM FOK，也不改变入站 CURRENT_BETS 的真实成交价。
 
 Strategy 始终记录并提交计划 price/qty；OE/SE LAY 深度只在 ExecutionClient 最终 page write
 前读取。显式 debug `price_overrides` 仍只负责构造计划订单；开启市价提交后，最终 venue

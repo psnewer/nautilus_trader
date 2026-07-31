@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Collection
 from dataclasses import dataclass
+from decimal import Decimal
 from importlib import import_module
 from typing import Literal
 
@@ -24,6 +26,26 @@ _LEG_KEY_ALIASES = {
     "oe": ORBITEXCH,
     "se": SHARPEXCH,
 }
+
+_DECIMAL_ODDS_TICKS_CENTS = (
+    *(
+        tick
+        for start, stop, step in (
+            (101, 200, 1),
+            (200, 300, 2),
+            (300, 400, 5),
+            (400, 600, 10),
+            (600, 1000, 20),
+            (1000, 2000, 50),
+            (2000, 3000, 100),
+            (3000, 5000, 200),
+            (5000, 10000, 500),
+            (10000, 100000, 1000),
+        )
+        for tick in range(start, stop, step)
+    ),
+    100000,
+)
 
 
 @dataclass(frozen=True)
@@ -352,3 +374,29 @@ def order_required_balance(venue: str, quantity: float, price: float, side: str)
         price,
         is_lay=descriptor.odds_model == "decimal" and side_name == "SELL",
     )
+
+
+def normalize_order_price(venue: str, price: float, side: str) -> float:
+    """按 venue 下单规则把价格保守量化到合法档位。
+
+    Decimal venue 使用 OE/SE 共用的分段赔率梯度。BACK/BUY 向上取整，LAY/SELL
+    向下取整，避免量化后接受比计划更差的成交价格。Probability venue 原值返回。
+    """
+    if not is_decimal_odds_venue(venue):
+        return float(price)
+
+    side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
+    if side_name in {"BUY", "BACK"}:
+        round_up = True
+    elif side_name in {"SELL", "LAY"}:
+        round_up = False
+    else:
+        raise ValueError(f"Unsupported order side for decimal odds: {side!r}")
+
+    cents = Decimal(str(price)) * 100
+    index = bisect_left(_DECIMAL_ODDS_TICKS_CENTS, cents)
+    if index >= len(_DECIMAL_ODDS_TICKS_CENTS):
+        index = len(_DECIMAL_ODDS_TICKS_CENTS) - 1
+    elif not round_up and Decimal(_DECIMAL_ODDS_TICKS_CENTS[index]) != cents:
+        index = max(0, index - 1)
+    return _DECIMAL_ODDS_TICKS_CENTS[index] / 100.0

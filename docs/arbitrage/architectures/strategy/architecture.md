@@ -505,7 +505,8 @@ NT `Strategy`，负责把 spec 转成 NT Order，并通过原生 `submit_order` 
   限价、不改变既定 qty。调整后优先使用 instrument
   `min_price/max_price`；PM 未显式给边界时按 `[price_increment, 1-price_increment]`，
   decimal venue 未显式给边界时按 `[1.01, 1000]` 裁剪。`price_overrides` 先于 spread；
-  资金需求按 spread 后价格计算。若 `market_order_enabled=true`，Execution adapter 的最终
+  资金需求按 spread 后的计划价格计算。decimal 分段赔率量化属于 Execution adapter 的最终
+  payload 边界，不在 Action 重复执行。若 `market_order_enabled=true`，Execution adapter 的最终
   市价转换仍可覆盖该限价，Strategy 不读取 execution 配置。
 - Action ACK 收口参数(#298):`enable_timeout` 必须是 JSON boolean；缺失/`true` 保持
   submit session 等待全成、失败终态或 watchdog 的既有行为；显式 `false` 时

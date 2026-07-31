@@ -135,6 +135,7 @@ def outcome_for_position(
 def leg_economics(venue: str, price: float, size: float, *, is_lay: bool = False) -> LegEconomics: ...
 def order_liability(venue: str, quantity: float, price: float, *, is_lay: bool = False) -> float: ...
 def order_required_balance(venue: str, quantity: float, price: float, side: str) -> float: ...
+def normalize_order_price(venue: str, price: float, side: str) -> float: ...
 ```
 
 ### 4.1 净 Position → outcome 经济腿(#230)
@@ -205,6 +206,29 @@ reconciliation 已把同 selection 的 BACK/LAY 聚合为一个 LONG/SHORT 净 P
   不直接写 `cfg.venues.polymarket/orbitexch/sharpexch.enabled` 路径,除非正在构造该 venue 的专属 config。
 - discovery context 通过 descriptor 的 `discovery_config_builder` 派生 `discovery_config_by_venue`;
   新增 tradable venue 时在 descriptor 声明 builder,dispatcher 不再维护 OE/SE venue 列表。
+
+### 4.2 Decimal venue 分段赔率梯度(#299)
+
+OE 与 SE 使用同一套 decimal odds 合法档位:
+
+| 赔率区间 | 增量 |
+|---|---:|
+| `[1, 2)` | `0.01` |
+| `[2, 3)` | `0.02` |
+| `[3, 4)` | `0.05` |
+| `[4, 6)` | `0.10` |
+| `[6, 10)` | `0.20` |
+| `[10, 20)` | `0.50` |
+| `[20, 30)` | `1` |
+| `[30, 50)` | `2` |
+| `[50, 100)` | `5` |
+| `[100, 1000]` | `10` |
+
+`normalize_order_price` 是下单价格量化的唯一入口。BUY/BACK 向上取最近合法档位，
+SELL/LAY 向下取最近合法档位，使量化后的限价不比 Strategy 计划价更激进；超出范围时夹到
+`[1.01, 1000]`。Strategy 与 Risk 保留计划价格；OE/SE adapter 只在写最终 `placeBets`
+payload 前调用该 helper。分段梯度不能用单一 NT `price_increment` 表达，禁止各 adapter
+自行 `round(price, 2)`。
 
 ---
 

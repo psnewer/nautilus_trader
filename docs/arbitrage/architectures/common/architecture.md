@@ -146,6 +146,7 @@ runtime 流程。
 | `outcome_for_position(venue, outcomes, selection_role, claim, position_side)` | 将 NT 当前净 Position 归属到 pair 的经济 outcome;decimal SHORT 映射到二元 complement,其它无法确认的 side fail-closed |
 | `LegEconomics` / `leg_economics(venue, price, size, is_lay=False)` | 统一计算 probability BACK、decimal BACK/LAY 的 `share_if_wins/profit_if_wins/loss_if_loses` |
 | `order_liability(venue, quantity, price, is_lay=False)` | 统一返回订单最大本金占用:probability=`qty×price`,decimal BACK=`qty`,decimal LAY=`qty×(price−1)`;Risk 余额门控与 Execution accepted 预扣共用 |
+| `normalize_order_price(venue, price, side)` | 将 decimal venue 价格按共用分段赔率梯度量化；BUY/BACK 向上、SELL/LAY 向下；probability venue 原值返回。完整档位契约见 `_cross-cutting/venues.md §4.2` |
 
 **约束**:
 - registry 不抹平真实 venue identity;account、instrument、position、liveness 仍按真实 venue 记录。

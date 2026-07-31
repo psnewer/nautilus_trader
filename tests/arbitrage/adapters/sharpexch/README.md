@@ -13,6 +13,9 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 ## 用例
 
+`test_execution_translation.py` 锁定最终 `placeBets` payload 使用 OE/SE 共用分段赔率梯度；
+曾导致服务端拒单的 `2.45` 必须归一为 BACK `2.46`、LAY `2.44`，且 stake/fx 口径不变。
+
 ### se-adapter-1.1:配置 schema 与 env 注入
 
 **前置**:环境变量包含 `SHARPEXCH_USERNAME` / `SHARPEXCH_PASSWORD`。
