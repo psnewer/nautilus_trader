@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 
 from nautilus_trader.model.enums import PositionSide
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_known_venue
@@ -73,8 +74,11 @@ class _CalcLeg:
 class MeanRebateRecoveryCheck(Check):
     """补齐缺口后,若最差 outcome rebate 达标则写 recovery legs。"""
 
-    def __init__(self, min_repaired_rebate: float = -0.05) -> None:
+    def __init__(self, min_repaired_rebate: float = -0.05, venue_select: bool = False) -> None:
         self._min_repaired_rebate = float(min_repaired_rebate)
+        # venue_select=True:补救腿只在 PM 里选(某 outcome 无 PM 报价则该 role 缺席 →
+        # 后续 roles_present 校验 fail-closed,不补)。缺省/False 保持现状:各 venue 取最优赔率。
+        self._venue_select = bool(venue_select)
 
     def passes(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:
@@ -107,7 +111,7 @@ class MeanRebateRecoveryCheck(Check):
         if current and min(current.values()) >= self._min_repaired_rebate:
             return False
 
-        candidates = _best_candidates_by_role(ctx, valid_outcomes)
+        candidates = _best_candidates_by_role(ctx, valid_outcomes, pm_only=self._venue_select)
         roles_present = sorted(candidates.keys())
         if roles_present != sorted(valid_outcomes):
             return False
@@ -201,12 +205,24 @@ def _actual_share_by_role(legs: list[_CalcLeg]) -> dict[str, float]:
     return result
 
 
-def _best_candidates_by_role(ctx, outcomes: tuple[str, ...]) -> dict[str, dict]:
+def _best_candidates_by_role(
+    ctx,
+    outcomes: tuple[str, ...],
+    *,
+    pm_only: bool = False,
+) -> dict[str, dict]:
     candidates = quote_legs_by_outcome(ctx)
-    return {
-        role: min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
-        for role, legs in candidates.items()
-    }
+    result: dict[str, dict] = {}
+    for role, legs in candidates.items():
+        pool = (
+            [leg for leg in legs if str(leg["venue"]).upper() == POLYMARKET]
+            if pm_only
+            else legs
+        )
+        if not pool:
+            continue
+        result[role] = min(pool, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
+    return result
 
 
 def _outcome_return_rates(legs: list[_CalcLeg], roles: list[str], share: float) -> dict[str, float]:

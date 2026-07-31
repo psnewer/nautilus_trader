@@ -190,6 +190,60 @@ def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
     assert ctx.scratch["legs"][0]["qty"] == 2.5
 
 
+def test_recovery_venue_select_true_picks_pm_over_better_odds_venue():
+    # 同一 outcome 同时有更便宜的 OE 报价(prob 0.40)和 PM 报价(prob 0.50)。
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.5)),  # prob 0.40
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.ORBITEXCH": {"selection_role": "away"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+
+    # 缺省:各 venue 取最优赔率 → 命中更便宜的 OE。
+    default_ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+    )
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(default_ctx) is True
+    assert default_ctx.scratch["legs"][0]["instrument_id"] == "A.ORBITEXCH"
+
+    # venue_select=True:只在 PM 里选,即使 OE 赔率更优也走 PM。
+    pm_ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+    )
+    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=True).passes(pm_ctx)
+    assert ok is True
+    assert pm_ctx.scratch["legs"][0]["instrument_id"] == "A.POLYMARKET"
+    assert pm_ctx.scratch["legs"][0]["venue"] == "POLYMARKET"
+
+
+def test_recovery_venue_select_true_fails_closed_without_pm_leg():
+    # 缺口 outcome 只有 OE 报价、无 PM → venue_select 下不补(fail-closed)。
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.ORBITEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+    )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=True).passes(ctx) is False
+    assert "legs" not in ctx.scratch
+
+
 def test_recovery_handles_typed_instrument_info_map():
     home = InstrumentId.from_str("H.POLYMARKET")
     away = InstrumentId.from_str("A.POLYMARKET")

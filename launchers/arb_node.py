@@ -79,6 +79,7 @@ from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
+from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
@@ -112,6 +113,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
     register_action("share_limit", ShareLimitModification)
+    register_action("venue_replace", VenueReplaceAction)
     register_action("candi_select", CandiSelectAction)
     register_action("place_bets", PlaceBetsAction)
 

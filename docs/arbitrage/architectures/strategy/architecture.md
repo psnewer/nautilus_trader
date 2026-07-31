@@ -409,9 +409,10 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `OneSideRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 从 live Cache 按固定 `yes/no` outcome 收集所有可买 leg，枚举 venue 组合与 target outcome；达阈值时写 `ctx.scratch["candidates"]`。qty 通过 Venue Registry 计算 |
 | `CurrentRebateCheck(min_rate=0.0)` | `src/arbitrage/strategy/checks/current_rebate.py` | one_side_rebate 套利树的当前组合仓位门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母，要求每个 outcome 的 `net_profit / max_share >= min_rate`。无仓位时各 outcome rate 视为 0；缺 Portfolio、outcome 不完整或经济投影异常时不通过。只判断当前仓位，不把待下 candidate 加入预测 |
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
-| `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share，目标为最大实际 share；当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure，包含 Data API 对账恢复的 SELL/merge 已实现盈亏；对缺口 outcome 取当前 best ask 最便宜 venue，写 recovery legs。position outcome/金额统一委托 venues §4.1 |
+| `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share，目标为最大实际 share；当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure，包含 Data API 对账恢复的 SELL/merge 已实现盈亏；对缺口 outcome 选补救腿写 recovery legs。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，将订单价与当前 ask 都换算为 outcome exposure probability；严格概率差满足门限时写标准 `legs + cancel_pair_orders`。随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `ShareLimitModification(max_leg_share=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate |
+| `VenueReplaceAction()` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价保持当前 order 的隐含概率**:`price=prob=` 原腿 `prob`(两 venue 共享的 outcome 概率,**不用 PM 实时 ask、也不用原 decimal 赔率**);PM 为 probability venue,`qty=share`(不缩放),`cost=share×prob`(与原 decimal 腿 cost 口径一致);每腿 `share_if_wins` 保持不变。裸腿无 `prob` 时回退到 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
 
@@ -438,6 +439,11 @@ legs/candidates,不把未知敞口当成零继续下单。
 分发阶段实现，不改 submit/cancel barrier。
 legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidates:
 `candi_select` 对缺 `candidates` 键的 scratch 把 `legs` 包成单 candidate 走同一路径。
+
+需要把执行 venue 强制定向到 PM 时，套利链显式插入
+`venue_replace -> share_limit -> candi_select -> place_bets`。顺序不可后移到 `share_limit`
+之后：替换会改变 venue，额度必须读取最终 PM 持仓。`venue_replace` 只转换执行腿，不重新执行
+上游 Check，也不重算 candidate 的发现时 `rate/total_prob`；这些字段继续表示替换前机会。
 
 `one_side_rebate` candidate 的 share 语义:非 target outcome 的 `share_if_wins=share`;target outcome
 使用非 target 买完后的剩余预算全部买入,因此 `target_share_if_wins = target_cost / target_prob`。
