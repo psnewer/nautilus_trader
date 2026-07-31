@@ -5,6 +5,7 @@ candi_select。它们不启动 TradingNode,不进入 Risk/Execution/barrier。
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from nautilus_trader.model.enums import PositionSide
@@ -15,6 +16,7 @@ from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
+from src.arbitrage.strategy.checks.current_rebate import CurrentRebateCheck
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Condition
@@ -59,10 +61,27 @@ class _Position:
 
 
 class _Portfolio:
-    def __init__(self, *, pm=None, se=None, oe=None):
+    def __init__(self, *, pm=None, se=None, oe=None, profits=None):
         self._pm = pm or {}
         self._se = se or {}
         self._oe = oe or {}
+        self._profits = profits or {"yes": 0.0, "no": 0.0}
+
+    def outcome_exposures(self, pair_id):
+        return {
+            outcome: SimpleNamespace(net_profit=profit)
+            for outcome, profit in self._profits.items()
+        }
+
+    def outcome_shares(self, pair_id):
+        outcomes = {"yes", "no"}
+        return {
+            outcome: sum(
+                shares.get(outcome, 0.0)
+                for shares in (self._pm, self._se, self._oe)
+            )
+            for outcome in outcomes
+        }
 
     def outcome_shares_for_venue(self, pair_id, venue, account_id):
         if venue == "polymarket":
@@ -174,3 +193,28 @@ def test_existing_position_share_limit_scales_candidates_before_selection():
     assert round(by_role["yes"]["qty"], 6) == 10.0
     assert round(by_role["no"]["share_if_wins"], 6) == 11.0
     assert round(by_role["no"]["qty"], 6) == 5.5
+
+
+def test_current_rebate_gate_rolls_back_one_side_candidates_when_one_outcome_is_below_limit():
+    """one_side 已生成 candidates 后，当前任一 outcome 返水不达标则整棵套利树不命中。"""
+    ctx = _ctx(
+        portfolio=_Portfolio(
+            pm={"yes": 100.0, "no": 80.0},
+            profits={"yes": 10.0, "no": -1.0},
+        ),
+        strategy_defaults={"share": 100.0},
+    )
+    tree = Condition(
+        self_hits=AndExpr(),
+        checktion=AndCheckExpr(
+            OneSideRebateCheck(min_rate=0.09),
+            CurrentRebateCheck(),
+        ),
+        actions=[_MarkerAction("arbitrage")],
+    )
+
+    result = evaluate_tree(tree, ctx)
+
+    assert result.hit is False
+    assert "candidates" not in ctx.scratch
+    assert "one_side_rebate" not in ctx.scratch

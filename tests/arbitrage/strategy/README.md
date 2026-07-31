@@ -176,6 +176,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
 - ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；缺 live state、缺 claim、缺 order book、非正价格、非正 share 均 fail-fast
+- ✅ `test_check_current_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 套利树读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；覆盖默认阈值 0、任一 outcome 低于阈值、空仓按 0、outcome 不完整、缺 Portfolio、经济投影异常，以及 AND 失败时回滚已生成 candidates
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价且不读取 `market_order_enabled`，市价转换留给 Execution adapter 的最终提交边界

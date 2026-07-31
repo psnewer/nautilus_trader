@@ -85,6 +85,7 @@ from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
+from src.arbitrage.strategy.checks.current_rebate import CurrentRebateCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
@@ -107,6 +108,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("mean_rebate", MeanRebateCheck)
     register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
     register_check("one_side_rebate", OneSideRebateCheck)
+    register_check("current_rebate", CurrentRebateCheck)
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
     register_action("share_limit", ShareLimitModification)
