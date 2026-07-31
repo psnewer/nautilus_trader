@@ -148,6 +148,13 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **期望**:脚本先真登录并在 customer context 中 `sport/details` 发现一条 SE instrument;构造 `SELL/LAY @ 1.01` 小额单;`_submit_order` 取得 `venue_order_id`;`CURRENT_BETS` 出现 working order;`_cancel_order` 成功后该单消失或 `sizeRemaining=0`;finally 按 CURRENT_BETS 兜底撤所有 SE 活单。
 **验收**:已 live 通过。2026-07-01 用户明确授权后,为避开 Cloudflare discovery 抖动,使用已知 `market_id=1.259494210/selection_id=8960879` 跳过 `sport/details` 执行最小真单 probe:`BACK @100,size=12` → `venue_order_id=22157223`;`CURRENT_BETS` 收到 2 帧并显示该单 `remaining=12.0,matched=0.0`;`generate_order_status_reports` 派生 1 条 report;随后 `_cancel_order` 成功,该单消失/remaining=0;finally 兜底活单数 0。脚本默认 dry-run,不带 `--confirm` 不调用 placeBets;`--cleanup-only` 零下单,只按 CURRENT_BETS 撤活单。
 
+### se-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
+
+**输入**:`cancelBets` 返回明确 `success=true`。
+**期望/验收**:adapter 不伪造 `OrderCanceled`，只把 ACK 交给共用 cancel session；
+订单终态仍由后续 `CURRENT_BETS` 确认。接线由
+`test_cancel_order_uses_instrument_market_id_and_accepts_success` 验收。
+
 ### se-adapter-live.3:真成交 fill probe
 
 **前置**:用户明确授权真单;已理解成交后会持有真实 SE BACK 仓,脚本不会自动平仓。

@@ -433,6 +433,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 f"SE cancel request accepted: client_order_id={client_order_id}, "
                 f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
             )
+            self._ack_cancel_session(client_order_id, voi)
         else:
             if result is not None and _se_result_is_transport_unknown(result):
                 self._log.warning(

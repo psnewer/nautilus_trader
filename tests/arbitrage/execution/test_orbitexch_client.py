@@ -456,6 +456,9 @@ def test_cancel_order_passes_market_id_from_current_bets():
         },
     }
     c.generate_order_canceled = lambda *args, **kwargs: captured.update(canceled=True, canceled_kwargs=kwargs)
+    c._ack_cancel_session = lambda coid, venue_order_id: captured.update(
+        cancel_ack=(coid, venue_order_id),
+    )
 
     _run(c._cancel_order(SimpleNamespace(
         strategy_id="S",
@@ -466,6 +469,7 @@ def test_cancel_order_passes_market_id_from_current_bets():
 
     assert captured["venue_order_id"] == "221972467"
     assert captured["market_id"] == inst.market_id
+    assert captured["cancel_ack"] == (order.client_order_id, voi)
     assert "canceled" not in captured
 
     c._on_current_bets([])                            # 新快照中订单消失 → 撤单完成

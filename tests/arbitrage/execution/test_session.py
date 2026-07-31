@@ -422,6 +422,57 @@ def test_cancel_session_ignores_fill_until_cancel_terminal():
     assert not client._execution_active
 
 
+def test_disabled_timeout_ends_cancel_session_on_request_ack(caplog):
+    caplog.set_level(logging.INFO, logger="session-test")
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    order = _order(
+        factory,
+        pm,
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-1",
+                pair_id="pair-1",
+                leg_key="pm:home:0",
+                expected_legs=("pm:home:0",),
+                enable_timeout=False,
+            ),
+        ),
+    )
+
+    assert client._begin_cancel_session(order) is True
+    client._ack_cancel_session(order.client_order_id, "V-1")
+
+    assert not client._execution_active
+    assert "Execution cancel session accepted" in caplog.text
+    assert "tracking ends on ack" in caplog.text
+
+
+@pytest.mark.parametrize("enable_timeout", [None, True])
+def test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing(enable_timeout):
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    tags = None
+    if enable_timeout is not None:
+        tags = tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-1",
+                pair_id="pair-1",
+                leg_key="pm:home:0",
+                expected_legs=("pm:home:0",),
+                enable_timeout=enable_timeout,
+            ),
+        )
+    order = _order(factory, pm, tags=tags)
+
+    assert client._begin_cancel_session(order) is True
+    client._ack_cancel_session(order.client_order_id, "V-1")
+
+    assert client._execution_active
+
+
 def test_base_cancel_only_tracks_residual_until_cancel_terminal():
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)

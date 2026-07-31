@@ -285,7 +285,7 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
   检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
-- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求,**不释放 session**;释放只能来自 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected`,或 30s watchdog 超时。撤单在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
+- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求；缺失/`enable_timeout=true` 时仍只由 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected` 或 watchdog 释放，`enable_timeout=false` 时则可在明确请求 ACK 后只释放 session。ACK 收口不生成伪造的订单终态，订单继续保持 `PENDING_CANCEL`，等待后续真实撤单/拒绝事件更新。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
 - cancel session 不把成交事件当终点。若撤单等待期间订单成交,成交仍走正常 fill/order 流;cancel session 继续等撤单终态或 timeout。
 - venue 终态映射:
   - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
@@ -326,13 +326,16 @@ def _on_session_timeout(self, event):
     self._end_session(coid, timed_out=True)
 ```
 - **绝对超时**:partial / OrderAccepted **不重置** timer。
-- **Action 可选 ACK 收口(#298)**:submit session 建立时从 `Order.tags` 的
-  `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；
-  显式 `false` 时收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有
-  accepted 余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`
-  取消 watchdog、释放 `_execution_active`。这不撤单、
-  不把订单改成终态；后续 fill/order 事件仍由 ExecutionClient → ExecEngine 标准路径处理。
-  cancel session 不消费该字段。
+- **Action 可选 ACK 收口(#298/#300)**:submit/cancel session 建立时均从原订单
+  `Order.tags` 的 `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；
+  显式 `false` 时：
+  - submit 收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有 accepted
+    余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`；
+  - cancel 收到 venue 明确的撤单请求 ACK 后，由 adapter 调共用 `_ack_cancel_session`，
+    再调用 `_end_session`。PM ACK 是 CLOB `canceled[]`，OE/SE ACK 是
+    `cancelBets` 成功响应；传输结果未知与业务拒绝不走 ACK 收口。
+  两条路径都只取消 watchdog、释放 `_execution_active`，不把订单改成终态；后续
+  fill/cancellation/order 事件仍由 ExecutionClient → ExecEngine 标准路径处理。
 - 全局唯一超时配置(per-venue 不分);cancel session 超时仅 log warning,不补撤、不重试。
 - terminal 与 timeout 都触发 session 结束 → 都 publish `execution.finished` + 清 `_execution_active`。
 - **watchdog 与 per-pair 计数原子(#105 ②,保证置位一定有出口)**:`_begin_session` 顺序固定为

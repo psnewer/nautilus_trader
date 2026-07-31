@@ -938,6 +938,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             f"Cancel request accepted for {client_order_id!r}: "
             f"venue_order_id={venue_order_id}; awaiting WS CANCELLATION",
         )
+        ack_cancel_session = getattr(self, "_ack_cancel_session", None)
+        if ack_cancel_session is not None:
+            ack_cancel_session(client_order_id, venue_order_id)
 
     def _cancel_terminal_already_emitted(self, client_order_id) -> bool:
         if client_order_id is None:

@@ -56,12 +56,12 @@ class ArbExecutionSessionMixin:
         session_timeout_secs: float,
     ) -> None:
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
-        # coid -> {kind, qty, price, filled, instrument_id, venue_order_id}
+        # coid -> {kind, qty, price, filled, instrument_id, venue_order_id, enable_timeout}
         self._active_sessions: dict = {}
 
     @property
     def _execution_active(self) -> bool:
-        """在飞 submit+track session 数 > 0(健康检查据此整 tick 让路,Q19/§6.10)。"""
+        """在飞 submit/cancel session 数 > 0(健康检查据此整 tick 让路,Q19/§6.10)。"""
         return len(self._active_sessions) > 0
 
     # ── NT 同步入口:session 必须在此建立(#261)─────────────────────────
@@ -146,7 +146,7 @@ class ArbExecutionSessionMixin:
             alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
             callback=self._on_session_timeout,
         )
-        meta = meta_from_order(order) if kind == "submit" else None
+        meta = meta_from_order(order)
         self._active_sessions[coid] = {
             "kind": kind,
             "qty": order.quantity.as_double(),
@@ -197,6 +197,26 @@ class ArbExecutionSessionMixin:
                 terminal = True  # 全成才终态;partial 不重置/不结束(绝对超时,§4.2)
         if terminal:
             self._end_session(event.client_order_id)
+
+    def _ack_cancel_session(self, client_order_id, venue_order_id=None) -> None:
+        """记录撤单请求已被 venue 接受；按订单冻结策略决定是否结束追踪。"""
+        sess = self._active_sessions.get(client_order_id)
+        if sess is None or sess.get("kind") != "cancel":
+            return
+
+        end_on_ack = sess.get("enable_timeout") is False
+        self._log.info(
+            "Execution cancel session accepted: "
+            f"client_order_id={client_order_id}, "
+            f"venue_order_id={venue_order_id}; "
+            + (
+                "tracking ends on ack"
+                if end_on_ack
+                else "tracking continues until terminal/timeout"
+            ),
+        )
+        if end_on_ack:
+            self._end_session(client_order_id)
 
     # ── 超时(NT clock 绝对超时;超时即结束,不补救)──────────────────
     def _on_session_timeout(self, event) -> None:

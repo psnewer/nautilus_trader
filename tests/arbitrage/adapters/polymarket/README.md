@@ -528,3 +528,10 @@ Sports config;禁用客户端主动 heartbeat;app-level `ping` 经同一 client 
 test_cancel_track_marks_execution_active_before_dispatch` 覆盖；PM 已预建 session 仍触达 venue
 由 `test_polymarket_client.py::test_polymarket_residual_cancel_reaches_venue_despite_active_session`
 覆盖。
+
+### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
+
+**输入**:CLOB cancel 响应的 `canceled[]` 包含目标 `venue_order_id`。
+**期望/验收**:adapter 仍不生成 `OrderCanceled`，只把明确 ACK 交给共用 cancel session；
+`enable_timeout=false` 的收口由 session 测试覆盖。接线由
+`test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` 验收。

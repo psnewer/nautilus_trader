@@ -560,6 +560,9 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
 
     client._executor = Executor()
     client.generate_order_canceled = lambda *args, **kwargs: captured.update(canceled=True)
+    client._ack_cancel_session = lambda coid, venue_order_id: captured.update(
+        cancel_ack=(coid, venue_order_id),
+    )
 
     _run(
         client._cancel_order(
@@ -575,6 +578,7 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     assert captured["market_id"] == inst.market_id
     assert captured["venue_order_id"] == "SE-OFFER-1"
     assert captured["bet"] == {}
+    assert captured["cancel_ack"] == (order.client_order_id, voi)
     assert "canceled" not in captured
 
     client._on_current_bets([])

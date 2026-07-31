@@ -592,6 +592,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 f"OE cancel request accepted: client_order_id={client_order_id}, "
                 f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
             )
+            self._ack_cancel_session(client_order_id, voi)
         else:
             if result is not None and _oe_result_is_transport_unknown(result):
                 self._log.warning(

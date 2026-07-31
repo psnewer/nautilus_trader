@@ -518,6 +518,13 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口由
 `test_session.py::test_cancel_track_marks_execution_active_before_dispatch` 覆盖。
 
+### oe-adapter-5.cancel.ack-policy:撤单请求 ACK 接入 session
+
+**输入**:`cancelBets` 返回明确 `success=true`。
+**期望/验收**:adapter 不伪造 `OrderCanceled`，只把 ACK 交给共用 cancel session；
+订单终态仍由后续 `CURRENT_BETS` 确认。接线由
+`test_cancel_order_passes_market_id_from_current_bets` 验收。
+
 ## #251:退订归零关 competition 页(`test_data_client_step2.py`)
 
 - `test_unregister_routing_returns_orphaned_page_key`:同页两 market 退订第一个不孤儿;退订

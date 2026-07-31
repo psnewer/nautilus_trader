@@ -125,6 +125,7 @@ def _cancel_test_client(response):
     captured = {}
     client.generate_order_canceled = lambda **kwargs: captured.update(canceled=kwargs)
     client.generate_order_cancel_rejected = lambda **kwargs: captured.update(rejected=kwargs)
+    client._ack_cancel_session = lambda coid, voi: captured.update(cancel_ack=(coid, voi))
 
     venue_order_id = VenueOrderId("0x" + "a" * 64)
     order = SimpleNamespace(
@@ -542,6 +543,7 @@ def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
 
     assert "canceled" not in captured
     assert "rejected" not in captured
+    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
 
     client._generate_cancel_success_event(
         strategy_id="S",

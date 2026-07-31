@@ -508,10 +508,11 @@ NT `Strategy`，负责把 spec 转成 NT Order，并通过原生 `submit_order` 
   资金需求按 spread 后的计划价格计算。decimal 分段赔率量化属于 Execution adapter 的最终
   payload 边界，不在 Action 重复执行。若 `market_order_enabled=true`，Execution adapter 的最终
   市价转换仍可覆盖该限价，Strategy 不读取 execution 配置。
-- Action ACK 收口参数(#298):`enable_timeout` 必须是 JSON boolean；缺失/`true` 保持
-  submit session 等待全成、失败终态或 watchdog 的既有行为；显式 `false` 时
+- Action ACK 收口参数(#298/#300):`enable_timeout` 必须是 JSON boolean；缺失/`true` 保持
+  submit/cancel session 等待各自终态或 watchdog 的既有行为；显式 `false` 时
   `PlaceBetsAction` 为同一 opportunity 的每条真实 submit spec 写该字段，submitter 经
-  `OpportunityMeta` 写入 `Order.tags`。Strategy 只声明策略，不直接结束 execution session。
+  `OpportunityMeta` 写入 `Order.tags`。后续撤销该订单时，cancel session 复用同一冻结策略；
+  Strategy 只声明策略，不直接结束 execution session。
 - `intent` 默认 `"arbitrage"`;compensation/recovery tree 应显式配置 `"recovery"`。submitter 将其写入 `Order.tags` 的 `arb:intent=<intent>` 标签。该标签是 Strategy → Risk 的跨组件契约:Risk 对 `recovery` 仍执行 NT 基础检查 + 余额检查,但跳过单场 profit gates(`match_tp/match_sl`),详见 risk 详设 §3.1。
 - **opportunity metadata(已落地代码,待 live 验证,2026-06-14)**:`PlaceBetsAction` 在同一次 `execute(ctx)` 内为所有真实 legs 生成同一个 `opportunity_id`,并为每条 spec 写 `pair_id=ctx.pair_id`、稳定 `leg_key`、`expected_legs`(所有真实腿 key,包含自己)。submitter 把这些字段写入 `Order.tags`:`arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`，并在 Action 显式配置时追加 `arb:enable_timeout=<true|false>`。不发送 0 qty 空单;没有真实下单的 outcome 不进 `expected_legs`。tag 构造/解析复用 `src/arbitrage/common/opportunity.py`。
 

@@ -288,6 +288,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 期望:每条真实腿都携带 `enable_timeout=false`；缺省 Action 不增加该 spec/tag 字段；
   非 boolean 配置 fail-fast。
 - 期望:submitter 将假值编码为 `arb:enable_timeout=false`，metadata 解码后保持假值。
+- 期望:该字段属于原订单 metadata；后续 cancel session 可复用它决定是否在撤单请求 ACK 后
+  结束追踪，Strategy 不额外构造 cancel 参数。执行语义见 execution README
+  `execution-4.2.5`。
 - 验收:✅ `test_action_place_bets.py::test_action_disabled_timeout_is_written_to_every_submit_spec` /
   `test_action_rejects_non_boolean_enable_timeout`，
   `test_submitter.py::test_submit_writes_opportunity_metadata_tags`，
