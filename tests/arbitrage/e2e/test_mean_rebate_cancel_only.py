@@ -20,6 +20,7 @@ from nautilus_trader.model.objects import Quantity
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -89,6 +90,17 @@ def _ctx_with_one_leg(submitter, instrument_id):
     return ctx
 
 
+def _prepare_and_dispatch(action, ctx):
+    _run(action.execute(ctx))
+    _run(dispatch_execution_plan(
+        ctx.scratch["execution_plan"],
+        submitter=ctx.submitter,
+        pair_order_canceler=None,
+        log=logging.getLogger("e2e-mean-rebate-cancel-only"),
+        source="arbitrage",
+    ))
+
+
 def test_mean_rebate_next_opportunity_first_cancels_unmatched_residual():
     cache = _Cache()
     instrument = pm_instrument("match_1", "home")
@@ -112,7 +124,7 @@ def test_mean_rebate_next_opportunity_first_cancels_unmatched_residual():
     action = PlaceBetsAction()
 
     # 第一次机会:无残留,进入 submit+track。
-    _run(action.execute(_ctx_with_one_leg(submitter, instrument.id)))
+    _prepare_and_dispatch(action, _ctx_with_one_leg(submitter, instrument.id))
     assert len(client.submitted) == 1
     assert client.cancels == []
 
@@ -120,7 +132,7 @@ def test_mean_rebate_next_opportunity_first_cancels_unmatched_residual():
     cache.add_open(client.submitted[0])
 
     # 下一轮机会:同一 action 重新 submit,session 入口先撤残留并丢弃本次新 submit。
-    _run(action.execute(_ctx_with_one_leg(submitter, instrument.id)))
+    _prepare_and_dispatch(action, _ctx_with_one_leg(submitter, instrument.id))
 
     assert len(client.submitted) == 1
     assert len(client.cancels) == 1

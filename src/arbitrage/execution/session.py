@@ -31,6 +31,7 @@ from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.opportunity import cancel_meta_from_command
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
@@ -87,7 +88,9 @@ class ArbExecutionSessionMixin:
         if order is None:
             super().cancel_order(command)
             return
-        if not self._begin_cancel_session(order):
+        cancel_meta = cancel_meta_from_command(command)
+        enable_timeout = cancel_meta.enable_timeout if cancel_meta is not None else None
+        if not self._begin_cancel_session(order, enable_timeout=enable_timeout):
             return
         command.params[CANCEL_SESSION_STARTED_PARAM] = True
         try:
@@ -123,11 +126,21 @@ class ArbExecutionSessionMixin:
 
         return self._begin_order_session(order, kind="submit")
 
-    def _begin_cancel_session(self, order) -> bool:
-        """True = 已建立 cancel session;False = 同 order 已有 session,调用方不再重复撤。"""
-        return self._begin_order_session(order, kind="cancel")
+    def _begin_cancel_session(self, order, *, enable_timeout: bool | None = None) -> bool:
+        """True = 已建立 cancel session；只使用撤单命令的显式参数。"""
+        return self._begin_order_session(
+            order,
+            kind="cancel",
+            enable_timeout=enable_timeout,
+        )
 
-    def _begin_order_session(self, order, *, kind: str) -> bool:
+    def _begin_order_session(
+        self,
+        order,
+        *,
+        kind: str,
+        enable_timeout: bool | None = None,
+    ) -> bool:
         coid = order.client_order_id
         if coid in self._active_sessions:
             self._log.info(
@@ -146,7 +159,9 @@ class ArbExecutionSessionMixin:
             alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
             callback=self._on_session_timeout,
         )
-        meta = meta_from_order(order)
+        if kind == "submit":
+            submit_meta = meta_from_order(order)
+            enable_timeout = submit_meta.enable_timeout if submit_meta is not None else None
         self._active_sessions[coid] = {
             "kind": kind,
             "qty": order.quantity.as_double(),
@@ -155,7 +170,7 @@ class ArbExecutionSessionMixin:
             "filled": 0.0,
             "instrument_id": instrument_id,
             "venue_order_id": getattr(order, "venue_order_id", None),
-            "enable_timeout": meta.enable_timeout if meta is not None else None,
+            "enable_timeout": enable_timeout,
         }
         # #261:session 不参与 pair 闸(闸已收窄为 strategy 评估串行),故也不再需要 `pair_id`
         # —— 原先它只喂 `exec_started/exec_finished`,随之成为无消费者的死字段,一并删除。
@@ -292,7 +307,7 @@ class ArbExecutionSessionMixin:
         也由 watchdog 兜底(无需 max-hold 等兜底)。子类实现 `_cancel_residual_one(order)`
         (真实 venue 撤单请求,async),最终由 `OrderCanceled`/`OrderCancelRejected` 或 timeout 收口。"""
         for order in residual:
-            if self._begin_cancel_session(order):
+            if self._begin_cancel_session(order, enable_timeout=None):
                 self._loop.create_task(self._tracked_residual_cancel(order))
 
     async def _tracked_residual_cancel(self, order) -> None:

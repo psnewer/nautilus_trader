@@ -412,7 +412,7 @@ def test_cancel_session_ignores_fill_until_cancel_terminal():
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     order = _order(factory, pm, qty=10)
 
-    assert client._begin_cancel_session(order) is True
+    assert client._begin_cancel_session(order, enable_timeout=False) is True
     client._send_order_event(TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(10)))
 
     assert client._execution_active                       # cancel session 不由成交事件收口
@@ -441,7 +441,7 @@ def test_disabled_timeout_ends_cancel_session_on_request_ack(caplog):
         ),
     )
 
-    assert client._begin_cancel_session(order) is True
+    assert client._begin_cancel_session(order, enable_timeout=False) is True
     client._ack_cancel_session(order.client_order_id, "V-1")
 
     assert not client._execution_active
@@ -467,7 +467,32 @@ def test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing
         )
     order = _order(factory, pm, tags=tags)
 
-    assert client._begin_cancel_session(order) is True
+    assert client._begin_cancel_session(order, enable_timeout=enable_timeout) is True
+    client._ack_cancel_session(order.client_order_id, "V-1")
+
+    assert client._execution_active
+
+
+def test_cancel_only_does_not_inherit_original_order_enable_timeout():
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    order = _order(
+        factory,
+        pm,
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-1",
+                pair_id="pair-1",
+                leg_key="pm:home:0",
+                expected_legs=("pm:home:0",),
+                enable_timeout=False,
+            ),
+        ),
+    )
+
+    # 残单 cancel-only 没有撤单命令参数，必须按缺省语义等待撤单终态。
+    assert client._begin_cancel_session(order, enable_timeout=None) is True
     client._ack_cancel_session(order.client_order_id, "V-1")
 
     assert client._execution_active

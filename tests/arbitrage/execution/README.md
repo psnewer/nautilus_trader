@@ -128,8 +128,9 @@
   + `test_submit_order_cancel_only_does_not_dispatch`
   + OE/SE `test_submit_order_builds_session_before_dispatch`。
 
-### execution-4.2.5: enable_timeout=false 时 ACK 后结束 submit/cancel session
-- 前置:订单带完整 opportunity metadata，且 `arb:enable_timeout=false`。
+### execution-4.2.5: enable_timeout=false 时 ACK 后结束 submit/grouped cancel session
+- 前置:submit 订单带 `arb:enable_timeout=false`，或 grouped cancel command params 显式带
+  `enable_timeout=false`。
 - 输入:submit session 收到 `OrderAccepted`，或 cancel session 收到 venue 明确的撤单请求 ACK。
 - 期望:submit 的 `OrderAccepted` 仍先正常上送，accepted 余额 hook 保持原顺序（PM no-op，
   OE/SE 本地预扣）；随后取消 watchdog、
@@ -143,6 +144,11 @@
   `test_accepted_keeps_session_active` /
   `test_disabled_timeout_ends_cancel_session_on_request_ack` /
   `test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing`。
+
+### execution-4.2.5a: cancel-only 不继承原订单 enable_timeout
+- 前置:残留原订单 tags 带 `arb:enable_timeout=false`，但 cancel-only 命令未携带该字段。
+- 期望:撤单 session 按缺省语义继续等待真实撤单终态或 watchdog，不因原订单参数在 ACK 后提前结束。
+- 验收:`test_session.py::test_cancel_only_does_not_inherit_original_order_enable_timeout`。
 
 ### execution-4.2.4: cancel session 的默认终态收口
 - 前置:一笔 cancel session 已建立。

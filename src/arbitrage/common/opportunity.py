@@ -34,6 +34,7 @@ class CancelOpportunityMeta:
     pair_id: str
     cancel_key: str
     expected_cancels: tuple[str, ...]
+    enable_timeout: bool | None = None
 
 
 def new_opportunity_id() -> str:
@@ -98,7 +99,7 @@ def order_intent(order) -> str:
 
 
 def cancel_params_from_meta(meta: CancelOpportunityMeta) -> dict[str, object]:
-    return {
+    params: dict[str, object] = {
         CANCEL_OPPORTUNITY_PARAM: {
             "opportunity_id": meta.opportunity_id,
             "pair_id": meta.pair_id,
@@ -106,6 +107,9 @@ def cancel_params_from_meta(meta: CancelOpportunityMeta) -> dict[str, object]:
             "expected_cancels": list(meta.expected_cancels),
         },
     }
+    if meta.enable_timeout is not None:
+        params[CANCEL_OPPORTUNITY_PARAM]["enable_timeout"] = meta.enable_timeout
+    return params
 
 
 def cancel_meta_from_command(command) -> CancelOpportunityMeta | None:
@@ -130,6 +134,11 @@ def cancel_meta_from_command(command) -> CancelOpportunityMeta | None:
         pair_id=pair_id,
         cancel_key=cancel_key,
         expected_cancels=expected,
+        enable_timeout=(
+            raw.get("enable_timeout")
+            if isinstance(raw.get("enable_timeout"), bool)
+            else None
+        ),
     )
 
 

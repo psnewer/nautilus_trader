@@ -20,6 +20,7 @@ from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
 from src.arbitrage.strategy.actor import _RuntimeDeps
+from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
@@ -367,7 +368,7 @@ def test_log_evaluations_enabled_keeps_evaluator_behavior():
     _run(_drain(loop))
 
     assert arb_action.calls == 1
-    assert comp_action.calls == 0
+    assert comp_action.calls == 1
 
 
 def test_log_evaluations_enabled_covers_skip_paths():
@@ -386,8 +387,8 @@ def test_log_evaluations_enabled_covers_skip_paths():
     assert loop.tasks == []
 
 
-# ── eval.4:arb 链作为统一候选选择与 Action 执行宿主 ────────────────
-def test_arb_hit_blocks_comp_action():
+# ── eval.4:两树 Action 链独立规划 ──────────────────────────────────
+def test_both_hit_runs_both_planning_chains():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     arb_action = _RecordingAction("arb")
     comp_action = _RecordingAction("comp")
@@ -396,7 +397,7 @@ def test_arb_hit_blocks_comp_action():
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 1
-    assert comp_action.calls == 0
+    assert comp_action.calls == 1
 
 
 def test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders():
@@ -462,7 +463,7 @@ def test_arb_and_comp_evaluation_scratch_is_isolated():
     _run(_drain(loop))
 
     assert arb_action.legs == arb_legs
-    assert comp_action.calls == 0
+    assert comp_action.calls == 1
 
 
 # ── eval.5: 补救兜底 — arb 没命中 + comp 命中 → fire comp ─────────
@@ -887,58 +888,33 @@ def test_released_gate_allows_reevaluation():
     assert gate.is_in_flight("match_X") is False
 
 
-# ── #277:comp 同轮命中 → recovery candidate 注入 arb ctx ──────────
+# ── 两树计划统一分发:补偿优先 ──────────────────────────────────────
 
-class _CaptureRecoveryAction(Action):
-    def __init__(self):
-        self.recovery = "UNSET"
-
-    async def execute(self, ctx):
-        self.recovery = ctx.scratch.get("recovery_candidates")
-
-
-def test_both_hit_injects_recovery_candidates_into_arb_ctx():
-    """arb+comp 同轮命中:comp 链不 fire,comp legs 包成 recovery candidate 进 arb ctx。"""
-    actor, store, pair_reg, strat_reg, loop, _ = _harness()
-    capture = _CaptureRecoveryAction()
-    comp_action = _RecordingAction("comp")
-    comp_legs = [{"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET",
-                  "role": "yes", "price": 0.5, "qty": 8.0}]
-    arb_tree = Condition(
-        self_hits=_ConstantQuery(True), checktion=AndCheckExpr(_StubCheck(True)), actions=[capture],
-    )
-    comp_tree = Condition(
-        self_hits=_ConstantQuery(True),
-        checktion=AndCheckExpr(_SetScratchLegsCheck(comp_legs)),
-        actions=[comp_action],
-    )
-    strat_reg.register_pair(
-        "match_X",
-        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
-    )
-
-    actor.on_data(_mp())
-    _run(_drain(loop))
-
-    assert comp_action.calls == 0            # 树间取舍已下移:comp 链不直接 fire
-    assert capture.recovery == [
-        {"candidate_id": "recovery", "intent": "recovery", "legs": comp_legs},
-    ]
-
-
-def test_both_hit_injects_spread_cancel_as_recovery_candidate():
+def test_both_plans_select_compensation_without_inheriting_arb_spread():
     actor, _, _, strat_reg, loop, _ = _harness()
-    capture = _CaptureRecoveryAction()
-    comp_action = _RecordingAction("comp")
+    submitted = []
+
+    async def fake_submitter(spec):
+        submitted.append(spec)
+
+    actor._make_submitter = lambda: fake_submitter
+    legs = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "yes",
+        "price": 0.5,
+        "qty": 8.0,
+    }]
     arb_tree = Condition(
         self_hits=_ConstantQuery(True),
-        checktion=AndCheckExpr(_StubCheck(True)),
-        actions=[capture],
+        checktion=AndCheckExpr(_SetScratchLegsCheck(legs)),
+        actions=[PlaceBetsAction(spread=0.05)],
     )
     comp_tree = Condition(
         self_hits=_ConstantQuery(True),
-        checktion=AndCheckExpr(_SetCancelRequestCheck()),
-        actions=[comp_action],
+        checktion=AndCheckExpr(_SetScratchLegsCheck(legs)),
+        actions=[PlaceBetsAction(intent="recovery")],
     )
     strat_reg.register_pair(
         "match_X",
@@ -948,27 +924,80 @@ def test_both_hit_injects_spread_cancel_as_recovery_candidate():
     actor.on_data(_mp())
     _run(_drain(loop))
 
-    assert comp_action.calls == 0
-    assert capture.recovery == [{
-        "candidate_id": "recovery",
-        "intent": "recovery",
-        "legs": [{
+    assert len(submitted) == 1
+    assert submitted[0]["intent"] == "recovery"
+    assert submitted[0]["price"] == 0.5
+
+
+def test_spread_cancel_recovery_completes_comp_tree_then_wins_dispatch():
+    actor, _, _, strat_reg, loop, _ = _harness()
+    submitted = []
+    canceled = []
+
+    async def fake_submitter(spec):
+        submitted.append(spec)
+
+    actor._make_submitter = lambda: fake_submitter
+    actor._make_pair_order_canceler = lambda: (
+        lambda pair_id, **kwargs: canceled.append(pair_id) or 2
+    )
+    arb_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_SetScratchLegsCheck([{
             "instrument_id": "H.POLYMARKET",
             "venue": "POLYMARKET",
             "price": 0.5,
             "qty": 8.0,
-            "share_if_wins": 8.0,
-        }],
-        "cancel_pair_orders": {"reason": "spread_cancel_recovery"},
-    }]
-
-
-def test_arb_hit_comp_miss_no_recovery_injection():
-    actor, store, pair_reg, strat_reg, loop, _ = _harness()
-    capture = _CaptureRecoveryAction()
-    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=capture))
+        }])),
+        actions=[PlaceBetsAction(spread=0.05)],
+    )
+    comp_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_SetCancelRequestCheck()),
+        actions=[PlaceBetsAction(intent="recovery")],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
 
     actor.on_data(_mp())
     _run(_drain(loop))
 
-    assert capture.recovery is None
+    assert submitted == []
+    assert canceled == ["match_X"]
+
+
+def test_comp_hit_without_plan_falls_back_to_arb_plan():
+    actor, _, _, strat_reg, loop, _ = _harness()
+    submitted = []
+
+    async def fake_submitter(spec):
+        submitted.append(spec)
+
+    actor._make_submitter = lambda: fake_submitter
+    arb_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_SetScratchLegsCheck([{
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "price": 0.5,
+            "qty": 8.0,
+        }])),
+        actions=[PlaceBetsAction()],
+    )
+    comp_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_StubCheck(True)),
+        actions=[_RecordingAction("comp")],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
+
+    actor.on_data(_mp())
+    _run(_drain(loop))
+
+    assert len(submitted) == 1
+    assert submitted[0]["intent"] == "arbitrage"

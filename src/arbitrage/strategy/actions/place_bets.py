@@ -1,15 +1,15 @@
 """
-PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
+PlaceBetsAction —— 把树内候选转换为统一执行计划。
 
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整计划腿),经 Venue Registry 按 odds model 算 size:
-  - `ctx.scratch["cancel_pair_orders"]` 存在时不构造订单，调用 EvalContext 的 NT pair 撤单回调后返回
+  - `ctx.scratch["cancel_pair_orders"]` 存在时生成 grouped cancel 计划
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
   - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
   - probability BUY 可用同 pair 互斥 LONG 仓位拆成 SELL 减仓 + BUY 剩余量
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
-  - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
-    #277 起优先读 `ctx.scratch["selected_candidate"]["intent"]`(recovery 候选经 arb 链胜出时不丢豁免)。
+  - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
+    优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
   - enable_timeout=false 时经 opportunity metadata 通知 Execution session 在 ACK 后结束追踪。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
@@ -17,7 +17,6 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 
@@ -28,6 +27,8 @@ from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.execution_plan import ExecutionPlan
+from src.arbitrage.strategy.execution_plan import PreparedOrder
 from src.arbitrage.strategy.leg_plan import as_instrument_id as _as_instrument_id
 from src.arbitrage.strategy.leg_plan import compute_leg_size as _compute_leg_size
 from src.arbitrage.strategy.leg_plan import instrument_constraints
@@ -38,7 +39,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class PlaceBetsAction(Action):
-    """通用下单 Action。"""
+    """完成订单转换并写入 `scratch["execution_plan"]`，不直接提交或撤单。"""
 
     def __init__(
         self,
@@ -57,7 +58,8 @@ class PlaceBetsAction(Action):
         self._enable_timeout = enable_timeout
 
     async def execute(self, ctx: EvalContext) -> None:
-        if _execute_cancel_request(ctx):
+        ctx.scratch.pop("execution_plan", None)
+        if self._prepare_cancel_request(ctx):
             return
 
         legs = ctx.scratch.get("legs", [])
@@ -65,17 +67,14 @@ class PlaceBetsAction(Action):
             _LOG.debug(f"PlaceBets: pair={ctx.pair_id} no legs (Check 未写),skip")
             return
 
-        # #277:胜出 candidate 自带 intent(recovery 候选经 arb 链胜出时必须以 recovery 提交,
-        # 保住 Risk 的 profit-gates 豁免);无标记时用本 Action 配置值。
+        # 胜出 candidate 可覆盖本树 Action 的 intent；无标记时使用 Action 配置值。
         selected = ctx.scratch.get("selected_candidate") or {}
         mean_rate = ctx.scratch.get("mean_rebate_rate")
         strategy = str(selected.get("strategy") or ("mean_rebate" if mean_rate is not None else "unknown"))
         rate = selected.get("rate", mean_rate)
         intent = str(selected.get("intent") or self._intent)
-        submitter = ctx.submitter      # slice 10a:None → log-only fallback;否则真出单
-        mode = "submit" if submitter is not None else "smoke"
         _LOG.info(
-            f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} "
+            f"PlaceBets[prepare]: pair={ctx.pair_id} legs={len(legs)} "
             f"strategy={strategy} rate={rate}",
         )
         opportunity_id = new_opportunity_id()
@@ -123,7 +122,7 @@ class PlaceBetsAction(Action):
 
         expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
         required_by_venue = _required_balance_by_venue(drafts)
-        prepared = []
+        prepared: list[PreparedOrder] = []
         for draft, leg_key in zip(drafts, expected_legs, strict=True):
             spec = {
                 "instrument_id": draft["instrument_id"],
@@ -141,41 +140,32 @@ class PlaceBetsAction(Action):
             }
             if self._enable_timeout is not None:
                 spec["enable_timeout"] = self._enable_timeout
-            prepared.append((draft, spec))
+            prepared.append(
+                PreparedOrder(
+                    spec=spec,
+                    venue=draft["venue"],
+                    role=draft["role"],
+                ),
+            )
+        if not prepared:
+            return
+        ctx.scratch["execution_plan"] = ExecutionPlan.submit(ctx.pair_id, prepared)
 
-        if submitter is not None:
-            # #105:多腿**并发**提交(顺序 workaround 退役)。同页并发 placeBets 丢回执的风险由
-            # OE/SE ExecClient 页锁串行碰页操作兜底;PM 与外部腿并行 → 对冲窗口更窄(synchronization §8.3)。
-            # slice 10a(#50):SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成。
-            await asyncio.gather(*(submitter(spec) for (_, spec) in prepared))
-        else:
-            # log-only fallback(无 submitter 注入;单测 / smoke)
-            for draft, spec in prepared:
-                _LOG.info(
-                    f"  would submit: instrument={spec['instrument_id']} side={spec['side']} "
-                    f"role={draft['role']} venue={draft['venue']} qty={spec['qty']:.4f} "
-                    f"price={spec['price']}",
-                )
-
-
-def _execute_cancel_request(ctx: EvalContext) -> bool:
-    selected = ctx.scratch.get("selected_candidate") or {}
-    request = selected.get("cancel_pair_orders") or ctx.scratch.get("cancel_pair_orders")
-    if not request:
-        return False
-    canceler = ctx.pair_order_canceler
-    if canceler is None:
+    def _prepare_cancel_request(self, ctx: EvalContext) -> bool:
+        selected = ctx.scratch.get("selected_candidate") or {}
+        request = selected.get("cancel_pair_orders") or ctx.scratch.get("cancel_pair_orders")
+        if not request:
+            return False
+        ctx.scratch["execution_plan"] = ExecutionPlan.cancel_pair(
+            ctx.pair_id,
+            request.get("reason"),
+            enable_timeout=self._enable_timeout,
+        )
         _LOG.info(
-            f"PlaceBets[cancel-smoke]: pair={ctx.pair_id} "
-            f"reason={request.get('reason')} orders=0",
+            f"PlaceBets[prepare-cancel]: pair={ctx.pair_id} "
+            f"reason={request.get('reason')}",
         )
         return True
-    count = canceler(ctx.pair_id)
-    _LOG.info(
-        f"PlaceBets[cancel]: pair={ctx.pair_id} "
-        f"reason={request.get('reason')} orders={count}",
-    )
-    return True
 
 
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:

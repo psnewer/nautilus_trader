@@ -111,8 +111,8 @@ def _3way_arbitrage_ctx() -> EvalContext:
 
 # ─── 端到端 smoke ──────────────────────────────────────────────────
 
-def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
-    """**核心 e2e**:JSON 配置 → JSON loader → Strategy → evaluate_tree 命中 → PlaceBetsAction.execute → log 3 leg。
+def test_mean_rebate_full_pipeline_prepares_two_orders(caplog):
+    """JSON 配置 → loader → evaluate_tree → PlaceBetsAction 生成两腿执行计划。
 
     `min(prob) × 3 = 0.25 × 3 = 0.75 → rate = 0.25 > 0.05` → mean_rebate 命中。
     空 self_hits → 默认通过。
@@ -131,15 +131,19 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     assert len(ctx.scratch["legs"]) == 2
     assert ctx.scratch["mean_rebate_rate"] == 0.25  # 1 - (0.25 + 0.50)
 
-    # 3. fire action(log-only smoke)
+    # 3. Action 只生成计划，提交由 Evaluator 统一分发。
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
         _run(res.pending_actions[0].execute(ctx))
 
     msgs = [r.message for r in caplog.records]
     # header log
-    assert any("PlaceBets[smoke]" in m and "pair=pair_X" in m and "legs=2" in m for m in msgs)
-    # 2 个 leg 各一行(yes/no 都选 OE 因更便宜)
-    assert sum("ORBITEXCH" in m and "would submit" in m for m in msgs) == 2
+    assert any("PlaceBets[prepare]" in m and "pair=pair_X" in m and "legs=2" in m for m in msgs)
+    assert len(ctx.scratch["execution_plan"].orders) == 2
+    # 两个计划订单都选择 OE（yes/no 均更便宜）。
+    assert [order.venue for order in ctx.scratch["execution_plan"].orders] == [
+        "ORBITEXCH",
+        "ORBITEXCH",
+    ]
 
 
 def test_no_arb_below_threshold_no_action(caplog):

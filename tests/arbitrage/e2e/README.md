@@ -17,7 +17,7 @@
 ## 预期用例
 
 - e2e-1: 完整套利会话(从 instrument 加载到双腿成交)在 paper trading 上的端到端验证
-- e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit。显式补偿撤单使用同一 grouped-command barrier 的 CancelOrder policy，不伪造成 SubmitOrder 腿。测试输入 leg 必须已带 `share_if_wins/qty`,Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
+- e2e-2: 当前主流程闭环:Strategy Action 先生成 execution plan，Evaluator 统一分发后，execution barrier 收齐同 opportunity 的 risk-pass legs；若任一 leg 有 residual → 整次 opportunity cancel-only，撤残单并丢弃本次所有新 submit。显式补偿撤单使用同一 grouped-command barrier 的 CancelOrder policy，不伪造成 SubmitOrder 腿。测试输入 leg 必须已带 `share_if_wins/qty`，Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
 - e2e-3: 单腿成交另一腿失败时的专门 recovery 状态机(后议,不属于当前主流程闭环)
 - e2e-4: 启动重连 reconciliation(Cache 状态与 venue 一致)
 - e2e-5: 多 MatchedPair 并发处理

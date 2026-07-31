@@ -1,15 +1,13 @@
 """
-CandiSelectAction —— 门控 + 树间取舍 + 组内选择(#277)。
+CandiSelectAction —— 本树候选的最小下注门控 + 组内选择。
 
-#277 起所有链(arb + comp)都在 `place_bets` 之前插入本 Action,内部三步:
-1. **最小下注门控**:候选池 = 本树 `candidates`(缺失时把 `legs` 包成单 candidate)
-   + evaluator 注入的 `recovery_candidates`;逐腿按与 place_bets 共用的 `leg_plan`
+#277 起所有链(arb + comp)都在 `place_bets` 之前插入本 Action,内部两步:
+1. **最小下注门控**:候选池 = 本树 `candidates`(缺失时把 `legs` 包成单 candidate);
+   逐腿按与 place_bets 共用的 `leg_plan`
    解析 side/price/qty,对实际提交 instrument(`exec_instrument_id` 优先)检查
    `min_quantity` / `min_notional`(经 `notional_value`,与 NT 原生口径一致)/
    BUY `min_buy_notional`;任一腿不过整 candidate 淘汰。
-2. **补偿优先分组**:`recovery_candidates` 有幸存者时只在补偿组选；补偿组全灭才落
-   本树的套利组。两组不混合比较 share。
-3. **组内选择(逻辑不变)**:legs 内最大 `share_if_wins` 最高者胜出,写
+2. **组内选择**:legs 内最大 `share_if_wins` 最高者胜出,写
    `ctx.scratch["selected_candidate"]`(含 intent 标记)和 `ctx.scratch["legs"]`。
 
 Risk 侧限额检查保留为兜底:market-order 最差价覆盖与 PM 减仓拆单发生在门控之后。
@@ -32,25 +30,14 @@ _LOG = logging.getLogger(__name__)
 
 
 class CandiSelectAction(Action):
-    """最小下注门控 → 补偿优先分组 → 组内 max leg share 选择。"""
+    """最小下注门控 → 本树内 max leg share 选择。"""
 
     async def execute(self, ctx: EvalContext) -> None:
         primary = _primary_pool(ctx)
-        recovery = list(ctx.scratch.get("recovery_candidates") or [])
-        if primary is None and not recovery:
+        if primary is None:
             return
 
-        survivors = _gate_pool(ctx, recovery, group="recovery")
-        group = "recovery"
-        if not survivors:
-            survivors = _gate_pool(ctx, primary or [], group="primary")
-            group = "primary"
-            if survivors and recovery:
-                _LOG.debug(
-                    f"CandiSelect: pair={ctx.pair_id} recovery group exhausted, "
-                    f"fallback to primary ({len(survivors)} candidate)"
-                )
-
+        survivors = _gate_pool(ctx, primary, group="tree")
         if not survivors:
             ctx.scratch["legs"] = []
             _LOG.debug(f"CandiSelect: pair={ctx.pair_id} no candidates")
@@ -61,7 +48,7 @@ class CandiSelectAction(Action):
         ctx.scratch["legs"] = selected.get("legs", [])
 
         _LOG.debug(
-            f"CandiSelect: pair={ctx.pair_id} group={group} candidates={len(survivors)} "
+            f"CandiSelect: pair={ctx.pair_id} candidates={len(survivors)} "
             f"selected={selected.get('candidate_id', selected.get('candidate_index'))} "
             f"max_candidate_share={_candidate_score(selected):.4f}"
         )

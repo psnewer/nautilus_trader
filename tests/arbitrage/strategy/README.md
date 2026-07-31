@@ -181,9 +181,10 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价且不读取 `market_order_enabled`，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
-- ✅ `test_action_candi_select.py`(12,#277/#295):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs / **最小下注门控**:低于 `min_quantity` 的高分 candidate 先淘汰不参与选择、PM BUY 低于 `min_buy_notional`(qty×price)淘汰、OE `min_notional` 按 **stake 口径**(NT `notional_value`=qty×multiplier,qty×price 会误判)、双腿任一腿不过整 candidate 淘汰 / **补偿优先分组**:recovery 有幸存者时 primary 分数再大也不参与、recovery 全灭同轮回退 primary、两池全灭清空 legs / **legs-only 包装**(mean_rebate/comp 链):`legs` 包成单 candidate 走同一路径、低于限额清空、无 candidates 无 legs 纯 no-op
-- ✅ `test_action_place_bets.py` +2(#277):提交 intent 优先读 `selected_candidate["intent"]`(recovery 经 arb 链胜出不丢豁免)/ 无标记时回退 Action 配置值
-- ✅ `test_evaluator.py` +2(#277):arb+comp 同轮命中 → comp 链不 fire,comp legs 包成 `{candidate_id: recovery, intent: recovery}` 注入 arb ctx `recovery_candidates` / comp 未命中不注入
+- ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
+- ✅ `test_action_place_bets.py` +2:提交 intent 优先读本树 `selected_candidate["intent"]`；
+  无标记时回退 Action 配置值
+- ✅ `test_evaluator.py`(#301):arb/comp 两条 Action 链分别生成 plan；两者都有 plan 时只分发补偿计划且补偿不继承套利 spread；补偿无 plan 时回退套利计划
 
 **OE inplay 写入**:
 - ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise
@@ -245,11 +246,12 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - ✅ `test_submitter.py`(6):`make_submitter` 经 NT `OrderFactory` 构 LimitOrder 并委托
   `Strategy.submit_order` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串
   `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 与 opportunity metadata 写入 tags。
-- ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
+- ✅ `test_action_place_bets.py`:Action 只生成 execution plan，不直接调用 submitter/canceler；统一 dispatcher 并发提交 specs。另覆盖 leg qty、price/qty override、spread、intent 与 log-only fallback
 - ✅ `test_evaluator.py`:evaluator 构造 ctx 时注入 callable submitter；
   `test_submitter_uses_native_strategy_submit_order_path` 锁定原生路径先把 Order 写入 NT Cache，再向
   `RiskEngine.execute` 路由 `SubmitOrder`，且 strategy ID 为 `ARB-EVAL-001`。
-- ✅ **#105(2026-06-13)place_bets 顺序提交 → 并发 `gather`**:`place_bets.py` 多腿改 `await asyncio.gather(*(submitter(spec) ...))`(顺序 workaround 退役;同页并发 placeBets 丢回执由 OE ExecClient 页锁串行兜底,PM/OE 腿并行 → 对冲窗口更窄,synchronization §8.3)。`test_action_place_bets.py` 既有用例(submitter 调用次数 / spec 正确 / log-only fallback)在并发下仍 23 passed。⚠️ **仍需 live 重验**两腿真盘回执不丢。
+- ✅ **#105(2026-06-13)多腿并发提交**:并发 `gather` 已迁到统一
+  `dispatch_execution_plan`；同页操作仍由 OE/SE ExecClient 页锁串行兜底，跨 venue 腿并发。
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` 后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
 
@@ -382,10 +384,11 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.1**:`on_data` 收 `OrderBookDeltas` → 查 PairRegistry 拿 pair_id → 查 StrategyRegistry 拿 strategy → 触发 `_evaluate_strategy`
 - **.2**:strategy 为 None(无挂载)→ no-op,无 fire
 - **.3**:Q19:`_execution_active` True 时 evaluate 跳过(让路)
-- **.4**:arb.hit=True + comp.hit=True 时由 arb Action 链作为统一宿主，comp candidate 注入后由
-  `candi_select` 按补偿优先选择；不重复执行 comp Action 链
-- **.4a**(`test_arb_and_comp_evaluation_scratch_is_isolated`):同轮 arb/comp 都命中,arb check 写 PM+OE 双腿,comp check 写单腿 recovery legs → fire arb.action 时读取的必须仍是 arb 自己的双腿 scratch;comp.action 不执行。验收:不得出现补偿树单腿污染套利树,导致 `intent=arbitrage` 但 `expected_legs` 只有一条。
-- **.5**:Q21 补救兜底:arb.hit=False + comp.hit=True → fire comp.action(等 arb evaluate 完成确认未命中后才 fire)
+- **.4**:arb.hit=True + comp.hit=True 时两条 Action 链都在独立 scratch 内生成 plan；
+  Evaluator 只分发 compensation plan
+- **.4a**(`test_arb_and_comp_evaluation_scratch_is_isolated`):两树 scratch 不共享，禁止跨树
+  candidate 注入；补偿计划不得继承套利参数
+- **.5**:补偿树没有生成有效 plan 时，同轮可回退并分发套利 plan
 
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
 - **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_dispatch_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次。**#260 起断言 gate 已释放**(该用例的 `_RecordingAction` 不提交任何订单 → 所有权未交出);旧断言是「fire 后仍 in-flight」,那正是泄漏本身 —— action 空转也永久占闸,该 pair 再不被评估。
@@ -500,17 +503,15 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   撤单意图；decimal 合成 NO 的真实 `SELL@lay` 按执行 instrument/side 转成补集概率后
   比较（即使原始赔率差大于 spread 也可因概率差命中）；非法 spread fail-fast。
 - `test_action_place_bets.py::test_action_cancel_request_cancels_pair_without_submitting`:
-  `PlaceBetsAction` 消费撤单意图时调用 pair canceler，绝不调用 submitter。
+  `PlaceBetsAction` 先生成 cancel plan，统一 dispatcher 才调用 pair canceler，且不调用 submitter。
 - `test_action_place_bets.py::test_action_cancels_when_selected_recovery_candidate_carries_request`:
-  spread cancel 作为 recovery candidate 经 `candi_select` 胜出后仍走撤单而非下单。
+  补偿树选择出的 spread cancel candidate 生成撤单计划而非下单计划。
 - `test_evaluator.py::test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders`:
-  Action 执行时重新读取目标 pair 全部 open orders；逐单发 NT CancelOrder，并为所有命令
+  dispatcher 执行 cancel plan 时重新读取目标 pair 全部 open orders；逐单发 NT CancelOrder，并为所有命令
   写入相同 `opportunity_id/expected_cancels`，由 Execution grouped cancel barrier 收齐后
   跨 venue 统一 release。
-- `test_evaluator.py::test_both_hit_injects_spread_cancel_as_recovery_candidate`:同轮两树命中时，
-  标准 legs 与撤单元数据一起进入 recovery candidate；不在 evaluator 层静默丢弃。
-- `test_action_candi_select.py::test_recovery_survivor_wins_even_if_primary_share_larger`:
-  spread cancel / recovery 所在补偿组只要有合法 candidate 就优先于套利组。
+- `test_evaluator.py::test_spread_cancel_recovery_completes_comp_tree_then_wins_dispatch`:同轮两树
+  命中时，spread cancel 完整经过补偿树生成 cancel plan；统一分发选择补偿，只执行 grouped cancel。
 - `test_mean_rebate_e2e.py::test_spread_cancel_and_mean_recovery_build_as_or_expression`:
   JSON loader 可将 `spread_cancel_recovery OR mean_rebate_recovery` 装配为补偿 CheckExpr。
 ### strategy-action-place-bets-log: 实际策略汇总日志

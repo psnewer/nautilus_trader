@@ -6,9 +6,9 @@ evaluate 流程(`StrategyEvaluator._evaluate_tree`):
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
   3. 叶子(sub_conditions 空)→ checktion.eval(ctx) → 返 (hit=True, pending_actions=actions)
 
-**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`,**fire 由顶层做**(让套利/补救
-并行 evaluate 后,套利结果决定补救是否 fire)。Check 可向本树独占的 `ctx.scratch` 写派生结果；
-actions 依次串行执行(如 ShareLimitModification → PlaceBetsAction)。
+**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`。顶层让套利/补偿 Action
+链在各自上下文内生成执行计划，再统一选择和分发。Check 可向本树独占的 `ctx.scratch`
+写派生结果；actions 依次串行执行。
 """
 
 from __future__ import annotations
@@ -36,11 +36,10 @@ class EvalContext:
     # slice 9(#49):per-eval scratch — Check 算 derived 数据(如 legs)给同 condition 树的 Action 用;
     # per-eval 自动隔离(每次 evaluate 新建 ctx),无 race。只在同 condition 树内 Check→Action 传。
     scratch: dict = field(default_factory=dict)
-    # slice 10a(#50):Action 真出单 callable —— evaluator 构造时注入,Action 经
-    # `await ctx.submitter(spec)` 提交;`None` 时 Action 应 log-only fallback。
+    # Evaluator 统一分发执行计划时使用；树内 Action 不得直接调用。
     # `spec` schema:{instrument_id, side: "BUY"|"SELL", qty: float, price: float}
     submitter: object | None = None  # Callable[[dict], Awaitable[None]] | None;运行时类型避循环 import
-    # spread_cancel_recovery 命中后由 PlaceBetsAction 调用；实现必须走 NT 原生 CancelOrder。
+    # Evaluator 分发 cancel_pair 计划时调用；实现必须走 NT 原生 CancelOrder。
     pair_order_canceler: object | None = None  # Callable[[str], int] | None
     # ShareLimitModification 等 Action 需要读取持仓数据计算 remaining
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import

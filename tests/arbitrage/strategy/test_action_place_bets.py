@@ -8,6 +8,7 @@ import pytest
 
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.leg_plan import compute_size as _compute_size
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -17,6 +18,20 @@ def _run(coro):
         return asyncio.run(coro)
     finally:
         asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+def _prepare_and_dispatch(action, ctx):
+    _run(action.execute(ctx))
+    plan = ctx.scratch.get("execution_plan")
+    if plan is not None:
+        _run(dispatch_execution_plan(
+            plan,
+            submitter=ctx.submitter,
+            pair_order_canceler=ctx.pair_order_canceler,
+            log=logging.getLogger("src.arbitrage.strategy.actions.place_bets"),
+            source="test",
+        ))
+    return plan
 
 
 def test_pm_size_equals_share():
@@ -41,7 +56,7 @@ def test_action_log_only_no_raise_when_no_legs(caplog):
     """Check 没写 scratch["legs"] → Action 静默 skip,不 raise。"""
     ctx = EvalContext(pair_id="p")
     action = PlaceBetsAction()
-    _run(action.execute(ctx))
+    _prepare_and_dispatch(action, ctx)
     # 没下单 log(只 debug 级别 skip)
 
 
@@ -54,11 +69,11 @@ def test_action_cancel_request_cancels_pair_without_submitting():
     ctx = EvalContext(
         pair_id="p",
         submitter=fail_submit,
-        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 3,
+        pair_order_canceler=lambda pair_id, **kwargs: canceled.append(pair_id) or 3,
     )
     ctx.scratch["cancel_pair_orders"] = {"reason": "spread_cancel_recovery"}
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert canceled == ["p"]
 
@@ -72,7 +87,7 @@ def test_action_cancels_when_selected_recovery_candidate_carries_request():
     ctx = EvalContext(
         pair_id="p",
         submitter=fail_submit,
-        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 2,
+        pair_order_canceler=lambda pair_id, **kwargs: canceled.append(pair_id) or 2,
     )
     ctx.scratch["selected_candidate"] = {
         "candidate_id": "recovery",
@@ -81,9 +96,37 @@ def test_action_cancels_when_selected_recovery_candidate_carries_request():
     }
     ctx.scratch["legs"] = ctx.scratch["selected_candidate"]["legs"]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert canceled == ["p"]
+
+
+def test_action_only_prepares_plan_without_execution_side_effects():
+    submitted = []
+    canceled = []
+
+    async def fake_submitter(spec):
+        submitted.append(spec)
+
+    ctx = EvalContext(
+        pair_id="p",
+        submitter=fake_submitter,
+        pair_order_canceler=lambda pair_id, **kwargs: canceled.append(pair_id),
+    )
+    ctx.scratch["legs"] = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "yes",
+        "price": 0.4,
+        "qty": 5.0,
+    }]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert ctx.scratch["execution_plan"].kind == "submit"
+    assert submitted == []
+    assert canceled == []
 
 
 def test_action_logs_each_leg(caplog):
@@ -97,11 +140,11 @@ def test_action_logs_each_leg(caplog):
     ctx.scratch["mean_rebate_rate"] = 0.15
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction().execute(ctx))
+        _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     msgs = [r.message for r in caplog.records]
     assert any(
-        "PlaceBets[smoke]" in m
+        "PlaceBets[prepare]" in m
         and "legs=2" in m
         and "strategy=mean_rebate" in m
         and "rate=0.15" in m
@@ -130,10 +173,10 @@ def test_action_summary_logs_selected_one_side_rebate_candidate(caplog):
     }
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction().execute(ctx))
+        _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert any(
-        "PlaceBets[smoke]" in record.message
+        "PlaceBets[prepare]" in record.message
         and "strategy=one_side_rebate" in record.message
         and "rate=0.12" in record.message
         for record in caplog.records
@@ -143,7 +186,7 @@ def test_action_summary_logs_selected_one_side_rebate_candidate(caplog):
 # ── slice 10a(#50):submitter 接通 ─────────────────────────────────
 
 def test_action_calls_submitter_when_present(caplog):
-    """ctx.submitter 非 None → Action 经 `await submitter(spec)` 真出单(不走 log-only fallback)。"""
+    """Action 先构造计划，统一 dispatcher 再并发调用 submitter。"""
     calls = []
     async def fake_submitter(spec: dict) -> None:
         calls.append(spec)
@@ -158,7 +201,7 @@ def test_action_calls_submitter_when_present(caplog):
     ctx.scratch["mean_rebate_rate"] = 0.15
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction().execute(ctx))
+        _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     # 2 leg → 2 submitter 调用
     assert len(calls) == 2
@@ -178,9 +221,9 @@ def test_action_calls_submitter_when_present(caplog):
     assert calls[1]["instrument_id"] == "A.ORBITEXCH"
     assert calls[1]["qty"] == 9.0
     assert calls[1]["price"] == 2.5
-    # log mode = "submit" 不是 "smoke"
+    # Action 日志只表示完成规划，不表示已经提交。
     msgs = [r.message for r in caplog.records]
-    assert any("PlaceBets[submit]" in m for m in msgs)
+    assert any("PlaceBets[prepare]" in m for m in msgs)
     # log-only fallback "would submit" 不应出现
     assert not any("would submit" in m for m in msgs)
 
@@ -211,7 +254,7 @@ def test_action_disabled_timeout_is_written_to_every_submit_spec():
         },
     ]
 
-    _run(PlaceBetsAction(enable_timeout=False).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(enable_timeout=False), ctx)
 
     assert len(calls) == 2
     assert all(spec["enable_timeout"] is False for spec in calls)
@@ -256,7 +299,7 @@ def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
         },
     ]
 
-    _run(PlaceBetsAction(spread=0.02).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(spread=0.02), ctx)
 
     assert [(call["side"], call["qty"], call["price"]) for call in calls] == [
         ("BUY", 10.0, 0.38),
@@ -307,7 +350,7 @@ def test_action_spread_clamps_prices_to_venue_extremes():
         },
     ]
 
-    _run(PlaceBetsAction(spread=0.1).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(spread=0.1), ctx)
 
     assert [call["price"] for call in calls] == [0.01, 0.99, 1000.0, 1.01]
 
@@ -330,7 +373,7 @@ def test_action_spread_prefers_instrument_price_bounds():
         "qty": 5.0,
     }]
 
-    _run(PlaceBetsAction(spread=0.1).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(spread=0.1), ctx)
 
     assert calls[0]["price"] == 0.05
 
@@ -354,7 +397,7 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls == [{
         "instrument_id": "A.ORBITEXCH",
@@ -386,7 +429,7 @@ def test_action_uses_leg_share_if_wins_without_action_share():
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 40.0},
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["qty"] == 40.0
     assert calls[1]["qty"] == 16.0
@@ -404,7 +447,7 @@ def test_action_uses_sharpexch_leg_share_if_wins_without_action_share():
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 40.0},
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["qty"] == 16.0
     assert calls[0]["leg_key"] == "sharpexch:away:0"
@@ -431,7 +474,7 @@ def test_decimal_real_no_claim_keeps_back_side_price_and_size():
         },
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["side"] == "BUY"
     assert calls[0]["price"] == 2.0
@@ -460,7 +503,7 @@ def test_decimal_no_claim_redirects_to_exec_instrument():
         },
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["instrument_id"] == "1-123-42-None.ORBITEXCH"
     assert calls[0]["side"] == "SELL"
@@ -488,7 +531,7 @@ def test_probability_no_claim_keeps_buy_path():
         },
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["side"] == "BUY"
     assert calls[0]["price"] == 0.4
@@ -512,7 +555,7 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         price_overrides={"orbitexch": 1000.0},
         qty_overrides={"ORBITEXCH": 7.0},
     )
-    _run(action.execute(ctx))
+    _prepare_and_dispatch(action, ctx)
 
     assert calls == [{
         "instrument_id": "A.ORBITEXCH",
@@ -591,7 +634,7 @@ def _pm_target_ctx(ctx, *, price: float = 0.2):
 def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60))
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
         ("SINNER.POLYMARKET", "SELL", 60.0, 0.8),
@@ -609,7 +652,7 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
 def test_probability_inventory_split_applies_spread_after_sizing():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60))
 
-    _run(PlaceBetsAction(spread=0.01).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(spread=0.01), ctx)
 
     assert [(c["side"], c["qty"], c["price"]) for c in calls] == [
         ("SELL", 60.0, 0.81),
@@ -622,7 +665,7 @@ def test_probability_inventory_split_applies_spread_after_sizing():
 def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97))
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["side"], c["qty"]) for c in calls] == [("SELL", 95.0), ("BUY", 5.0)]
 
@@ -630,7 +673,7 @@ def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
 def test_probability_split_keeps_minimum_buy_notional_at_low_price():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97), price=0.02)
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["side"], c["qty"], c["price"]) for c in calls] == [
         ("SELL", 50.0, 0.98),
@@ -641,7 +684,7 @@ def test_probability_split_keeps_minimum_buy_notional_at_low_price():
 def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_minimum():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=3))
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"]) for c in calls] == [
         ("ALCARAZ.POLYMARKET", "BUY", 100.0),
@@ -652,7 +695,7 @@ def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_mini
 def test_probability_buy_fully_replaced_by_opposite_sell():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=100))
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
         ("SINNER.POLYMARKET", "SELL", 100.0, 0.8),
@@ -673,7 +716,7 @@ def test_action_qty_override_beats_leg_qty():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction(qty_overrides={"ORBITEXCH": 7.0}).execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(qty_overrides={"ORBITEXCH": 7.0}), ctx)
 
     assert calls[0]["qty"] == 7.0
 
@@ -691,7 +734,7 @@ def test_action_can_mark_recovery_intent():
          "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 5.0},
     ]
 
-    _run(PlaceBetsAction(intent="recovery").execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(intent="recovery"), ctx)
 
     assert calls[0]["intent"] == "recovery"
     assert calls[0]["qty"] == 5.0
@@ -702,7 +745,7 @@ def test_submitter_none_falls_back_to_log_only():
     ctx = EvalContext(pair_id="p", submitter=None)
     ctx.scratch["legs"] = [{"instrument_id": "X", "venue": "POLYMARKET", "side": "BUY",
                              "role": "home", "price": 0.5, "prob": 0.5, "share_if_wins": 10.0}]
-    _run(PlaceBetsAction().execute(ctx))   # 不 raise
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)   # 不 raise
 
 
 def test_action_aborts_when_leg_missing_qty_and_share_if_wins(caplog):
@@ -718,7 +761,7 @@ def test_action_aborts_when_leg_missing_qty_and_share_if_wins(caplog):
     ]
 
     with caplog.at_level(logging.WARNING, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction().execute(ctx))
+        _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls == []
     assert any("missing qty/share_if_wins" in r.message for r in caplog.records)
@@ -737,7 +780,7 @@ def test_action_aborts_when_leg_is_non_tradable_anchor(caplog):
     ]
 
     with caplog.at_level(logging.WARNING, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction().execute(ctx))
+        _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls == []
     assert any("non-tradable anchor" in r.message for r in caplog.records)
@@ -756,7 +799,7 @@ def test_strategy_keeps_planned_price_for_execution_adapter():
          "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
     ]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["price"] == 2.5
 
@@ -764,7 +807,7 @@ def test_strategy_keeps_planned_price_for_execution_adapter():
 # ── #277:intent 优先读 selected_candidate ────────────────────────
 
 def test_intent_from_selected_candidate_overrides_configured():
-    """recovery 候选经 arb 链胜出时,提交 intent 必须是 candidate 自带的 recovery。"""
+    """本树胜出 candidate 的 intent 必须覆盖 Action 默认值。"""
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
@@ -777,7 +820,7 @@ def test_intent_from_selected_candidate_overrides_configured():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction(intent="arbitrage").execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(intent="arbitrage"), ctx)
 
     assert [spec["intent"] for spec in calls] == ["recovery"]
 
@@ -796,6 +839,6 @@ def test_intent_falls_back_to_configured_without_candidate_tag():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction(intent="arbitrage").execute(ctx))
+    _prepare_and_dispatch(PlaceBetsAction(intent="arbitrage"), ctx)
 
     assert [spec["intent"] for spec in calls] == ["arbitrage"]

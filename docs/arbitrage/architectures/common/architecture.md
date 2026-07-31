@@ -17,7 +17,7 @@
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
 | `order_intent(order)` | Risk 读取 `arb:intent`,默认 `arbitrage` |
 | `RISK_LEG_DENIED_TOPIC` | `risk.opportunity.leg_denied` topic 常量 |
-| `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels`;描述一组应同步进入 ExecutionClient 的标准撤单命令 |
+| `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels / enable_timeout`;描述一组应同步进入 ExecutionClient 的标准撤单命令；`enable_timeout` 只有 grouped cancel 显式传入时才生效 |
 | `cancel_params_from_meta(meta)` / `cancel_meta_from_command(command)` | Strategy 经 `CancelOrder.params["arb_cancel_opportunity"]` 写入、Execution barrier 读取 grouped cancel metadata |
 
 **约束**:
@@ -28,9 +28,10 @@
   `cancel_key`；格式无效时 fail-closed 为 `OrderCancelRejected`。
 - `expected_legs` 只包含真实下单腿;不发送 0 qty 空单。
 - 同一 opportunity 的所有真实腿必须携带相同 `open_orders_digest`。
-- `enable_timeout=true/false` 分别写为对应 tag；字段缺失或非法值按“未配置”处理，
+- `enable_timeout=true/false` 分别写为对应 submit tag；字段缺失或非法值按“未配置”处理，
   保持旧订单兼容。只有显式 `false` 表示禁用 timeout 等待、ACK 后结束 submit session；
-  缺失或 `true` 均继续既有跟踪。该字段只提供给 submit execution session，Risk 不改变门控。
+  缺失或 `true` 均继续既有跟踪。普通 CancelOrder/cancel-only 不读取原订单 tag，只有
+  grouped cancel 的 command params 显式携带该字段时才应用；Risk 不改变门控。
 - common 模块只负责解析 / 构造,不维护 opportunity 状态；SubmitOrder 与 CancelOrder 共用的
   grouped-command 状态机归 Execution barrier。
 

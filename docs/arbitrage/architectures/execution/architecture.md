@@ -326,12 +326,12 @@ def _on_session_timeout(self, event):
     self._end_session(coid, timed_out=True)
 ```
 - **绝对超时**:partial / OrderAccepted **不重置** timer。
-- **Action 可选 ACK 收口(#298/#300)**:submit/cancel session 建立时均从原订单
-  `Order.tags` 的 `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；
-  显式 `false` 时：
+- **Action 可选 ACK 收口(#298/#300)**:submit session 从原订单 `Order.tags` 的
+  `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；显式 `false` 时：
   - submit 收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有 accepted
     余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`；
-  - cancel 收到 venue 明确的撤单请求 ACK 后，由 adapter 调共用 `_ack_cancel_session`，
+  - grouped cancel 只有在 `CancelOrder.params` 显式携带 `enable_timeout` 时才使用该配置；普通
+    cancel-only 不读取原订单 tags，按缺省值等待。收到 venue 明确的撤单请求 ACK 后，由 adapter 调共用 `_ack_cancel_session`，
     再调用 `_end_session`。PM ACK 是 CLOB `canceled[]`，OE/SE ACK 是
     `cancelBets` 成功响应；传输结果未知与业务拒绝不走 ACK 收口。
   两条路径都只取消 watchdog、释放 `_execution_active`，不把订单改成终态；后续

@@ -1,6 +1,6 @@
 """
 StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 → 查 StrategyRegistry
-→ 基于当前 EvalContext 并行 evaluate arb+comp → fire(补偿候选优先)。
+→ 基于当前 EvalContext 并行 evaluate arb+comp → 各树独立规划 → 补偿优先统一分发。
 
 设计见 `docs/arbitrage/architectures/strategy/architecture.md §3.5 / §4`。
 
@@ -47,6 +47,7 @@ from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
+from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.registry import StrategyRegistry
 
 
@@ -368,31 +369,37 @@ class StrategyEvaluator(Strategy):
                 f"comp_hit={comp_res.hit}, "
                 f"comp_actions={comp_actions_str}",
             )
-        # 树间取舍下移至 candi_select。顶层只决定跑哪条链:
-        # arb 命中 → 跑 arb 链,comp 同轮命中时把 comp legs 包成 recovery candidate 注入
-        # (candi_select 先选通过门控的补偿候选,补偿全灭才落套利);仅 comp 命中 → comp 链。
-        # `await` 而非 `create_task`:让 action 链的异常落进本 task,由 `_on_eval_done` 打出来,
-        # 而不是变成无上下文的 asyncio "Task exception was never retrieved"。
-        if arb_res.hit and arb_res.pending_actions:
-            if comp_res.hit and comp_res.pending_actions and comp_ctx.scratch.get("legs"):
-                recovery_candidate = {
-                    "candidate_id": "recovery",
-                    "intent": "recovery",
-                    "legs": comp_ctx.scratch["legs"],
-                }
-                cancel_request = comp_ctx.scratch.get("cancel_pair_orders")
-                if cancel_request:
-                    recovery_candidate["cancel_pair_orders"] = cancel_request
-                arb_ctx.scratch["recovery_candidates"] = [recovery_candidate]
+        # 两树 Action 链只在各自 ctx 中生成 execution_plan，不产生下单/撤单副作用。
+        # 等两边都规划完毕后，Evaluator 才按补偿 > 套利选择唯一计划统一分发。
+        await asyncio.gather(
+            self._prepare_actions(arb_res, arb_ctx),
+            self._prepare_actions(comp_res, comp_ctx),
+        )
+        arb_plan = arb_ctx.scratch.get("execution_plan")
+        comp_plan = comp_ctx.scratch.get("execution_plan")
+        plan = comp_plan or arb_plan
+        source = "compensation" if comp_plan is not None else "arbitrage"
+        if plan is None:
             if self._log_evaluations:
-                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-            await self._execute_actions(arb_res.pending_actions, arb_ctx)
-        elif comp_res.hit and comp_res.pending_actions:
-            if self._log_evaluations:
-                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-            await self._execute_actions(comp_res.pending_actions, comp_ctx)
-        elif self._log_evaluations:
-            self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
+                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_execution_plan")
+            return
+        if self._log_evaluations:
+            self._log.info(
+                f"Strategy execution selected: pair_id={pair_id}, "
+                f"source={source}, kind={plan.kind}",
+            )
+        await dispatch_execution_plan(
+            plan,
+            submitter=submitter,
+            pair_order_canceler=base_ctx["pair_order_canceler"],
+            log=self._log,
+            source=source,
+        )
+
+    async def _prepare_actions(self, result, ctx) -> None:
+        if not result.hit or not result.pending_actions:
+            return
+        await self._execute_actions(result.pending_actions, ctx)
 
     def _get_sports_store(self):
         """#250:lazy 建 SportsGameStateStore，供状态查询读取 PMS Cache。"""
@@ -458,7 +465,7 @@ class StrategyEvaluator(Strategy):
 
     # ── slice 10a(#50):submitter 工厂 ───────────────────────────────
     def _make_submitter(self):
-        """返 async callable:Action 经 `await ctx.submitter(spec)` 提交订单。
+        """返 async callable:统一 execution-plan dispatcher 用它提交订单。
 
         thin wrapper 经 module-level `make_submitter(...)`,最终调用 NT 原生 `Strategy.submit_order`。
         """
@@ -471,7 +478,7 @@ class StrategyEvaluator(Strategy):
 
     def _make_pair_order_canceler(self):
         """返同步 callable：重读 pair open orders，并作为同组 NT CancelOrder 送入 barrier。"""
-        def cancel(pair_id: str) -> int:
+        def cancel(pair_id: str, *, enable_timeout: bool | None = None) -> int:
             seen = set()
             orders = []
             for raw_instrument_id in sorted(
@@ -504,6 +511,7 @@ class StrategyEvaluator(Strategy):
                             pair_id=pair_id,
                             cancel_key=cancel_key,
                             expected_cancels=expected,
+                            enable_timeout=enable_timeout,
                         ),
                     ),
                 )
