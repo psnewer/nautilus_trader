@@ -4323,6 +4323,11 @@ async def test_venue_reported_position_retries_stop_after_max(
     # Arrange
     live_exec_engine.register_client(exec_client)
     live_exec_engine.position_check_retries = 2
+    # Isolate the fill-query retry path: with `generate_missing_orders` the flat-cache
+    # discrepancy self-heals via the NET inferred-fill fallback on the first pass (covered
+    # by `test_venue_reported_position_flat_cache_self_heals_via_netting`), so disable it
+    # here to exercise the retry cap when the gap cannot be explained.
+    live_exec_engine.generate_missing_orders = False
 
     if AUDUSD_SIM.id not in [i.id for i in cache.instruments()]:
         cache.add_instrument(AUDUSD_SIM)
@@ -4356,6 +4361,61 @@ async def test_venue_reported_position_retries_stop_after_max(
 
     # Assert - should query exactly 2 times (the max), not 3
     assert query_count == 2
+
+
+@pytest.mark.asyncio
+async def test_venue_reported_position_flat_cache_self_heals_via_netting(
+    live_exec_engine,
+    exec_client,
+    cache,
+):
+    # Arrange - server-pulled position is authoritative: a flat cache vs a venue-reported
+    # position must self-heal via the NET inferred-fill fallback even when no fills explain it.
+    live_exec_engine.register_client(exec_client)
+    live_exec_engine.generate_missing_orders = True
+
+    if AUDUSD_SIM.id not in [i.id for i in cache.instruments()]:
+        cache.add_instrument(AUDUSD_SIM)
+
+    venue_report = PositionStatusReport(
+        account_id=TestIdStubs.account_id(),
+        instrument_id=AUDUSD_SIM.id,
+        position_side=PositionSide.LONG,
+        quantity=Quantity.from_int(500),
+        report_id=UUID4(),
+        ts_last=live_exec_engine._clock.timestamp_ns(),
+        ts_init=live_exec_engine._clock.timestamp_ns(),
+        avg_px_open=Price.from_str("0.50"),  # real PM /positions reports carry the avg price
+    )
+
+    # No fills can explain the gap (mirrors PM `generate_fill_reports` returning []).
+    async def empty_query(instrument_id, clients):
+        return [], False
+
+    live_exec_engine._query_and_find_missing_fills = empty_query
+
+    # Spy the netting fallback to confirm it runs (without it, the empty fill query resolves nothing).
+    netting_calls = []
+    original_netting = live_exec_engine._reconcile_position_report
+
+    def spy_netting(report):
+        netting_calls.append(report)
+        return original_netting(report)
+
+    live_exec_engine._reconcile_position_report = spy_netting
+
+    # Act
+    await live_exec_engine._process_venue_reported_positions(
+        {},  # No cached positions
+        {AUDUSD_SIM.id: venue_report},
+    )
+
+    # Assert - flat-cache path fell back to NET reconciliation and synthesized an inferred
+    # fill for the venue's authoritative net qty (the position then opens via the event
+    # pipeline, as in startup mass-status reconcile).
+    assert netting_calls == [venue_report]
+    inferred = [o for o in cache.orders() if o.filled_qty.as_double() == 500]
+    assert len(inferred) == 1
 
 
 @pytest.mark.asyncio

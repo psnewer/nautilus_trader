@@ -407,17 +407,49 @@ def test_canceled_is_terminal():
     assert published == []                               # #108:execution.* 退役
 
 
-def test_cancel_session_ignores_fill_until_cancel_terminal():
+def test_cancel_session_ignores_fill_until_cancel_terminal_when_timeout_enabled():
+    # #306:缺失/enable_timeout=true 保持原语义 —— 成交(即使打满)不收口 cancel session,
+    # 只有 OrderCanceled / OrderCancelRejected / timeout 能结束。
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    order = _order(factory, pm, qty=10)
+
+    assert client._begin_cancel_session(order, enable_timeout=True) is True
+    client._send_order_event(TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(10)))
+
+    assert client._execution_active                       # true:成交不收口 cancel session
+
+    client._send_order_event(TestEventStubs.order_canceled(order))
+
+    assert not client._execution_active
+
+
+@pytest.mark.parametrize("last_qty", [4, 10])
+def test_cancel_session_disabled_timeout_ends_on_fill(last_qty):
+    # #306:enable_timeout=false 的 cancel session 语义 = "拿到确定的 venue 回执即释放追踪"。
+    # 成交(不分部分/全部)是确定回执 → 立即结束;cancel/match 竞态下 venue 抑制
+    # OrderCancelRejected 时,成交是唯一能让 session 及时收口的回执,否则空耗 watchdog。
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     order = _order(factory, pm, qty=10)
 
     assert client._begin_cancel_session(order, enable_timeout=False) is True
-    client._send_order_event(TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(10)))
+    client._send_order_event(
+        TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(last_qty)),
+    )
 
-    assert client._execution_active                       # cancel session 不由成交事件收口
+    assert not client._execution_active                   # false:成交回执即收尾,不分部分/全部
 
-    client._send_order_event(TestEventStubs.order_canceled(order))
+
+def test_cancel_session_disabled_timeout_ends_on_any_venue_ack():
+    # #306:收口是 ack 语义、非成交特判 —— 任一到达本漏斗的 venue 回执(此处用非终态、非成交的
+    # OrderAccepted)都让 enable_timeout=false 的 cancel session 结束。
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    order = _order(factory, pm, qty=10)
+
+    assert client._begin_cancel_session(order, enable_timeout=False) is True
+    client._send_order_event(TestEventStubs.order_accepted(order))
 
     assert not client._execution_active
 

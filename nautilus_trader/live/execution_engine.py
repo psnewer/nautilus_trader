@@ -1146,6 +1146,24 @@ class LiveExecutionEngine(ExecutionEngine):
                 instrument_id,
             )
 
+            # Server-pulled position is authoritative: when the fill query can't explain the
+            # gap (e.g. venues that return no fill reports), fall back to NET reconciliation —
+            # infer a fill from the venue's authoritative net qty + avg_px. Symmetric with the
+            # non-flat path in `_process_cached_position_discrepancies`; without this a flat
+            # cache vs a venue-reported position never self-heals until a restart.
+            if (
+                still_discrepant
+                and not had_fill_query_errors
+                and self.generate_missing_orders
+                and self._reconcile_position_report(venue_report)
+            ):
+                cached_after = self._cache.positions_open(instrument_id=instrument_id)
+                still_discrepant = self._check_position_discrepancy(
+                    cached_after,
+                    venue_report,
+                    instrument_id,
+                )
+
             if still_discrepant:
                 cached_qty_now = sum(p.signed_decimal_qty() for p in cached_after)
                 self._position_recon_retries[instrument_id] = retries + 1

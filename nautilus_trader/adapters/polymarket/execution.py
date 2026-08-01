@@ -2146,6 +2146,38 @@ class PolymarketExecutionClient(LiveExecutionClient):
         """
         return False
 
+    def _trigger_position_reconcile(self, instrument_id: InstrumentId) -> None:
+        """
+        Schedule an immediate position reconcile for `instrument_id`.
+
+        Used when a trade arrives for an already-closed order (cancel/match race), so the
+        real on-chain position is booked now via the authoritative `/positions` net snapshot
+        instead of waiting for the periodic reconcile cycle.
+        """
+        self.create_task(self._reconcile_position_now(instrument_id))
+
+    async def _reconcile_position_now(self, instrument_id: InstrumentId) -> None:
+        try:
+            reports = await self.generate_position_status_reports(
+                GeneratePositionStatusReports(
+                    instrument_id=instrument_id,
+                    start=None,
+                    end=None,
+                    command_id=UUID4(),
+                    ts_init=self._clock.timestamp_ns(),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — best-effort nudge; periodic reconcile is the backstop
+            self._log.warning(
+                f"On-drop position reconcile query failed for {instrument_id}: {e!r}",
+            )
+            return
+
+        for report in reports:
+            if report.instrument_id == instrument_id:
+                # Routes to ExecEngine.reconcile_execution_report -> NET inferred fill.
+                self._send_position_status_report(report)
+
     def _handle_ws_trade_msg(self, msg: PolymarketUserTrade, wait_for_ack: bool):
         self._log.debug(f"Handling trade message, {wait_for_ack=}")
 
@@ -2287,8 +2319,16 @@ class PolymarketExecutionClient(LiveExecutionClient):
             return
 
         if order.is_closed:
-            self._log.warning(f"Order already closed - skipping trade processing: {order}")
-            return  # Already closed (only status update)
+            # cancel/match race edge: the order was already terminal when this fill arrived, so
+            # applying it here would fight the order FSM. Instead trust the server: trigger an
+            # immediate position reconcile so the venue's authoritative net position (which
+            # includes this fill) is booked now, rather than waiting for the periodic cycle.
+            self._log.warning(
+                f"Order already closed - skipping trade processing, triggering position "
+                f"reconcile: {order}",
+            )
+            self._trigger_position_reconcile(instrument_id)
+            return
 
         last_qty = instrument.make_qty(msg.last_qty(order_id))
         last_qty = self._fill_tracker.snap_fill_qty(venue_order_id, last_qty)

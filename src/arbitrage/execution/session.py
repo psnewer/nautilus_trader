@@ -203,13 +203,25 @@ class ArbExecutionSessionMixin:
                 self._end_session(event.client_order_id)
                 return
         if kind == "cancel":
-            terminal = isinstance(event, _CANCEL_TERMINAL)
+            # #306:enable_timeout=false 的 cancel session 语义 = "拿到确定的 venue 回执即释放追踪"
+            # (它只是 barrier 闸;残量留待下轮 strategy 按 live state 重评估重撤)。到达本漏斗的
+            # 都是 client 生成的 venue 回执(成交/撤单成功/撤单拒绝/接受/改单…);pending/预览态
+            # (OrderPendingCancel 等)由 ExecEngine 生成、不经此,而 cancel 的目标单早已 live、
+            # 不会再触发 submit/denied —— 故**任一到达事件都当 ack 收尾**,与 _ack_cancel_session
+            # 的 end-on-ack 同源,不必特判事件类型。cancel/match 竞态下 venue 回
+            # already-canceled-or-matched 被 adapter 抑制(不发 OrderCancelRejected)时,成交事件
+            # 就是那个能让 session 及时收口的确定回执 —— 否则空耗一个 watchdog timeout(nohup 571/572)。
+            # 缺失/enable_timeout=true 保持原语义:只等撤单终态(_CANCEL_TERMINAL)或 timeout(§4.2)。
+            if sess.get("enable_timeout") is False:
+                terminal = True
+            else:
+                terminal = isinstance(event, _CANCEL_TERMINAL)
         else:
             terminal = isinstance(event, _SUBMIT_TERMINAL)
-        if kind == "submit" and isinstance(event, OrderFilled):
-            sess["filled"] += event.last_qty.as_double()
-            if sess["filled"] >= sess["qty"]:
-                terminal = True  # 全成才终态;partial 不重置/不结束(绝对超时,§4.2)
+            if isinstance(event, OrderFilled):
+                sess["filled"] += event.last_qty.as_double()
+                if sess["filled"] >= sess["qty"]:
+                    terminal = True  # 全成才终态;partial 不重置/不结束(绝对超时,§4.2)
         if terminal:
             self._end_session(event.client_order_id)
 

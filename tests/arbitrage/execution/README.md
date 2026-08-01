@@ -150,12 +150,22 @@
 - 期望:撤单 session 按缺省语义继续等待真实撤单终态或 watchdog，不因原订单参数在 ACK 后提前结束。
 - 验收:`test_session.py::test_cancel_only_does_not_inherit_original_order_enable_timeout`。
 
-### execution-4.2.4: cancel session 的默认终态收口
-- 前置:一笔 cancel session 已建立。
-- 输入:先收到该订单的 `OrderFilled`,再收到 `OrderCanceled`。
-- 期望:fill 事件不结束 cancel session；缺失/`enable_timeout=true` 时只有
+### execution-4.2.4: cancel session 默认(缺失/enable_timeout=true)成交不收口(#306)
+- 前置:一笔 cancel session 已建立(qty=10,`enable_timeout=true`)。
+- 输入:先收到该订单的 `OrderFilled`(即使打满),再收到 `OrderCanceled`。
+- 期望:成交不结束 cancel session(残量语义:只等撤单终态);只有
   `OrderCanceled` / `OrderCancelRejected` / timeout 能结束 cancel session。
-- 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal`。
+- 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal_when_timeout_enabled`。
+
+### execution-4.2.4b: enable_timeout=false 的 cancel session 任一 venue 回执即收尾(#306)
+- 前置:一笔 cancel session 已建立(qty=10,`enable_timeout=false`)。
+- 输入:撤单等待期间收到任一 client venue 回执 —— 成交 `OrderFilled`(部分 last_qty=4 / 全部 last_qty=10),
+  或非终态非成交的 `OrderAccepted`。
+- 期望:cancel session 立即收尾(`_execution_active` 转 False)。收口是 **ack 语义、不特判事件类型**:
+  到达 client 漏斗的都是 venue 回执(pending/预览态不经此),故任一回执都当 ack。这天然覆盖
+  cancel/match 竞态 —— venue 抑制 `OrderCancelRejected` 时成交是唯一到达的回执,否则空耗 watchdog(nohup 571/572)。
+- 验收:`test_session.py::test_cancel_session_disabled_timeout_ends_on_fill[4/10]`、
+  `test_session.py::test_cancel_session_disabled_timeout_ends_on_any_venue_ack`。
 
 ### execution-4.2.4a: cancel_order 同步建 session
 - 前置:stub NT 基类 `cancel_order` 记录下发。

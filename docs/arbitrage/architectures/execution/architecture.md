@@ -286,7 +286,9 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
 - cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求；缺失/`enable_timeout=true` 时仍只由 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected` 或 watchdog 释放，`enable_timeout=false` 时则可在明确请求 ACK 后只释放 session。ACK 收口不生成伪造的订单终态，订单继续保持 `PENDING_CANCEL`，等待后续真实撤单/拒绝事件更新。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
-- cancel session 不把成交事件当终点。若撤单等待期间订单成交,成交仍走正常 fill/order 流;cancel session 继续等撤单终态或 timeout。
+- cancel session 对成交事件的收尾按 `enable_timeout` 分档(#306):
+  - **缺失/`enable_timeout=true`**:成交不当终点(成交仍走正常 fill/order 流),cancel session 继续等撤单终态(`OrderCanceled`/`OrderCancelRejected`)或 timeout —— 保留"残量仍需撤"的原语义。
+  - **`enable_timeout=false`**:session 语义即"拿到确定的 venue 回执就释放追踪"(它只是 barrier 闸;残量交下轮 strategy 按 live state 重评估重撤)。**收口是 ack 语义,不特判事件类型**:到达 `_send_order_event` 漏斗的都是 client 生成的 venue 回执(成交/撤单成功/撤单拒绝/接受/改单…),pending/预览态(`OrderPendingCancel` 等)由 ExecEngine 生成不经此、cancel 目标单又早已 live 不会再触发 submit/denied,故**任一到达事件都当 ack 收尾**(与 `_ack_cancel_session` 的 end-on-ack 同源)。这天然覆盖成交(`OrderFilled`,不分部分/全部):cancel/match 竞态下 venue 对已撮合单回 `already canceled or matched` 被 adapter 抑制(不发 `OrderCancelRejected`),此时成交是唯一到达的确定回执,若不在此收口只能空耗一个 watchdog timeout(实盘取证 nohup 571/572:cancel 发出→同刻 MATCHED→60s 后才 `Execution session timeout`)。已撤(非撮合)子情形则由 WS `CANCELLATION → OrderCanceled` 收口。
 - venue 终态映射:
   - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
