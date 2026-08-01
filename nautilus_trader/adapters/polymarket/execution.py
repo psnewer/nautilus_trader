@@ -2136,6 +2136,16 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._processed_fills.move_to_end(fill_key)
         self._truncate_ordered_dict(self._processed_fills)
 
+    def _should_book_early_fill(self, venue_order_id: VenueOrderId) -> bool:
+        """
+        Whether to book a fill from a non-finalized (MATCHED/MINED) trade message.
+
+        Base Polymarket books fills only once a trade is CONFIRMED. Subclasses override
+        this to opt specific orders in. Subsequent MINED/CONFIRMED messages for the same
+        trade are suppressed by the existing per-fill dedup, so a fill is never doubled.
+        """
+        return False
+
     def _handle_ws_trade_msg(self, msg: PolymarketUserTrade, wait_for_ack: bool):
         self._log.debug(f"Handling trade message, {wait_for_ack=}")
 
@@ -2222,7 +2232,17 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
 
-        if msg.status not in POLYMARKET_FINALIZED_TRADE_STATUSES:
+        # Base only books a fill once the trade is CONFIRMED (finalized). A subclass may
+        # opt specific orders into booking from an earlier MATCHED/MINED message — e.g. arb
+        # main orders whose tracking ends on ack, where waiting for CONFIRMED can lose a
+        # fill to a cancel/match race (MATCHED arrives, the leaves are then cancel-confirmed,
+        # and the later CONFIRMED is dropped as "order already closed"). Booking at MATCHED
+        # (order still open) records the fill via a normal OrderFilled event, and the real
+        # cancel-confirm then closes the order to CANCELED with the true filled qty.
+        if (
+            msg.status not in POLYMARKET_FINALIZED_TRADE_STATUSES
+            and not self._should_book_early_fill(venue_order_id)
+        ):
             self._record_processed_trade(trade_id, msg.status)
             return
 

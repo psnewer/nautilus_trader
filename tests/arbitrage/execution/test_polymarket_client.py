@@ -23,6 +23,8 @@ from py_clob_client_v2.order_utils.model.side import Side as PolySide
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
 from nautilus_trader.adapters.polymarket.arb_execution import _realized_by_instrument
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
@@ -843,6 +845,9 @@ def test_polymarket_realtime_fill_waits_for_confirmed_status():
     client._handle_user_trade_in_ws_trade_msg = (
         PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
     )
+    client._should_book_early_fill = (
+        PolymarketExecutionClient._should_book_early_fill.__get__(client)
+    )
 
     client._handle_user_trade_in_ws_trade_msg(
         _PMTradeMsg(PolymarketTradeStatus.MATCHED),
@@ -862,6 +867,105 @@ def test_polymarket_realtime_fill_waits_for_confirmed_status():
     assert len(captured) == 1
     assert captured[0]["last_qty"].as_double() == pytest.approx(5.0)
     assert captured[0]["last_px"].as_double() == pytest.approx(0.42)
+
+
+def test_polymarket_realtime_fill_books_early_when_opted_in():
+    """opt-in(`_should_book_early_fill` → True)时 MATCHED 即记账,不等 CONFIRMED;
+    随后 CONFIRMED 由 per-fill 去重挡掉,不重复记。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(5), inst.make_price(0.42))
+    cache.add_order(order)
+    cache.add_venue_order_id(order.client_order_id, VenueOrderId("PM-OID-1"))
+
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _fill_tracker=_PMFillTracker(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    captured = []
+    client.generate_order_filled = lambda **kwargs: captured.append(kwargs)
+    client._should_book_early_fill = lambda _vid: True
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+
+    # MATCHED already books the fill (order still open).
+    client._handle_user_trade_in_ws_trade_msg(
+        _PMTradeMsg(PolymarketTradeStatus.MATCHED),
+        trade_id="trade-1",
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+    assert len(captured) == 1
+    assert captured[0]["last_qty"].as_double() == pytest.approx(5.0)
+
+    # CONFIRMED for the same trade is deduped — no second fill.
+    client._handle_user_trade_in_ws_trade_msg(
+        _PMTradeMsg(PolymarketTradeStatus.CONFIRMED),
+        trade_id="trade-1",
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+    assert len(captured) == 1
+
+
+def test_arb_should_book_early_fill_only_when_enable_timeout_false():
+    """套利子类只对 `enable_timeout=false` 的主单提前(MATCHED)记账;true / 无 arb tag / 未知单不提前。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+
+    def _tagged_order(enable_timeout: bool, vid: str):
+        meta = OpportunityMeta(
+            opportunity_id="OPP",
+            pair_id="P",
+            leg_key="polymarket:yes:0",
+            expected_legs=("polymarket:yes:0",),
+            enable_timeout=enable_timeout,
+        )
+        order = factory.limit(
+            inst.id, OrderSide.BUY, inst.make_qty(5), inst.make_price(0.42),
+            tags=tags_from_meta(meta),
+        )
+        cache.add_order(order)
+        cache.add_venue_order_id(order.client_order_id, VenueOrderId(vid))
+
+    _tagged_order(enable_timeout=False, vid="PM-OID-F")
+    _tagged_order(enable_timeout=True, vid="PM-OID-T")
+    plain = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(5), inst.make_price(0.42))
+    cache.add_order(plain)
+    cache.add_venue_order_id(plain.client_order_id, VenueOrderId("PM-OID-P"))
+
+    client = SimpleNamespace(_cache=cache)
+    hook = ArbPolymarketExecutionClient._should_book_early_fill.__get__(client)
+
+    assert hook(VenueOrderId("PM-OID-F")) is True
+    assert hook(VenueOrderId("PM-OID-T")) is False
+    assert hook(VenueOrderId("PM-OID-P")) is False
+    assert hook(VenueOrderId("PM-OID-UNKNOWN")) is False
 
 
 def test_polymarket_realtime_fill_dust_residual_closes_via_cancel():
@@ -908,6 +1012,9 @@ def test_polymarket_realtime_fill_dust_residual_closes_via_cancel():
     client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
     client._handle_user_trade_in_ws_trade_msg = (
         PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+    client._should_book_early_fill = (
+        PolymarketExecutionClient._should_book_early_fill.__get__(client)
     )
 
     client._handle_user_trade_in_ws_trade_msg(
@@ -956,6 +1063,9 @@ def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
     client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
     client._handle_user_trade_in_ws_trade_msg = (
         PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+    client._should_book_early_fill = (
+        PolymarketExecutionClient._should_book_early_fill.__get__(client)
     )
 
     maker_order = PolymarketMakerOrder(

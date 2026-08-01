@@ -40,6 +40,7 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
+from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -127,6 +128,19 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
         # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
         self._settlement_inflight = False
+
+    def _should_book_early_fill(self, venue_order_id) -> bool:
+        # 套利主单 `enable_timeout=false`(tracking ends on ack):这类单常被 spread_cancel_recovery
+        # 立刻撤,若等 CONFIRMED 才记账,cancel/match race 会丢掉真实成交(MATCHED 到 → leaves
+        # 被 cancel 确认置 CANCELED → CONFIRMED 到时被 is_closed 拦)。改在 MATCHED 就记账:此刻单
+        # 多半仍 open,走正常 OrderFilled → PARTIALLY_FILLED,随后真实 cancel 确认把它收成 CANCELED
+        # (带真实 filled_qty)。后续 MINED/CONFIRMED 由 per-fill 去重挡掉,不会重复记。
+        client_order_id = self._cache.client_order_id(venue_order_id)
+        order = self._cache.order(client_order_id) if client_order_id is not None else None
+        if order is None:
+            return False
+        meta = meta_from_order(order)
+        return meta is not None and meta.enable_timeout is False
 
     async def _cancel_order(self, command: CancelOrder, *, session_started: bool = False) -> None:
         session_started = session_started or cancel_session_started(command)
