@@ -268,6 +268,37 @@ def test_leg_from_position_probability_short_fails_closed():
         )
 
 
+def test_leg_from_position_dust_short_treated_as_flat():
+    # #307:venue 撮合误差 dust —— reduce 多卖成 -0.02 空头(≤ dust)不该触发概率盘
+    # "cannot be SHORT",视为 flat 跳过(返回 None)。
+    cache = TestComponentStubs.cache()
+    pm = pm_instrument("match_1", "home")
+    pm.info["claim"] = "yes"
+    cache.add_instrument(pm)
+    pf = _portfolio(cache=cache)
+
+    leg = pf._leg_from_position(
+        DuckPosition(pm.id, 0.02, 0.4, side=PositionSide.SHORT),
+        outcomes={"yes", "no"},
+    )
+    assert leg is None
+
+
+def test_leg_from_position_dust_long_treated_as_flat():
+    # #307 对称:reduce 少卖留 +0.02 多头(≤ dust)也当 flat 跳过,不作真实腿计入。
+    cache = TestComponentStubs.cache()
+    pm = pm_instrument("match_1", "home")
+    pm.info["claim"] = "yes"
+    cache.add_instrument(pm)
+    pf = _portfolio(cache=cache)
+
+    leg = pf._leg_from_position(
+        DuckPosition(pm.id, 0.02, 0.4, side=PositionSide.LONG),
+        outcomes={"yes", "no"},
+    )
+    assert leg is None
+
+
 def test_leg_from_position_uses_claim_not_selection_role():
     """统一 outcome 后 selection_role 只用于匹配和展示。"""
     cache = TestComponentStubs.cache()

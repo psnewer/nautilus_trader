@@ -46,4 +46,8 @@ POLYMARKET_FINALIZED_TRADE_STATUSES: Final[tuple[PolymarketTradeStatus, ...]] = 
 
 POLYMARKET_HTTP_RATE_LIMIT: Final[int] = 100  # requests per minute
 
-DUST_SNAP_THRESHOLD: Final[float] = 0.01
+# Un-filled leaves below this are venue matching-error dust: the order is terminalized
+# via cancel (position kept), so a sub-fillable reduce remainder doesn't linger as a
+# stuck residual (cancel-only → already-canceled-or-matched → watchdog timeout loop).
+# 0.02-class residuals were slipping through at 0.01; 0.1 covers them (0.5 is too coarse).
+DUST_SNAP_THRESHOLD: Final[float] = 0.1

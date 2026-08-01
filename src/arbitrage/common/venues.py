@@ -85,6 +85,21 @@ class PositionOutcomeInvariantError(ValueError):
     """持仓无法映射到声明 outcome 时抛出，调用方必须 fail-closed。"""
 
 
+# |净持仓| ≤ 此值视为 venue 撮合误差 dust（经济上等同 flat），持仓解释处一律跳过：
+# reduce 单少卖留 +dust 多头、多卖成 -dust 空头都是同一对称问题的两面（venue 无法精撮的
+# 尾量，非真实持仓）。跳过后概率盘不变量既不因 -dust 空头误报 SHORT，也不把 +dust 多头
+# 当真腿计入。与执行层的 PM `DUST_SNAP_THRESHOLD`（下单收口）分属两层，故各留常量。
+POSITION_DUST_SNAP: float = 0.1
+
+
+def is_dust_position(position) -> bool:
+    """净持仓量在 dust 阈值内 → 视为 flat（撮合误差尾量，非真实持仓）。"""
+    qty = getattr(position, "quantity", None)
+    if qty is None:
+        return False
+    return abs(qty.as_double()) <= POSITION_DUST_SNAP
+
+
 VENUE_REGISTRY: dict[str, VenueDescriptor] = {
     POLYMARKET: VenueDescriptor(
         venue_id=POLYMARKET,
@@ -302,13 +317,21 @@ def outcome_for_position(
     selection_role: str | None,
     claim: str | None,
     position_side: str,
+    size: float | None = None,
 ) -> str | None:
-    """将 NT 净 Position 映射到 pair 内的经济 outcome。"""
+    """将 NT 净 Position 映射到 pair 内的经济 outcome。
+
+    传入 `size`(净持仓量绝对值)时,|size| ≤ `POSITION_DUST_SNAP` 的持仓被判为 venue
+    撮合误差 dust,直接返回 None(outcome 可忽略):±dust 净仓经济上等同 flat —— 概率盘
+    -dust 空头因此不误触发 SHORT 不变量,+dust 多头也不当真腿计入(见 `is_dust_position`)。
+    """
     normalized_outcomes = tuple(str(value).strip().lower() for value in outcomes)
     base_outcome = str(claim or selection_role or "").strip().lower()
     side = str(getattr(position_side, "name", position_side) or "").rsplit(".", 1)[-1].upper()
     if not base_outcome or base_outcome not in normalized_outcomes:
         return None
+    if size is not None and abs(size) <= POSITION_DUST_SNAP:
+        return None  # venue 撮合误差 dust:outcome 可忽略(调用方按 None 跳过)
     if side == "LONG":
         return base_outcome
     if side == "SHORT" and not is_decimal_odds_venue(venue):

@@ -105,10 +105,31 @@ class TestOrderFillTracker:
         tracker.record_fill(vid, 50.0, 0.55, 1000)
         tracker.record_fill(vid, 49.997714, 0.55, 2000)
 
-        # 100.0 - 99.997714 = 0.002286 < 0.01 -> detected as dust residual (no fill emitted)
+        # 100.0 - 99.997714 = 0.002286 < DUST_SNAP_THRESHOLD -> detected as dust residual
         result = tracker.check_dust_residual(vid)
         assert result is not None
         assert float(result) == pytest.approx(0.002286, abs=1e-6)
+
+    def test_check_dust_residual_detects_0_02_class_leaves(self, tracker):
+        # #307: the 0.02-class residual that slipped through at the old 0.01 threshold
+        # (reduce SELL filled 28.54 of 28.56) is now caught as dust at 0.1, so the order
+        # is terminalized instead of lingering as a stuck residual.
+        vid = VenueOrderId("order-2")
+        tracker.register(
+            venue_order_id=vid,
+            submitted_qty=Quantity(28.56, SIZE_PRECISION),
+            order_side=OrderSide.SELL,
+            instrument_id=INSTRUMENT_ID,
+            size_precision=SIZE_PRECISION,
+            price_precision=PRICE_PRECISION,
+        )
+
+        tracker.record_fill(vid, 28.54, 0.30, 1000)
+
+        # 28.56 - 28.54 = 0.02 < 0.1 -> now dust (was NOT at 0.01)
+        result = tracker.check_dust_residual(vid)
+        assert result is not None
+        assert float(result) == pytest.approx(0.02, abs=1e-6)
 
     def test_check_dust_no_residual(self, tracker):
         vid = VenueOrderId("order-1")
@@ -137,7 +158,7 @@ class TestOrderFillTracker:
             price_precision=PRICE_PRECISION,
         )
 
-        # Only half filled — residual = 50 >> 0.01
+        # Only half filled — residual = 50 >> DUST_SNAP_THRESHOLD
         tracker.record_fill(vid, 50.0, 0.55, 1000)
         result = tracker.check_dust_residual(vid)
         assert result is None

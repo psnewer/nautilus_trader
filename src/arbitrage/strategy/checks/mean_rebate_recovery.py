@@ -175,12 +175,14 @@ def _existing_legs(ctx, outcomes: tuple[str, ...]) -> list[_CalcLeg]:
         if not is_known_venue(venue):
             continue
         position_side = getattr(position, "side", None)
+        # size 让 outcome_for_position 判 dust:±dust 净仓返回 None → 这里跳过(撮合误差,非真实腿)。
         role = outcome_for_position(
             venue,
             outcomes,
             selection_role=selection_role,
             claim=claim,
             position_side=position_side,
+            size=abs(position.quantity.as_double()),
         )
         if role is None:
             continue

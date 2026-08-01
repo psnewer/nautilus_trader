@@ -272,6 +272,33 @@ def test_position_outcome_rejects_probability_short_and_nonbinary_decimal_short(
     ) is None
 
 
+@pytest.mark.parametrize("side", ["SHORT", "LONG"])
+def test_position_outcome_ignores_pm_dust(side):
+    # #307:|size| ≤ POSITION_DUST_SNAP 的持仓是 venue 撮合误差 dust → 返回 None(outcome 可忽略)。
+    # 对称:-dust 空头不再触发 "cannot be SHORT"(reduce 多卖),+dust 多头也不当真腿。
+    assert outcome_for_position(
+        POLYMARKET,
+        ["yes", "no"],
+        selection_role="home",
+        claim="yes",
+        position_side=side,
+        size=0.02,
+    ) is None
+
+
+def test_position_outcome_non_dust_pm_short_still_raises():
+    # dust 阈值 ≥ 的真实空头仍 fail-closed(size 传入不改变真实空头的判定)。
+    with pytest.raises(PositionOutcomeInvariantError, match="cannot be SHORT"):
+        outcome_for_position(
+            POLYMARKET,
+            ["yes", "no"],
+            selection_role="home",
+            claim="yes",
+            position_side="SHORT",
+            size=10.0,
+        )
+
+
 def test_leg_economics_covers_probability_back_decimal_back_and_lay():
     pm = leg_economics(POLYMARKET, price=0.4, size=10.0)
     assert pm.share_if_wins == pytest.approx(10.0)

@@ -28,6 +28,7 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
+from src.arbitrage.common.venues import is_dust_position
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -295,8 +296,12 @@ class ArbitragePortfolio(Portfolio):
             selection_role=None,
             claim=claim,
             position_side=position_side,
+            size=abs(position.quantity.as_double()),
         )
         if market_type is None:
+            # dust(venue 撮合误差,±dust 净仓)→ 忽略;真正无法映射 → fail-closed。
+            if is_dust_position(position):
+                return None
             raise PositionOutcomeInvariantError(
                 f"position cannot map to pair outcome: instrument_id={position.instrument_id}",
             )

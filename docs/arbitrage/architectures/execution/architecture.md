@@ -670,6 +670,10 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 - **不设**其它触发口:opportunity barrier 的 `cancel-only` + cancel-response `already canceled or matched` 只是"订单没在源头收口"的**下游症状**(残单被 barrier 撞上 → 撤单 → venue 回已终结)。源头收口后 barrier 根本看不到残单,该链不再发生;故 `_generate_cancel_event` 的 `already matched` 分支与 order UPDATE 的 dust 特判**均不承担收口职责**(前者保持原"等 WS"语义,后者不再特判 dust)。
 - 理由/根因日志见 refactor.md #280;测试见 `test_order_fill_tracker.py::test_check_dust_residual_detects_sub_threshold_leaves` + `test_polymarket_client.py::test_polymarket_realtime_fill_dust_residual_closes_via_cancel`。
 
+**#307 补强(2026-08-01,dust 两条正交线)**:实盘(nohup 6356)出现 0.02-类尾量,暴露两个正交点:
+- **PM `DUST_SNAP_THRESHOLD` 0.01→0.1**(下单收口层):0.02 尾量 ≥0.01 时不算 dust → reduce 单挂成残单卡死(即 #306 的 ARB-101776ae:cancel-only→`already canceled or matched`→watchdog timeout 循环)。抬到 0.1 让 0.02-类被上面的 fill-handler 收口(0.5 过粗)。
+- **±dust 空头触发概率盘不变量(修在不变量层,非对账层)**:少卖留 +0.02 多头 → 对账合成 inferred SELL 落 `…-EXTERNAL` 仓 → external -0.02 空头;多卖(卖多了)直接在 cache 记 -0.02 真实空头。两者都是 |qty|≤dust 的空头,是同一对称问题。**不修在对账层**:对账 snap 只能"不造出"少卖幻影,消不掉多卖的真实空头(#280 不许伪造/篡改 fill),且多卖空头照样触发不变量。唯一非对称点在不变量 `outcome_for_position`(LONG 放行、概率盘 SHORT 抛错)。**修法(dust 判断收进函数本身)**:`common/venues.py` 加 `POSITION_DUST_SNAP=0.1`,`outcome_for_position` 增 `size` 入参,`|size| ≤ snap` 在 LONG/SHORT 分支前 `return None`(outcome 可忽略)→ 对称:-dust 空头不触发 SHORT、+dust 多头不返回真实 outcome。消费点传 `size`:策略 `_existing_legs` 靠 `role is None → continue`(策略侧零 dust 逻辑);`portfolio._leg_from_position` 在 `None` 分支用 `is_dust_position` 区分 dust(跳过)与真正无法映射(仍 fail-closed)。dust 阈值 ≥ 的真实空头照常 fail-closed。与 PM `DUST_SNAP_THRESHOLD` 分属两层各留常量。测试:`test_venues.py`(函数 dust)、`test_portfolio.py`、`test_order_fill_tracker.py::test_check_dust_residual_detects_0_02_class_leaves`。理由见 refactor.md #307。
+
 ---
 
 ## 5. 与横切的咬合
