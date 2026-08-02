@@ -618,10 +618,35 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   失败回执不能证明 merge 尝试期间仓位未发生变化，因此也不能复用第一次 reports。
   不再需要注入独立 `_positions_fetcher`。
 - **realized PnL reconcile(#282)**:同一 override 另分页拉 `/closed-positions`，把 current +
-  closed 的 `realizedPnl` 按 `conditionId-asset.POLYMARKET` 聚合。账本保存
+  closed 的 `realizedPnl` 按 `conditionId-asset.POLYMARKET` 聚合。拉取结果先保存在当前协程的
+  候选 map，最终并发校验通过后才让账本保存
   `Data API realized - NT 当前 instrument realized` 的基线差；后续 CONFIRMED fill 仍只走
   NT 原生 Position/Portfolio，不能在 adapter 再累计一份。closed 查询失败时保留上次完整基线，
   不清空账本、不让 position reports 失败。
+- **乐观并发校验(#308，已落地 2026-08-02)**:PM/OE/SE 在 order/position report 请求发出前，
+  对该 `account_id + venue` 的本地执行状态取摘要。order 摘要只覆盖 orders；position 摘要覆盖
+  orders + positions，并在存在 `RealizedPnlLedger` 时带 account revision。集合、状态、成交量、
+  仓位经济字段、realized PnL 与 NT 对象 `event_count/ts_last` 均参与摘要。
+
+  adapter 返回 `GuardedReports(list)`，把拉取前摘要作为 report batch 的一部分；连续对账中的
+  每份 report 与单份 QueryOrder report 也附同一摘要。startup 的 `ExecutionMassStatus` 同时携带
+  order/position 两个 batch，并在进入同步 mass reconcile 前统一校验，不对内部 report 重复校验。
+  **adapter 不做并发判定**：远端拉取成功仍按原语义标记 order/position alive；网络失败仍按原
+  语义 mark dead + raise。PM `/closed-positions` 只生成 deferred realized 候选，随 position batch
+  下传，不在 adapter 中提交。
+
+  `ArbLiveExecutionEngine` 仅在真正应用前校验 batch：过期 order batch 被移除，并把当前 cache
+  open/inflight ids 视为已报告，避免陈旧空响应被解释成 venue 缺单；过期 position batch 被移除
+  并把该 venue 放进 `failed_venues`；过期 startup mass-status 整批失败；过期单份 QueryOrder
+  report 在 `_reconcile_order_report` 的最终入口直接跳过（覆盖连续检查和 targeted QueryOrder
+  两条调用路径）。position report 在 `_reconcile_position_report` 最终入口同样复核；空 position
+  batch 若让 NT 合成 flat report，该 synthetic report 继承对应 venue 的 batch 摘要，不能绕过保护。
+  校验通过后，PM 才同步提交 realized 候选，并立即重取应用阶段摘要，避免账本自身 revision 递增
+  把同批 position report 误判过期；这些同步步骤之间没有 `await`。**liveness 与应用资格正交**：远端查询成功即按原逻辑
+  `mark_*_alive`，即使随后因本地状态已变化而丢弃 report 也不回写 dead；下一周期自然重拉。
+
+  账户余额不参与摘要：它是独立权威刷新，不由 order/position reports 覆盖；但余额请求发生在
+  PM batch 返回前，因此其等待期间发生的 order/position/realized 变化仍会使 batch 在应用前失效。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **路由约束(#276)**:结算 Relayer SDK(`py_builder_relayer_client`,requests)经 `configure_relayer_http_transport(polymarket_proxy_url)` 换显式路由 Session(`trust_env=False`),`PolymarketContractService.initialize` 内配置;与 PM 其余出口同路由,未配置=直连。
 - **liveness**:最终要返回的 position reports 拉成功 → `mark_position_alive`;第一次或 merge

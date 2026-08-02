@@ -6,31 +6,69 @@ order event 须真实(mixin 用 isinstance)→ 经 TestEventStubs 构造。
 
 import asyncio
 import logging
-
-import pytest
 from types import SimpleNamespace
 
+import pytest
+
+from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.core.datetime import secs_to_nanos
-from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
-
-from src.arbitrage.execution.session import accepted_order_reserved_notional
-from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import tags_from_meta
+from src.arbitrage.execution.reconciliation import GuardedReports
+from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from src.arbitrage.execution.session import accepted_order_reserved_notional
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
 from tests.arbitrage.risk._factories import pm_instrument
 from tests.arbitrage.risk._factories import se_account_state
 from tests.arbitrage.risk._factories import se_instrument
+
+
+class _MassStatusBase:
+    async def generate_mass_status(self, lookback_mins=None):
+        await self.generate_order_status_reports(None)
+        await self.generate_position_status_reports(None)
+        return SimpleNamespace()
+
+
+class _MassStatusClient(ArbExecutionSessionMixin, _MassStatusBase):
+    async def generate_order_status_reports(self, _command):
+        return self._guard_reconciliation_reports("order", [], SimpleNamespace())
+
+    async def generate_position_status_reports(self, _command):
+        return self._guard_reconciliation_reports("position", [], SimpleNamespace())
+
+
+def test_generate_mass_status_carries_guarded_report_batches():
+    client = _MassStatusClient()
+
+    mass_status = asyncio.run(client.generate_mass_status())
+
+    assert set(mass_status._arb_reconciliation_batches) == {"order", "position"}
+    assert all(
+        isinstance(batch, GuardedReports)
+        for batch in mass_status._arb_reconciliation_batches.values()
+    )
+
+
+def test_guarded_reports_attach_snapshot_outside_mass_status():
+    client = _MassStatusClient()
+    report = SimpleNamespace()
+    snapshot = SimpleNamespace()
+
+    batch = client._guard_reconciliation_reports("position", [report], snapshot)
+
+    assert batch.snapshot is snapshot
+    assert report._arb_reconciliation_snapshot is snapshot
 
 
 class _FakeCache:

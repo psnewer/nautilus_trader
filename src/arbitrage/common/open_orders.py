@@ -14,11 +14,17 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 def pair_open_orders_digest(cache, instrument_ids) -> str:
     """返回指定 instruments 当前 open orders 的稳定摘要。"""
-    fingerprints = []
+    orders = []
     for raw_instrument_id in sorted({str(value) for value in instrument_ids}):
         instrument_id = InstrumentId.from_str(raw_instrument_id)
         for order in cache.orders_open(instrument_id=instrument_id) or ():
-            fingerprints.append(_order_fingerprint(order))
+            orders.append(order)
+    return orders_digest(orders)
+
+
+def orders_digest(orders) -> str:
+    """返回任意订单集合的稳定摘要，供跨 await 状态一致性校验。"""
+    fingerprints = [_order_fingerprint(order) for order in orders or ()]
     payload = json.dumps(sorted(fingerprints), separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(payload.encode("ascii")).hexdigest()
 
@@ -34,6 +40,8 @@ def _order_fingerprint(order) -> tuple[str, ...]:
         _value_text(getattr(order, "filled_qty", None)),
         _value_text(getattr(order, "leaves_qty", None)),
         _order_price_text(order),
+        _callable_value_text(getattr(order, "event_count", None)),
+        _value_text(getattr(order, "ts_last", None)),
     )
 
 
@@ -49,6 +57,10 @@ def _value_text(value) -> str:
     if raw is not None:
         return f"{raw}:{precision}"
     return str(value)
+
+
+def _callable_value_text(value) -> str:
+    return _value_text(value() if callable(value) else value)
 
 
 def _order_price_text(order) -> str:

@@ -155,6 +155,16 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 订单终态仍由后续 `CURRENT_BETS` 确认。接线由
 `test_cancel_order_uses_instrument_market_id_and_accepts_success` 验收。
 
+### se-adapter-exec.reconcile-guard:CURRENT_BETS 对账应用前并发保护(#308)
+
+**前置**:order/position report 请求前已记录 SE 账户本地 order/position 摘要。
+**输入**:`_ensure_exec_snapshot_fresh()` 等待期间，WS Fill 或其他标准事件更新本地执行状态。
+**期望/验收**:CURRENT_BETS 拉取成功仍标记相应 liveness alive；返回的 `GuardedReports` 携带旧摘要，
+由 `ArbLiveExecutionEngine` 在应用前丢弃，不把旧快照写回 cache，也不因摘要失效标记 venue dead。
+适配器接线由 `test_order_status_reports_from_current_bets_snapshot` 与
+`test_position_status_reports_aggregate_current_bets` 验收，引擎行为见
+`tests/arbitrage/execution/test_engine_barrier.py`。
+
 ### se-adapter-live.3:真成交 fill probe
 
 **前置**:用户明确授权真单;已理解成交后会持有真实 SE BACK 仓,脚本不会自动平仓。

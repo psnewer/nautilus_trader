@@ -697,6 +697,7 @@ def test_order_status_reports_from_current_bets_snapshot():
     reports = _run(client.generate_order_status_reports(SimpleNamespace()))
 
     assert len(reports) == 1
+    assert reports.snapshot.is_current(client)
     report = reports[0]
     assert report.venue_order_id == voi
     assert report.client_order_id == order.client_order_id
@@ -776,6 +777,7 @@ def test_position_status_reports_aggregate_current_bets():
     reports = _run(client.generate_position_status_reports(SimpleNamespace()))
 
     assert len(reports) == 1
+    assert reports.snapshot.is_current(client)
     report = reports[0]
     assert report.instrument_id == inst.id
     assert report.position_side == PositionSide.LONG

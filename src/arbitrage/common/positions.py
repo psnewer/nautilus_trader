@@ -14,11 +14,17 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 def pair_positions_digest(cache, instrument_ids) -> str:
     """返回指定 instruments 当前 positions 的稳定摘要。"""
-    fingerprints = []
+    positions = []
     for raw_instrument_id in sorted({str(value) for value in instrument_ids}):
         instrument_id = InstrumentId.from_str(raw_instrument_id)
         for position in cache.positions(instrument_id=instrument_id) or ():
-            fingerprints.append(_position_fingerprint(position))
+            positions.append(position)
+    return positions_digest(positions)
+
+
+def positions_digest(positions) -> str:
+    """返回任意仓位集合的稳定摘要，供跨 await 状态一致性校验。"""
+    fingerprints = [_position_fingerprint(position) for position in positions or ()]
     payload = json.dumps(sorted(fingerprints), separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(payload.encode("ascii")).hexdigest()
 
@@ -34,6 +40,8 @@ def _position_fingerprint(position) -> tuple[str, ...]:
         _value_text(getattr(position, "avg_px_open", None)),
         _value_text(getattr(position, "avg_px_close", None)),
         _value_text(getattr(position, "realized_pnl", None)),
+        _callable_value_text(getattr(position, "event_count", None)),
+        _value_text(getattr(position, "ts_last", None)),
     )
 
 
@@ -49,3 +57,7 @@ def _value_text(value) -> str:
     if raw is not None:
         return f"{raw}:{precision}"
     return str(value)
+
+
+def _callable_value_text(value) -> str:
+    return _value_text(value() if callable(value) else value)

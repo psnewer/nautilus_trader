@@ -30,6 +30,7 @@ from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venues import normalize_order_price
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
+from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 
@@ -714,6 +715,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
 
     async def generate_order_status_reports(self, command) -> list:
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:快照不可信 → 抛,不返空(与 OE 对称)。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
             # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
@@ -733,9 +735,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 reports.append(report)
         if self._venue_liveness is not None:
             self._venue_liveness.mark_order_alive(SHARPEXCH)
-        return reports
+        return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command):
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             if self._venue_liveness is not None:
@@ -756,12 +759,13 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 continue
             if self._venue_liveness is not None:
                 self._venue_liveness.mark_order_alive(SHARPEXCH)
-            return report
+            return attach_reconciliation_snapshot(report, snapshot)
         if self._venue_liveness is not None:
             self._venue_liveness.mark_order_alive(SHARPEXCH)
         return None
 
     async def generate_position_status_reports(self, command) -> list:
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             if self._venue_liveness is not None:
@@ -774,7 +778,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         reports = self._build_position_status_reports_from_current_bets()
         if self._venue_liveness is not None:
             self._venue_liveness.mark_position_alive(SHARPEXCH)
-        return reports
+        return self._guard_reconciliation_reports("position", reports, snapshot)
 
     def _build_position_status_reports_from_current_bets(self) -> list:
         """从当前完整 CURRENT_BETS 快照构造仓位报告，不修改 liveness。"""

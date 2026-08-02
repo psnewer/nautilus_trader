@@ -23,8 +23,6 @@ from py_clob_client_v2.order_utils.model.side import Side as PolySide
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
-from src.arbitrage.common.opportunity import OpportunityMeta
-from src.arbitrage.common.opportunity import tags_from_meta
 from nautilus_trader.adapters.polymarket.arb_execution import _realized_by_instrument
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
@@ -54,6 +52,8 @@ from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -87,6 +87,30 @@ class _RetryPool:
 class _Clock:
     def timestamp_ns(self):
         return 123
+
+
+def _stable_reconciliation_state(client, state=None):
+    state = state or {"version": 0}
+
+    class _Snapshot:
+        def __init__(self, include_positions):
+            ledger = getattr(client, "_realized_pnl_ledger", None)
+            self.value = (
+                state["version"],
+                ledger.revision("POLYMARKET-001") if include_positions and ledger else None,
+            )
+
+        def is_current(self, _client):
+            ledger = getattr(client, "_realized_pnl_ledger", None)
+            return self.value == (
+                state["version"],
+                ledger.revision("POLYMARKET-001") if self.value[1] is not None and ledger else None,
+            )
+
+    client._capture_reconciliation_state_snapshot = (
+        lambda *, include_positions: _Snapshot(include_positions)
+    )
+    return state
 
 
 class _Log:
@@ -1128,7 +1152,7 @@ def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(mon
         self._last_raw_positions = [
             {"conditionId": "cond1", "size": "10", "negativeRisk": True, "redeemable": False},
         ]
-        return ["report"]
+        return [SimpleNamespace(name="report")]
 
     class _Settlement:
         async def run(self, positions):
@@ -1141,6 +1165,7 @@ def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(mon
         client._settlement = _Settlement()
         client._settlement_inflight = False
         client._loop = asyncio.get_running_loop()
+        state = _stable_reconciliation_state(client)
 
         async def refresh_balance():
             balance_calls.append("balance_refresh")
@@ -1148,9 +1173,12 @@ def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(mon
         client._update_account_state = refresh_balance
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
-        assert reports == ["report"]
+        assert [report.name for report in reports] == ["report"]
         assert client._venue_liveness.position_alive(POLYMARKET)
         assert client._settlement_inflight is False
+        assert reports.snapshot.is_current(client)
+        state["version"] += 1
+        assert not reports.snapshot.is_current(client)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
 
@@ -1172,11 +1200,11 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
     responses = [
         (
             [{"conditionId": "cond1", "asset": "yes", "size": "10"}],
-            ["pre-report"],
+            [SimpleNamespace(name="pre-report")],
         ),
         (
             [],
-            ["post-report"],
+            [SimpleNamespace(name="post-report")],
         ),
     ]
 
@@ -1205,20 +1233,22 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
         client._settlement = _Settlement()
         client._settlement_inflight = False
         client._realized_pnl_ledger = None
+        _stable_reconciliation_state(client)
 
         async def refresh_balance():
             calls.append("balance")
             return None
 
-        async def sync_realized(raw):
+        async def load_realized(raw):
             calls.append("closed")
             assert raw == []
+            return None
 
         client._update_account_state = refresh_balance
-        client._sync_realized_pnl_after_position_reconcile = sync_realized
+        client._load_realized_pnl_snapshot = load_realized
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
-        assert reports == ["post-report"]
+        assert [report.name for report in reports] == ["post-report"]
         assert client._venue_liveness.position_alive(POLYMARKET)
         assert responses == []
         assert calls == ["positions", "merge", "positions", "closed", "balance"]
@@ -1230,7 +1260,7 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
 def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile(monkeypatch):
     async def fake_super(self, command):
         self._last_raw_positions = []
-        return ["report"]
+        return [SimpleNamespace(name="report")]
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
@@ -1238,6 +1268,8 @@ def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_rec
         client._settlement = None
         client._settlement_inflight = False
         client._loop = asyncio.get_running_loop()
+        client._realized_pnl_ledger = None
+        _stable_reconciliation_state(client)
 
         async def fail_balance():
             raise RuntimeError("balance unavailable")
@@ -1246,11 +1278,131 @@ def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_rec
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
-        assert reports == ["report"]
+        assert [report.name for report in reports] == ["report"]
         assert client._venue_liveness.position_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
 
+    _run(scenario())
+
+
+def test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch(monkeypatch):
+    state = {"version": 0}
+    settlement_calls = []
+
+    async def fake_super(self, command):
+        self._last_raw_positions = [{"conditionId": "0xc", "asset": "1", "size": "10"}]
+        state["version"] += 1
+        return [SimpleNamespace(name="stale-report")]
+
+    class _Settlement:
+        async def run(self, positions):
+            settlement_calls.append(positions)
+            return SettlementResult()
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._venue_liveness.mark_position_alive(POLYMARKET)
+        client._settlement = _Settlement()
+        client._settlement_inflight = False
+        client._realized_pnl_ledger = None
+        _stable_reconciliation_state(client, state)
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+
+        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not reports.snapshot.is_current(client)
+        assert settlement_calls
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+    _run(scenario())
+
+
+def test_position_reconcile_defers_realized_when_state_changes_during_closed_fetch(
+    monkeypatch,
+):
+    state = {"version": 0}
+    instrument_id = "0xc-1.POLYMARKET"
+
+    async def fake_super(self, command):
+        self._last_raw_positions = [
+            {"conditionId": "0xc", "asset": "1", "size": "0", "realizedPnl": "9.0"},
+        ]
+        return [SimpleNamespace(name="stale-report")]
+
+    async def scenario():
+        ledger = RealizedPnlLedger()
+        ledger.replace_instrument_snapshot(
+            "POLYMARKET-001",
+            external_realized={instrument_id: 4.0},
+            native_realized={},
+        )
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._venue_liveness.mark_position_alive(POLYMARKET)
+        client._settlement = None
+        client._settlement_inflight = False
+        client._realized_pnl_ledger = ledger
+        _stable_reconciliation_state(client, state)
+
+        async def fetch_closed_positions():
+            ledger.replace_instrument_snapshot(
+                "POLYMARKET-001",
+                external_realized={instrument_id: 5.0},
+                native_realized={},
+            )
+            return []
+
+        async def refresh_balance():
+            return None
+
+        client._fetch_closed_positions = fetch_closed_positions
+        client._refresh_account_state_after_position_reconcile = refresh_balance
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+
+        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not reports.snapshot.is_current(client)
+        assert reports.payload == {instrument_id: 9.0}
+        assert ledger.instrument_adjustment(
+            instrument_id,
+            "POLYMARKET-001",
+        ) == pytest.approx(5.0)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+    _run(scenario())
+
+
+def test_position_reconcile_returns_stale_guard_when_state_changes_during_balance_refresh(
+    monkeypatch,
+):
+    state = {"version": 0}
+
+    async def fake_super(self, command):
+        self._last_raw_positions = []
+        return [SimpleNamespace(name="stale-report")]
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._venue_liveness.mark_position_alive(POLYMARKET)
+        client._settlement = None
+        client._settlement_inflight = False
+        client._realized_pnl_ledger = None
+        _stable_reconciliation_state(client, state)
+
+        async def refresh_balance():
+            state["version"] += 1
+
+        client._refresh_account_state_after_position_reconcile = refresh_balance
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+
+        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not reports.snapshot.is_current(client)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
     _run(scenario())
 
 
@@ -1339,12 +1491,14 @@ def test_position_reconcile_sets_external_minus_native_realized_baseline():
             return [{"conditionId": "0xc", "asset": "1", "realizedPnl": "2.0"}]
 
         client._fetch_closed_positions = closed_positions
-        sync = ArbPolymarketExecutionClient._sync_realized_pnl_after_position_reconcile.__get__(
+        load = ArbPolymarketExecutionClient._load_realized_pnl_snapshot.__get__(
             client,
         )
-        await sync([
+        external = await load([
             {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.0"},
         ])
+        commit = ArbPolymarketExecutionClient._commit_realized_pnl_snapshot.__get__(client)
+        commit(external)
 
         assert ledger.instrument_adjustment(
             instrument_id,
@@ -1361,6 +1515,7 @@ def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
         client._venue_liveness = VenueExecutionLiveness()
+        _stable_reconciliation_state(client)
 
         client._venue_liveness.mark_position_alive(POLYMARKET)
         # #259(修订 #122):失败 mark_dead + **重新抛出**。NT 判"venue 查询失败"只认异常
@@ -1451,6 +1606,7 @@ def test_arb_generate_order_reports_failure_marks_dead(monkeypatch):
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
         client._venue_liveness = VenueExecutionLiveness()
         client._venue_liveness.mark_order_alive(POLYMARKET)
+        _stable_reconciliation_state(client)
 
         with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_reports(SimpleNamespace())
@@ -1470,6 +1626,7 @@ def test_arb_generate_single_order_report_failure_marks_dead(monkeypatch):
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
         client._venue_liveness = VenueExecutionLiveness()
         client._venue_liveness.mark_order_alive(POLYMARKET)
+        _stable_reconciliation_state(client)
 
         with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_report(SimpleNamespace())
@@ -1478,6 +1635,48 @@ def test_arb_generate_single_order_report_failure_marks_dead(monkeypatch):
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
 
+    _run(scenario())
+
+
+def test_arb_generate_order_reports_returns_stale_guard_when_local_state_changes(monkeypatch):
+    state = {"version": 0}
+
+    async def fake_super(self, command):
+        state["version"] += 1
+        return [SimpleNamespace(name="stale-report")]
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._venue_liveness.mark_order_alive(POLYMARKET)
+        _stable_reconciliation_state(client, state)
+
+        reports = await client.generate_order_status_reports(SimpleNamespace())
+
+        assert client._venue_liveness.order_alive(POLYMARKET)
+        assert not reports.snapshot.is_current(client)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
+    _run(scenario())
+
+
+def test_arb_generate_order_reports_remembers_engine_boundary_state(monkeypatch):
+    async def fake_super(self, command):
+        return [SimpleNamespace(name="report")]
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        state = _stable_reconciliation_state(client)
+
+        reports = await client.generate_order_status_reports(SimpleNamespace())
+        assert [report.name for report in reports] == ["report"]
+        assert reports.snapshot.is_current(client)
+
+        state["version"] += 1
+        assert not reports.snapshot.is_current(client)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
     _run(scenario())
 
 

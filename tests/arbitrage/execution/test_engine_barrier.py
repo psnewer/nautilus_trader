@@ -11,6 +11,7 @@ from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
@@ -21,15 +22,19 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.mocks.exec_clients import MockExecutionClient
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
-from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
+from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.positions import pair_positions_digest
+from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.execution.engine import _CommandGroupContext
+from src.arbitrage.execution.reconciliation import GuardedReports
+from src.arbitrage.execution.reconciliation import ReconciliationStateSnapshot
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -584,3 +589,154 @@ def test_leg_denied_without_expected_legs_cleans_immediately():
         "reason": "risk blocked",
     })
     assert ("submit", "opp-1") not in ctx.engine._arb_command_groups
+
+
+def test_stale_order_report_batch_is_discarded_at_engine_boundary(monkeypatch):
+    ctx = _Ctx()
+    command = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",))
+    command.order.apply(TestEventStubs.order_submitted(command.order, ctx.client.account_id))
+    ctx.cache.add_order(command.order)
+    snapshot = SimpleNamespace(is_current=lambda client: False)
+
+    async def fake_query(_command):
+        return GuardedReports([], snapshot=snapshot)
+
+    ctx.client.generate_order_status_reports = fake_query
+    reports, venue_reported_ids = ctx.loop.run_until_complete(
+        ctx.engine._query_order_status_reports(),
+    )
+
+    assert reports == []
+    assert venue_reported_ids == {command.order.client_order_id}
+
+
+def test_stale_position_report_batch_is_failed_at_engine_boundary(monkeypatch):
+    ctx = _Ctx()
+    snapshot = SimpleNamespace(is_current=lambda client: False)
+    report = SimpleNamespace(account_id=ctx.client.account_id)
+
+    async def fake_query(_command):
+        return GuardedReports([report], snapshot=snapshot)
+
+    ctx.client.generate_position_status_reports = fake_query
+    venue_positions, failed_venues = ctx.loop.run_until_complete(
+        ctx.engine._query_position_status_reports(),
+    )
+
+    assert venue_positions == {}
+    assert failed_venues == {ctx.client.venue}
+
+
+def test_stale_mass_status_is_discarded_at_engine_boundary(monkeypatch):
+    ctx = _Ctx()
+    snapshot = SimpleNamespace(is_current=lambda client: False)
+    parent_calls = []
+
+    def fake_reconcile(_engine, _mass_status):
+        parent_calls.append(True)
+        return True
+
+    monkeypatch.setattr(LiveExecutionEngine, "_reconcile_execution_mass_status", fake_reconcile)
+    mass_status = SimpleNamespace(
+        client_id=ctx.client.id,
+        _arb_reconciliation_batches={
+            "position": GuardedReports([], snapshot=snapshot),
+        },
+    )
+    result = ctx.engine._reconcile_execution_mass_status(mass_status)
+
+    assert result is False
+    assert parent_calls == []
+
+
+def test_valid_position_report_batch_commits_deferred_payload():
+    ctx = _Ctx()
+    snapshot = SimpleNamespace(is_current=lambda client: True)
+    applied = []
+
+    async def fake_query(_command):
+        return GuardedReports([], snapshot=snapshot, payload={"instrument": 1.25})
+
+    ctx.client.generate_position_status_reports = fake_query
+    ctx.client.apply_reconciliation_batch = lambda kind, batch: applied.append(
+        (kind, batch.payload),
+    )
+    venue_positions, failed_venues = ctx.loop.run_until_complete(
+        ctx.engine._query_position_status_reports(),
+    )
+
+    assert venue_positions == {}
+    assert failed_venues == set()
+    assert applied == [("position", {"instrument": 1.25})]
+
+
+def test_deferred_realized_commit_refreshes_position_application_snapshot():
+    ctx = _Ctx()
+    ledger = RealizedPnlLedger()
+    ctx.client._realized_pnl_ledger = ledger
+    report = SimpleNamespace(instrument_id=ctx.instrument.id)
+
+    before = ReconciliationStateSnapshot.capture(ctx.client, include_positions=True)
+
+    async def fake_query(_command):
+        return GuardedReports([report], snapshot=before, payload={"instrument": 1.25})
+
+    def apply_batch(kind, batch):
+        ledger.replace_instrument_snapshot(
+            ctx.client.account_id,
+            external_realized={"instrument": 1.25},
+            native_realized={},
+        )
+
+    ctx.client.generate_position_status_reports = fake_query
+    ctx.client.apply_reconciliation_batch = apply_batch
+
+    venue_positions, failed_venues = ctx.loop.run_until_complete(
+        ctx.engine._query_position_status_reports(),
+    )
+
+    assert venue_positions == {ctx.instrument.id: report}
+    assert failed_venues == set()
+    assert not before.is_current(ctx.client)
+    assert report._arb_reconciliation_snapshot.is_current(ctx.client)
+
+
+def test_stale_single_order_report_is_discarded_at_apply_boundary(monkeypatch):
+    ctx = _Ctx()
+    parent_calls = []
+
+    def fake_reconcile(_engine, _report, _trades, _is_external=True):
+        parent_calls.append(True)
+        return True
+
+    monkeypatch.setattr(LiveExecutionEngine, "_reconcile_order_report", fake_reconcile)
+    report = SimpleNamespace(
+        id="report-1",
+        account_id=ctx.client.account_id,
+        _arb_reconciliation_snapshot=SimpleNamespace(is_current=lambda client: False),
+    )
+
+    assert ctx.engine._reconcile_order_report(report, []) is False
+    assert parent_calls == []
+
+
+def test_flat_position_report_inherits_empty_batch_snapshot(monkeypatch):
+    ctx = _Ctx()
+    parent_calls = []
+
+    def fake_reconcile(_engine, _report):
+        parent_calls.append(True)
+        return True
+
+    monkeypatch.setattr(LiveExecutionEngine, "_reconcile_position_report", fake_reconcile)
+    snapshot = SimpleNamespace(is_current=lambda client: False)
+    ctx.engine._arb_position_reconciliation_snapshots[ctx.instrument.id.venue] = snapshot
+
+    report = ctx.engine._create_flat_position_report(
+        ctx.instrument.id,
+        ctx.client.account_id,
+    )
+
+    assert report._arb_reconciliation_snapshot is snapshot
+    assert ctx.engine._reconcile_position_report(report) is False
+    assert parent_calls == []

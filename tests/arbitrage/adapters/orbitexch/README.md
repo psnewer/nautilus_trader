@@ -525,6 +525,16 @@ CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口�
 订单终态仍由后续 `CURRENT_BETS` 确认。接线由
 `test_cancel_order_passes_market_id_from_current_bets` 验收。
 
+### oe-adapter-5.reconcile-guard:CURRENT_BETS 对账应用前并发保护(#308)
+
+**前置**:order/position report 请求前已记录 OE 账户本地 order/position 摘要。
+**输入**:`_ensure_exec_snapshot_fresh()` 等待期间，WS Fill 或其他标准事件更新本地执行状态。
+**期望/验收**:CURRENT_BETS 拉取成功仍标记相应 liveness alive；返回的 `GuardedReports` 携带旧摘要，
+由 `ArbLiveExecutionEngine` 在应用前丢弃，不把旧快照写回 cache，也不因摘要失效标记 venue dead。
+适配器接线由 `test_generate_position_status_reports_aggregates` 与
+`test_reconcile_reports_stale_snapshot_reload_success_stays_alive` 验收，引擎行为见
+`tests/arbitrage/execution/test_engine_barrier.py`。
+
 ## #251:退订归零关 competition 页(`test_data_client_step2.py`)
 
 - `test_unregister_routing_returns_orphaned_page_key`:同页两 market 退订第一个不孤儿;退订

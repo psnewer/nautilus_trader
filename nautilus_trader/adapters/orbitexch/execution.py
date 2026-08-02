@@ -43,6 +43,7 @@ from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessagePa
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
+from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 
@@ -934,6 +935,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def generate_order_status_reports(self, command) -> list:
         """reconcile:缓存的 CURRENT_BETS 快照(`_on_current_bets` 维护)→ `OrderStatusReport` 列表。
         仅为能反查到 NT order 的 bet 构建。"""
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:快照不可信 → 抛,不返空。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
             # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
@@ -952,10 +954,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             if report is not None:
                 reports.append(report)
         self._venue_liveness.mark_order_alive(ORBITEXCH)
-        return reports
+        return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command):
         """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。"""
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             self._venue_liveness.mark_order_dead(ORBITEXCH)
@@ -974,7 +977,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             if target_coid is not None and report.client_order_id != target_coid:
                 continue
             self._venue_liveness.mark_order_alive(ORBITEXCH)
-            return report
+            return attach_reconciliation_snapshot(report, snapshot)
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         return None
 
@@ -988,6 +991,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         (BACK=long/LAY=short,net=ΣBACK−ΣLAY,avg_px=主方向成交量加权)。matched=0 / 净 0 跳过;
         instrument 经 market_id+selection_id 反查,反查不到跳过。
         **注**:NT Portfolio 平时由 order fills 自行派生持仓;本 report 仅供 reconcile 对账用。"""
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             self._venue_liveness.mark_position_dead(ORBITEXCH)
@@ -998,7 +1002,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         reports = self._build_position_status_reports_from_current_bets()
         self._venue_liveness.mark_position_alive(ORBITEXCH)
-        return reports
+        return self._guard_reconciliation_reports("position", reports, snapshot)
 
     def _build_position_status_reports_from_current_bets(self) -> list:
         """从当前完整 CURRENT_BETS 快照构造仓位报告，不修改 liveness。"""

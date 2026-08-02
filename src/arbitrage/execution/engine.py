@@ -2,22 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from dataclasses import field
 
+import pandas as pd
+
+from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import CANCEL_OPPORTUNITY_PARAM
-from src.arbitrage.common.opportunity import CancelOpportunityMeta
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.opportunity import CancelOpportunityMeta
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_meta_from_command
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.positions import pair_positions_digest
+from src.arbitrage.execution.reconciliation import ReconciliationStateSnapshot
+from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 
 
 _GROUP_TIMEOUT_PREFIX = "arb_group_timeout:"
@@ -46,6 +55,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
         self._pair_registry = None
         self._arb_command_groups: dict[tuple[str, str], _CommandGroupContext] = {}
+        self._arb_position_reconciliation_snapshots = {}
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
 
     def configure_arb(
@@ -58,6 +68,157 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             self._pair_registry = pair_registry
         if barrier_timeout_secs is not None:
             self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
+
+    async def _query_order_status_reports(self):
+        order_status_start = self._clock.utc_now() - pd.Timedelta(
+            minutes=self.open_check_lookback_mins,
+        )
+        clients = list(self._clients.values())
+        batches = await asyncio.gather(
+            *[
+                client.generate_order_status_reports(
+                    GenerateOrderStatusReports(
+                        instrument_id=None,
+                        start=order_status_start,
+                        end=None,
+                        open_only=self.open_check_open_only,
+                        command_id=UUID4(),
+                        ts_init=self._clock.timestamp_ns(),
+                        log_receipt_level=LogLevel.DEBUG,
+                    ),
+                )
+                for client in clients
+            ],
+            return_exceptions=True,
+        )
+        reports = []
+        protected_order_ids = set()
+        for client, batch in zip(clients, batches, strict=True):
+            if isinstance(batch, Exception):
+                self._log.error(f"Failed to generate order status reports: {batch}")
+                continue
+            if not self._reconciliation_batch_is_current(client, batch):
+                self._log.warning(
+                    f"Discarding stale order reports before reconciliation: client={client.id}",
+                )
+                protected_order_ids.update(
+                    order.client_order_id
+                    for order in self._cache.orders(account_id=client.account_id)
+                    if order.is_open or order.is_inflight
+                )
+                continue
+            self._apply_reconciliation_batch(client, "order", batch)
+            reports.extend(batch)
+        venue_reported_ids = {
+            report.client_order_id
+            for report in reports
+            if report.client_order_id is not None
+        }
+        venue_reported_ids.update(protected_order_ids)
+        return reports, venue_reported_ids
+
+    async def _query_position_status_reports(self):
+        clients = list(self._clients.values())
+        self._arb_position_reconciliation_snapshots = {}
+        batches = await asyncio.gather(
+            *[
+                client.generate_position_status_reports(
+                    GeneratePositionStatusReports(
+                        instrument_id=None,
+                        start=None,
+                        end=None,
+                        command_id=UUID4(),
+                        ts_init=self._clock.timestamp_ns(),
+                        log_receipt_level=LogLevel.DEBUG,
+                    ),
+                )
+                for client in clients
+            ],
+            return_exceptions=True,
+        )
+        venue_positions = {}
+        failed_venues = set()
+        for client, batch in zip(clients, batches, strict=True):
+            if isinstance(batch, Exception):
+                failed_venues.add(client.venue)
+                self._log.error(
+                    f"Failed to generate position status reports for venue {client.venue}: {batch}",
+                )
+                continue
+            if not self._reconciliation_batch_is_current(client, batch):
+                failed_venues.add(client.venue)
+                self._log.warning(
+                    f"Discarding stale position reports before reconciliation: client={client.id}",
+                )
+                continue
+            self._apply_reconciliation_batch(client, "position", batch)
+            snapshot = getattr(batch, "snapshot", None)
+            if snapshot is not None:
+                snapshot = ReconciliationStateSnapshot.capture(client, include_positions=True)
+                self._arb_position_reconciliation_snapshots[client.venue] = snapshot
+                for report in batch:
+                    attach_reconciliation_snapshot(report, snapshot)
+            for report in batch:
+                venue_positions[report.instrument_id] = report
+        return venue_positions, failed_venues
+
+    def _reconcile_execution_mass_status(self, mass_status):
+        client = self._clients.get(mass_status.client_id)
+        batches = getattr(mass_status, "_arb_reconciliation_batches", {})
+        for kind, batch in batches.items():
+            if not self._reconciliation_batch_is_current(client, batch):
+                self._log.warning(
+                    "Discarding stale execution mass status before reconciliation: "
+                    f"client={mass_status.client_id}, kind={kind}",
+                )
+                return False
+        for kind, batch in batches.items():
+            self._apply_reconciliation_batch(client, kind, batch)
+        return super()._reconcile_execution_mass_status(mass_status)
+
+    def _reconcile_order_report(self, report, trades, is_external: bool = True):
+        if not self._reconciliation_report_is_current(report):
+            return False
+        return super()._reconcile_order_report(report, trades, is_external)
+
+    def _reconcile_position_report(self, report):
+        if not self._reconciliation_report_is_current(report):
+            return False
+        return super()._reconcile_position_report(report)
+
+    def _create_flat_position_report(self, instrument_id, account_id):
+        report = super()._create_flat_position_report(instrument_id, account_id)
+        snapshot = self._arb_position_reconciliation_snapshots.get(instrument_id.venue)
+        if snapshot is not None:
+            attach_reconciliation_snapshot(report, snapshot)
+        return report
+
+    def _reconciliation_report_is_current(self, report) -> bool:
+        snapshot = getattr(report, "_arb_reconciliation_snapshot", None)
+        if snapshot is None:
+            return True
+        client = next(
+            (item for item in self._clients.values() if item.account_id == report.account_id),
+            None,
+        )
+        if client is not None and snapshot.is_current(client):
+            return True
+        self._log.warning(
+            "Discarding stale execution report before reconciliation: "
+            f"report_id={getattr(report, 'id', '?')}",
+        )
+        return False
+
+    @staticmethod
+    def _reconciliation_batch_is_current(client, batch) -> bool:
+        snapshot = getattr(batch, "snapshot", None)
+        return snapshot is None or snapshot.is_current(client)
+
+    @staticmethod
+    def _apply_reconciliation_batch(client, kind: str, batch) -> None:
+        apply_batch = getattr(client, "apply_reconciliation_batch", None)
+        if apply_batch is not None:
+            apply_batch(kind, batch)
 
     def _execute_command(self, command) -> None:
         if isinstance(command, CancelOrder):

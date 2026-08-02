@@ -30,8 +30,8 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
-from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import cancel_meta_from_command
+from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
@@ -49,6 +49,39 @@ def cancel_session_started(command) -> bool:
 
 
 class ArbExecutionSessionMixin:
+
+    def _capture_reconciliation_state_snapshot(self, *, include_positions: bool):
+        from src.arbitrage.execution.reconciliation import ReconciliationStateSnapshot
+
+        return ReconciliationStateSnapshot.capture(self, include_positions=include_positions)
+
+    async def generate_mass_status(self, lookback_mins=None):
+        """保留 NT mass-status 生成流程，并把 guarded report 批次随 mass report 下传。"""
+        self._arb_mass_report_batches = {}
+        try:
+            mass_status = await super().generate_mass_status(lookback_mins)
+            if mass_status is not None:
+                mass_status._arb_reconciliation_batches = dict(self._arb_mass_report_batches)
+            return mass_status
+        finally:
+            self._arb_mass_report_batches = None
+
+    def _guard_reconciliation_reports(self, kind: str, reports, snapshot, *, payload=None):
+        from src.arbitrage.execution.reconciliation import GuardedReports
+        from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
+
+        batch = GuardedReports(reports, snapshot=snapshot, payload=payload)
+        batches = getattr(self, "_arb_mass_report_batches", None)
+        if batches is not None:
+            batches[kind] = batch
+        else:
+            for report in batch:
+                attach_reconciliation_snapshot(report, snapshot)
+        return batch
+
+    def apply_reconciliation_batch(self, kind: str, batch) -> None:
+        """报告通过应用边界校验后的 venue hook；默认无 deferred 状态。"""
+        return None
 
     # ── 宿主在 __init__ 末尾调用 ───────────────────────────────────────
     def _init_arb_session(

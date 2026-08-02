@@ -2,10 +2,19 @@
 
 from types import SimpleNamespace
 
+from src.arbitrage.common.open_orders import orders_digest
 from src.arbitrage.common.open_orders import pair_open_orders_digest
 
 
-def _order(client_order_id, *, filled="0", leaves="10", status="ACCEPTED"):
+def _order(
+    client_order_id,
+    *,
+    filled="0",
+    leaves="10",
+    status="ACCEPTED",
+    event_count=1,
+    ts_last=1,
+):
     return SimpleNamespace(
         client_order_id=client_order_id,
         venue_order_id=f"venue-{client_order_id}",
@@ -17,6 +26,8 @@ def _order(client_order_id, *, filled="0", leaves="10", status="ACCEPTED"):
         leaves_qty=leaves,
         price="0.4",
         has_price=True,
+        event_count=lambda: event_count,
+        ts_last=ts_last,
     )
 
 
@@ -66,3 +77,9 @@ def test_digest_supports_order_has_price_method_and_unpriced_orders():
     del unpriced.price
 
     pair_open_orders_digest(_Cache([priced, unpriced]), ["A.POLYMARKET"])
+
+
+def test_orders_digest_detects_event_generation_change_without_economic_change():
+    baseline = orders_digest([_order("a", event_count=1, ts_last=1)])
+
+    assert orders_digest([_order("a", event_count=2, ts_last=2)]) != baseline

@@ -43,6 +43,7 @@ from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 
@@ -295,6 +296,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 )
 
     async def generate_order_status_reports(self, command):
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         try:
             reports = await super().generate_order_status_reports(command)
         except Exception as e:
@@ -308,9 +310,10 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 self._log.warning(f"PM order reports query failed (mark dead, raise): {e!r}")
             raise
         self._venue_liveness.mark_order_alive(POLYMARKET)
-        return reports
+        return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command, *, retry: bool = True):
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not retry:
             try:
                 report = await super().generate_order_status_report(command, retry=False)
@@ -323,7 +326,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 raise
             if report is None:
                 self._venue_liveness.mark_order_dead(POLYMARKET)
-            return report
+            return attach_reconciliation_snapshot(report, snapshot)
 
         try:
             report = await super().generate_order_status_report(command)
@@ -336,9 +339,10 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._venue_liveness.mark_order_dead(POLYMARKET)
             return None
         self._venue_liveness.mark_order_alive(POLYMARKET)
-        return report
+        return attach_reconciliation_snapshot(report, snapshot)
 
     async def generate_position_status_reports(self, command):
+        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
         try:
             reports = await super().generate_position_status_reports(command)  # 单次拉 /positions,上游 stash raw
         except Exception as e:
@@ -368,7 +372,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 raw = list(getattr(self, "_last_raw_positions", []))
                 merge_refreshed = True
 
-        await self._sync_realized_pnl_after_position_reconcile(raw)
+        realized_snapshot = await self._load_realized_pnl_snapshot(raw)
         await self._refresh_account_state_after_position_reconcile()
         self._venue_liveness.mark_position_alive(POLYMARKET)
         # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + venue 标活 + 结算结果。
@@ -379,19 +383,37 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 f"settlement {'merge-refreshed' if merge_refreshed else 'checked'} "
                 f"({len(raw)} raw positions)",
             )
-        return reports
+        return self._guard_reconciliation_reports(
+            "position",
+            reports,
+            snapshot,
+            payload=realized_snapshot,
+        )
 
-    async def _sync_realized_pnl_after_position_reconcile(self, current_positions: list[dict]) -> None:
+    def apply_reconciliation_batch(self, kind: str, batch) -> None:
+        if kind == "position":
+            self._commit_realized_pnl_snapshot(batch.payload)
+
+    async def _load_realized_pnl_snapshot(
+        self,
+        current_positions: list[dict],
+    ) -> dict[str, float] | None:
+        """拉取权威 realized 候选；最终状态校验前不得修改共享账本。"""
         ledger = getattr(self, "_realized_pnl_ledger", None)
         if ledger is None:
-            return
+            return None
         try:
             closed_positions = await self._fetch_closed_positions()
         except Exception as exc:  # 保留上一份完整基线，不污染 position reconcile
             self._log.warning(f"PM realized PnL reconcile skipped: closed positions query failed: {exc!r}")
-            return
+            return None
 
-        external = _realized_by_instrument([*current_positions, *closed_positions])
+        return _realized_by_instrument([*current_positions, *closed_positions])
+
+    def _commit_realized_pnl_snapshot(self, external: dict[str, float] | None) -> None:
+        ledger = getattr(self, "_realized_pnl_ledger", None)
+        if ledger is None or external is None:
+            return
         native = {
             instrument_id: _native_realized_for_instrument(
                 self._cache,

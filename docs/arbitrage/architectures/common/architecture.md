@@ -179,6 +179,9 @@ runtime 流程。
 - PM `/positions + /closed-positions` 的 `realizedPnl` 是对账权威值，已包含 SELL 与历史
   merge；merge 成功时不另写 condition 调整、不伪造 Fill。
 - Portfolio 经 PairRegistry 聚合 pair 下全部 instrument 的 NT realized 与账本基线差。
+- 账本按 account 维护单调 `revision`；它参与 execution §4.6 的 position report batch 快照，
+  只服务应用前乐观并发校验，不改变
+  offset/PnL 计算语义。
 
 账本不保存 position/share/liability，也不接管 FillReport。其详细生产语义见 execution §4.6，
 消费公式见 risk §4.1。
@@ -187,14 +190,17 @@ runtime 流程。
 
 `src/arbitrage/common/open_orders.py::pair_open_orders_digest` 与
 `src/arbitrage/common/positions.py::pair_positions_digest` 是 Strategy 和 Execution barrier
-共用的纯函数。两者都按 PairRegistry 给出的 instrument 集读取 NT Cache，将业务相关字段投影
-成稳定排序的 JSON 后计算 SHA256，不保存 Order/Position 对象引用。
+共用的纯函数；底层 `orders_digest(orders)` / `positions_digest(positions)` 也可对任意已筛选集合
+生成同口径摘要。四者都将业务相关字段投影成稳定排序的 JSON 后计算 SHA256，不保存
+Order/Position 对象引用。
 
-- order 摘要覆盖订单身份、side/status、quantity/filled/leaves 与 price。
+- order 摘要覆盖订单身份、side/status、quantity/filled/leaves、price、`event_count/ts_last`。
 - position 摘要覆盖 position/account/instrument/strategy 身份、side/quantity、
-  `avg_px_open/avg_px_close/realized_pnl`。
+  `avg_px_open/avg_px_close/realized_pnl`、`event_count/ts_last`。
 - position 使用 `cache.positions()` 而非只读 open positions，保证 SELL 全平后的 closed
   position 变化仍参与比较。
 
 本节只定义 helper 落点与字段；Strategy → metadata → Risk → Execution 的一致性协议和
 fail-closed 时序以 `_cross-cutting/synchronization.md §8.4bis` 为单一真理源。
+各 venue reconciliation 使用集合级 helper 的乐观并发校验由 execution §4.6 定义；它与 pair barrier
+是两个消费场景，不共享生命周期。

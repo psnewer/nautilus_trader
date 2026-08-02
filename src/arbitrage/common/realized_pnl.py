@@ -14,6 +14,7 @@ class RealizedPnlLedger:
 
     def __init__(self) -> None:
         self._instrument_offsets: dict[tuple[str, str], float] = {}
+        self._account_revisions: dict[str, int] = {}
 
     def replace_instrument_snapshot(
         self,
@@ -32,6 +33,11 @@ class RealizedPnlLedger:
             offset = float(external_value) - float(native_realized.get(instrument_id, 0.0))
             if abs(offset) > 1e-12:
                 self._instrument_offsets[(account, str(instrument_id))] = offset
+        self._account_revisions[account] = self._account_revisions.get(account, 0) + 1
+
+    def revision(self, account_id) -> int:
+        """返回账户账本的单调版本，供 reconciliation 乐观并发校验。"""
+        return self._account_revisions.get(str(account_id), 0)
 
     def instrument_adjustment(self, instrument_id, account_id=None) -> float:
         instrument = str(instrument_id)

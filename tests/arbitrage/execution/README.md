@@ -266,6 +266,28 @@
 - 期望:返回 `[]`,且**不触达上游**(不抛)。position 对账由 `_reconcile_position_report_netting` 凭 `/positions` 权威净仓 NET 合成,不需要真 fill;PM live 成交仍由 USER WS trade 累加,不受影响。
 - 验收:`test_polymarket_client.py::test_arb_generate_fill_reports_returns_empty_without_trades_api`。
 
+### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308)
+- 前置:PM/OE/SE report 请求发出前记录本账户 order/position 摘要；position batch 同时覆盖
+  reconciled realized ledger revision。
+- 输入:远端请求等待或多 venue gather 期间，WS Fill 或其他标准事件改变任一 order/position/realized。
+- 期望:adapter 拉取成功照常标记 alive，并返回携带旧摘要的 `GuardedReports`；ExecEngine 应用前
+  识别失效并跳过，不提交 PM deferred realized 候选，也不改变 liveness。
+- 引擎边界:过期 order batch 不参与 reconcile 且保留当前 cache open/inflight ids；过期 position
+  batch 按 failed venue 跳过；过期 mass-status 整批失败；过期单份 QueryOrder report 跳过。
+- 正交性:远端查询成功仍由 adapter 标记对应 order/position alive；摘要过期只影响 report 应用，
+  不把 venue 改回 dead。有效 position batch 在应用前提交 deferred payload，空 report batch 也不例外。
+- 最终入口:连续 report 在 `_reconcile_order_report/_reconcile_position_report` 再校验；空 position
+  batch 派生的 flat report 继承 venue 摘要；deferred realized 提交后重取应用阶段摘要，不能因自身
+  revision 变化误拒同批 position reports。
+- 验收:各 adapter README #308 所列用例；摘要字段变化由
+  `tests/arbitrage/common/test_{open_orders,positions}.py` 覆盖，引擎应用边界由
+  `test_engine_barrier.py::test_stale_*_at_engine_boundary`、
+  `test_valid_position_report_batch_commits_deferred_payload` 与
+  `test_deferred_realized_commit_refreshes_position_application_snapshot`、
+  `test_stale_single_order_report_is_discarded_at_apply_boundary`、
+  `test_flat_position_report_inherits_empty_batch_snapshot` 覆盖；startup mass report 携带
+  guarded batches 由 `test_session.py::test_generate_mass_status_carries_guarded_report_batches` 覆盖。
+
 ## AccountState accepted 本地预扣(Q17 修订,已落地;#254 起仅 OE/SE)
 
 对应设计:execution §4.5 + risk §3.1。AccountState 统一表达可用余额快照:
