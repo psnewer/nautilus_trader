@@ -1767,6 +1767,7 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-03 (#313) | **PM 互斥仓位 SELL 规划增加即时成交价格门。**原 `PlaceBetsAction` 只按 `1-target_price` 生成减仓 SELL，不读取互斥 instrument 盘口，可能把本应等价替代 BUY 的减仓单挂在 book 上。定夺：仅当应用 Action spread 后的最终 SELL 限价不高于当前 best bid 时才做 inventory 转换；缺 book/bid 或价格不交叉则保留原 BUY。当前只判断价格，不检查/截断 bid 深度。现行设计见 strategy §3.8，测试见 strategy README #233。 |
 | 2026-08-03 (#312) | **`current_rebate` 改为按目标方向筛选的 `neg_rebate`。**原门控要求所有 outcome rebate 均不低于阈值，无法表达“把新增返水集中给当前亏损方向”。定夺：替换为 `neg_rebate(max_rate=0.0)`，逐个读取 one-side candidate 的 `target_role`，只保留该 outcome 当前 rebate 小于等于阈值的候选；计算口径不变。现行设计见 strategy §3.8，测试见 strategy README。 |
 | 2026-08-03 (#311) | **in-flight check 暂停写 venue liveness。**用户要求 QueryOrder 只恢复订单状态，不再因单笔卡在飞查询把整个 venue 切 dead/alive；该耦合未来可能恢复，因此 PM/OE/SE 原调用点保留为注释。定夺：PM 单次 `get_order` 与 OE/SE 强制 reload 行为不变，成功/失败均不修改 order/position liveness；WS、启动和周期 reconciliation 的既有 liveness 写入不动。详细设计见 execution §4.3bis(5b)，测试见 execution 与三 venue adapter README。 |
 | 2026-08-03 (#310) | **PM 手工 taker 成交补齐 external order，submit 失败恢复明确拒绝/结果未知分流。**实盘日志中页面手工 SELL 已到 `CONFIRMED`，但 NT 报 `FillReport received before OrderStatusReport` 并丢弃，Position 未更新；另有 HTTP 400 与 `status_code=None` 都走 ambiguous，导致明确拒单不结束 session。定夺：外部 taker fill 先经 NT 标准 report 通路建立 external order，再应用真实 fill；PM POST 仅在拿到 HTTP 状态码时生成 `OrderRejected`，无响应仍保留 in-flight。详细设计见 execution §3.1/§4.1，测试见 PM adapter 与 execution README。 |

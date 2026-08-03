@@ -6,7 +6,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
   - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
-  - probability BUY 可用同 pair 互斥 LONG 仓位拆成 SELL 减仓 + BUY 剩余量
+  - probability BUY 仅在互斥 LONG 的 SELL 最终限价不高于当前 best bid 时，
+    拆成 SELL 减仓 + BUY 剩余量；当前只判断价格，不检查盘口深度
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
     优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
@@ -117,7 +118,7 @@ class PlaceBetsAction(Action):
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
             }
-            drafts.extend(_expand_probability_inventory(draft, leg, ctx))
+            drafts.extend(_expand_probability_inventory(draft, leg, ctx, self._spread))
 
         _apply_spread_to_drafts(drafts, self._spread, ctx)
 
@@ -251,9 +252,11 @@ def _is_non_tradable_leg(leg: dict) -> bool:
     return leg.get("tradable") is False or leg.get("anchor") is True
 
 
-def _expand_probability_inventory(draft: dict, leg: dict, ctx) -> list[dict]:
+def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0.0) -> list[dict]:
     """把 probability BUY 优先转换成“卖互斥仓位 + 买剩余量”。
 
+    仅当应用 spread 后的 SELL 限价不高于互斥 instrument 当前 best bid 时转换，
+    保证规划时该 SELL 可立即成交；暂不按盘口深度限制数量。
     在 Action 执行时读取 live Cache；之后挂单变化由 Execution barrier 基线比较收口。
     """
     if ctx.cache is None or ctx.pair_registry is None or draft["side"] != "BUY":
@@ -274,6 +277,23 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx) -> list[dict]:
         return [draft]
     available = _long_position_quantity(ctx.cache, opposite_iid)
     if available <= 0:
+        return [draft]
+
+    sell_limit = 1.0 - target_price
+    sell_probe = dict(draft)
+    sell_probe.update({
+        "instrument_id": str(opposite_iid),
+        "side": "SELL",
+        "price": sell_limit,
+    })
+    if spread > 0:
+        sell_limit = _price_with_spread(sell_probe, spread, ctx.cache)
+    best_bid = _best_bid_price(ctx.cache, opposite_iid)
+    if best_bid is None or sell_limit > best_bid + 1e-9:
+        _LOG.debug(
+            f"PlaceBets: pair={ctx.pair_id} skip PM inventory SELL "
+            f"instrument={opposite_iid} limit={sell_limit} best_bid={best_bid}",
+        )
         return [draft]
 
     opposite_constraints = instrument_constraints(ctx.cache, opposite_iid)
@@ -307,6 +327,27 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx) -> list[dict]:
     buy = dict(draft)
     buy.update({"qty": remainder, "key_suffix": "buy"})
     return [sell, buy]
+
+
+def _best_bid_price(cache, instrument_id: str) -> float | None:
+    """读取互斥 instrument 当前 best bid；缺盘口或非法值时 fail-closed。"""
+    book = cache.order_book(_as_instrument_id(instrument_id))
+    if book is None:
+        return None
+    fn = getattr(book, "best_bid_price", None)
+    if callable(fn):
+        try:
+            value = fn()
+            return _numeric_value(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(book, dict):
+        try:
+            value = book.get("bid") or book.get("best_bid")
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _opposite_real_instrument(ctx, leg: dict, draft: dict) -> str | None:

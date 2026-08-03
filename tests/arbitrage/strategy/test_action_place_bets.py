@@ -581,16 +581,26 @@ class _Qty:
         return self._value
 
 
+class _BidBook:
+    def __init__(self, price):
+        self._price = price
+
+    def best_bid_price(self):
+        return self._price
+
+
 def _pm_inventory_ctx(
     *,
     held_qty: float,
     min_quantity: float = 5.0,
     min_buy_notional: float = 1.0,
+    opposite_bid: float | None = 0.8,
 ):
     target = "ALCARAZ.POLYMARKET"
     opposite = "SINNER.POLYMARKET"
     return live_context(
         instrument_ids=[target, opposite],
+        books={opposite: _BidBook(opposite_bid)} if opposite_bid is not None else {},
         positions=[SimpleNamespace(instrument_id=opposite, side="LONG", quantity=_Qty(held_qty))],
         infos={
             target: {"selection_role": "away"},
@@ -649,8 +659,28 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
     assert calls[1]["venue_required_balance"] == 8.0
 
 
+def test_probability_inventory_sell_requires_immediately_marketable_price():
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=0.79))
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.2),
+    ]
+
+
+def test_probability_inventory_sell_without_best_bid_falls_back_to_buy():
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=None))
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.2),
+    ]
+
+
 def test_probability_inventory_split_applies_spread_after_sizing():
-    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60))
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=0.81))
 
     _prepare_and_dispatch(PlaceBetsAction(spread=0.01), ctx)
 
@@ -662,6 +692,16 @@ def test_probability_inventory_split_applies_spread_after_sizing():
     assert calls[1]["venue_required_balance"] == 7.6
 
 
+def test_probability_inventory_sell_checks_price_after_spread():
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=0.8))
+
+    _prepare_and_dispatch(PlaceBetsAction(spread=0.01), ctx)
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.19),
+    ]
+
+
 def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97))
 
@@ -671,7 +711,10 @@ def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
 
 
 def test_probability_split_keeps_minimum_buy_notional_at_low_price():
-    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=97), price=0.02)
+    ctx, calls = _pm_target_ctx(
+        _pm_inventory_ctx(held_qty=97, opposite_bid=0.98),
+        price=0.02,
+    )
 
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 

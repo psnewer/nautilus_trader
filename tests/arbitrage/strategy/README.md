@@ -428,7 +428,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 ## #233:canonical outcome + 下单前等价拆单
 
 - 2-way/3-way pair 的经济 outcome 统一为 `yes/no`;真实 decimal NO 仍 BUY/BACK，只有带 `exec_instrument_id` 的合成 NO 转 SELL/LAY。
-- `test_action_place_bets.py` 覆盖 PM 目标 BUY 100、有互斥仓位 60 时拆为 SELL 60 + BUY 40；仓位 97 时按最小 5 调成 SELL 95 + BUY 5；仓位 3 时回退原 BUY；仓位 100 时只 SELL。
+- `test_action_place_bets.py` 覆盖 PM 目标 BUY 100、有互斥仓位 60 且 SELL 限价不高于当前 best bid 时拆为 SELL 60 + BUY 40；缺 best bid、SELL 限价高于 best bid、或应用 spread 后不再交叉时回退原 BUY；等于 best bid 可转换。仓位 97 时按最小 5 调成 SELL 95 + BUY 5；仓位 3 时回退原 BUY；仓位 100 时只 SELL。这里只校验价格可立即成交，不按 bid 深度缩量。
 - 同 venue 子单共享实际 `expected_legs` 与 `venue_required_balance`；PM SELL 对资金需求贡献 0。
 - `test_mean_rebate_e2e.py`:e2e fixture 改为 [yes,no] 拆分 pair(2 腿)。
 - mean_rebate_recovery 已按 #230 支持 `[yes,no]` pair,策略内用例覆盖:
