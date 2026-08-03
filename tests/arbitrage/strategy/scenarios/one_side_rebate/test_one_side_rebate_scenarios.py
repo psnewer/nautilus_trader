@@ -16,7 +16,7 @@ from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
-from src.arbitrage.strategy.checks.current_rebate import CurrentRebateCheck
+from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Condition
@@ -195,8 +195,8 @@ def test_existing_position_share_limit_scales_candidates_before_selection():
     assert round(by_role["no"]["qty"], 6) == 5.5
 
 
-def test_current_rebate_gate_rolls_back_one_side_candidates_when_one_outcome_is_below_limit():
-    """one_side 已生成 candidates 后，当前任一 outcome 返水不达标则整棵套利树不命中。"""
+def test_neg_rebate_gate_keeps_candidate_for_low_rebate_outcome():
+    """one_side 生成两个方向后，只保留当前返水不高于阈值的目标方向。"""
     ctx = _ctx(
         portfolio=_Portfolio(
             pm={"yes": 100.0, "no": 80.0},
@@ -208,13 +208,13 @@ def test_current_rebate_gate_rolls_back_one_side_candidates_when_one_outcome_is_
         self_hits=AndExpr(),
         checktion=AndCheckExpr(
             OneSideRebateCheck(min_rate=0.09),
-            CurrentRebateCheck(),
+            NegRebateCheck(),
         ),
         actions=[_MarkerAction("arbitrage")],
     )
 
     result = evaluate_tree(tree, ctx)
 
-    assert result.hit is False
-    assert "candidates" not in ctx.scratch
-    assert "one_side_rebate" not in ctx.scratch
+    assert result.hit is True
+    assert {candidate["target_role"] for candidate in ctx.scratch["candidates"]} == {"no"}
+    assert ctx.scratch["neg_rebate"]["rates"] == {"yes": 0.1, "no": -0.01}
