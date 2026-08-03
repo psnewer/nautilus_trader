@@ -30,7 +30,6 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
-from src.arbitrage.common.opportunity import cancel_meta_from_command
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -121,9 +120,7 @@ class ArbExecutionSessionMixin:
         if order is None:
             super().cancel_order(command)
             return
-        cancel_meta = cancel_meta_from_command(command)
-        enable_timeout = cancel_meta.enable_timeout if cancel_meta is not None else None
-        if not self._begin_cancel_session(order, enable_timeout=enable_timeout):
+        if not self._begin_cancel_session(order):
             return
         command.params[CANCEL_SESSION_STARTED_PARAM] = True
         try:
@@ -159,13 +156,9 @@ class ArbExecutionSessionMixin:
 
         return self._begin_order_session(order, kind="submit")
 
-    def _begin_cancel_session(self, order, *, enable_timeout: bool | None = None) -> bool:
-        """True = 已建立 cancel session；只使用撤单命令的显式参数。"""
-        return self._begin_order_session(
-            order,
-            kind="cancel",
-            enable_timeout=enable_timeout,
-        )
+    def _begin_cancel_session(self, order) -> bool:
+        """True = 已建立 cancel session；撤单不消费 submit 的超时策略。"""
+        return self._begin_order_session(order, kind="cancel")
 
     def _begin_order_session(
         self,
@@ -236,19 +229,7 @@ class ArbExecutionSessionMixin:
                 self._end_session(event.client_order_id)
                 return
         if kind == "cancel":
-            # #306:enable_timeout=false 的 cancel session 语义 = "拿到确定的 venue 回执即释放追踪"
-            # (它只是 barrier 闸;残量留待下轮 strategy 按 live state 重评估重撤)。到达本漏斗的
-            # 都是 client 生成的 venue 回执(成交/撤单成功/撤单拒绝/接受/改单…);pending/预览态
-            # (OrderPendingCancel 等)由 ExecEngine 生成、不经此,而 cancel 的目标单早已 live、
-            # 不会再触发 submit/denied —— 故**任一到达事件都当 ack 收尾**,与 _ack_cancel_session
-            # 的 end-on-ack 同源,不必特判事件类型。cancel/match 竞态下 venue 回
-            # already-canceled-or-matched 被 adapter 抑制(不发 OrderCancelRejected)时,成交事件
-            # 就是那个能让 session 及时收口的确定回执 —— 否则空耗一个 watchdog timeout(nohup 571/572)。
-            # 缺失/enable_timeout=true 保持原语义:只等撤单终态(_CANCEL_TERMINAL)或 timeout(§4.2)。
-            if sess.get("enable_timeout") is False:
-                terminal = True
-            else:
-                terminal = isinstance(event, _CANCEL_TERMINAL)
+            terminal = isinstance(event, _CANCEL_TERMINAL)
         else:
             terminal = isinstance(event, _SUBMIT_TERMINAL)
             if isinstance(event, OrderFilled):
@@ -259,24 +240,17 @@ class ArbExecutionSessionMixin:
             self._end_session(event.client_order_id)
 
     def _ack_cancel_session(self, client_order_id, venue_order_id=None) -> None:
-        """记录撤单请求已被 venue 接受；按订单冻结策略决定是否结束追踪。"""
+        """正常撤单响应已返回；结束追踪但不伪造订单状态。"""
         sess = self._active_sessions.get(client_order_id)
         if sess is None or sess.get("kind") != "cancel":
             return
 
-        end_on_ack = sess.get("enable_timeout") is False
         self._log.info(
-            "Execution cancel session accepted: "
+            "Execution cancel session acknowledged: "
             f"client_order_id={client_order_id}, "
-            f"venue_order_id={venue_order_id}; "
-            + (
-                "tracking ends on ack"
-                if end_on_ack
-                else "tracking continues until terminal/timeout"
-            ),
+            f"venue_order_id={venue_order_id}; tracking ends on response",
         )
-        if end_on_ack:
-            self._end_session(client_order_id)
+        self._end_session(client_order_id)
 
     # ── 超时(NT clock 绝对超时;超时即结束,不补救)──────────────────
     def _on_session_timeout(self, event) -> None:
@@ -352,11 +326,11 @@ class ArbExecutionSessionMixin:
         也由 watchdog 兜底(无需 max-hold 等兜底)。子类实现 `_cancel_residual_one(order)`
         (真实 venue 撤单请求,async),最终由 `OrderCanceled`/`OrderCancelRejected` 或 timeout 收口。"""
         for order in residual:
-            if self._begin_cancel_session(order, enable_timeout=None):
+            if self._begin_cancel_session(order):
                 self._loop.create_task(self._tracked_residual_cancel(order))
 
     async def _tracked_residual_cancel(self, order) -> None:
-        """#105:撤一条残单;session 由后续 NT cancel terminal 或 watchdog 收尾。"""
+        """#105:撤一条残单；session 由正常响应 ACK、cancel terminal 或 watchdog 收尾。"""
         try:
             await self._cancel_residual_one(order)
         except Exception as e:  # noqa: BLE001 — 撤单 IO 异常必须生成 NT cancel reject 来释放 session

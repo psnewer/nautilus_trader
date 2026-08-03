@@ -49,6 +49,7 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -79,6 +80,26 @@ class _RetryManager:
 class _RetryPool:
     async def acquire(self):
         return _RetryManager()
+
+    async def release(self, _retry_manager):
+        return None
+
+
+class _FailedRetryPool:
+    def __init__(self, exc):
+        self.manager = SimpleNamespace(
+            result=False,
+            message=str(exc),
+            last_exception=exc,
+        )
+
+        async def run(*_args, **_kwargs):
+            return None
+
+        self.manager.run = run
+
+    async def acquire(self):
+        return self.manager
 
     async def release(self, _retry_manager):
         return None
@@ -168,6 +189,9 @@ def _cancel_test_client(response):
     )
     client._log_cancel_request_accepted = (
         PolymarketExecutionClient._log_cancel_request_accepted.__get__(client)
+    )
+    client._ack_normal_cancel_response = (
+        PolymarketExecutionClient._ack_normal_cancel_response.__get__(client)
     )
     client._cancel_terminal_already_emitted = (
         PolymarketExecutionClient._cancel_terminal_already_emitted.__get__(client)
@@ -457,6 +481,61 @@ def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():
     assert captured == [(ClientOrderId("O-INFLIGHT"), "")]
 
 
+def test_polymarket_http_submit_rejection_is_not_ambiguous():
+    response = SimpleNamespace(
+        status_code=400,
+        json=lambda: {"error": "not enough balance"},
+    )
+    exc = PolyApiException(resp=response)
+    rejected = []
+    client = SimpleNamespace(
+        _retry_manager_pool=_FailedRetryPool(exc),
+        _http_client=SimpleNamespace(post_order=lambda *_args: None),
+        _clock=_Clock(),
+        _handle_ambiguous_submit_failure=lambda *_args: pytest.fail(
+            "HTTP 400 is a definite rejection",
+        ),
+        generate_order_rejected=lambda **kwargs: rejected.append(kwargs),
+    )
+    client._post_signed_order = PolymarketExecutionClient._post_signed_order.__get__(client)
+    order = SimpleNamespace(
+        strategy_id=StrategyId("S-1"),
+        instrument_id=InstrumentId.from_str("0xcond-token.POLYMARKET"),
+        client_order_id=ClientOrderId("O-REJECTED"),
+        time_in_force="GTC",
+    )
+
+    _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))
+
+    assert len(rejected) == 1
+    assert rejected[0]["client_order_id"] == order.client_order_id
+    assert "status_code=400" in rejected[0]["reason"]
+
+
+def test_polymarket_transport_submit_failure_remains_ambiguous():
+    exc = PolyApiException(error_msg="request timed out")
+    ambiguous = []
+    client = SimpleNamespace(
+        _retry_manager_pool=_FailedRetryPool(exc),
+        _http_client=SimpleNamespace(post_order=lambda *_args: None),
+        _handle_ambiguous_submit_failure=lambda order, reason: ambiguous.append(
+            (order.client_order_id, reason),
+        ),
+        generate_order_rejected=lambda **_kwargs: pytest.fail(
+            "transport failure has unknown venue result",
+        ),
+    )
+    client._post_signed_order = PolymarketExecutionClient._post_signed_order.__get__(client)
+    order = SimpleNamespace(
+        client_order_id=ClientOrderId("O-INFLIGHT"),
+        time_in_force="GTC",
+    )
+
+    _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))
+
+    assert ambiguous == [(order.client_order_id, str(exc))]
+
+
 def test_arb_inflight_query_updates_order_before_marking_alive():
     calls = []
 
@@ -695,6 +774,17 @@ def test_polymarket_cancel_order_reject_generates_cancel_rejected_event():
     assert captured["rejected"]["client_order_id"] == ClientOrderId("O-1")
     assert captured["rejected"]["venue_order_id"] == expected_venue_order_id
     assert captured["rejected"]["reason"] == "already open on another market"
+    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
+    assert "canceled" not in captured
+
+
+def test_polymarket_cancel_order_unknown_result_keeps_session_active():
+    client, command, captured, _ = _cancel_test_client(None)
+
+    _run(client._cancel_order(command))
+
+    assert "cancel_ack" not in captured
+    assert "rejected" not in captured
     assert "canceled" not in captured
 
 
@@ -1139,6 +1229,74 @@ def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
     assert captured[0]["last_qty"].as_double() == pytest.approx(3.25)
     assert captured[0]["last_px"].as_double() == pytest.approx(0.37)
     assert captured[0]["liquidity_side"] == LiquiditySide.MAKER
+
+
+def test_polymarket_external_taker_fill_bootstraps_order_before_fill():
+    """手动 taker 成交没有 PLACEMENT；先建 EXTERNAL order，真实 fill 才能推进 NT Position。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    sent = []
+    client._send_order_status_report = lambda report: sent.append(("order", report))
+    client._send_fill_report = lambda report: sent.append(("fill", report))
+    client._should_book_early_fill = lambda _venue_order_id: False
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+    msg = PolymarketUserTrade(
+        asset_id="tok1",
+        bucket_index=0,
+        fee_rate_bps="0",
+        id="manual-trade-1",
+        last_update="1710000000",
+        maker_address="0xwallet",
+        maker_orders=[],
+        market="0xcond",
+        match_time="1710000000",
+        outcome="Home",
+        owner="api-key",
+        price="0.26",
+        side=PolymarketOrderSide.SELL,
+        size="30",
+        status=PolymarketTradeStatus.CONFIRMED,
+        taker_order_id="manual-order-1",
+        timestamp="1710000000000",
+        trade_owner="api-key",
+        trader_side=PolymarketLiquiditySide.TAKER,
+        type=PolymarketEventType.TRADE,
+    )
+
+    client._handle_user_trade_in_ws_trade_msg(
+        msg,
+        trade_id=TradeId("manual-trade-1"),
+        wait_for_ack=False,
+        order_id="manual-order-1",
+    )
+
+    assert [kind for kind, _ in sent] == ["order", "fill"]
+    order_report = sent[0][1]
+    fill_report = sent[1][1]
+    assert order_report.client_order_id is None
+    assert order_report.order_status == OrderStatus.ACCEPTED
+    assert order_report.order_side == OrderSide.SELL
+    assert order_report.quantity == fill_report.last_qty
+    assert order_report.filled_qty.as_double() == 0.0
+    assert order_report.price == fill_report.last_px
 
 
 def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(monkeypatch):

@@ -69,7 +69,7 @@ def test_action_cancel_request_cancels_pair_without_submitting():
     ctx = EvalContext(
         pair_id="p",
         submitter=fail_submit,
-        pair_order_canceler=lambda pair_id, **kwargs: canceled.append(pair_id) or 3,
+        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 3,
     )
     ctx.scratch["cancel_pair_orders"] = {"reason": "spread_cancel_recovery"}
 
@@ -87,7 +87,7 @@ def test_action_cancels_when_selected_recovery_candidate_carries_request():
     ctx = EvalContext(
         pair_id="p",
         submitter=fail_submit,
-        pair_order_canceler=lambda pair_id, **kwargs: canceled.append(pair_id) or 2,
+        pair_order_canceler=lambda pair_id: canceled.append(pair_id) or 2,
     )
     ctx.scratch["selected_candidate"] = {
         "candidate_id": "recovery",

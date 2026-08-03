@@ -585,7 +585,7 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     assert captured["canceled"] is True
 
 
-def test_cancel_order_transport_failure_keeps_pending_cancel():
+def test_cancel_order_transport_failure_keeps_order_state():
     client = _client()
     inst = _instrument("home")
     client._cache.add_instrument(inst)

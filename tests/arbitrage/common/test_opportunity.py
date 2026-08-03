@@ -53,7 +53,6 @@ def test_cancel_opportunity_meta_round_trips_through_command_params():
         pair_id="pair-1",
         cancel_key="order-a",
         expected_cancels=("order-a", "order-b"),
-        enable_timeout=False,
     )
 
     assert cancel_meta_from_command(

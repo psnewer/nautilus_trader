@@ -484,7 +484,7 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 **落地**:
 - `ExecutionPlan(kind="submit")` 携带已定稿的真实 order specs；spread、intent、
   `enable_timeout`、实际 instrument/side/price/qty 均在所属树内确定，dispatcher 不重算。
-- `ExecutionPlan(kind="cancel_pair")` 携带 pair/reason 及可选 `enable_timeout`；胜出后才调用 `pair_order_canceler`，
+- `ExecutionPlan(kind="cancel_pair")` 只携带 pair/reason；胜出后才调用 `pair_order_canceler`，
   并继续走现有 grouped cancel barrier。
 - 补偿树命中但树内门控后没有 plan 时可选择套利 plan；一旦某个 plan 开始分发，本轮不再回退。
 - 任一树 Action 链抛异常则整轮失败，不以套利 plan 绕过异常的补偿链。

@@ -118,6 +118,15 @@ session 预扣双扣。**成交确认语义不变**:fill 仍只在 trade `CONFIR
 (`POLYMARKET_FINALIZED_TRADE_STATUSES`),MATCHED/MINED 只记录 + 补 ack、不生成 fill。
 测试:`tests/arbitrage/adapters/polymarket/test_execution_ack.py`。
 
+**PM 外部 taker 成交接入 NT 标准对账(#310)**:用户在 PM 页面手工成交时，本进程没有
+`client_order_id`，taker 路径也可能没有先收到可用于建单的 `PLACEMENT`。若 adapter 直接发送
+孤立 `FillReport`，NT `LiveExecutionEngine` 无法从 `venue_order_id` 反查本地订单，会拒绝应用
+该 fill，因而不会更新本地 Position。对此仅在 `client_order_id is None` 且成交为 TAKER 时，
+adapter 先发送同一 `venue_order_id` 的 `OrderStatusReport(ACCEPTED)`，由 NT reconcile 建立
+`EXTERNAL` order，再发送保留真实成交量、成交价和手续费的 `FillReport`。状态 report 中的
+LIMIT/GTC 只是缺少原始页面委托类型时的订单身份载体，不替代成交经济事实。外部 maker 单仍
+依赖其正常 `PLACEMENT`/order report，不扩大该 fallback。
+
 **PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并关闭环境代理继承(`trust_env=False`;#276 起无论 `proxy_url` 显式与否——未配置=直连,政策见 configuration.md「网络代理路由」)。共享 client 的 `HTTPTransport(retries=1)` 只对 `ConnectError` / `ConnectTimeout` 重试一次,覆盖 CLOB report GET 与 submit/cancel 的连接建立阶段;不重试 HTTP 状态、读写超时或业务拒绝。它不同于 `PolymarketExecClientConfig.max_retries` 的上层共享 RetryManagerPool,后者仍默认关闭。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"(#275/#276 实锤过一次:arb_factories 漏传 `proxy_url` 即此症状)。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
 
 WS 接线约束:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,内部按 USER channel 拼接 `user`;项目 dispatcher 兼容旧 `.../ws/market` / `.../ws/user` 配置并统一归一化。否则 ExecClient user WS 会误连 `.../ws/marketuser`。
@@ -285,21 +294,21 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
   检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
-- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)。撤单请求返回成功只表示 venue 已接受请求；缺失/`enable_timeout=true` 时仍只由 adapter 经 NT 标准事件管道生成的 `OrderCanceled` / `OrderCancelRejected` 或 watchdog 释放，`enable_timeout=false` 时则可在明确请求 ACK 后只释放 session。ACK 收口不生成伪造的订单终态，订单继续保持 `PENDING_CANCEL`，等待后续真实撤单/拒绝事件更新。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
-- cancel session 对成交事件的收尾按 `enable_timeout` 分档(#306):
-  - **缺失/`enable_timeout=true`**:成交不当终点(成交仍走正常 fill/order 流),cancel session 继续等撤单终态(`OrderCanceled`/`OrderCancelRejected`)或 timeout —— 保留"残量仍需撤"的原语义。
-  - **`enable_timeout=false`**:session 语义即"拿到确定的 venue 回执就释放追踪"(它只是 barrier 闸;残量交下轮 strategy 按 live state 重评估重撤)。**收口是 ack 语义,不特判事件类型**:到达 `_send_order_event` 漏斗的都是 client 生成的 venue 回执(成交/撤单成功/撤单拒绝/接受/改单…),pending/预览态(`OrderPendingCancel` 等)由 ExecEngine 生成不经此、cancel 目标单又早已 live 不会再触发 submit/denied,故**任一到达事件都当 ack 收尾**(与 `_ack_cancel_session` 的 end-on-ack 同源)。这天然覆盖成交(`OrderFilled`,不分部分/全部):cancel/match 竞态下 venue 对已撮合单回 `already canceled or matched` 被 adapter 抑制(不发 `OrderCancelRejected`),此时成交是唯一到达的确定回执,若不在此收口只能空耗一个 watchdog timeout(实盘取证 nohup 571/572:cancel 发出→同刻 MATCHED→60s 后才 `Execution session timeout`)。已撤(非撮合)子情形则由 WS `CANCELLATION → OrderCanceled` 收口。
+- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)，但不消费 submit 的 `enable_timeout`。adapter 收到一次**正常撤单响应**后调用 `_ack_cancel_session`，立即结束 cancel session；这只释放 barrier tracking，不生成或修改任何订单状态。没有响应、传输结果未知时不 ACK，继续等待撤单终态、reconcile 或 watchdog。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
+- cancel 等待期间到达的成交事件只按正常 fill/order 流程处理，不代表撤单请求已有响应，也不结束 cancel session。订单状态与 session 生命周期正交：ACK 负责释放 session；随后 adapter 仍解析响应并由 USER WS / `CURRENT_BETS` / reconcile 更新真实状态。
 - venue 终态映射:
-  - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
+  - PM:CLOB 返回正常撤单响应后先统一 ACK session，再解析 `canceled[]` / `not_canceled`。`canceled[]` 不伪造撤单终态，真实撤单完成仍以 USER channel `CANCELLATION` 为准；`not_canceled` 的 reason 只参与既有订单事件映射，不决定 session 是否结束。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
   - OE `CancelAllOrders` 只调用 `/customer/api/cancelAllUnmatchedBets`；API 失败直接返回失败，不再点击页面 UI 兜底。旧 `take-at-market/modify-and-take` 页面能力已删除：它不在 NT 套利执行链路内，且不能用固定 sleep 代替真实成交确认。
 - session mixin 只维护 `_active_sessions` 与 tracking timeout(**#261**:`execution.*` 消息与 `PairInFlightGate` 记账均已删除)。`_execution_active` = `len(_active_sessions) > 0` 是 barrier 全局 ≤1 判定的派生源之一。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
 - **submit 异常收口**:只对“确定尚未提交到 venue”的本地失败立即生成终态；请求已发出但结果未知必须保留在飞状态:
   - PM 在签名后、POST 前按 CLOB order hash 算法得到确定性 `venue_order_id`，先写
     `client_order_id -> venue_order_id` 映射，再生成 `OrderSubmitted`。POST 返回明确拒绝时正常
-    `OrderRejected`；签名/构造阶段失败且尚无 hash 映射时 `OrderDenied + _end_session`；POST
-    传输异常、空回执或抛错但 hash 已登记时不生成本地终态、不结束 session，订单保持
-    `SUBMITTED`，等待 NT 的 in-flight threshold 判定。
+    `OrderRejected`；明确拒绝的判据是 `PolyApiException.status_code is not None`，包括 HTTP 4xx/5xx。
+    签名/构造阶段失败且尚无 hash 映射时 `OrderDenied + _end_session`；POST 传输异常、空回执或
+    `status_code is None` 的抛错但 hash 已登记时不生成本地终态、不结束 session，订单保持
+    `SUBMITTED`，等待 NT 的 in-flight threshold 判定。`RetryManager` 必须保留最后异常，不能只用
+    message 抹掉“已收到 HTTP 响应”和“根本没有响应”的区别。
   - OE/SE 在本地 instrument/executor/payload 校验通过后、进入真实 `placeBets` 前生成
     `OrderSubmitted`。HTTP/业务响应明确拒绝时生成 `OrderRejected`；断线、execution context
     销毁、fetch transport error 等结果未知路径不生成终态、不结束 session，保留 `SUBMITTED`
@@ -307,8 +316,8 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
     place/cancel 使用统一 5 秒 I/O 总预算；超时取消该调用并释放页锁，但只表示结果未知，不代表
     venue 拒绝。该 timeout 与 QueryOrder 解耦，也不复用页面导航的 `page_timeout`。旧 OE cancel
     内部 cookies 5 秒 + evaluate 10 秒的分段 timeout 已删除。
-  - OE/SE cancel 命令进入 adapter 前已由 NT Strategy 生成 `OrderPendingCancel`。`cancelBets`
-    明确失败才生成 `OrderCancelRejected`；结果未知保留 `PENDING_CANCEL`。cancel-only 残单由 base
+  - OE/SE `cancelBets` 明确失败才生成 `OrderCancelRejected`；结果未知不猜测或改写订单状态。
+    cancel-only 残单由 base
     先建立 session，adapter 复用该 session 发真实请求，不得再次 `_begin_cancel_session` 后把请求
     当重复操作跳过。
   - `OrderDenied`/异常 `OrderRejected` 只负责收口,不把"未知是否到达 venue"误写成 execution liveness。
@@ -328,16 +337,14 @@ def _on_session_timeout(self, event):
     self._end_session(coid, timed_out=True)
 ```
 - **绝对超时**:partial / OrderAccepted **不重置** timer。
-- **Action 可选 ACK 收口(#298/#300)**:submit session 从原订单 `Order.tags` 的
+- **Action 可选 ACK 收口(#298)**:submit session 从原订单 `Order.tags` 的
   `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；显式 `false` 时：
   - submit 收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有 accepted
     余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`；
-  - grouped cancel 只有在 `CancelOrder.params` 显式携带 `enable_timeout` 时才使用该配置；普通
-    cancel-only 不读取原订单 tags，按缺省值等待。收到 venue 明确的撤单请求 ACK 后，由 adapter 调共用 `_ack_cancel_session`，
-    再调用 `_end_session`。PM ACK 是 CLOB `canceled[]`，OE/SE ACK 是
-    `cancelBets` 成功响应；传输结果未知与业务拒绝不走 ACK 收口。
-  两条路径都只取消 watchdog、释放 `_execution_active`，不把订单改成终态；后续
-  fill/cancellation/order 事件仍由 ExecutionClient → ExecEngine 标准路径处理。
+  cancel 不消费该字段。PM/OE/SE 收到正常撤单响应后统一调用 `_ack_cancel_session` 并结束
+  cancel session；传输结果未知不 ACK。submit/cancel 两条路径都只取消 watchdog、释放
+  `_execution_active`，不把订单改成终态；后续 fill/cancellation/order 事件仍由
+  ExecutionClient → ExecEngine 标准路径处理。
 - 全局唯一超时配置(per-venue 不分);cancel session 超时仅 log warning,不补撤、不重试。
 - terminal 与 timeout 都触发 session 结束 → 都 publish `execution.finished` + 清 `_execution_active`。
 - **watchdog 与 per-pair 计数原子(#105 ②,保证置位一定有出口)**:`_begin_session` 顺序固定为
@@ -482,8 +489,9 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 - `fx` 启动值经 `ArbContext.arbitrage_params` 注入 OE factory;PM/OE/SE execution session timeout 只从 `ArbContext.session_timeout_secs_by_venue[venue]` 读取。缺失该 keyed 值时 factory fail-fast,不再用 venue 专属字段兜底。Web 热改 `arbitrage.fx` 通过 `command.arb.arbitrage_params` 同步到 `OrbitExchExecutionClient`,executor 通过 getter 读取最新值。
 
 **(5b) in-flight check / reconcile 失败语义(#105/#242/#243 已定；已落地 2026-07-17)**:
-- **in-flight check 全 venue 开启**。PM/OE/SE 的明确业务结果直接进入终态；传输结果未知分别保留
-  `SUBMITTED` / `PENDING_CANCEL`，统一由 NT 原生 delayed in-flight 检测触发 `QueryOrder`。
+- **in-flight check 全 venue 开启**。PM/OE/SE 的明确业务结果直接进入终态；submit 传输结果未知
+  保留 `SUBMITTED`，cancel 传输结果未知不猜测或改写订单状态，统一由 NT 原生 delayed
+  in-flight 检测触发 `QueryOrder`。
   传输结果未知包括请求超时、断线、fetch 异常、空响应、响应不可解析，以及 place 响应缺少目标
   market；这些情形不得伪造 `OrderRejected` / `OrderCancelRejected`。venue 明确返回的业务错误才是
   terminal reject。

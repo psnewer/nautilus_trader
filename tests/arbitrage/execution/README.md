@@ -58,7 +58,7 @@
 - 验收:`test_engine_barrier.py::test_barrier_residual_check_is_pair_wide_even_for_single_leg_opportunity` 覆盖。
 
 ### execution-3.5.6: grouped CancelOrder 收齐后才统一 release
-- 前置:同一 pair 两条 open order 已由 Strategy 置为 `PENDING_CANCEL`，两条
+- 前置:同一 pair 有两条 open order，Strategy 生成两条
   `CancelOrder` 携带相同 `opportunity_id/expected_cancels`。
 - 输入:第一条先进入 ExecutionEngine，第二条随后进入。
 - 期望:第一条到达时任何 ExecutionClient 均未收到撤单；第二条到达后两条标准
@@ -73,8 +73,8 @@
 
 ### execution-3.5.6b: grouped CancelOrder busy/timeout fail-closed
 - 输入:组首条进入时已有 execution session，或只到达部分命令直到 barrier timeout。
-- 期望:不调用 venue；已到达命令收到标准 `OrderCancelRejected`，NT 可回退
-  `PENDING_CANCEL`。
+- 期望:不调用 venue；已到达命令收到标准 `OrderCancelRejected`，订单保持 NT 事件管道
+  解析出的状态。
 - 状态:✅ `test_cancel_barrier_rejects_group_when_other_execution_is_active` /
   `test_cancel_barrier_timeout_rejects_arrived_commands`
 
@@ -103,6 +103,20 @@
 对应设计:execution §4.1(submit 异常收口 PM/OE 对称)+ §4.2(watchdog 与 per-pair 计数原子)。
 目标:**只要执行进入了一笔 session,无论成功/失败/异常/超时,pair in-flight 一定有出口被清**。
 
+### execution-4.1.4a: PM HTTP 拒绝立即终止，传输未知保持 in-flight
+- 输入:PM POST 分别抛出 `PolyApiException(status_code=400)` 与
+  `PolyApiException(status_code=None)`。
+- 期望:HTTP 400 生成 `OrderRejected`，由既有 session terminal 立即收口；无 HTTP 响应时
+  不生成终态，订单保持 `SUBMITTED` 等待 NT in-flight check。
+- 验收:✅ `test_polymarket_client.py::test_polymarket_http_submit_rejection_is_not_ambiguous` /
+  `test_polymarket_transport_submit_failure_remains_ambiguous`。
+
+### execution-4.1.4b: PM 外部 taker fill 先建 external order
+- 输入:PM USER `CONFIRMED` 成交没有本进程 `client_order_id`。
+- 期望:先送 `OrderStatusReport(ACCEPTED)`，再送真实 `FillReport`，使 NT 标准 reconcile 能建立
+  external order 并把成交应用到 Position。
+- 验收:✅ `test_polymarket_client.py::test_polymarket_external_taker_fill_bootstraps_order_before_fill`。
+
 ### execution-4.1.5: OE submit 异常 → 立刻 rejected + 结束 session(对齐 PM,#105 ①)
 - 前置:`_begin_session` 通过(submit+track),注入会抛异常的 `_place_via_executor`。
 - 输入:`_submit_order` 执行,placement await 抛 `TimeoutError`(Playwright 崩)。
@@ -128,44 +142,32 @@
   + `test_submit_order_cancel_only_does_not_dispatch`
   + OE/SE `test_submit_order_builds_session_before_dispatch`。
 
-### execution-4.2.5: enable_timeout=false 时 ACK 后结束 submit/grouped cancel session
-- 前置:submit 订单带 `arb:enable_timeout=false`，或 grouped cancel command params 显式带
-  `enable_timeout=false`。
-- 输入:submit session 收到 `OrderAccepted`，或 cancel session 收到 venue 明确的撤单请求 ACK。
+### execution-4.2.5: submit enable_timeout 与 cancel ACK 独立
+- 前置:submit 订单可带 `arb:enable_timeout=false`；cancel metadata 不含该字段。
+- 输入:submit session 收到 `OrderAccepted`，或 cancel session 收到 venue 正常撤单响应的 ACK。
 - 期望:submit 的 `OrderAccepted` 仍先正常上送，accepted 余额 hook 保持原顺序（PM no-op，
   OE/SE 本地预扣）；随后取消 watchdog、
-  清对应 session 并释放 `_execution_active`。cancel ACK 不伪造 `OrderCanceled`，订单继续
-  保持 `PENDING_CANCEL`，后续真实成交/撤单事件继续走 NT 标准事件管道。
-- 对照:字段缺失/true 时 ACK 后 session 仍 active，继续等各自终态或 timeout；传输结果
-  未知、业务拒绝不视为 cancel ACK。
+  清对应 session 并释放 `_execution_active`。cancel ACK 同样只结束 session，不伪造或修改
+  订单状态；后续真实成交/撤单事件继续走 NT 标准事件管道。
+- 对照:submit 字段缺失/true 时继续等 submit 终态或 timeout；cancel 不读取该字段，正常响应
+  一律结束 session，传输结果未知不 ACK。
 - 验收:✅ `test_session.py::test_disabled_timeout_ends_session_on_accepted` /
   `test_disabled_timeout_ack_only_ends_own_execution_client_session` /
   `test_enabled_timeout_keeps_session_active_on_accepted` /
   `test_accepted_keeps_session_active` /
-  `test_disabled_timeout_ends_cancel_session_on_request_ack` /
-  `test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing`。
+  `test_normal_cancel_response_ends_cancel_session`。
 
-### execution-4.2.5a: cancel-only 不继承原订单 enable_timeout
-- 前置:残留原订单 tags 带 `arb:enable_timeout=false`，但 cancel-only 命令未携带该字段。
-- 期望:撤单 session 按缺省语义继续等待真实撤单终态或 watchdog，不因原订单参数在 ACK 后提前结束。
-- 验收:`test_session.py::test_cancel_only_does_not_inherit_original_order_enable_timeout`。
+### execution-4.2.5a: cancel session 不继承原订单 enable_timeout
+- 前置:原订单 tags 的 `enable_timeout` 分别为缺失/false/true。
+- 期望:三种情况下 cancel session 都不读取原订单参数；正常撤单响应 ACK 均立即结束 session。
+- 验收:`test_session.py::test_cancel_session_does_not_inherit_original_order_enable_timeout`。
 
-### execution-4.2.4: cancel session 默认(缺失/enable_timeout=true)成交不收口(#306)
-- 前置:一笔 cancel session 已建立(qty=10,`enable_timeout=true`)。
+### execution-4.2.4: cancel session 不把成交当撤单响应
+- 前置:一笔 cancel session 已建立(qty=10)。
 - 输入:先收到该订单的 `OrderFilled`(即使打满),再收到 `OrderCanceled`。
 - 期望:成交不结束 cancel session(残量语义:只等撤单终态);只有
   `OrderCanceled` / `OrderCancelRejected` / timeout 能结束 cancel session。
-- 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal_when_timeout_enabled`。
-
-### execution-4.2.4b: enable_timeout=false 的 cancel session 任一 venue 回执即收尾(#306)
-- 前置:一笔 cancel session 已建立(qty=10,`enable_timeout=false`)。
-- 输入:撤单等待期间收到任一 client venue 回执 —— 成交 `OrderFilled`(部分 last_qty=4 / 全部 last_qty=10),
-  或非终态非成交的 `OrderAccepted`。
-- 期望:cancel session 立即收尾(`_execution_active` 转 False)。收口是 **ack 语义、不特判事件类型**:
-  到达 client 漏斗的都是 venue 回执(pending/预览态不经此),故任一回执都当 ack。这天然覆盖
-  cancel/match 竞态 —— venue 抑制 `OrderCancelRejected` 时成交是唯一到达的回执,否则空耗 watchdog(nohup 571/572)。
-- 验收:`test_session.py::test_cancel_session_disabled_timeout_ends_on_fill[4/10]`、
-  `test_session.py::test_cancel_session_disabled_timeout_ends_on_any_venue_ack`。
+- 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal`。
 
 ### execution-4.2.4a: cancel_order 同步建 session
 - 前置:stub NT 基类 `cancel_order` 记录下发。
@@ -176,9 +178,11 @@
 
 ### execution-4.2.5: cancel-only 残单撤单进入同一 watchdog / exec_count
 - 前置:strategy 已持有 pair in-flight;同 pair 有两条 residual open order。
-- 输入:cancel-only 发出两条残单撤单请求,撤单 coroutine 先完成,随后两条 `OrderCanceled` 到达。
-- 期望:撤单请求完成不落回 `_execution_active`;每条 cancel terminal 到齐后才落回 False(#261:撤单在飞期间 barrier 不放行新机会)。
-- 验收:`test_session.py::test_base_cancel_only_tracks_residual_until_cancel_terminal` / `test_orbitexch_client.py::test_cancel_residual_tracked_clears_inflight_when_all_done` / `test_cancel_residual_inflight_held_until_last_cancel`。
+- 输入:cancel-only 发出两条残单撤单请求；正常响应由 ACK 收口；测试替身不产生 ACK 时，随后以两条 `OrderCanceled` 收口。
+- 期望:每条 session 分别由正常响应 ACK、cancel terminal 或 watchdog 结束；仍有任一 session 在飞时 `_execution_active` 保持 True。
+- 验收:`test_session.py::test_base_cancel_only_tracks_residual_until_cancel_terminal` /
+  `test_orbitexch_client.py::test_cancel_residual_tracked_keeps_execution_active_until_all_terminal` /
+  `test_cancel_residual_execution_active_held_until_last_cancel`。
 
 ## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)
 

@@ -17,7 +17,7 @@
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
 | `order_intent(order)` | Risk 读取 `arb:intent`,默认 `arbitrage` |
 | `RISK_LEG_DENIED_TOPIC` | `risk.opportunity.leg_denied` topic 常量 |
-| `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels / enable_timeout`;描述一组应同步进入 ExecutionClient 的标准撤单命令；`enable_timeout` 只有 grouped cancel 显式传入时才生效 |
+| `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels`;只描述一组应同步进入 ExecutionClient 的标准撤单命令，不携带 submit tracking 策略 |
 | `cancel_params_from_meta(meta)` / `cancel_meta_from_command(command)` | Strategy 经 `CancelOrder.params["arb_cancel_opportunity"]` 写入、Execution barrier 读取 grouped cancel metadata |
 
 **约束**:

@@ -10,7 +10,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
     优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
-  - enable_timeout=false 时经 opportunity metadata 通知 Execution session 在 ACK 后结束追踪。
+  - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
+    cancel session 收到正常撤单响应即结束，不消费该参数。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -159,7 +160,6 @@ class PlaceBetsAction(Action):
         ctx.scratch["execution_plan"] = ExecutionPlan.cancel_pair(
             ctx.pair_id,
             request.get("reason"),
-            enable_timeout=self._enable_timeout,
         )
         _LOG.info(
             f"PlaceBets[prepare-cancel]: pair={ctx.pair_id} "

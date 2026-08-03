@@ -130,6 +130,12 @@ def _raise_on_retry_failure(retry_manager, operation: str) -> None:
     raise RuntimeError(retry_manager.message or f"{operation} failed without a response")
 
 
+def _is_explicit_submit_rejection(retry_manager) -> bool:
+    """服务器已返回 HTTP 状态码时，提交结果不是传输未知。"""
+    exc = getattr(retry_manager, "last_exception", None)
+    return isinstance(exc, PolyApiException) and exc.status_code is not None
+
+
 def _parse_position_avg_price(position: dict[str, Any]) -> Decimal | None:
     avg_price = position.get("avgPrice", position.get("avg_price"))
     if avg_price in (None, ""):
@@ -938,6 +944,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             f"Cancel request accepted for {client_order_id!r}: "
             f"venue_order_id={venue_order_id}; awaiting WS CANCELLATION",
         )
+
+    def _ack_normal_cancel_response(self, client_order_id, venue_order_id) -> None:
+        """结束 cancel session；订单状态仍由响应解析和 USER WS 分别更新。"""
         ack_cancel_session = getattr(self, "_ack_cancel_session", None)
         if ack_cancel_session is not None:
             ack_cancel_session(client_order_id, venue_order_id)
@@ -1031,15 +1040,20 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 OrderPayload(orderID=venue_order_id.value),
             )
 
-            if not response or not retry_manager.result:
-                reason = retry_manager.message
-            else:
-                not_canceled = response.get("not_canceled") or {}
-                reason = (
-                    not_canceled.get(venue_order_id.value)
-                    if isinstance(not_canceled, dict)
-                    else not_canceled
+            if response is None or not retry_manager.result:
+                self._log.warning(
+                    f"Cancel result unknown for {order.client_order_id!r}: "
+                    f"{retry_manager.message}",
                 )
+                return
+
+            self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
+            not_canceled = response.get("not_canceled") or {}
+            reason = (
+                not_canceled.get(venue_order_id.value)
+                if isinstance(not_canceled, dict)
+                else not_canceled
+            )
 
             if reason:
                 self._generate_cancel_event(
@@ -1070,15 +1084,20 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 OrderPayload(orderID=venue_order_id.value),
             )
 
-            if not response or not retry_manager.result:
-                reason = retry_manager.message
-            else:
-                not_canceled = response.get("not_canceled") or {}
-                reason = (
-                    not_canceled.get(venue_order_id.value)
-                    if isinstance(not_canceled, dict)
-                    else not_canceled
+            if response is None or not retry_manager.result:
+                self._log.warning(
+                    f"Deferred cancel result unknown for {order.client_order_id!r}: "
+                    f"{retry_manager.message}",
                 )
+                return
+
+            self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
+            not_canceled = response.get("not_canceled") or {}
+            reason = (
+                not_canceled.get(venue_order_id.value)
+                if isinstance(not_canceled, dict)
+                else not_canceled
+            )
 
             if reason:
                 self._generate_cancel_event(
@@ -1824,7 +1843,16 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
 
             if not response:
-                self._handle_ambiguous_submit_failure(order, retry_manager.message)
+                if _is_explicit_submit_rejection(retry_manager):
+                    self.generate_order_rejected(
+                        strategy_id=order.strategy_id,
+                        instrument_id=order.instrument_id,
+                        client_order_id=order.client_order_id,
+                        reason=str(retry_manager.last_exception),
+                        ts_event=self._clock.timestamp_ns(),
+                    )
+                else:
+                    self._handle_ambiguous_submit_failure(order, retry_manager.message)
             elif not response.get("success"):
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id,
@@ -2301,6 +2329,28 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 ts_init=self._clock.timestamp_ns(),
                 filled_user_order_id=order_id,
             )
+            if client_order_id is None and report.liquidity_side == LiquiditySide.TAKER:
+                # 手动 taker 单没有 PLACEMENT，NT 收到孤立 FillReport 时找不到 order，
+                # 会拒绝应用。先经标准 report 通路建立 EXTERNAL order，再落真实 fill。
+                self._send_order_status_report(
+                    OrderStatusReport(
+                        account_id=report.account_id,
+                        instrument_id=report.instrument_id,
+                        client_order_id=None,
+                        venue_order_id=report.venue_order_id,
+                        order_side=report.order_side,
+                        order_type=OrderType.LIMIT,
+                        time_in_force=TimeInForce.GTC,
+                        order_status=OrderStatus.ACCEPTED,
+                        price=report.last_px,
+                        quantity=report.last_qty,
+                        filled_qty=Quantity.zero(report.last_qty.precision),
+                        report_id=UUID4(),
+                        ts_accepted=report.ts_event,
+                        ts_last=report.ts_event,
+                        ts_init=self._clock.timestamp_ns(),
+                    ),
+                )
             self._send_fill_report(report)
             self._record_processed_fill(trade_id, venue_order_id)
             self._record_processed_trade(trade_id, msg.status)

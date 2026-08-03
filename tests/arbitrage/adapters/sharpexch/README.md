@@ -151,7 +151,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 ### se-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 
 **输入**:`cancelBets` 返回明确 `success=true`。
-**期望/验收**:adapter 不伪造 `OrderCanceled`，只把 ACK 交给共用 cancel session；
+**期望/验收**:adapter 不伪造 `OrderCanceled`，把正常响应 ACK 交给共用 cancel session并结束追踪；
 订单终态仍由后续 `CURRENT_BETS` 确认。接线由
 `test_cancel_order_uses_instrument_market_id_and_accepts_success` 验收。
 
@@ -183,7 +183,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:NT order 已进入 submit 或 cancel 流程。
 **输入**:`placeBets/cancelBets` 超过统一 5 秒总预算、断线、fetch 异常、空响应、JSON 不可解析或缺目标 market。
 **步骤**:执行 adapter 请求并观察 NT order event。
-**期望/验收**:place 已先发 `OrderSubmitted`，cancel 保持 `PENDING_CANCEL`；均不发明确 reject，等待 NT `QueryOrder`。
+**期望/验收**:place 已先发 `OrderSubmitted`，cancel 不猜测或改写订单状态；均不发明确 reject，等待 NT `QueryOrder`。
 
 ### se-adapter-5.inflight.2:5 秒 I/O timeout 与 QueryOrder 解耦
 **前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。

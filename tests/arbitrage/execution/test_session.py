@@ -445,54 +445,23 @@ def test_canceled_is_terminal():
     assert published == []                               # #108:execution.* 退役
 
 
-def test_cancel_session_ignores_fill_until_cancel_terminal_when_timeout_enabled():
-    # #306:缺失/enable_timeout=true 保持原语义 —— 成交(即使打满)不收口 cancel session,
-    # 只有 OrderCanceled / OrderCancelRejected / timeout 能结束。
+def test_cancel_session_ignores_fill_until_cancel_terminal():
+    # 成交不是撤单响应；订单成交照常上送，但 cancel session 只由撤单 ACK、撤单终态或 timeout 收口。
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     order = _order(factory, pm, qty=10)
 
-    assert client._begin_cancel_session(order, enable_timeout=True) is True
+    assert client._begin_cancel_session(order) is True
     client._send_order_event(TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(10)))
 
-    assert client._execution_active                       # true:成交不收口 cancel session
+    assert client._execution_active
 
     client._send_order_event(TestEventStubs.order_canceled(order))
 
     assert not client._execution_active
 
 
-@pytest.mark.parametrize("last_qty", [4, 10])
-def test_cancel_session_disabled_timeout_ends_on_fill(last_qty):
-    # #306:enable_timeout=false 的 cancel session 语义 = "拿到确定的 venue 回执即释放追踪"。
-    # 成交(不分部分/全部)是确定回执 → 立即结束;cancel/match 竞态下 venue 抑制
-    # OrderCancelRejected 时,成交是唯一能让 session 及时收口的回执,否则空耗 watchdog。
-    client, clock, cache, published, factory = _harness()
-    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    order = _order(factory, pm, qty=10)
-
-    assert client._begin_cancel_session(order, enable_timeout=False) is True
-    client._send_order_event(
-        TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(last_qty)),
-    )
-
-    assert not client._execution_active                   # false:成交回执即收尾,不分部分/全部
-
-
-def test_cancel_session_disabled_timeout_ends_on_any_venue_ack():
-    # #306:收口是 ack 语义、非成交特判 —— 任一到达本漏斗的 venue 回执(此处用非终态、非成交的
-    # OrderAccepted)都让 enable_timeout=false 的 cancel session 结束。
-    client, clock, cache, published, factory = _harness()
-    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
-    order = _order(factory, pm, qty=10)
-
-    assert client._begin_cancel_session(order, enable_timeout=False) is True
-    client._send_order_event(TestEventStubs.order_accepted(order))
-
-    assert not client._execution_active
-
-
-def test_disabled_timeout_ends_cancel_session_on_request_ack(caplog):
+def test_normal_cancel_response_ends_cancel_session(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home")
@@ -511,16 +480,16 @@ def test_disabled_timeout_ends_cancel_session_on_request_ack(caplog):
         ),
     )
 
-    assert client._begin_cancel_session(order, enable_timeout=False) is True
+    assert client._begin_cancel_session(order) is True
     client._ack_cancel_session(order.client_order_id, "V-1")
 
     assert not client._execution_active
-    assert "Execution cancel session accepted" in caplog.text
-    assert "tracking ends on ack" in caplog.text
+    assert "Execution cancel session acknowledged" in caplog.text
+    assert "tracking ends on response" in caplog.text
 
 
-@pytest.mark.parametrize("enable_timeout", [None, True])
-def test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing(enable_timeout):
+@pytest.mark.parametrize("enable_timeout", [None, False, True])
+def test_cancel_session_does_not_inherit_original_order_enable_timeout(enable_timeout):
     client, clock, cache, published, factory = _harness()
     pm = pm_instrument("match_1", "home")
     cache.add_instrument(pm)
@@ -537,35 +506,10 @@ def test_cancel_request_ack_keeps_session_active_when_timeout_enabled_or_missing
         )
     order = _order(factory, pm, tags=tags)
 
-    assert client._begin_cancel_session(order, enable_timeout=enable_timeout) is True
+    assert client._begin_cancel_session(order) is True
     client._ack_cancel_session(order.client_order_id, "V-1")
 
-    assert client._execution_active
-
-
-def test_cancel_only_does_not_inherit_original_order_enable_timeout():
-    client, clock, cache, published, factory = _harness()
-    pm = pm_instrument("match_1", "home")
-    cache.add_instrument(pm)
-    order = _order(
-        factory,
-        pm,
-        tags=tags_from_meta(
-            OpportunityMeta(
-                opportunity_id="opp-1",
-                pair_id="pair-1",
-                leg_key="pm:home:0",
-                expected_legs=("pm:home:0",),
-                enable_timeout=False,
-            ),
-        ),
-    )
-
-    # 残单 cancel-only 没有撤单命令参数，必须按缺省语义等待撤单终态。
-    assert client._begin_cancel_session(order, enable_timeout=None) is True
-    client._ack_cancel_session(order.client_order_id, "V-1")
-
-    assert client._execution_active
+    assert not client._execution_active
 
 
 def test_base_cancel_only_tracks_residual_until_cancel_terminal():

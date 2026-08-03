@@ -423,9 +423,9 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ),
                 timeout=self._order_io_timeout_secs,
             )
-        except Exception as exc:  # noqa: BLE001 — 结果未知,保留 PENDING_CANCEL 给 NT inflight reconcile
+        except Exception as exc:  # noqa: BLE001 — 结果未知,保留原订单状态并等待 NT inflight reconcile
             self._log.warning(
-                "SE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                "SE cancel result unknown; retaining order state for NT inflight reconcile "
                 f"client_order_id={client_order_id}, venue_order_id={voi}: {exc!r}",
             )
             return
@@ -438,7 +438,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         else:
             if result is not None and _se_result_is_transport_unknown(result):
                 self._log.warning(
-                    "SE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                    "SE cancel result unknown; retaining order state for NT inflight reconcile "
                     f"client_order_id={client_order_id}, venue_order_id={voi}: {result.get('message')}",
                 )
                 return

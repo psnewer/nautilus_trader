@@ -478,7 +478,7 @@ class StrategyEvaluator(Strategy):
 
     def _make_pair_order_canceler(self):
         """返同步 callable：重读 pair open orders，并作为同组 NT CancelOrder 送入 barrier。"""
-        def cancel(pair_id: str, *, enable_timeout: bool | None = None) -> int:
+        def cancel(pair_id: str) -> int:
             seen = set()
             orders = []
             for raw_instrument_id in sorted(
@@ -511,7 +511,6 @@ class StrategyEvaluator(Strategy):
                             pair_id=pair_id,
                             cancel_key=cancel_key,
                             expected_cancels=expected,
-                            enable_timeout=enable_timeout,
                         ),
                     ),
                 )

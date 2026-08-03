@@ -163,6 +163,23 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 已卡在飞处理不调用 `_end_session`，不读写 `_active_sessions` / `pair_inflight`
 **验收**:`test_polymarket_client.py` 覆盖 signed hash、submit 歧义、dead→update→alive 顺序、失败保持 dead 与无 session 调用；launcher 测试锁定 `inflight_check_retries=1`。
 
+### pm-adapter-5.1e: PM submit 明确拒绝与传输未知分流
+
+**输入**:同一 signed order 的 POST 分别抛出带 HTTP 状态码的 `PolyApiException`，以及
+`status_code=None` 的网络异常。
+**期望**:前者立即生成 `OrderRejected` 并由标准终态收口 session；后者保持 `SUBMITTED`，
+不伪造拒绝，交给 NT in-flight check。
+**验收**:`test_polymarket_http_submit_rejection_is_not_ambiguous` /
+`test_polymarket_transport_submit_failure_remains_ambiguous`。
+
+### pm-adapter-5.1f: PM 页面手工 taker 成交更新本地 Position
+
+**输入**:USER trade `CONFIRMED` 无本地 `client_order_id`，成交方向为 TAKER。
+**期望**:adapter 先发送同一 venue order 的 `OrderStatusReport(ACCEPTED)` 建立 NT external order，
+再发送真实 `FillReport`；不得让孤立 fill 因缺订单映射被 ExecEngine 丢弃。
+**验收**:`test_polymarket_external_taker_fill_bootstraps_order_before_fill` 锁定 report 顺序、方向、
+数量与成交价。
+
 ### pm-adapter-5.2: 撤单接口
 
 **前置**: 已下一笔挂单
@@ -541,7 +558,9 @@ test_cancel_track_marks_execution_active_before_dispatch` 覆盖；PM 已预建 
 
 ### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 
-**输入**:CLOB cancel 响应的 `canceled[]` 包含目标 `venue_order_id`。
-**期望/验收**:adapter 仍不生成 `OrderCanceled`，只把明确 ACK 交给共用 cancel session；
-`enable_timeout=false` 的收口由 session 测试覆盖。接线由
-`test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` 验收。
+**输入**:CLOB 返回任一正常撤单响应，再分别解析 `canceled[]` / `not_canceled`。
+**期望/验收**:adapter 先把统一 ACK 交给共用 cancel session；reason 文本不参与 session
+收口。`canceled[]` 仍不伪造 `OrderCanceled`，订单状态继续由 USER WS / 响应映射更新。
+接线由 `test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` 和
+`test_polymarket_cancel_order_reject_generates_cancel_rejected_event` 验收；无响应不 ACK、
+不生成拒绝事件由 `test_polymarket_cancel_order_unknown_result_keeps_session_active` 验收。

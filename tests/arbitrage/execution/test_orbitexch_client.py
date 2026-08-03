@@ -477,7 +477,7 @@ def test_cancel_order_passes_market_id_from_current_bets():
     assert captured["canceled_kwargs"]["client_order_id"] == order.client_order_id
 
 
-def test_cancel_order_transport_failure_keeps_pending_cancel():
+def test_cancel_order_transport_failure_keeps_order_state():
     from nautilus_trader.common.factories import OrderFactory
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.identifiers import StrategyId

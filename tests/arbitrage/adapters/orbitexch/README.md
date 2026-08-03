@@ -493,7 +493,7 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **前置**:NT order 已进入 submit 或 cancel 流程。
 **输入**:`placeBets/cancelBets` 超过统一 5 秒总预算、断线、fetch 异常、空响应或缺目标 market。
 **步骤**:执行 adapter 请求并观察 NT order event。
-**期望/验收**:place 已先发 `OrderSubmitted`，cancel 保持 `PENDING_CANCEL`；均不发明确 reject，等待 NT `QueryOrder`。
+**期望/验收**:place 已先发 `OrderSubmitted`，cancel 不猜测或改写订单状态；均不发明确 reject，等待 NT `QueryOrder`。
 
 ### oe-adapter-5.inflight.2:5 秒 I/O timeout 与 QueryOrder 解耦
 **前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
@@ -521,7 +521,7 @@ CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口�
 ### oe-adapter-5.cancel.ack-policy:撤单请求 ACK 接入 session
 
 **输入**:`cancelBets` 返回明确 `success=true`。
-**期望/验收**:adapter 不伪造 `OrderCanceled`，只把 ACK 交给共用 cancel session；
+**期望/验收**:adapter 不伪造 `OrderCanceled`，把正常响应 ACK 交给共用 cancel session并结束追踪；
 订单终态仍由后续 `CURRENT_BETS` 确认。接线由
 `test_cancel_order_passes_market_id_from_current_bets` 验收。
 
