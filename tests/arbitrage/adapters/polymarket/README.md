@@ -157,11 +157,11 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **输入**:一笔 PM `LimitOrder` 的 POST 结果因超时/断线/回执丢失而不明确，订单保持 `SUBMITTED`;超过 NT in-flight threshold 后收到 `QueryOrder`。
 **期望**:
 - POST 前登记 `client_order_id -> order hash`;明确拒绝仍生成 `OrderRejected`，结果不明确不生成本地终态、不提前结束 session
-- `QueryOrder` 入口先把 PM order liveness 置 dead，然后只调用一次 `get_order`
-- 有效 report 先经 `_send_order_status_report` 进入 ExecEngine 通用订单更新，完成后才置 alive
-- 异常、空响应、查不到或解析失败不发送 report，PM 保持 dead；NT 不再次访问 venue
+- `QueryOrder` 只调用一次 `get_order`，不改变 PM order/position liveness
+- 有效 report 经 `_send_order_status_report` 进入 ExecEngine 通用订单更新
+- 异常、空响应、查不到或解析失败不发送 report；NT 不再次访问 venue
 - 已卡在飞处理不调用 `_end_session`，不读写 `_active_sessions` / `pair_inflight`
-**验收**:`test_polymarket_client.py` 覆盖 signed hash、submit 歧义、dead→update→alive 顺序、失败保持 dead 与无 session 调用；launcher 测试锁定 `inflight_check_retries=1`。
+**验收**:`test_polymarket_client.py` 覆盖 signed hash、submit 歧义、成功/失败均不改变 liveness、有效 report 更新与无 session 调用；launcher 测试锁定 `inflight_check_retries=1`。
 
 ### pm-adapter-5.1e: PM submit 明确拒绝与传输未知分流
 

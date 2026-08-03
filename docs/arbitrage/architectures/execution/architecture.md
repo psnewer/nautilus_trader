@@ -501,20 +501,22 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `tracking_timeout_sec`=60 秒的 session 超时,保证 inflight-check 能在 session 结束前生效)后
   只发送一次 `QueryOrder`;若没有有效 report,下一次检查直接由 NT `_resolve_inflight_order()`
   收口,不再次访问 venue。
-- **PM 已卡在飞时序**:`ArbPolymarketExecutionClient._query_order` 收到 `QueryOrder` 即先
-  `mark_order_dead(POLYMARKET)`，再按 POST 前缓存的 order hash 执行一次且仅一次 `get_order`
-  (该路径不使用 PM RetryManager)。失败/空响应/查不到/解析失败均不发 report，order liveness
-  保持 dead；成功则先用 `_send_order_status_report(report)` 进入 NT 通用
-  `ExecEngine.reconcile_execution_report` 更新订单，调用返回后才 `mark_order_alive(POLYMARKET)`。
-  该恢复流程独立于 execution session，不读写 `_active_sessions`、session timer 或
+- **PM 已卡在飞时序**:`ArbPolymarketExecutionClient._query_order` 按 POST 前缓存的 order hash
+  执行一次且仅一次 `get_order`(该路径不使用 PM RetryManager)。失败/空响应/查不到/解析失败
+  不发 report；成功则用 `_send_order_status_report(report)` 进入 NT 通用
+  `ExecEngine.reconcile_execution_report` 更新订单。#311 起 in-flight 查询不再写
+  `VenueExecutionLiveness`，原 dead/alive 调用保留为代码注释；查询结果不改变 venue order/position
+  alive。该恢复流程独立于 execution session，不读写 `_active_sessions`、session timer 或
   `pair_inflight`。
 - **OE/SE 已卡在飞时序**:place/cancel 自身的统一 5 秒 I/O timeout 先保证页锁及时释放(与
   inflight threshold 是两个独立的 5 秒,不是同一个数字);NT 的 inflight threshold(#256 起 30 秒,
   见 (5) 一次性查询语义)独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task,
-  先把对应 venue 的 order/position liveness 都置 dead,再强制 reload execution page 并等待一帧新的完整
+  强制 reload execution page 并等待一帧新的完整
   `CURRENT_BETS`(与常规 WS-stale 触发的 reload **复用同一套** `_ensure_exec_snapshot_fresh`/
   `_reload_exec_page` 成功判定逻辑,只是这里显式传 `force=True`,不等 WS 判定为 stale 才重载);
   不按目标订单字段做猜测或单笔认领,也不会先等待 120 秒 `page_timeout`。
+  #311 起该 QueryOrder reload 同样不写 order/position liveness；成功/失败均保持进入查询前的
+  liveness，真实 WS 帧与启动/周期 reconciliation 继续按各自既有路径更新。
   ⚠️ **修订(#256,2026-07-20)**:reload 成功后**不再**主动构造/推送任何报告(原
   `_push_reports_from_snapshot()` 全量 order+position report 已删除)——reload 只负责让
   `_current_bets` 快照追上真值,状态同步(fill 派生、pending-accept 转 ack、撤单检测)交给

@@ -117,6 +117,15 @@
   external order 并把成交应用到 Position。
 - 验收:✅ `test_polymarket_client.py::test_polymarket_external_taker_fill_bootstraps_order_before_fill`。
 
+### execution-4.1.4c: in-flight QueryOrder 不改变 venue liveness
+- 输入:PM 单次 `get_order` 成功/失败，或 OE/SE 强制 reload 成功/失败。
+- 期望:查询与订单更新行为保持不变；任何分支都不调用 order/position
+  `mark_*_dead/mark_*_alive`。venue liveness 继续由 WS 与启动/周期 reconciliation 更新。
+- 验收:✅ PM `test_arb_inflight_query_updates_order_without_changing_liveness` /
+  `test_arb_inflight_query_failure_does_not_change_liveness_or_session`；OE/SE
+  `test_query_order_forces_reload_without_pushing_reports` /
+  `test_query_order_reload_failure_does_not_change_liveness`。
+
 ### execution-4.1.5: OE submit 异常 → 立刻 rejected + 结束 session(对齐 PM,#105 ①)
 - 前置:`_begin_session` 通过(submit+track),注入会抛异常的 `_place_via_executor`。
 - 输入:`_submit_order` 执行,placement await 抛 `TimeoutError`(Playwright 崩)。

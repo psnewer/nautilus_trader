@@ -900,15 +900,14 @@ def test_pending_accept_same_frame_fill_resolves_via_newly_acked():
 
 
 def test_query_order_forces_reload_without_pushing_reports():
-    """#256:卡在飞仍是 dead → 强制 reload(同 #255 判定逻辑)→ alive,但不再对账
-    (不构造/推送任何报告——状态同步交给 WS 监听在后续自然帧里做)。"""
+    """卡在飞只强制 reload，不推报告，也不改变 venue liveness。"""
     client = _client()
     calls = []
     client._venue_liveness = SimpleNamespace(
-        mark_order_dead=lambda venue: calls.append(("dead", venue)),
-        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
-        mark_order_alive=lambda venue: calls.append(("alive", venue)),
-        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
+        mark_order_dead=lambda venue: pytest.fail(f"unexpected dead: {venue}"),
+        mark_position_dead=lambda venue: pytest.fail(f"unexpected position dead: {venue}"),
+        mark_order_alive=lambda venue: pytest.fail(f"unexpected alive: {venue}"),
+        mark_position_alive=lambda venue: pytest.fail(f"unexpected position alive: {venue}"),
     )
 
     async def fresh(*, force=False):
@@ -919,23 +918,17 @@ def test_query_order_forces_reload_without_pushing_reports():
 
     _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
 
-    assert calls == [
-        ("dead", "SHARPEXCH"),
-        ("position_dead", "SHARPEXCH"),
-        ("fresh", True),
-        ("alive", "SHARPEXCH"),
-        ("position_alive", "SHARPEXCH"),
-    ]
+    assert calls == [("fresh", True)]
     assert not hasattr(client, "_push_reports_from_snapshot")
 
 
-def test_query_order_reload_failure_keeps_order_liveness_dead():
+def test_query_order_reload_failure_does_not_change_liveness():
     client = _client()
     calls = []
     client._venue_liveness = SimpleNamespace(
-        mark_order_dead=lambda venue: calls.append(("dead", venue)),
-        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
-        mark_order_alive=lambda venue: calls.append(("alive", venue)),
+        mark_order_dead=lambda venue: pytest.fail(f"unexpected dead: {venue}"),
+        mark_position_dead=lambda venue: pytest.fail(f"unexpected position dead: {venue}"),
+        mark_order_alive=lambda venue: pytest.fail(f"unexpected alive: {venue}"),
     )
 
     async def stale(*, force=False):
@@ -946,11 +939,7 @@ def test_query_order_reload_failure_keeps_order_liveness_dead():
 
     _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
 
-    assert calls == [
-        ("dead", "SHARPEXCH"),
-        ("position_dead", "SHARPEXCH"),
-        ("fresh", True),
-    ]
+    assert calls == [("fresh", True)]
 
 
 def test_current_bets_normal_frame_skips_report_push():

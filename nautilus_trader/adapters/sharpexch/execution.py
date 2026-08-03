@@ -446,18 +446,19 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
 
     async def _query_order(self, command) -> None:
-        """卡在飞:dead → 强制 reload(复用既有 reload 成功判定,同 #255)→ alive。
+        """卡在飞时强制 reload，复用既有 reload 成功判定(同 #255)。
         #256:不再对账——不主动构造/推送报告,reload 成功后的状态同步交给 WS 监听在
         后续自然帧里做(与常规 WS-stale 场景一致);ack 也已不靠这里兜底(见 `_on_current_bets`
         的 `_pending_accept`)。"""
-        if self._venue_liveness is not None:
-            self._venue_liveness.mark_order_dead(SHARPEXCH)
-            self._venue_liveness.mark_position_dead(SHARPEXCH)
+        # in-flight 查询暂不参与 venue liveness；保留调用位置供以后按需恢复。
+        # if self._venue_liveness is not None:
+        #     self._venue_liveness.mark_order_dead(SHARPEXCH)
+        #     self._venue_liveness.mark_position_dead(SHARPEXCH)
         if not await self._ensure_exec_snapshot_fresh(force=True):
-            return  # reload 失败 / CURRENT_BETS 未重推 → 保持 dead
-        if self._venue_liveness is not None:
-            self._venue_liveness.mark_order_alive(SHARPEXCH)
-            self._venue_liveness.mark_position_alive(SHARPEXCH)
+            return
+        # if self._venue_liveness is not None:
+        #     self._venue_liveness.mark_order_alive(SHARPEXCH)
+        #     self._venue_liveness.mark_position_alive(SHARPEXCH)
 
     async def _run_page_write(self, operation):
         async with self._page_lock:

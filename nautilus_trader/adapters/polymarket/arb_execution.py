@@ -235,7 +235,8 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
 
     async def _query_order(self, command: QueryOrder) -> None:
         """PM 卡在飞只查询一次；订单更新仍走 NT 通用 report 管道。"""
-        self._venue_liveness.mark_order_dead(POLYMARKET)
+        # in-flight 查询暂不参与 venue liveness；保留调用位置供以后按需恢复。
+        # self._venue_liveness.mark_order_dead(POLYMARKET)
         report_command = GenerateOrderStatusReport(
             instrument_id=command.instrument_id,
             client_order_id=command.client_order_id,
@@ -245,12 +246,12 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         )
         report = await self.generate_order_status_report(report_command, retry=False)
         if report is None:
-            self._log.warning("PM in-flight order query returned no valid OrderStatusReport; order remains dead")
+            self._log.warning("PM in-flight order query returned no valid OrderStatusReport")
             return
 
         # MessageBus.send 同步调用 ExecEngine endpoint；返回后订单已走完通用 reconcile。
         self._send_order_status_report(report)
-        self._venue_liveness.mark_order_alive(POLYMARKET)
+        # self._venue_liveness.mark_order_alive(POLYMARKET)
 
     async def _cancel_residual_one(self, order) -> None:
         """#105:撤一条残单 —— 构 `CancelOrder` 走 `_cancel_order`。循环 + exec_count 跟踪由 base

@@ -536,19 +536,11 @@ def test_polymarket_transport_submit_failure_remains_ambiguous():
     assert ambiguous == [(order.client_order_id, str(exc))]
 
 
-def test_arb_inflight_query_updates_order_before_marking_alive():
+def test_arb_inflight_query_updates_order_without_changing_liveness():
     calls = []
-
-    class Liveness:
-        def mark_order_dead(self, venue):
-            calls.append(("dead", venue))
-
-        def mark_order_alive(self, venue):
-            calls.append(("alive", venue))
 
     report = SimpleNamespace()
     client = SimpleNamespace(
-        _venue_liveness=Liveness(),
         _clock=_Clock(),
         _log=_TrackingLog(),
         _send_order_status_report=lambda value: calls.append(("update", value)),
@@ -568,25 +560,15 @@ def test_arb_inflight_query_updates_order_before_marking_alive():
     _run(ArbPolymarketExecutionClient._query_order(client, command))
 
     assert calls == [
-        ("dead", POLYMARKET),
         ("query", False),
         ("update", report),
-        ("alive", POLYMARKET),
     ]
 
 
-def test_arb_inflight_query_failure_stays_dead_without_session_call():
+def test_arb_inflight_query_failure_does_not_change_liveness_or_session():
     calls = []
 
-    class Liveness:
-        def mark_order_dead(self, venue):
-            calls.append(("dead", venue))
-
-        def mark_order_alive(self, venue):
-            pytest.fail(f"must remain dead: {venue}")
-
     client = SimpleNamespace(
-        _venue_liveness=Liveness(),
         _clock=_Clock(),
         _log=_TrackingLog(),
     )
@@ -604,7 +586,7 @@ def test_arb_inflight_query_failure_stays_dead_without_session_call():
 
     _run(ArbPolymarketExecutionClient._query_order(client, command))
 
-    assert calls == [("dead", POLYMARKET), ("query", False)]
+    assert calls == [("query", False)]
 
 
 def test_polymarket_single_report_without_retry_calls_http_once():

@@ -499,7 +499,7 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
 **输入**:ExecEngine 发出一次 `QueryOrder`。
 **步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder。
-**期望/验收(#256 起,保留 QueryOrder 定制,只删对账推送)**:ack 已改为 CURRENT_BETS 驱动(见 oe-adapter-1.3bis),NT inflight-check 命中概率显著降低。`_query_order` 强制 reload 没有改——仍是 OE 定制 override,dead → `_ensure_exec_snapshot_fresh(force=True)`(复用与常规 WS-stale 场景相同的 reload 判定逻辑)→ alive;删的只是 reload 成功后原本会调的 `_push_reports_from_snapshot()`(全量 order+position report 推送),现在直接置 alive,状态同步交给 reload 之后 WS 监听自然收到的下一帧。用例:`test_query_order_forces_reload_without_pushing_reports`、`test_query_order_reload_failure_keeps_order_liveness_dead`。
+**期望/验收(#256/#311)**:ack 已改为 CURRENT_BETS 驱动(见 oe-adapter-1.3bis)。`_query_order` 仍强制 `_ensure_exec_snapshot_fresh(force=True)`，不恢复已删除的 `_push_reports_from_snapshot()`；#311 起成功/失败均不改变 order/position liveness，状态同步交给 WS 与启动/周期 reconciliation。用例:`test_query_order_forces_reload_without_pushing_reports`、`test_query_order_reload_failure_does_not_change_liveness`。
 
 ### oe-adapter-1.3bis:ack 来自 CURRENT_BETS,不再是 place 回执(#256)
 **前置**:`_submit_order` 收到 executor 成功结果。
