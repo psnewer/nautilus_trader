@@ -177,9 +177,12 @@ runtime 流程。
 - PM `/positions + /closed-positions` 的 `realizedPnl` 是对账权威值，已包含 SELL 与历史
   merge；merge 成功时不另写 condition 调整、不伪造 Fill。
 - Portfolio 经 PairRegistry 聚合 pair 下全部 instrument 的 NT realized 与账本基线差。
-- 账本按 account 维护单调 `revision`；它参与 execution §4.6 的 position report batch 快照，
-  只服务应用前乐观并发校验，不改变
-  offset/PnL 计算语义。
+- `replace_instrument_snapshot(only_instruments=...)`(#318):支持**per-instrument 选择性更新** —— 只更新
+  通过 per-pair reconcile 校验的 instrument 的 offset,其余保留(offset 公式 `external-native` 不变)。
+  `only_instruments=None` 仍是整账户全量替换(旧语义)。
+- ⚠️ **#318**:账户级单调 `revision` 曾参与 execution §4.6 的 position batch 快照(realized_revision),
+  该用途**已删** —— reconcile 快照收窄为 per-pair、realized staleness 由 position 摘要的 realized_pnl 覆盖。
+  `revision()` 方法保留但当前无消费者。
 
 账本不保存 position/share/liability，也不接管 FillReport。其详细生产语义见 execution §4.6，
 消费公式见 risk §4.1。

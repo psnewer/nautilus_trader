@@ -102,18 +102,23 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 self._log.error(f"Failed to generate order status reports: {batch}")
                 continue
             self._mark_reconciliation_liveness(client, "order", alive=True)
-            if not self._reconciliation_batch_is_current(client, batch):
-                self._log.warning(
-                    f"Discarding stale order reports before reconciliation: client={client.id}",
-                )
-                protected_order_ids.update(
-                    order.client_order_id
-                    for order in self._cache.orders(account_id=client.account_id)
-                    if order.is_open or order.is_inflight
-                )
-                continue
-            self._apply_reconciliation_batch(client, "order", batch)
-            reports.extend(batch)
+            # #318:逐 pair(报告与本地 open/inflight 单并入同一 scope)判 order_digest。通过的 pair 纳入
+            # reports;stale 的 pair 只把该 pair 的本地 open/inflight 单塞进 venue_reported_ids 保护
+            # (挡 NT missing_at_venue 误 reject venue 上仍存活的合法单;空批也能凭本地单判 stale)。
+            snapshot = getattr(batch, "snapshot", None)
+            local_orders = [
+                order
+                for order in self._cache.orders(account_id=client.account_id)
+                if order.is_open or order.is_inflight
+            ]
+            for instrument_ids, scoped_reports, scoped_local in self._collect_scopes(batch, local_orders):
+                if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
+                    self._log.warning(
+                        f"Discarding stale order reports before reconciliation: client={client.id}",
+                    )
+                    protected_order_ids.update(order.client_order_id for order in scoped_local)
+                    continue
+                reports.extend(scoped_reports)
         venue_reported_ids = {
             report.client_order_id
             for report in reports
@@ -152,35 +157,47 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 )
                 continue
             self._mark_reconciliation_liveness(client, "position", alive=True)
-            if not self._reconciliation_batch_is_current(client, batch):
-                failed_venues.add(client.venue)
-                self._log.warning(
-                    f"Discarding stale position reports before reconciliation: client={client.id}",
-                )
-                continue
-            self._apply_reconciliation_batch(client, "position", batch)
+            # #318:逐 pair(报告与本地 position 并入同一 scope)判 position_digest(含 realized_pnl)。
+            # 通过的 pair 纳入 venue_positions 并选择性更新其 offset;有 stale pair → venue 记 failed
+            # (保守:跳过该 venue 的 cached-position flatten,免误平未验证的 stale pair;空批凭本地仓判)。
             snapshot = getattr(batch, "snapshot", None)
-            if snapshot is not None:
-                snapshot = ReconciliationStateSnapshot.capture(client, include_positions=True)
-                self._arb_position_reconciliation_snapshots[client.venue] = snapshot
-                for report in batch:
-                    attach_reconciliation_snapshot(report, snapshot)
-            for report in batch:
+            local_positions = list(
+                self._cache.positions(venue=client.venue, account_id=client.account_id) or (),
+            )
+            passed_reports = []
+            passed_instruments = set()
+            any_stale = False
+            for instrument_ids, scoped_reports, _scoped_local in self._collect_scopes(batch, local_positions):
+                if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
+                    any_stale = True
+                    self._log.warning(
+                        f"Discarding stale position reports before reconciliation: client={client.id}",
+                    )
+                    continue
+                passed_reports.extend(scoped_reports)
+                passed_instruments.update(str(report.instrument_id) for report in scoped_reports)
+            if any_stale:
+                failed_venues.add(client.venue)
+            # realized offset:只对通过校验的 instrument 选择性更新(offset 公式不变),与 position 同批做。
+            self._apply_reconciliation_batch(client, "position", batch, passed_instruments)
+            if snapshot is not None and passed_reports:
+                fresh = ReconciliationStateSnapshot.capture(client, kind="position")
+                self._arb_position_reconciliation_snapshots[client.venue] = fresh
+                for report in passed_reports:
+                    attach_reconciliation_snapshot(report, fresh)
+            for report in passed_reports:
                 venue_positions[report.instrument_id] = report
         return venue_positions, failed_venues
 
     def _reconcile_execution_mass_status(self, mass_status):
+        # #318:启动 mass-status 同样 per-pair —— report 已由 `_guard_reconciliation_reports` 附上 snapshot,
+        # super 逐 report 走 `_reconciliation_report_is_current`(按 pair 判),stale pair 的 report 被拦、
+        # 通过的照常应用。offset 用预检出的通过 instrument 选择性更新。
         client = self._clients.get(mass_status.client_id)
         batches = getattr(mass_status, "_arb_reconciliation_batches", {})
         for kind, batch in batches.items():
-            if not self._reconciliation_batch_is_current(client, batch):
-                self._log.warning(
-                    "Discarding stale execution mass status before reconciliation: "
-                    f"client={mass_status.client_id}, kind={kind}",
-                )
-                return False
-        for kind, batch in batches.items():
-            self._apply_reconciliation_batch(client, kind, batch)
+            _passed, passed_instruments = self._partition_batch_by_pair(client, batch)
+            self._apply_reconciliation_batch(client, kind, batch, passed_instruments)
         return super()._reconcile_execution_mass_status(mass_status)
 
     def _mark_reconciliation_liveness(self, client, kind: str, *, alive: bool) -> None:
@@ -216,7 +233,11 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             (item for item in self._clients.values() if item.account_id == report.account_id),
             None,
         )
-        if client is not None and snapshot.is_current(client):
+        # #318:按该 report 所属 pair 判(pair 未知则退化为单 instrument),不再账户全量。
+        if client is not None and snapshot.is_current_for_instruments(
+            client,
+            self._instruments_to_check_for(report.instrument_id),
+        ):
             return True
         self._log.warning(
             "Discarding stale execution report before reconciliation: "
@@ -225,15 +246,54 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         return False
 
     @staticmethod
-    def _reconciliation_batch_is_current(client, batch) -> bool:
-        snapshot = getattr(batch, "snapshot", None)
-        return snapshot is None or snapshot.is_current(client)
-
-    @staticmethod
-    def _apply_reconciliation_batch(client, kind: str, batch) -> None:
+    def _apply_reconciliation_batch(client, kind: str, batch, applied_instruments=None) -> None:
         apply_batch = getattr(client, "apply_reconciliation_batch", None)
         if apply_batch is not None:
-            apply_batch(kind, batch)
+            apply_batch(kind, batch, applied_instruments)
+
+    # ── #318 per-pair reconcile 辅助 ──────────────────────────────────────
+    def _scope_of(self, instrument_id):
+        """该 instrument 的 staleness 判定 scope:(scope_key, instrument_ids)。
+
+        pair 已知 → 该 pair 全部腿(整 pair 一致才算 current);pair 未知 → 仅自身。
+        """
+        registry = self._pair_registry
+        if registry is not None:
+            pair_id = registry.get(instrument_id)
+            if pair_id is not None:
+                ids = registry.instrument_ids_for_pair(pair_id)
+                if ids:
+                    return ("pair", pair_id), set(ids)
+        return ("iid", str(instrument_id)), {str(instrument_id)}
+
+    def _instruments_to_check_for(self, instrument_id) -> set:
+        return self._scope_of(instrument_id)[1]
+
+    def _collect_scopes(self, reports, locals_):
+        """把 reports 与本地对象(order/position)按 scope 归组。
+
+        返回 [(instrument_ids, [reports], [locals])];reports 与 locals 各按 `instrument_id` 归入其 pair scope。
+        """
+        scopes: dict = {}
+        for report in reports:
+            key, ids = self._scope_of(report.instrument_id)
+            scopes.setdefault(key, [ids, [], []])[1].append(report)
+        for obj in locals_ or ():
+            key, ids = self._scope_of(obj.instrument_id)
+            scopes.setdefault(key, [ids, [], []])[2].append(obj)
+        return [(ids, grp_reports, grp_local) for ids, grp_reports, grp_local in scopes.values()]
+
+    def _partition_batch_by_pair(self, client, batch):
+        """仅 report 驱动的 per-pair 通过判定(mass-status 用):返回 (通过的 reports, 通过的 instrument 集合)。"""
+        snapshot = getattr(batch, "snapshot", None)
+        passed_reports = []
+        passed_instruments = set()
+        for instrument_ids, scoped_reports, _ in self._collect_scopes(batch, ()):
+            if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
+                continue
+            passed_reports.extend(scoped_reports)
+            passed_instruments.update(str(report.instrument_id) for report in scoped_reports)
+        return passed_reports, passed_instruments
 
     def _execute_command(self, command) -> None:
         if isinstance(command, CancelOrder):

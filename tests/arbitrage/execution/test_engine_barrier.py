@@ -594,7 +594,7 @@ def test_stale_order_report_batch_is_discarded_at_engine_boundary(monkeypatch):
     command = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",))
     command.order.apply(TestEventStubs.order_submitted(command.order, ctx.client.account_id))
     ctx.cache.add_order(command.order)
-    snapshot = SimpleNamespace(is_current=lambda client: False)
+    snapshot = SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: False)
 
     async def fake_query(_command):
         return GuardedReports([], snapshot=snapshot)
@@ -611,8 +611,8 @@ def test_stale_order_report_batch_is_discarded_at_engine_boundary(monkeypatch):
 
 def test_stale_position_report_batch_is_failed_at_engine_boundary(monkeypatch):
     ctx = _Ctx()
-    snapshot = SimpleNamespace(is_current=lambda client: False)
-    report = SimpleNamespace(account_id=ctx.client.account_id)
+    snapshot = SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: False)
+    report = SimpleNamespace(account_id=ctx.client.account_id, instrument_id=ctx.instrument.id)
 
     async def fake_query(_command):
         return GuardedReports([report], snapshot=snapshot)
@@ -665,9 +665,11 @@ def test_periodic_position_query_exception_marks_only_position_dead():
     assert not ctx.liveness.position_alive(ctx.client.venue)
 
 
-def test_stale_mass_status_is_discarded_at_engine_boundary(monkeypatch):
+def test_mass_status_delegates_to_super_with_per_pair_guard(monkeypatch):
+    """#318:启动 mass-status 不再整体 abort;逐 report 的 per-pair 判定交给 super 里的
+    `_reconciliation_report_is_current`。super 被 mock,验证委托发生(不 all-or-nothing)。"""
     ctx = _Ctx()
-    snapshot = SimpleNamespace(is_current=lambda client: False)
+    snapshot = SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: False)
     parent_calls = []
 
     def fake_reconcile(_engine, _mass_status):
@@ -683,20 +685,20 @@ def test_stale_mass_status_is_discarded_at_engine_boundary(monkeypatch):
     )
     result = ctx.engine._reconcile_execution_mass_status(mass_status)
 
-    assert result is False
-    assert parent_calls == []
+    assert result is True
+    assert parent_calls == [True]
 
 
 def test_valid_position_report_batch_commits_deferred_payload():
     ctx = _Ctx()
-    snapshot = SimpleNamespace(is_current=lambda client: True)
+    snapshot = SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: True)
     applied = []
 
     async def fake_query(_command):
         return GuardedReports([], snapshot=snapshot, payload={"instrument": 1.25})
 
     ctx.client.generate_position_status_reports = fake_query
-    ctx.client.apply_reconciliation_batch = lambda kind, batch: applied.append(
+    ctx.client.apply_reconciliation_batch = lambda kind, batch, applied_instruments: applied.append(
         (kind, batch.payload),
     )
     venue_positions, failed_venues = ctx.loop.run_until_complete(
@@ -708,23 +710,24 @@ def test_valid_position_report_batch_commits_deferred_payload():
     assert applied == [("position", {"instrument": 1.25})]
 
 
-def test_deferred_realized_commit_refreshes_position_application_snapshot():
+def test_valid_position_batch_selective_offset_and_fresh_snapshot():
+    """#318:position 批通过后 realized offset 按通过的 instrument 选择性 commit,且给通过的 report
+    附上重新捕获的 fresh 真快照(供 NT 逐 report 应用前 per-pair 校验)。"""
     ctx = _Ctx()
     ledger = RealizedPnlLedger()
     ctx.client._realized_pnl_ledger = ledger
     report = SimpleNamespace(instrument_id=ctx.instrument.id)
-
-    before = ReconciliationStateSnapshot.capture(ctx.client, include_positions=True)
+    snapshot = SimpleNamespace(
+        is_current_for_instruments=lambda client, instrument_ids: True,
+        kind="position",
+    )
+    applied = []
 
     async def fake_query(_command):
-        return GuardedReports([report], snapshot=before, payload={"instrument": 1.25})
+        return GuardedReports([report], snapshot=snapshot, payload={"instrument": 1.25})
 
-    def apply_batch(kind, batch):
-        ledger.replace_instrument_snapshot(
-            ctx.client.account_id,
-            external_realized={"instrument": 1.25},
-            native_realized={},
-        )
+    def apply_batch(kind, batch, applied_instruments):
+        applied.append((kind, set(applied_instruments)))
 
     ctx.client.generate_position_status_reports = fake_query
     ctx.client.apply_reconciliation_batch = apply_batch
@@ -735,8 +738,9 @@ def test_deferred_realized_commit_refreshes_position_application_snapshot():
 
     assert venue_positions == {ctx.instrument.id: report}
     assert failed_venues == set()
-    assert not before.is_current(ctx.client)
-    assert report._arb_reconciliation_snapshot.is_current(ctx.client)
+    assert applied == [("position", {str(ctx.instrument.id)})]
+    assert isinstance(report._arb_reconciliation_snapshot, ReconciliationStateSnapshot)
+    assert report._arb_reconciliation_snapshot.kind == "position"
 
 
 def test_stale_single_order_report_is_discarded_at_apply_boundary(monkeypatch):
@@ -751,7 +755,8 @@ def test_stale_single_order_report_is_discarded_at_apply_boundary(monkeypatch):
     report = SimpleNamespace(
         id="report-1",
         account_id=ctx.client.account_id,
-        _arb_reconciliation_snapshot=SimpleNamespace(is_current=lambda client: False),
+        instrument_id=ctx.instrument.id,
+        _arb_reconciliation_snapshot=SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: False),
     )
 
     assert ctx.engine._reconcile_order_report(report, []) is False
@@ -767,7 +772,7 @@ def test_flat_position_report_inherits_empty_batch_snapshot(monkeypatch):
         return True
 
     monkeypatch.setattr(LiveExecutionEngine, "_reconcile_position_report", fake_reconcile)
-    snapshot = SimpleNamespace(is_current=lambda client: False)
+    snapshot = SimpleNamespace(is_current_for_instruments=lambda client, instrument_ids: False)
     ctx.engine._arb_position_reconciliation_snapshots[ctx.instrument.id.venue] = snapshot
 
     report = ctx.engine._create_flat_position_report(

@@ -114,23 +114,15 @@ def _stable_reconciliation_state(client, state=None):
     state = state or {"version": 0}
 
     class _Snapshot:
-        def __init__(self, include_positions):
-            ledger = getattr(client, "_realized_pnl_ledger", None)
-            self.value = (
-                state["version"],
-                ledger.revision("POLYMARKET-001") if include_positions and ledger else None,
-            )
+        def __init__(self, kind):
+            self.kind = kind
+            self.value = state["version"]
 
-        def is_current(self, _client):
-            ledger = getattr(client, "_realized_pnl_ledger", None)
-            return self.value == (
-                state["version"],
-                ledger.revision("POLYMARKET-001") if self.value[1] is not None and ledger else None,
-            )
+        def is_current_for_instruments(self, _client, _instrument_ids):
+            # #318:per-instrument 判定;此 fake 用 version 模拟 stale,忽略具体 instrument。
+            return self.value == state["version"]
 
-    client._capture_reconciliation_state_snapshot = (
-        lambda *, include_positions: _Snapshot(include_positions)
-    )
+    client._capture_reconciliation_state_snapshot = lambda *, kind: _Snapshot(kind)
     return state
 
 
@@ -1316,9 +1308,9 @@ def test_arb_generate_position_reports_settles_without_writing_liveness(monkeypa
         assert [report.name for report in reports] == ["report"]
         assert not client._venue_liveness.position_alive(POLYMARKET)
         assert client._settlement_inflight is False
-        assert reports.snapshot.is_current(client)
+        assert reports.snapshot.is_current_for_instruments(client, [])
         state["version"] += 1
-        assert not reports.snapshot.is_current(client)
+        assert not reports.snapshot.is_current_for_instruments(client, [])
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
 
@@ -1452,7 +1444,7 @@ def test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch(
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
         assert client._venue_liveness.position_alive(POLYMARKET)
-        assert not reports.snapshot.is_current(client)
+        assert not reports.snapshot.is_current_for_instruments(client, [])
         assert settlement_calls
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
@@ -1503,7 +1495,8 @@ def test_position_reconcile_defers_realized_when_state_changes_during_closed_fet
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
         assert client._venue_liveness.position_alive(POLYMARKET)
-        assert not reports.snapshot.is_current(client)
+        # #318:realized_revision 已删 —— 快照不再侦测 fetch 期间的 ledger bump(其职责改由 position_digest
+        # 覆盖 cache realized_pnl);realized payload 照常加载,offset 由 engine 侧选择性 commit。
         assert reports.payload == {instrument_id: 9.0}
         assert ledger.instrument_adjustment(
             instrument_id,
@@ -1540,7 +1533,7 @@ def test_position_reconcile_returns_stale_guard_when_state_changes_during_balanc
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
         assert client._venue_liveness.position_alive(POLYMARKET)
-        assert not reports.snapshot.is_current(client)
+        assert not reports.snapshot.is_current_for_instruments(client, [])
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
     _run(scenario())
@@ -1794,7 +1787,7 @@ def test_arb_generate_order_reports_returns_stale_guard_when_local_state_changes
         reports = await client.generate_order_status_reports(SimpleNamespace())
 
         assert client._venue_liveness.order_alive(POLYMARKET)
-        assert not reports.snapshot.is_current(client)
+        assert not reports.snapshot.is_current_for_instruments(client, [])
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
     _run(scenario())
@@ -1811,10 +1804,10 @@ def test_arb_generate_order_reports_remembers_engine_boundary_state(monkeypatch)
 
         reports = await client.generate_order_status_reports(SimpleNamespace())
         assert [report.name for report in reports] == ["report"]
-        assert reports.snapshot.is_current(client)
+        assert reports.snapshot.is_current_for_instruments(client, [])
 
         state["version"] += 1
-        assert not reports.snapshot.is_current(client)
+        assert not reports.snapshot.is_current_for_instruments(client, [])
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
     _run(scenario())

@@ -936,7 +936,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def generate_order_status_reports(self, command) -> list:
         """reconcile:缓存的 CURRENT_BETS 快照(`_on_current_bets` 维护)→ `OrderStatusReport` 列表。
         仅为能反查到 NT order 的 bet 构建。"""
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:快照不可信 → 抛,不返空。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
             # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
@@ -957,7 +957,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def generate_order_status_report(self, command):
         """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。"""
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             raise RuntimeError(
@@ -987,7 +987,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         (BACK=long/LAY=short,net=ΣBACK−ΣLAY,avg_px=主方向成交量加权)。matched=0 / 净 0 跳过;
         instrument 经 market_id+selection_id 反查,反查不到跳过。
         **注**:NT Portfolio 平时由 order fills 自行派生持仓;本 report 仅供 reconcile 对账用。"""
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="position")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             raise RuntimeError(

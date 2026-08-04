@@ -279,14 +279,16 @@
 - 期望:返回 `[]`,且**不触达上游**(不抛)。position 对账由 `_reconcile_position_report_netting` 凭 `/positions` 权威净仓 NET 合成,不需要真 fill;PM live 成交仍由 USER WS trade 累加,不受影响。
 - 验收:`test_polymarket_client.py::test_arb_generate_fill_reports_returns_empty_without_trades_api`。
 
-### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308)
-- 前置:PM/OE/SE report 请求发出前记录本账户 order/position 摘要；position batch 同时覆盖
-  reconciled realized ledger revision。
-- 输入:远端请求等待或多 venue gather 期间，WS Fill 或其他标准事件改变任一 order/position/realized。
-- 期望:adapter 返回携带旧摘要的 `GuardedReports`；ExecutionEngine 在查询正常返回时先标记 alive，再于应用前
-  识别失效并跳过，不提交 PM deferred realized 候选，也不改变 liveness。
-- 引擎边界:过期 order batch 不参与 reconcile 且保留当前 cache open/inflight ids；过期 position
-  batch 按 failed venue 跳过；过期 mass-status 整批失败；过期单份 QueryOrder report 跳过。
+### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
+- 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
+  (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);
+  **无 realized_revision**。
+- 输入:远端请求等待或多 venue gather 期间，WS Fill 或其他标准事件改变某 pair 的 order/position/realized。
+- 期望:adapter 返回携带分格摘要的 `GuardedReports`(摘要附到每份 report);ExecutionEngine 查询正常返回时先标记 alive,
+  再**逐 pair**在应用前识别失效并只丢该 pair,不改变 liveness。
+- 引擎边界(**per-pair**):stale pair 的 order 不参与 reconcile 且其本地 open/inflight ids 视为已报告(空批凭本地单判);
+  stale pair 的 position 令该 venue 进 failed_venues;mass-status 不再整批 abort、交 super 逐 report per-pair 过滤;
+  单份 QueryOrder report 按其 pair 复核。realized offset 只对通过的 instrument 选择性 commit。
 - 正交性:远端查询成功由启动/周期 reconciliation 上层标记对应 order/position alive；摘要过期只影响 report 应用，
   不把 venue 改回 dead。有效 position batch 在应用前提交 deferred payload，空 report batch 也不例外。
 - 最终入口:连续 report 在 `_reconcile_order_report/_reconcile_position_report` 再校验；空 position

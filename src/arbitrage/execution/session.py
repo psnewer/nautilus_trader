@@ -50,10 +50,10 @@ def cancel_session_started(command) -> bool:
 
 class ArbExecutionSessionMixin:
 
-    def _capture_reconciliation_state_snapshot(self, *, include_positions: bool):
+    def _capture_reconciliation_state_snapshot(self, *, kind: str):
         from src.arbitrage.execution.reconciliation import ReconciliationStateSnapshot
 
-        return ReconciliationStateSnapshot.capture(self, include_positions=include_positions)
+        return ReconciliationStateSnapshot.capture(self, kind=kind)
 
     async def generate_mass_status(self, lookback_mins=None):
         """保留 NT mass-status 生成流程，并把 guarded report 批次随 mass report 下传。"""
@@ -87,16 +87,21 @@ class ArbExecutionSessionMixin:
         from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 
         batch = GuardedReports(reports, snapshot=snapshot, payload=payload)
+        # #318:总把 snapshot 附到每份 report —— 周期路径与启动 mass-status 都靠 per-report
+        # `_reconciliation_report_is_current` 做 per-pair 判定(periodic position 会被 engine 用 fresh 快照覆盖)。
+        for report in batch:
+            attach_reconciliation_snapshot(report, snapshot)
         batches = getattr(self, "_arb_mass_report_batches", None)
         if batches is not None:
             batches[kind] = batch
-        else:
-            for report in batch:
-                attach_reconciliation_snapshot(report, snapshot)
         return batch
 
-    def apply_reconciliation_batch(self, kind: str, batch) -> None:
-        """报告通过应用边界校验后的 venue hook；默认无 deferred 状态。"""
+    def apply_reconciliation_batch(self, kind: str, batch, applied_instruments=None) -> None:
+        """报告通过应用边界校验后的 venue hook；默认无 deferred 状态。
+
+        #318:`applied_instruments`=本次通过 per-pair 校验、允许应用的 instrument 字符串集合
+        (None=全部);PM 用它把 realized offset 限定为选择性更新。
+        """
         return None
 
     # ── 宿主在 __init__ 末尾调用 ───────────────────────────────────────

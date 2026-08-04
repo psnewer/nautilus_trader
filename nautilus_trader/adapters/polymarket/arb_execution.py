@@ -297,7 +297,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 )
 
     async def generate_order_status_reports(self, command):
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         try:
             reports = await super().generate_order_status_reports(command)
         except Exception as e:
@@ -312,7 +312,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command, *, retry: bool = True):
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         if not retry:
             try:
                 report = await super().generate_order_status_report(command, retry=False)
@@ -333,7 +333,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         return attach_reconciliation_snapshot(report, snapshot)
 
     async def generate_position_status_reports(self, command):
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="position")
         try:
             reports = await super().generate_position_status_reports(command)  # 单次拉 /positions,上游 stash raw
         except Exception as e:
@@ -378,9 +378,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             payload=realized_snapshot,
         )
 
-    def apply_reconciliation_batch(self, kind: str, batch) -> None:
+    def apply_reconciliation_batch(self, kind: str, batch, applied_instruments=None) -> None:
         if kind == "position":
-            self._commit_realized_pnl_snapshot(batch.payload)
+            self._commit_realized_pnl_snapshot(batch.payload, applied_instruments)
 
     async def _load_realized_pnl_snapshot(
         self,
@@ -398,22 +398,26 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
 
         return _realized_by_instrument([*current_positions, *closed_positions])
 
-    def _commit_realized_pnl_snapshot(self, external: dict[str, float] | None) -> None:
+    def _commit_realized_pnl_snapshot(self, external: dict[str, float] | None, applied_instruments=None) -> None:
         ledger = getattr(self, "_realized_pnl_ledger", None)
         if ledger is None or external is None:
             return
+        # #318:per-pair 选择性 —— 只更新通过校验的 instrument 的 offset;native 需覆盖 external 与被选集合。
+        only = None if applied_instruments is None else {str(i) for i in applied_instruments}
+        instruments = set(external) if only is None else (set(external) | only)
         native = {
             instrument_id: _native_realized_for_instrument(
                 self._cache,
                 instrument_id,
                 self.account_id,
             )
-            for instrument_id in external
+            for instrument_id in instruments
         }
         ledger.replace_instrument_snapshot(
             self.account_id,
             external_realized=external,
             native_realized=native,
+            only_instruments=only,
         )
 
     async def _fetch_closed_positions(self, *, limit: int = 50) -> list[dict]:

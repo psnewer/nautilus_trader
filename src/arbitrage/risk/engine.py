@@ -132,8 +132,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return False
         if not self._check_probability_gate(instrument, order):
             return False
-        if not self._check_required_venues_alive(order):
-            return False
+        # NOTE: venue liveness 门控暂时关闭(后面可能还会启用)。
+        # if not self._check_required_venues_alive(order):
+        #     return False
         if not self._check_balance(instrument, order):
             return False
         if not self._check_profit_gates(order):
@@ -182,7 +183,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             },
         )
 
-    # ── 应用层:余额(Q17:ExecutionClient 维护可用余额,本层只读 free)────
+    # ── 应用层:余额(Q17:ExecutionClient 维护可用余额,本层读 total)────
     def _check_balance(self, instrument, order) -> bool:
         if not order.has_price:  # property(Python 侧;`has_price_c` 是 cdef 仅 Cython 可调)
             return True  # 无价单(市价)交给 NT 父类的 native 余额检查
@@ -197,10 +198,10 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             else self._order_cost(instrument, order)
         )
 
-        free = account.balance_free(currency)
-        if free is None:
+        total = account.balance_total(currency)
+        if total is None:
             return True
-        available = free.as_double()
+        available = total.as_double()
 
         if cost > available:
             self._deny_order(

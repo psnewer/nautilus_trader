@@ -853,7 +853,7 @@ def test_generate_position_status_reports_aggregates():
 
     reports = _run(c.generate_position_status_reports(SimpleNamespace()))
     assert len(reports) == 1
-    assert reports.snapshot.is_current(c)
+    assert reports.snapshot.is_current_for_instruments(c, [])
     r = reports[0]
     assert r.position_side == PositionSide.LONG
     assert float(r.quantity) == pytest.approx(15.0)
@@ -1211,8 +1211,8 @@ def test_reconcile_reports_stale_snapshot_reload_success_stays_alive():
 
     assert order_reports == []
     assert position_reports == []
-    assert order_reports.snapshot.is_current(c)
-    assert position_reports.snapshot.is_current(c)
+    assert order_reports.snapshot.is_current_for_instruments(c, [])
+    assert position_reports.snapshot.is_current_for_instruments(c, [])
 
     assert c._page.reload_count == 2
     assert c._venue_liveness.order_alive("ORBITEXCH")

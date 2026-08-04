@@ -716,7 +716,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
 
     async def generate_order_status_reports(self, command) -> list:
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:快照不可信 → 抛,不返空(与 OE 对称)。返 [] 会被 NT 读成「查询成功、venue 无挂单」——
             # `live/execution_engine.py:875-881` 只把**异常**计入 `failed_venues`,返空使
@@ -735,7 +735,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command):
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             raise RuntimeError(
@@ -756,7 +756,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         return None
 
     async def generate_position_status_reports(self, command) -> list:
-        snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
+        snapshot = self._capture_reconciliation_state_snapshot(kind="position")
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
             raise RuntimeError(

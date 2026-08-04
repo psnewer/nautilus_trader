@@ -22,17 +22,33 @@ class RealizedPnlLedger:
         *,
         external_realized: dict[str, float],
         native_realized: dict[str, float],
+        only_instruments=None,
     ) -> None:
-        """用一次完整 reconcile 快照替换该账户的基线。"""
-        account = str(account_id)
-        stale = [key for key in self._instrument_offsets if key[0] == account]
-        for key in stale:
-            del self._instrument_offsets[key]
+        """更新该账户的 realized offset 基线。
 
-        for instrument_id, external_value in external_realized.items():
-            offset = float(external_value) - float(native_realized.get(instrument_id, 0.0))
+        `only_instruments=None`:整账户全量替换(旧语义,删该账户全部 offset 再按 external 重建)。
+        `only_instruments`(#318):**per-instrument 选择性更新** —— 只更新给定 instrument 的 offset
+        (通过 per-pair 校验的那些),其余 instrument 的 offset **原样保留**。offset 公式不变:
+        `external(fetch) - native(now)`。
+        """
+        account = str(account_id)
+        if only_instruments is None:
+            stale = [key for key in self._instrument_offsets if key[0] == account]
+            for key in stale:
+                del self._instrument_offsets[key]
+            targets = [str(instrument_id) for instrument_id in external_realized]
+        else:
+            targets = [str(instrument_id) for instrument_id in only_instruments]
+
+        for instrument_id in targets:
+            offset = float(external_realized.get(instrument_id, 0.0)) - float(
+                native_realized.get(instrument_id, 0.0),
+            )
+            key = (account, instrument_id)
             if abs(offset) > 1e-12:
-                self._instrument_offsets[(account, str(instrument_id))] = offset
+                self._instrument_offsets[key] = offset
+            else:
+                self._instrument_offsets.pop(key, None)
         self._account_revisions[account] = self._account_revisions.get(account, 0) + 1
 
     def revision(self, account_id) -> int:
