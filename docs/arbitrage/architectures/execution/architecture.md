@@ -127,7 +127,7 @@ adapter 先发送同一 `venue_order_id` 的 `OrderStatusReport(ACCEPTED)`，由
 LIMIT/GTC 只是缺少原始页面委托类型时的订单身份载体，不替代成交经济事实。外部 maker 单仍
 依赖其正常 `PLACEMENT`/order report，不扩大该 fallback。
 
-**PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并关闭环境代理继承(`trust_env=False`;#276 起无论 `proxy_url` 显式与否——未配置=直连,政策见 configuration.md「网络代理路由」)。共享 client 的 `HTTPTransport(retries=1)` 只对 `ConnectError` / `ConnectTimeout` 重试一次,覆盖 CLOB report GET 与 submit/cancel 的连接建立阶段;不重试 HTTP 状态、读写超时或业务拒绝。它不同于 `PolymarketExecClientConfig.max_retries` 的上层共享 RetryManagerPool,后者仍默认关闭。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"(#275/#276 实锤过一次:arb_factories 漏传 `proxy_url` 即此症状)。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
+**PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并关闭环境代理继承(`trust_env=False`;#276 起无论 `proxy_url` 显式与否——未配置=直连,政策见 configuration.md「网络代理路由」)。共享 client 的 connect/TLS timeout 为 15s，已建立连接后的 read/write/pool timeout 保持 5s；`HTTPTransport(retries=1)` 只对 `ConnectError` / `ConnectTimeout` 重试一次,覆盖 CLOB report GET 与 submit/cancel 的连接建立阶段;不重试 HTTP 状态、读写超时或业务拒绝。它不同于 `PolymarketExecClientConfig.max_retries` 的上层共享 RetryManagerPool,后者仍默认关闭。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"(#275/#276 实锤过一次:arb_factories 漏传 `proxy_url` 即此症状)。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
 
 WS 接线约束:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,内部按 USER channel 拼接 `user`;项目 dispatcher 兼容旧 `.../ws/market` / `.../ws/user` 配置并统一归一化。否则 ExecClient user WS 会误连 `.../ws/marketuser`。
 
@@ -139,9 +139,8 @@ class ArbPolymarketExecutionClient(PolymarketExecutionClient):
     def __init__(...):
         self._settlement = PolymarketSettlement(contract_service, ...)   # §4.6
         self._venue_liveness = VenueExecutionLiveness                    # 由 ArbContext 注入
-    async def generate_order_status_reports(...): ...     # super + mark_order_alive/dead
-    async def generate_position_status_reports(...): ...  # super + mark_position_alive/dead
-    async def _run_health_check(...): ...                 # PM positions fetcher + settlement + position_alive
+    async def generate_order_status_reports(...): ...     # super + guarded reports；liveness 由上层写
+    async def generate_position_status_reports(...): ...  # super + settlement + guarded reports
 ```
 
 ### 3.2 OE ExecutionClient(`adapters/orbitexch/execution.py` 自写)
@@ -442,13 +441,13 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   - OE close 锚(**✅ 已落地 2026-06-18**):ExecutionClient 注册 `OrbitExchWebSocketHandler.on_disconnect`;只消费 `close:orders`(general WS,`BALANCE`/`CURRENT_BETS` 来源)与未来可能的 `liveness_timeout`,把 `_last_frame_ns` 清零/置 stale。**不消费 execution 页 `close:prices`**(execution 真值不来自该 prices WS)。该事件只影响 freshness,不直接 reload、不直接写 `VenueExecutionLiveness`;下一次 NT reports/reconciliation 才走 `_ensure_exec_snapshot_fresh()`。
 - **OE 不能主动心跳**(只读观察口、不能注入 ping)所以走这套被动 silence 触发;**PM 的 NT Rust `WebSocketClient` 自带 WS 层心跳/重连**保数据新鲜,但**venue 死活仍以 reconcile(REST 拉)成败为准**(两层:WS 重连保流、reconcile 成败定死活)。
 
-**(5) VenueExecutionLiveness 写入不变量(2026-06-15 迁移修正,安全关键)**:`venue_order_alive=true ⟺ 拿到过 venue 真实 order response`;`venue_position_alive=true ⟺ 拿到过 venue 真实 position response`。
-
-**(5) VenueExecutionLiveness 写入不变量(已落地,2026-06-15)**:
+**(5) VenueExecutionLiveness 写入不变量(2026-08-04 修订,安全关键)**:
 - `venue_order_alive=true` 只表示该 venue 的订单真相可信,即拿到真实 order/open-order response。
 - `venue_position_alive=true` 只表示该 venue 的持仓真相可信,即拿到真实 position response。
-- OE/SE 当前 `CURRENT_BETS` 是完整 order/position 快照。`_on_current_bets` 先生成撤单/已知订单成交事件，再把全部 `OrderStatusReport` 与按 selection 聚合的 `PositionStatusReport` 依次送入 `ExecEngine.reconcile_execution_report`；两类报告都已发送后才推进 `_last_current_bets_ns` 并同时标记 `order_alive` / `position_alive`。`generate_order_status_report(s)` 和 `generate_position_status_reports` 先确认 `_ensure_exec_snapshot_fresh()` 成功且至少完整处理过一帧 CURRENT_BETS，成功返回才分别标记对应维度，否则标记对应维度 dead。
-- PM 子类包裹上游 `generate_order_status_report(s)` / `generate_position_status_reports`:成功标 alive;**失败标 dead 后 `raise`(#259 回归 NT 原生;单条 `generate_order_status_report` 仍 `return None`)**。
+- PM/OE/SE 的 `generate_order_status_report(s)` / `generate_position_status_reports` 只负责远端查询、翻译并返回，查询失败继续抛异常；这些 adapter 方法本身不写 liveness。单条 QueryOrder 属于 in-flight 恢复路径，成功、空结果或异常均不改变 venue liveness(#311)。
+- **启动与周期 reconciliation 是 report 查询 liveness 的唯一上层裁决者**：查询协程正常返回即标记对应维度 alive，包括 `[]` 和单条查询的 `None`；查询抛异常即标记对应维度 dead。标记发生在远端查询返回后、本地摘要校验与 report 应用之前。因此 report 后续因本地状态变化而被丢弃，仍表示 venue 查询可达，不得改回 dead。
+- 启动 `generate_mass_status()` 由 `ArbExecutionSessionMixin` 记录实际成功返回的 order/position 批次并逐维裁决：已返回的维度标 alive，缺失的维度标 dead。即使 NT 因另一维异常把聚合结果吞成 `None`，已成功查询的维度也不会被误伤。
+- OE/SE 的常规 `CURRENT_BETS` 是完整 order/position 快照，仍可在完整业务帧处理后实时同时标记两维 alive；reload 静默帧由发起该查询的上层 reconciliation 判定。该实时路径与启动/周期查询路径并存，但都不依赖 report 的本地应用是否成功。
   ⚠️ 2026-07-22(#259)修订 #122:NT 判定「venue 查询失败」的唯一通道是 client 抛异常(`live/execution_engine.py:875-881`
   `isinstance(reports_or_exception, Exception)` → `failed_venues`,配合 `asyncio.gather(..., return_exceptions=True)`)。
   返 `[]` 会被 NT 读成「查询成功、venue 无持仓/无挂单」→ `_did_position_status_query_fail` 恒 False →
@@ -456,8 +455,9 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `generate_missing_orders=True` → **合成 SELL 抹平真实持仓的账面记录**。`mark_*_dead` 只写我们自己的
   `VenueExecutionLiveness`,NT 看不见,不能替代异常;返 `None` 亦不可(非 Exception 进不了 `failed_venues`,
   且 `for report in None` 直接 TypeError)。上游 `polymarket/execution.py` 四个 report 方法本就无 `except`。
-  **三个方法统一** `mark_dead + raise`(含单数);但**「查询失败」(抛)与「venue 查无此单」(仍返 `None`,
-  NT 契约合法值)是两回事**,后者路径未改。**启动卡死同批解决**:`src/arbitrage/bootstrap.py` 的
+  **三个方法统一**失败时 `raise`(含单数);但**「查询失败」(抛)与「venue 查无此单」(仍返 `None`,
+  NT 契约合法值)是两回事**,后者路径未改。liveness 写入已上移到启动/周期 reconciliation，避免
+  in-flight 单笔 QueryOrder 间接修改全 venue 状态。**启动卡死同批解决**:`src/arbitrage/bootstrap.py` 的
   `ArbNautilusKernel` 覆盖 `_await_execution_reconciliation`,仍调 `super()` 保留上游判定与日志,失败时补
   warning 后恒返 True,经 `install_arbitrage_engines()` 装为 `_node.NautilusKernel`(必须替 `live.node`
   的绑定)。放行安全性:失败 venue 已 dead → `_check_required_venues_alive` 拒**整个机会**;
@@ -480,7 +480,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 - ② **连续对账不再走脆弱 fill-attach**:此前拉到真 fill 却指向历史母单(母单未 cache)→ `FillReport received before OrderStatusReport` → 挂不上 → NT core `_process_venue_reported_positions`(无 NET 兜底)卡死。返 `[]` 后不再进该路径。
 - **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg` → `generate_order_filled`)累加,与 `generate_fill_reports`(仅供 reconcile / 从 fill 反建未知订单)无关。
 - **代价**:重启一刻不再从 trades 反建"未知 venue 订单"的逐笔记录;净仓由 position 报表 NET 覆盖,open 单 `filled_qty` 由 order 报表带出(与 OE/SE 一致)。
-- **与 (4)/(5) 的关系**:本改动使 "query 成功 ⟹ cache 已对齐" 成立,故 (5) 里 `mark_position_alive` 挂在 position 查询成功之后**名副其实**(不再有"查询成功但 cache 未对齐"的空窗)。因此**不再单独引入** liveness-outcome 二次判定闸。
+- **与 (4)/(5) 的关系**:远端 position query 正常返回即可证明 position 查询通道可达；上层 reconciliation 随即标 alive。本地 cache 是否因并发摘要失效而应用该批 report 是另一件事，不再引入 liveness-outcome 二次判定闸。
 
 **(5c) OE fx 边界(已落地,2026-06-30)**:
 - adapter 外部统一 USD 口径:Strategy 生成的 OE `qty`、Risk 余额/利润门控、Portfolio outcome 指标、NT order/fill/report quantity 都按 USD stake 解释。
@@ -641,9 +641,9 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   adapter 返回 `GuardedReports(list)`，把拉取前摘要作为 report batch 的一部分；连续对账中的
   每份 report 与单份 QueryOrder report 也附同一摘要。startup 的 `ExecutionMassStatus` 同时携带
   order/position 两个 batch，并在进入同步 mass reconcile 前统一校验，不对内部 report 重复校验。
-  **adapter 不做并发判定**：远端拉取成功仍按原语义标记 order/position alive；网络失败仍按原
-  语义 mark dead + raise。PM `/closed-positions` 只生成 deferred realized 候选，随 position batch
-  下传，不在 adapter 中提交。
+  **adapter 不做并发或 liveness 判定**：远端拉取成功正常返回，网络失败继续 raise；启动/周期
+  reconciliation 上层据此标记 order/position alive/dead。PM `/closed-positions` 只生成 deferred
+  realized 候选，随 position batch 下传，不在 adapter 中提交。
 
   `ArbLiveExecutionEngine` 仅在真正应用前校验 batch：过期 order batch 被移除，并把当前 cache
   open/inflight ids 视为已报告，避免陈旧空响应被解释成 venue 缺单；过期 position batch 被移除
@@ -659,8 +659,9 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   PM batch 返回前，因此其等待期间发生的 order/position/realized 变化仍会使 batch 在应用前失效。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **路由约束(#276)**:结算 Relayer SDK(`py_builder_relayer_client`,requests)经 `configure_relayer_http_transport(polymarket_proxy_url)` 换显式路由 Session(`trust_env=False`),`PolymarketContractService.initialize` 内配置;与 PM 其余出口同路由,未配置=直连。
-- **liveness**:最终要返回的 position reports 拉成功 → `mark_position_alive`;第一次或 merge
-  后第二次 REST 拉取失败/超时 → `mark_position_dead` 后 **`raise`**(#259)。position reports
+- **liveness**:最终要返回的 position reports 拉成功 → 正常返回；第一次或 merge
+  后第二次 REST 拉取失败/超时 → **`raise`**(#259)。启动/周期 reconciliation 上层分别据此
+  `mark_position_alive/dead`。position reports
   成功但随后余额刷新失败时，只 warning，不改变 position liveness、不丢弃 reports。
 - **结算 await + single-flight(#283)**:position report 协程必须等待 settlement 返回，才能判断
   是否需要第二次 `/positions`；不再 `create_task` fire-and-forget。链上同步 SDK 调用仍必须在
@@ -679,7 +680,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 - **链上 target 与 ABI(2026-07-16 修正)**:标准二元调用 `CtfCollateralAdapter(0xAdA100...)`,negRisk 调 `NegRiskCtfCollateralAdapter(0xadA200...)`。后者继承前者的外部 `mergePositions(address,bytes32,bytes32,uint256[],uint256)` / `redeemPositions(address,bytes32,bytes32,uint256[])` ABI，因此两类 target 使用相同 calldata 结构与 pUSD `0xC011...DFB` 参数，只切换 target。negRisk collateral adapter 在 `redeemPositions` 内自行读取调用者当前 YES/NO ERC-1155 余额，再调用旧 NegRiskAdapter；不得对 collateral adapter 使用旧 `redeemPositions(bytes32,uint256[])` ABI。adapter 授权(`CTF.setApprovalForAll(adapter,true)`)不在本轮自动处理,未授权时链上 tx 会 revert,可由页面授权。
 - **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size))，
   不直接改变 `VenueExecutionLiveness`。但只要尝试过 merge，就必须重拉 positions；
-  第二次 positions 查询失败按正常 position reconcile 失败处理并 `mark_position_dead`。
+  第二次 positions 查询失败按正常 position reconcile 失败向上抛，由上层 `mark_position_dead`。
 - **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态由每轮成功的 PM position reconciliation 调 `_update_account_state()` 刷新。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不在 settlement 完成后立即 `_update_account_state`,由下一轮 position reconciliation 覆盖。
 - merge 尝试后第二次 `/positions` 与随后 `/closed-positions` 在同轮分别刷新仓位和
   realized PnL。settlement 不发 synthetic fill、不直接改 NT Position cache 或 realized 账本。

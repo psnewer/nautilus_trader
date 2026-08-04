@@ -1044,7 +1044,7 @@ def test_reload_current_bets_wait_budget_uses_page_timeout():
     assert client._reload_bets_wait_ns == 4_321_000_000
 
 
-def test_reconcile_without_current_bets_marks_liveness_dead():
+def test_reconcile_without_current_bets_does_not_write_liveness():
     liveness = VenueExecutionLiveness()
     client = _client(liveness=liveness)
     liveness.mark_order_alive("SHARPEXCH")
@@ -1060,5 +1060,5 @@ def test_reconcile_without_current_bets_marks_liveness_dead():
     with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
         _run(client.generate_position_status_reports(SimpleNamespace()))
 
-    assert liveness.order_alive("SHARPEXCH") is False
-    assert liveness.position_alive("SHARPEXCH") is False
+    assert liveness.order_alive("SHARPEXCH") is True
+    assert liveness.position_alive("SHARPEXCH") is True

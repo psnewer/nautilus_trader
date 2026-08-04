@@ -1,8 +1,8 @@
 """VenueExecutionLiveness —— execution reconcile / stuck-flight 的 venue 存活真值。
 
 该状态只表达“执行端能否可信对账”,不表达是否有持仓、是否有挂单,也不在每次下单前翻 false。
-Risk 在提交前读取它做 fail-closed 门控;执行客户端在明确拿到 order / position response
-后分别标记 alive,在明确失败时标记 dead。
+Risk 在提交前读取它做 fail-closed 门控;启动/周期 reconciliation 在远端 order / position
+查询正常返回后分别标记 alive,在查询抛异常时标记 dead。report 的本地应用结果不参与判定。
 """
 
 from __future__ import annotations

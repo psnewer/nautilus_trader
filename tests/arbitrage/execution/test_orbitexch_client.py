@@ -1165,7 +1165,7 @@ def test_cancel_io_timeout_releases_page_lock_and_keeps_pending():
     assert not c._page_lock.locked()
 
 
-def test_reconcile_reports_without_current_bets_marks_oe_liveness_dead():
+def test_reconcile_reports_without_current_bets_does_not_write_oe_liveness():
     c = _client()
     c._venue_liveness.mark_order_alive("ORBITEXCH")
     c._venue_liveness.mark_position_alive("ORBITEXCH")
@@ -1179,12 +1179,12 @@ def test_reconcile_reports_without_current_bets_marks_oe_liveness_dead():
     with pytest.raises(RuntimeError, match="exec snapshot not fresh"):
         _run(c.generate_position_status_reports(SimpleNamespace()))
 
-    assert not c._venue_liveness.order_alive("ORBITEXCH")
-    assert not c._venue_liveness.position_alive("ORBITEXCH")
-    assert not c._venue_liveness.venue_alive("ORBITEXCH")
+    assert c._venue_liveness.order_alive("ORBITEXCH")
+    assert c._venue_liveness.position_alive("ORBITEXCH")
+    assert c._venue_liveness.venue_alive("ORBITEXCH")
 
 
-def test_reconcile_reports_stale_snapshot_reload_failure_marks_dead():
+def test_reconcile_reports_stale_snapshot_reload_failure_does_not_write_liveness():
     c = _client()
     c._on_current_bets([])                            # 历史快照曾经存在
     c._reload_bets_wait_ns = 50_000_000
@@ -1196,9 +1196,9 @@ def test_reconcile_reports_stale_snapshot_reload_failure_marks_dead():
         _run(c.generate_position_status_reports(SimpleNamespace()))
 
     assert c._page.reload_count == 2                  # order / position 各探一次,均失败
-    assert not c._venue_liveness.order_alive("ORBITEXCH")
-    assert not c._venue_liveness.position_alive("ORBITEXCH")
-    assert not c._venue_liveness.venue_alive("ORBITEXCH")
+    assert c._venue_liveness.order_alive("ORBITEXCH")
+    assert c._venue_liveness.position_alive("ORBITEXCH")
+    assert c._venue_liveness.venue_alive("ORBITEXCH")
 
 
 def test_reconcile_reports_stale_snapshot_reload_success_stays_alive():

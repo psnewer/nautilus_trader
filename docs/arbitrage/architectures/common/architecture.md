@@ -56,7 +56,7 @@ leaves_qty / price`。它不持有 NT `Order` 引用；Cache 返回顺序和对�
 **约束**:
 - 未知 venue 默认 `false`,启动后 fail-closed。
 - 不存第三份 `venue_alive`;它始终由 order/position 两位派生。
-- registry 不在每次 submit 前翻 false。只有执行端明确进入 stuck/reconcile 失败等“真相不可信”路径时写 dead。
+- registry 不在每次 submit 前翻 false。启动/周期 reconciliation 的远端查询正常返回即写 alive、抛异常即写 dead；本地 report 应用成败不参与判定。单笔 in-flight QueryOrder 不写 liveness。OE/SE 常规完整 `CURRENT_BETS` 帧可实时标活。
 - key 统一为 venue 大写字符串;可传 `Venue` 对象或字符串。
 
 ## 3. PairRegistry(已落地,#34 / #116 / #127 slice A 补充)

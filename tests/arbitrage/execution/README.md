@@ -253,19 +253,19 @@
 - 前置:PM 或 OE ExecutionClient 注入共享 `VenueExecutionLiveness`;该 venue `order_alive=false`。
 - 输入:order/open-order reconcile 成功,拿到完整真实 response。
 - 期望:`venue_order_alive[venue]=true`;不写 `venue_position_alive`。
-- 验收:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive`;PM report 包装路径由 execution 文档约束,后续 live/reconcile 测继续补强。
+- 验收:`test_engine_barrier.py::test_stale_order_report_batch_is_discarded_at_engine_boundary` 证明远端查询成功后即使本地批次 stale 也标活；OE 实时帧另由 `test_on_current_bets_marks_oe_liveness_alive` 覆盖。
 
 ### execution-4.5.2: position reconcile 成功置 position_alive
 - 前置:该 venue `position_alive=false`。
 - 输入:position reconcile 成功,拿到完整真实 response。
 - 期望:`venue_position_alive[venue]=true`;不写 `venue_order_alive`。
-- 验收:`test_venue_liveness.py::test_venue_alive_requires_order_and_position_alive`。
+- 验收:`test_engine_barrier.py::test_stale_position_report_batch_is_failed_at_engine_boundary` 与 `test_venue_liveness.py::test_venue_alive_requires_order_and_position_alive`。
 
 ### execution-4.5.3: reconcile 失败 fail-closed
 - 前置:venue 当前 alive。
 - 输入:order reconcile 超时/失败或未拿到完整 order response。
 - 期望:`venue_order_alive[venue]=false`;position 失败同理只置 `venue_position_alive=false`。
-- 验收:WS 静默只触发探测;真正置 false 的依据是 reconcile 失败。
+- 验收:`test_engine_barrier.py::test_periodic_order_query_exception_marks_only_order_dead` / `test_periodic_position_query_exception_marks_only_position_dead`；启动 mass-status 整体失败与部分失败分别见 `test_session.py::test_generate_mass_status_none_marks_both_dimensions_dead` / `test_generate_mass_status_partial_failure_marks_each_dimension_independently`。
 
 ### execution-4.5.4: 普通 submit 不主动置 false
 - 前置:venue order/position 均 alive。
@@ -283,11 +283,11 @@
 - 前置:PM/OE/SE report 请求发出前记录本账户 order/position 摘要；position batch 同时覆盖
   reconciled realized ledger revision。
 - 输入:远端请求等待或多 venue gather 期间，WS Fill 或其他标准事件改变任一 order/position/realized。
-- 期望:adapter 拉取成功照常标记 alive，并返回携带旧摘要的 `GuardedReports`；ExecEngine 应用前
+- 期望:adapter 返回携带旧摘要的 `GuardedReports`；ExecutionEngine 在查询正常返回时先标记 alive，再于应用前
   识别失效并跳过，不提交 PM deferred realized 候选，也不改变 liveness。
 - 引擎边界:过期 order batch 不参与 reconcile 且保留当前 cache open/inflight ids；过期 position
   batch 按 failed venue 跳过；过期 mass-status 整批失败；过期单份 QueryOrder report 跳过。
-- 正交性:远端查询成功仍由 adapter 标记对应 order/position alive；摘要过期只影响 report 应用，
+- 正交性:远端查询成功由启动/周期 reconciliation 上层标记对应 order/position alive；摘要过期只影响 report 应用，
   不把 venue 改回 dead。有效 position batch 在应用前提交 deferred payload，空 report batch 也不例外。
 - 最终入口:连续 report 在 `_reconcile_order_report/_reconcile_position_report` 再校验；空 position
   batch 派生的 flat report 继承 venue 摘要；deferred realized 提交后重取应用阶段摘要，不能因自身

@@ -1281,8 +1281,8 @@ def test_polymarket_external_taker_fill_bootstraps_order_before_fill():
     assert order_report.price == fill_report.last_px
 
 
-def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(monkeypatch):
-    """没有 merge 尝试时，首次仓位快照可直接进入 NT 并恢复 liveness。"""
+def test_arb_generate_position_reports_settles_without_writing_liveness(monkeypatch):
+    """适配器只生成仓位批次，liveness 由调用它的 reconciliation 管理。"""
     position_calls = []
     settlement_calls = []
     balance_calls = []
@@ -1314,7 +1314,7 @@ def test_arb_generate_position_reports_settles_before_marking_snapshot_alive(mon
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
         assert [report.name for report in reports] == ["report"]
-        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not client._venue_liveness.position_alive(POLYMARKET)
         assert client._settlement_inflight is False
         assert reports.snapshot.is_current(client)
         state["version"] += 1
@@ -1389,7 +1389,7 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
         assert [report.name for report in reports] == ["post-report"]
-        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not client._venue_liveness.position_alive(POLYMARKET)
         assert responses == []
         assert calls == ["positions", "merge", "positions", "closed", "balance"]
 
@@ -1419,7 +1419,7 @@ def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_rec
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
         assert [report.name for report in reports] == ["report"]
-        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert not client._venue_liveness.position_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
 
@@ -1648,7 +1648,7 @@ def test_position_reconcile_sets_external_minus_native_realized_baseline():
     _run(scenario())
 
 
-def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
+def test_arb_generate_position_reports_failure_does_not_write_liveness(monkeypatch):
     async def fake_super(self, command):
         raise RuntimeError("positions unavailable")
 
@@ -1658,13 +1658,13 @@ def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
         _stable_reconciliation_state(client)
 
         client._venue_liveness.mark_position_alive(POLYMARKET)
-        # #259(修订 #122):失败 mark_dead + **重新抛出**。NT 判"venue 查询失败"只认异常
+        # #259(修订 #122):失败 **重新抛出**。NT 判"venue 查询失败"只认异常
         # (`live/execution_engine.py:876` → `failed_venues`);返 [] 会被读成"查询成功、无持仓",
         # 使 `_did_position_status_query_fail` 跳过保护失效,连续对账合成成交抹掉真实持仓账面。
         with pytest.raises(RuntimeError, match="positions unavailable"):
             await client.generate_position_status_reports(SimpleNamespace())
 
-        assert not client._venue_liveness.position_alive(POLYMARKET)
+        assert client._venue_liveness.position_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
 
@@ -1738,7 +1738,7 @@ def test_polymarket_report_methods_restore_retry_manager_failure(method, command
     _run(scenario())
 
 
-def test_arb_generate_order_reports_failure_marks_dead(monkeypatch):
+def test_arb_generate_order_reports_failure_does_not_write_liveness(monkeypatch):
     async def fake_super(self, command):
         raise RuntimeError("transport unavailable")
 
@@ -1751,14 +1751,14 @@ def test_arb_generate_order_reports_failure_marks_dead(monkeypatch):
         with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_reports(SimpleNamespace())
 
-        assert not client._venue_liveness.order_alive(POLYMARKET)
+        assert client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
 
     _run(scenario())
 
 
-def test_arb_generate_single_order_report_failure_marks_dead(monkeypatch):
+def test_arb_generate_single_order_report_failure_does_not_write_liveness(monkeypatch):
     async def fake_super(self, command, *, retry=True):
         raise RuntimeError("transport unavailable")
 
@@ -1771,7 +1771,7 @@ def test_arb_generate_single_order_report_failure_marks_dead(monkeypatch):
         with pytest.raises(RuntimeError, match="transport unavailable"):
             await client.generate_order_status_report(SimpleNamespace())
 
-        assert not client._venue_liveness.order_alive(POLYMARKET)
+        assert client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
 
@@ -1874,7 +1874,11 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
         "trust_env": False,
         "retries": 1,
     }]
-    assert clients == [{"transport": transports[0], "trust_env": False}]
+    assert clients == [{
+        "transport": transports[0],
+        "trust_env": False,
+        "timeout": pm_transport.httpx.Timeout(5.0, connect=15.0),
+    }]
     assert old_client.closed
 
 
@@ -1907,7 +1911,11 @@ def test_polymarket_transport_direct_when_unconfigured(monkeypatch):
         "trust_env": False,
         "retries": 1,
     }]
-    assert clients == [{"transport": transports[0], "trust_env": False}]
+    assert clients == [{
+        "transport": transports[0],
+        "trust_env": False,
+        "timeout": pm_transport.httpx.Timeout(5.0, connect=15.0),
+    }]
 
 
 def test_relayer_transport_explicit_proxy_or_direct(monkeypatch):

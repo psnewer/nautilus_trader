@@ -235,6 +235,9 @@ def wire_arbitrage_runtime(
 
     exec_engine = getattr(node.kernel, "exec_engine", None)
     if isinstance(exec_engine, ArbLiveExecutionEngine):
-        exec_engine.configure_arb(pair_registry=pair_registry)   # #261:barrier 不再持有 pair 闸
+        exec_engine.configure_arb(
+            pair_registry=pair_registry,
+            venue_liveness=venue_liveness,
+        )  # #261:barrier 不再持有 pair 闸
 
     return venue_liveness

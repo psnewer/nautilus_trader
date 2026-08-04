@@ -81,7 +81,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: 当前网络访问 PM CLOB WS 需要 HTTP(S) proxy;进程 env 中存在 `POLYMARKET_PROXY_URL` 或 `https_proxy` / `http_proxy`
 **输入**: `load_arb_config` + `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
-**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env。#98 起同一个 `proxy_url` 也必须配置到 `py_clob_client_v2` CLOB REST transport,显式代理存在时关闭环境代理继承,确保 WS/REST 同路由;transport 固定 `retries=1`,只覆盖 `ConnectError` / `ConnectTimeout`。#111 起 PM ExecClient 内部 Data API async `HttpClient`(`/positions`)也必须传同一个 `proxy_url`,避免周期 position 对账直连。
+**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env。#98 起同一个 `proxy_url` 也必须配置到 `py_clob_client_v2` CLOB REST transport,显式代理存在时关闭环境代理继承,确保 WS/REST 同路由;transport 固定 `retries=1`,只覆盖 `ConnectError` / `ConnectTimeout`；共享 client 的 connect/TLS timeout 为 15s，read/write/pool timeout 保持 5s。#111 起 PM ExecClient 内部 Data API async `HttpClient`(`/positions`)也必须传同一个 `proxy_url`,避免周期 position 对账直连。
 **验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`、`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_factory_configures_v2_http_proxy`、`test_polymarket_data_api_http_client_uses_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`,PM CLOB REST 与 Data API `/positions` 也走同一配置路由。
 
 ### pm-adapter-2.3c: PM proxy 钱包 signature_type 透传
@@ -213,21 +213,21 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - PM order/open-order reconcile 成功并拿到完整真实 response → `pm_order_alive=true`
 - PM position reconcile 成功并拿到完整真实 response → `pm_position_alive=true`
 - 任一路径失败/超时/response 不完整 → 对应 alive 置 false,另一维不被误改
-- **PM report 查询失败 = adapter 恢复异常 → Arb 标 dead 后继续抛**（#259）:默认 `max_retries=None`
+- **PM report 查询失败 = adapter 恢复异常并继续抛**（#259）:默认 `max_retries=None`
   等价不重复请求，但 `RetryManager.run()` 仍会把第一次 `PolyApiException` 转成 `None`。Base
   `PolymarketExecutionClient` 的 order-list、single-order、fill 三个 report 方法各自在 manager
   释放前检查 `result`，失败恢复 `last_exception`；真实请求成功但结果为空才允许返回 `[]`/`None`。
-  Arb 子类不再替换共享 retry pool，只负责 order liveness。
+  Arb 子类不再替换共享 retry pool，也不直接写 liveness；启动/周期 reconciliation 上层按返回或异常裁决。
 - PM `generate_fill_reports` 扫用户历史 trades 时,遇到当前未加载/未匹配的 instrument 属于目标市场外历史成交,应 DEBUG 跳过、不刷 WARN、不影响 liveness;open-order report 的未知 instrument 仍保留 WARNING。
 - `venues.polymarket.max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 只做显式透传,默认 None（等价 `max_retries=0`）,避免无意改变真钱 submit/cancel 语义;若显式开启,需知道上游同一 retry pool 也覆盖 PM submit/cancel/report。
 **验收**:
 - PM `venue_alive` 只由 `pm_order_alive && pm_position_alive` 派生,不存第三份状态。
-- 不再调用旧 leg 状态;PM liveness 只由 report/position health check 成功路径写入。
+- 不再调用旧 leg 状态;PM liveness 只由启动/周期 reconciliation 的查询结果写入。
 - Risk 在 PM-only 或 PM+OE opportunity 中读到 PM 任一维 false 时 fail-closed deny。
 - launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 PM order reports;若前一轮 retry failure 置 `pm_order_alive=false`,后续真实拿到 open-order response(即使真实空 `[]`)会恢复 `pm_order_alive=true`。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_fill_history_unknown_instrument_is_debug_noise` 覆盖历史 fill 中未知 instrument 只打 DEBUG 并跳过。
 - `tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_retry_params` / `test_polymarket_exec_client_config_retry_params_default_none` 覆盖 PM retry 参数显式透传与默认不变。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_report_methods_restore_retry_manager_failure` 覆盖三个 base report 入口恢复异常；`test_arb_generate_order_reports_failure_marks_dead` / `test_arb_generate_single_order_report_failure_marks_dead` 覆盖 Arb liveness 包装。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_report_methods_restore_retry_manager_failure` 覆盖三个 base report 入口恢复异常；`test_arb_generate_order_reports_failure_does_not_write_liveness` / `test_arb_generate_single_order_report_failure_does_not_write_liveness` 锁定 adapter 不越权写 liveness，上层裁决见 execution README 4.5.1~4.5.3。
 
 ### pm-adapter-5.account.1: 余额刷新触发(Q17)
 
@@ -241,7 +241,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - position reports 成功但余额刷新失败时,只 warning;reports 原样返回,`pm_position_alive` 保持 true。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_fill_waits_for_confirmed_status` 覆盖实时 trade: `MATCHED` 不产 NT fill,`CONFIRMED` 才按成交量产 fill。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_settles_before_marking_snapshot_alive` 覆盖 position reconcile 成功后余额刷新。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_settles_without_writing_liveness` 覆盖 position reports 成功后余额刷新且 adapter 不写 liveness。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile` 覆盖余额刷新失败不影响 position reconcile。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_balance_query_failure_is_not_retried` 覆盖余额请求失败只调用一次 CLOB client。
 
@@ -288,16 +288,16 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - settlement 在 report 协程内 await；没有尝试 merge 时返回第一次 reports；一旦尝试
   merge，无论结果成功或失败，都同轮再拉 `/positions`，只返回第二次 reports，然后拉
   `/closed-positions` 同步 realized PnL。
-- 最终 reports 拉成功 → `mark_position_alive`；第一次或 merge 后第二次拉失败 →
-  `mark_position_dead` 并抛。
+- 最终 reports 拉成功或失败均由方法返回/抛异常表达；启动/周期 reconciliation 上层据此
+  `mark_position_alive/dead`。
 - `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:
   `conditionId`/`size`/`negativeRisk`/`redeemable`)→
   `PolymarketSettlement.run` → merge/redeem。
 - #282:position reconcile 另读 `/closed-positions`，与 current rows 的 `realizedPnl` 按
   instrument 聚合；最终本地状态校验通过后才写 `RealizedPnlLedger` 基线差，closed 查询失败保留旧基线。
-- #308:order/position reconcile 返回携带请求前摘要的 `GuardedReports`；拉取成功照常 mark alive。
+- #308:order/position reconcile 返回携带请求前摘要的 `GuardedReports`；拉取成功由上层先 mark alive。
   `/closed-positions` 只作为 deferred payload，不在 adapter 内提交。状态变化由 ExecEngine 应用前
-  统一丢弃，不把过期空 order 响应解释成 venue 缺单，网络失败仍 mark dead + raise。
+  统一丢弃，不把过期空 order 响应解释成 venue 缺单；网络失败由 adapter raise、上层 mark dead。
   position batch 准入并提交 deferred realized 后重取应用阶段摘要，避免 ledger revision 的预期变化
   让同批 report 自我失效；单份 report 与空 batch 派生的 flat report 均在最终 NT reconcile 入口复核。
   验收：`test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch`、
@@ -315,8 +315,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **验收**:
 - launcher 构造并注入 `PolymarketSettlement`:cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 `PolymarketContractService.initialize()` 成功时接线;失败不阻塞节点启动。
 - **无 `HealthCheckLoop`/`_run_health_check`/独立调度**(静态检查);链上编排在 `PolymarketSettlement`,不内联进 ExecutionClient
-- `test_arb_generate_position_reports_settles_before_marking_snapshot_alive`:证明无 merge 尝试时
-  第一次 reports 正常返回并标活。
+- `test_arb_generate_position_reports_settles_without_writing_liveness`:证明无 merge 尝试时
+  adapter 正常返回 reports 但不越权标活。
 - `test_settlement_attempt_refetches_positions_before_returning_reports`:分别以 merge 成功和失败
   证明严格调用顺序均为 `positions → merge → positions → closed positions → balance`，
   且只返回第二次 reports。
@@ -325,7 +325,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `tests/arbitrage/settlement/test_contract_offload.py::test_standard_merge_uses_ctf_collateral_adapter_and_pusd`:证明标准 merge 发往 collateral adapter 且使用 pUSD。
 - `tests/arbitrage/settlement/test_contract_offload.py::test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter`:证明 negRisk merge 发往 negRisk collateral adapter。
 - `tests/arbitrage/settlement/test_contract_offload.py::test_neg_risk_redeem_uses_inherited_collateral_adapter_abi`:证明 negRisk redeem 使用 collateral adapter 的 inherited selector、pUSD 参数与正确 target。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_failure_marks_dead`:证明 `/positions` report 失败会 `mark_position_dead` 并抛给 NT 对账。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_failure_does_not_write_liveness`:证明 `/positions` report 失败只向上抛；上层负责 `mark_position_dead`。
 - `tests/arbitrage/launchers/test_arb_node.py::test_make_pm_settlement_initializes_contract_and_flags`:证明 launcher 将 PM 链上凭证 / relayer 配置映射到 `PolymarketContractService`,并把 cleanup flags 传给 `PolymarketSettlement`。
 - merge/redeem `TxResult` 失败:**仅 log,不判 `VenueExecutionLiveness` dead**;下个对账周期幂等重试(min(size))
 

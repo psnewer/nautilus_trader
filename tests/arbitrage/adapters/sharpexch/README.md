@@ -69,6 +69,10 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 ### se-adapter-2.3:prices WS liveness
 
+> **2026-08-04 reconcile liveness 修订**：`generate_order_status_report(s)` /
+> `generate_position_status_reports` 只返回或抛异常，不再直接标 alive/dead；启动/周期
+> `ArbLiveExecutionEngine` 按远端查询正常返回或异常统一裁决。常规 `CURRENT_BETS` 完整帧实时标活保持不变。
+
 **前置**:WS handler 绑定 prices feed。
 **输入**:prices 心跳/业务帧、close、超时。
 **期望**:prices 入向帧刷新存活锚;close/timeout 触发 competition reload;general/orders 心跳不掩盖 prices feed stale。
@@ -159,7 +163,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 **前置**:order/position report 请求前已记录 SE 账户本地 order/position 摘要。
 **输入**:`_ensure_exec_snapshot_fresh()` 等待期间，WS Fill 或其他标准事件更新本地执行状态。
-**期望/验收**:CURRENT_BETS 拉取成功仍标记相应 liveness alive；返回的 `GuardedReports` 携带旧摘要，
+**期望/验收**:CURRENT_BETS 拉取成功后由启动/周期 reconciliation 上层标记相应 liveness alive；adapter 返回的 `GuardedReports` 携带旧摘要，
 由 `ArbLiveExecutionEngine` 在应用前丢弃，不把旧快照写回 cache，也不因摘要失效标记 venue dead。
 适配器接线由 `test_order_status_reports_from_current_bets_snapshot` 与
 `test_position_status_reports_aggregate_current_bets` 验收，引擎行为见

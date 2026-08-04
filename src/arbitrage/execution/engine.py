@@ -54,6 +54,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         super().__init__(*args, **kwargs)
         self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
         self._pair_registry = None
+        self._arb_venue_liveness = None
         self._arb_command_groups: dict[tuple[str, str], _CommandGroupContext] = {}
         self._arb_position_reconciliation_snapshots = {}
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
@@ -62,10 +63,13 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         self,
         *,
         pair_registry=None,
+        venue_liveness=None,
         barrier_timeout_secs: float | None = None,
     ) -> None:
         if pair_registry is not None:
             self._pair_registry = pair_registry
+        if venue_liveness is not None:
+            self._arb_venue_liveness = venue_liveness
         if barrier_timeout_secs is not None:
             self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
 
@@ -95,8 +99,10 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         protected_order_ids = set()
         for client, batch in zip(clients, batches, strict=True):
             if isinstance(batch, Exception):
+                self._mark_reconciliation_liveness(client, "order", alive=False)
                 self._log.error(f"Failed to generate order status reports: {batch}")
                 continue
+            self._mark_reconciliation_liveness(client, "order", alive=True)
             if not self._reconciliation_batch_is_current(client, batch):
                 self._log.warning(
                     f"Discarding stale order reports before reconciliation: client={client.id}",
@@ -140,11 +146,13 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         failed_venues = set()
         for client, batch in zip(clients, batches, strict=True):
             if isinstance(batch, Exception):
+                self._mark_reconciliation_liveness(client, "position", alive=False)
                 failed_venues.add(client.venue)
                 self._log.error(
                     f"Failed to generate position status reports for venue {client.venue}: {batch}",
                 )
                 continue
+            self._mark_reconciliation_liveness(client, "position", alive=True)
             if not self._reconciliation_batch_is_current(client, batch):
                 failed_venues.add(client.venue)
                 self._log.warning(
@@ -175,6 +183,14 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         for kind, batch in batches.items():
             self._apply_reconciliation_batch(client, kind, batch)
         return super()._reconcile_execution_mass_status(mass_status)
+
+    def _mark_reconciliation_liveness(self, client, kind: str, *, alive: bool) -> None:
+        """按远端查询结果更新对应维度;本地报告应用不参与判定。"""
+        liveness = self._arb_venue_liveness
+        if liveness is None or client is None:
+            return
+        method = getattr(liveness, f"mark_{kind}_{'alive' if alive else 'dead'}")
+        method(client.venue)
 
     def _reconcile_order_report(self, report, trades, is_external: bool = True):
         if not self._reconciliation_report_is_current(report):

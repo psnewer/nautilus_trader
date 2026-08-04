@@ -944,7 +944,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             # `_create_flat_position_report`(qty=0)当目标 + 默认 `generate_missing_orders=True`
             # 合成成交,抹平真实状态的账面记录。`mark_*_dead` 只写我们自己的 VenueExecutionLiveness,
             # NT 看不见,不能替代异常。(#122 当初让 PM「对齐 OE」,实为参照系本身偏离 NT 约定。)
-            self._venue_liveness.mark_order_dead(ORBITEXCH)
             raise RuntimeError(
                 "OE order status reports unavailable: exec snapshot not fresh "
                 "(page reload failed / CURRENT_BETS not repushed)",
@@ -954,7 +953,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             report = self._build_order_report(bet)
             if report is not None:
                 reports.append(report)
-        self._venue_liveness.mark_order_alive(ORBITEXCH)
         return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command):
@@ -962,7 +960,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         snapshot = self._capture_reconciliation_state_snapshot(include_positions=False)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
-            self._venue_liveness.mark_order_dead(ORBITEXCH)
             raise RuntimeError(
                 "OE order status report unavailable: exec snapshot not fresh "
                 "(page reload failed / CURRENT_BETS not repushed)",
@@ -977,9 +974,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 continue
             if target_coid is not None and report.client_order_id != target_coid:
                 continue
-            self._venue_liveness.mark_order_alive(ORBITEXCH)
             return attach_reconciliation_snapshot(report, snapshot)
-        self._venue_liveness.mark_order_alive(ORBITEXCH)
         return None
 
     async def generate_fill_reports(self, command) -> list:
@@ -995,14 +990,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         snapshot = self._capture_reconciliation_state_snapshot(include_positions=True)
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:同上——返空会让 NT 拿真实持仓去对齐一个假的「空仓」报告。
-            self._venue_liveness.mark_position_dead(ORBITEXCH)
             raise RuntimeError(
                 "OE position status reports unavailable: exec snapshot not fresh "
                 "(page reload failed / CURRENT_BETS not repushed)",
             )
 
         reports = self._build_position_status_reports_from_current_bets()
-        self._venue_liveness.mark_position_alive(ORBITEXCH)
         return self._guard_reconciliation_reports("position", reports, snapshot)
 
     def _build_position_status_reports_from_current_bets(self) -> list:

@@ -31,6 +31,7 @@ from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.execution.engine import _CommandGroupContext
 from src.arbitrage.execution.reconciliation import GuardedReports
@@ -73,6 +74,8 @@ class _Ctx:
             config=LiveExecEngineConfig(),
         )
         self.engine.register_client(self.client)
+        self.liveness = VenueExecutionLiveness()
+        self.engine.configure_arb(venue_liveness=self.liveness)
         self.portfolio = Portfolio(msgbus=self.msgbus, cache=self.cache, clock=self.clock)
         self.strategy = Strategy()
         self.strategy.register(
@@ -608,6 +611,7 @@ def test_stale_order_report_batch_is_discarded_at_engine_boundary(monkeypatch):
 
     assert reports == []
     assert venue_reported_ids == {command.order.client_order_id}
+    assert ctx.liveness.order_alive(ctx.client.venue)
 
 
 def test_stale_position_report_batch_is_failed_at_engine_boundary(monkeypatch):
@@ -625,6 +629,45 @@ def test_stale_position_report_batch_is_failed_at_engine_boundary(monkeypatch):
 
     assert venue_positions == {}
     assert failed_venues == {ctx.client.venue}
+    assert ctx.liveness.position_alive(ctx.client.venue)
+
+
+def test_periodic_order_query_exception_marks_only_order_dead():
+    ctx = _Ctx()
+    ctx.liveness.mark_order_alive(ctx.client.venue)
+    ctx.liveness.mark_position_alive(ctx.client.venue)
+
+    async def fake_query(_command):
+        raise RuntimeError("order unavailable")
+
+    ctx.client.generate_order_status_reports = fake_query
+    reports, venue_reported_ids = ctx.loop.run_until_complete(
+        ctx.engine._query_order_status_reports(),
+    )
+
+    assert reports == []
+    assert venue_reported_ids == set()
+    assert not ctx.liveness.order_alive(ctx.client.venue)
+    assert ctx.liveness.position_alive(ctx.client.venue)
+
+
+def test_periodic_position_query_exception_marks_only_position_dead():
+    ctx = _Ctx()
+    ctx.liveness.mark_order_alive(ctx.client.venue)
+    ctx.liveness.mark_position_alive(ctx.client.venue)
+
+    async def fake_query(_command):
+        raise RuntimeError("position unavailable")
+
+    ctx.client.generate_position_status_reports = fake_query
+    venue_positions, failed_venues = ctx.loop.run_until_complete(
+        ctx.engine._query_position_status_reports(),
+    )
+
+    assert venue_positions == {}
+    assert failed_venues == {ctx.client.venue}
+    assert ctx.liveness.order_alive(ctx.client.venue)
+    assert not ctx.liveness.position_alive(ctx.client.venue)
 
 
 def test_stale_mass_status_is_discarded_at_engine_boundary(monkeypatch):

@@ -22,6 +22,7 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import tags_from_meta
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.reconciliation import GuardedReports
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import accepted_order_reserved_notional
@@ -41,6 +42,11 @@ class _MassStatusBase:
 
 
 class _MassStatusClient(ArbExecutionSessionMixin, _MassStatusBase):
+    venue = "POLYMARKET"
+
+    def __init__(self):
+        self._venue_liveness = VenueExecutionLiveness()
+
     async def generate_order_status_reports(self, _command):
         return self._guard_reconciliation_reports("order", [], SimpleNamespace())
 
@@ -58,6 +64,37 @@ def test_generate_mass_status_carries_guarded_report_batches():
         isinstance(batch, GuardedReports)
         for batch in mass_status._arb_reconciliation_batches.values()
     )
+    assert client._venue_liveness.order_alive(client.venue)
+    assert client._venue_liveness.position_alive(client.venue)
+
+
+def test_generate_mass_status_none_marks_both_dimensions_dead(monkeypatch):
+    client = _MassStatusClient()
+    client._venue_liveness.mark_order_alive(client.venue)
+    client._venue_liveness.mark_position_alive(client.venue)
+
+    async def failed_mass_status(self, lookback_mins=None):
+        return None
+
+    monkeypatch.setattr(_MassStatusBase, "generate_mass_status", failed_mass_status)
+
+    assert asyncio.run(client.generate_mass_status()) is None
+    assert not client._venue_liveness.order_alive(client.venue)
+    assert not client._venue_liveness.position_alive(client.venue)
+
+
+def test_generate_mass_status_partial_failure_marks_each_dimension_independently(monkeypatch):
+    client = _MassStatusClient()
+
+    async def partial_mass_status(self, lookback_mins=None):
+        await self.generate_order_status_reports(None)
+        return None
+
+    monkeypatch.setattr(_MassStatusBase, "generate_mass_status", partial_mass_status)
+
+    assert asyncio.run(client.generate_mass_status()) is None
+    assert client._venue_liveness.order_alive(client.venue)
+    assert not client._venue_liveness.position_alive(client.venue)
 
 
 def test_guarded_reports_attach_snapshot_outside_mass_status():

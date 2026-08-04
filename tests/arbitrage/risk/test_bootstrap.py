@@ -12,8 +12,8 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 import src.arbitrage.bootstrap as bootstrap
-from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution import ArbLiveExecutionEngine
 from src.arbitrage.risk import ArbitragePortfolio
 from src.arbitrage.risk import ArbitrageLiveRiskEngine
@@ -90,6 +90,10 @@ def _arb_node():
 
 def test_wire_injects_params_and_returns_shared_liveness():
     node = _arb_node()
+    exec_engine = ArbLiveExecutionEngine.__new__(ArbLiveExecutionEngine)
+    exec_engine._pair_registry = None
+    exec_engine._arb_venue_liveness = None
+    node.kernel.exec_engine = exec_engine
     liveness = VenueExecutionLiveness()
     params = ArbRiskParams(match_tp=0.07)
     arbitrage_params = ArbitrageParams(share=200.0, fx=1.3)
@@ -105,6 +109,7 @@ def test_wire_injects_params_and_returns_shared_liveness():
     assert node.kernel.portfolio._share == 200.0
     assert node.kernel.risk_engine._params.match_tp == 0.07
     assert node.kernel.risk_engine._arb_venue_liveness is liveness
+    assert node.kernel.exec_engine._arb_venue_liveness is liveness
 
 
 def test_wire_raises_when_install_skipped():

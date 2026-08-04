@@ -59,11 +59,27 @@ class ArbExecutionSessionMixin:
         self._arb_mass_report_batches = {}
         try:
             mass_status = await super().generate_mass_status(lookback_mins)
-            if mass_status is not None:
-                mass_status._arb_reconciliation_batches = dict(self._arb_mass_report_batches)
+            self._mark_mass_reconciliation_liveness()
+            if mass_status is None:
+                return None
+            mass_status._arb_reconciliation_batches = dict(self._arb_mass_report_batches)
             return mass_status
+        except Exception:
+            self._mark_mass_reconciliation_liveness()
+            raise
         finally:
             self._arb_mass_report_batches = None
+
+    def _mark_mass_reconciliation_liveness(self) -> None:
+        """启动 mass-status 按实际返回的批次逐维更新 liveness。"""
+        liveness = getattr(self, "_venue_liveness", None)
+        venue = getattr(self, "venue", None)
+        if liveness is None or venue is None:
+            return
+        batches = self._arb_mass_report_batches or {}
+        for kind in ("order", "position"):
+            method = getattr(liveness, f"mark_{kind}_{'alive' if kind in batches else 'dead'}")
+            method(venue)
 
     def _guard_reconciliation_reports(self, kind: str, reports, snapshot, *, payload=None):
         from src.arbitrage.execution.reconciliation import GuardedReports
