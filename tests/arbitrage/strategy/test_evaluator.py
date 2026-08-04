@@ -179,7 +179,7 @@ def _harness(
         pair_registry=pair_reg,
         strategy_registry=strat_reg,
         portfolio=object(),
-        is_execution_active=lambda: active_flag["v"],
+        is_pair_executing=lambda pid: active_flag["v"],
         loop=loop,
         arbitrage_params=arbitrage_params,
         pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
@@ -511,7 +511,6 @@ def test_submitter_wired_into_eval_context():
     assert ctx.submitter is not None              # slice 10a:submitter 已注入
     assert callable(ctx.submitter)
     assert callable(ctx.pair_order_canceler)
-    assert ctx.open_orders_digest is not None
     assert ctx.positions_digest is not None
 
 

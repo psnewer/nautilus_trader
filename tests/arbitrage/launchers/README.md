@@ -16,7 +16,7 @@
 - ✅ OE data factory 真接 scraper(slice 7A,#46)
 - ✅ MarketMatchingActor + StrategyEvaluator Strategy + optional WebGatewayActor 接线;InstrumentRefresher 已退役,发现由 DataClient 原生周期负责
 - ✅ PolymarketSettlement 接线(#110:由 NT 连续 position 对账触发;#110 后不再有 `pm_positions_fetcher`)
-- ✅ `is_execution_active` 真接 in-flight 检测(#48)
+- ✅ `is_pair_executing` 真接 per-pair in-flight 检测(#48;#316 起 per-pair)
 
 ## Slice 8A 落地(2026-05-29 #47)
 
@@ -32,7 +32,9 @@ WebGatewayActor 经 `add_actor` 注册，StrategyEvaluator 经 `add_strategy` �
 
 落地:`_make_is_execution_active(node)` 遍历 `node.kernel.exec_engine._clients`,`getattr(client, "_execution_active", False)` 兜底任意 client(无 mixin 也不 raise);任一 True → 聚合返 True;StrategyEvaluator deps 改用真 callable(撤 `lambda: False`)。
 
-- ✅ `test_arb_node.py` +4:无 session 在飞 → False / 任一 client True → 聚合 True(切 client 状态后 callable 反映最新)/ 无 `_execution_active` 属性的 client 不 raise / `add_actors` 装的 StrategyEvaluator `_is_execution_active` 是真聚合 callable(不是 `lambda: False`)
+> ⚠️ **#316 收窄 per-pair**:上述全局聚合已改为 `_make_is_pair_executing(node, pair_registry)`,谓词签名 `(pair_id) -> bool`,只看归属该 pair 的 session(`client._pair_execution_active`);deps 字段 `is_execution_active` → `is_pair_executing`。见 synchronization §7.5。
+
+- ✅ `test_arb_node.py` +4:**#316 per-pair 化** —— `_make_is_pair_executing(node, registry)`:该 pair 无 session → False / 任一 client 对该 pair `_pair_execution_active=True` → True(跨 pair 不互相挡)/ 无 `_pair_execution_active` 方法的 client 不 raise / `add_actors` 装的 StrategyEvaluator `_is_pair_executing(pair_id)` 是真聚合 callable(切 client 状态反映最新)
 
 ## PM live preflight(2026-06-10 #98)
 

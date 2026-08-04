@@ -107,7 +107,6 @@ def test_submit_writes_opportunity_metadata_tags():
         "pair_id": "pair-1",
         "leg_key": "pm:home:0",
         "expected_legs": ("pm:home:0", "oe:away:1"),
-        "open_orders_digest": "digest-1",
         "positions_digest": "positions-1",
         "enable_timeout": False,
     }))
@@ -118,7 +117,6 @@ def test_submit_writes_opportunity_metadata_tags():
         "arb:leg_key=pm:home:0",
         "arb:expected_legs=pm:home:0,oe:away:1",
         "arb:intent=recovery",
-        "arb:open_orders_digest=digest-1",
         "arb:positions_digest=positions-1",
         "arb:enable_timeout=false",
     ]

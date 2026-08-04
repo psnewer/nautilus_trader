@@ -72,7 +72,7 @@
 - 验收:busy/timeout 不触达 venue且 `OrderCancelRejected` 回退本地状态；不宣称 venue 原子完成。
 
 ### e2e-9d: evaluation 后成交改变仓位时不 release 旧机会
-- 前置:Strategy 已记录 pair 的 `open_orders_digest/positions_digest`，订单通过 Risk、尚未收齐
+- 前置:Strategy 已记录 pair 的 `positions_digest`（#317:open_orders_digest 已删），订单通过 Risk、尚未收齐
   barrier；期间 BUY/SELL/外部成交或 position reconcile 已更新 NT Cache position。
 - 输入:最后一条 risk-pass 腿进入 barrier。
 - 期望:barrier 重算 position digest 发现变化，整组本地 deny，不向任何 venue release。

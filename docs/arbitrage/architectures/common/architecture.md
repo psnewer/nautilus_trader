@@ -11,7 +11,7 @@
 
 | API | 用途 |
 |---|---|
-| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / open_orders_digest / positions_digest / intent / venue_required_balance / enable_timeout`；两个 digest 是 Strategy 评估开始时该 pair 的订单/仓位基线；`enable_timeout` 是三态字段，缺省不写 tag |
+| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / positions_digest / intent / venue_required_balance / enable_timeout`；`positions_digest` 是 Strategy 评估开始时该 pair 的仓位基线（#317:open_orders_digest 已删）；`enable_timeout` 是三态字段，缺省不写 tag |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
@@ -27,7 +27,7 @@
 - `expected_cancels` 必须是非空、无重复的 `client_order_id` 集合，并包含本命令的
   `cancel_key`；格式无效时 fail-closed 为 `OrderCancelRejected`。
 - `expected_legs` 只包含真实下单腿;不发送 0 qty 空单。
-- 同一 opportunity 的所有真实腿必须携带相同 `open_orders_digest`。
+- 同一 opportunity 的所有真实腿必须携带相同 `positions_digest`（#317:open_orders_digest 已删）。
 - `enable_timeout=true/false` 分别写为对应 submit tag；字段缺失或非法值按“未配置”处理，
   保持旧订单兼容。只有显式 `false` 表示禁用 timeout 等待、ACK 后结束 submit session；
   缺失或 `true` 均继续既有跟踪。普通 CancelOrder/cancel-only 不读取原订单 tag，只有
@@ -35,10 +35,8 @@
 - common 模块只负责解析 / 构造,不维护 opportunity 状态；SubmitOrder 与 CancelOrder 共用的
   grouped-command 状态机归 Execution barrier。
 
-`src/arbitrage/common/open_orders.py::pair_open_orders_digest(cache, instrument_ids)` 是 Strategy
-记录与 Execution 重算基线的唯一实现。摘要只包含当前 open orders 的不可变字段：
-`client_order_id / venue_order_id / instrument_id / side / status / quantity / filled_qty /
-leaves_qty / price`。它不持有 NT `Order` 引用；Cache 返回顺序和对象身份不影响结果。
+Strategy 记录与 Execution 重算的执行状态基线是 `pair_positions_digest`（详见 §9）。
+**#317**:原 `pair_open_orders_digest`（pair-level open-order 摘要）已删除,barrier 不再做 order-digest 校验（承 #316 per-pair ≤1）；集合级底层 `orders_digest` 保留,仅 reconciliation 用。
 
 ## 2. VenueExecutionLiveness(已落地,2026-06-15)
 
@@ -186,19 +184,17 @@ runtime 流程。
 账本不保存 position/share/liability，也不接管 FillReport。其详细生产语义见 execution §4.6，
 消费公式见 risk §4.1。
 
-## 9. Pair execution-state 摘要(`#266/#284`)
+## 9. Pair execution-state 摘要(`#266/#284`；#317 barrier 侧仅留 position)
 
-`src/arbitrage/common/open_orders.py::pair_open_orders_digest` 与
 `src/arbitrage/common/positions.py::pair_positions_digest` 是 Strategy 和 Execution barrier
-共用的纯函数；底层 `orders_digest(orders)` / `positions_digest(positions)` 也可对任意已筛选集合
-生成同口径摘要。四者都将业务相关字段投影成稳定排序的 JSON 后计算 SHA256，不保存
-Order/Position 对象引用。
+共用的纯函数(评估基线 + release 前重算)；底层 `positions_digest(positions)` 可对任意已筛选集合
+生成同口径摘要。二者将业务相关字段投影成稳定排序的 JSON 后计算 SHA256，不保存 Position 对象引用。
 
-- order 摘要覆盖订单身份、side/status、quantity/filled/leaves、price、`event_count/ts_last`。
 - position 摘要覆盖 position/account/instrument/strategy 身份、side/quantity、
   `avg_px_open/avg_px_close/realized_pnl`、`event_count/ts_last`。
 - position 使用 `cache.positions()` 而非只读 open positions，保证 SELL 全平后的 closed
   position 变化仍参与比较。
+- **#317**:`pair_open_orders_digest`(pair-level open-order 摘要)已删除 —— barrier 不再做 order-digest 校验(承 #316 per-pair ≤1,见 synchronization §8.4bis)。底层 `orders_digest(orders)`(集合级)**保留**,仅 execution §4.6 的 reconciliation 乐观并发校验使用。
 
 本节只定义 helper 落点与字段；Strategy → metadata → Risk → Execution 的一致性协议和
 fail-closed 时序以 `_cross-cutting/synchronization.md §8.4bis` 为单一真理源。

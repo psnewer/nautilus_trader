@@ -17,7 +17,6 @@ from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.identifiers import InstrumentId
-from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import CANCEL_OPPORTUNITY_PARAM
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
@@ -255,7 +254,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def _handle_cancel_opportunity(self, meta: CancelOpportunityMeta, command: CancelOrder) -> None:
         ctx = self._get_group(_CANCEL_GROUP, meta.opportunity_id)
         if ctx is None:
-            blocked = self._other_execution_in_flight()
+            blocked = self._other_execution_in_flight_for_pair(meta.pair_id)
             ctx = self._create_group(
                 kind=_CANCEL_GROUP,
                 group_id=meta.opportunity_id,
@@ -334,7 +333,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def _handle_opportunity_pass(self, meta: OpportunityMeta, command: SubmitOrder) -> None:
         ctx = self._get_group(_SUBMIT_GROUP, meta.opportunity_id)
         if ctx is None:
-            blocked = self._other_execution_in_flight()
+            blocked = self._other_execution_in_flight_for_pair(meta.pair_id)
             ctx = self._create_group(
                 kind=_SUBMIT_GROUP,
                 group_id=meta.opportunity_id,
@@ -361,10 +360,6 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             self._deny_order(command.order, "opportunity metadata mismatch: expected_legs differ")
             self._finish(ctx, terminal="denied")
             return
-        if meta.open_orders_digest != ctx.meta.open_orders_digest:
-            self._deny_order(command.order, "opportunity metadata mismatch: open_orders_digest differs")
-            self._finish(ctx, terminal="denied")
-            return
         if meta.positions_digest != ctx.meta.positions_digest:
             self._deny_order(command.order, "opportunity metadata mismatch: positions_digest differs")
             self._finish(ctx, terminal="denied")
@@ -372,26 +367,27 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         if self._add_group_command(ctx, meta.leg_key, command):
             self._release(ctx)
 
-    def _other_execution_in_flight(self) -> bool:
-        """#261 全局 ≤1 执行的**唯一**判定,只读派生态 —— 无 token、无出口、不可能泄漏。
+    def _other_execution_in_flight_for_pair(self, pair_id: str) -> bool:
+        """#316 per-pair ≤1 执行的**唯一**判定,只读派生态 —— 无 token、无出口、不可能泄漏。
 
-        两个源:① grouped barrier 里还在等命令的 submit/cancel group(跳过
-        `terminal is not None` 的墓碑,否则墓碑会挡住合法新机会);② 任一 exec client 的
-        `_execution_active`(= 在飞 session 数 > 0)。
+        两个源(都按 `pair_id` 过滤):① grouped barrier 里还在等命令的**同 pair** submit/cancel group
+        (跳过 `terminal is not None` 的墓碑,否则墓碑会挡住合法新机会);② 任一 exec client 上**归属该 pair**
+        的在飞 session。跨 pair 并发执行放行,同 pair 仍串行(每 pair ≤1 机会)。
 
-        **无需参数**:本方法只在 `ctx is None`(全新机会)时调用,故在飞的执行必然不是它的
-        —— 各业务出口最终都调用 `_close_group`,所以 registry 中有非墓碑 ctx 等价于仍有
-        group 在等命令。方案不依赖识别执行归属
-        (`_active_sessions` 只存 `pair_id`,本就无法回答"属于哪次机会")。
+        **取 `pair_id`**:本方法只在 `ctx is None`(本 pair 全新机会)时调用,同 pair 的在飞执行必是同 pair
+        的另一次机会;归属只到 pair 级即够 —— ctx 带 `pair_id`,session 存 `pair_id`,tag-less 残单用
+        `PairRegistry.get(instrument_id)` 反查兜底(instrument 已注销则不归属任何 pair,fail-open,§7.5)。
 
         **无需加锁**:所有 `SubmitOrder` / `CancelOrder` 经 `LiveExecutionEngine` 的单队列单 task 逐条
         `_execute_command`,构造上串行,本判定天然原子。
         """
         for ctx in self._arb_command_groups.values():
-            if ctx.terminal is None:
+            if ctx.terminal is None and ctx.pair_id == pair_id:
                 return True
+        resolve = self._pair_registry.get if self._pair_registry is not None else (lambda _iid: None)
         for client in self._clients.values():
-            if getattr(client, "_execution_active", False):
+            fn = getattr(client, "_pair_execution_active", None)
+            if fn is not None and fn(pair_id, resolve):
                 return True
         return False
 
@@ -507,25 +503,16 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
 
         meta = ctx.meta
         assert isinstance(meta, OpportunityMeta)
-        baseline = meta.open_orders_digest
+        # #317:只比 position digest(order-digest 已删,承 #316 per-pair ≤1)。威胁安全的 order 变化=成交,
+        # 成交必改 position → 这里抓住;纯撤单不动 position、只让新机会保守一轮(自愈),不再误拒。
         positions_baseline = meta.positions_digest
         instrument_ids = self._residual_check_instrument_ids(ctx)
-        current = pair_open_orders_digest(self._cache, instrument_ids)
         current_positions = pair_positions_digest(self._cache, instrument_ids)
-        if (
-            baseline is None
-            or current != baseline
-            or positions_baseline is None
-            or current_positions != positions_baseline
-        ):
+        if positions_baseline is None or current_positions != positions_baseline:
             reason = (
-                "opportunity denied: pair open orders changed during evaluation"
-                if baseline is not None and current != baseline
-                else (
-                    "opportunity denied: pair positions changed during evaluation"
-                    if positions_baseline is not None and current_positions != positions_baseline
-                    else "opportunity denied: missing pair execution-state baseline"
-                )
+                "opportunity denied: pair positions changed during evaluation"
+                if positions_baseline is not None
+                else "opportunity denied: missing pair execution-state baseline"
             )
             self._log.info(
                 f"{reason} opportunity_id={ctx.meta.opportunity_id}, "

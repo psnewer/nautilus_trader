@@ -631,57 +631,59 @@ def test_add_actors_strategy_evaluator_receives_portfolio_from_kernel(monkeypatc
     assert strategy_evaluator._portfolio is portfolio_sentinel
 
 
-def test_make_is_execution_active_false_when_no_session_in_flight(monkeypatch):
-    """Q19 桥接:所有 exec client `_execution_active=False` → 聚合 callable 返 False。"""
+def test_make_is_pair_executing_false_when_no_session_for_pair(monkeypatch):
+    """§7.5(#316)桥接:所有 exec client 对该 pair `_pair_execution_active=False` → 聚合返 False。"""
     _add_actors_setup(monkeypatch)
     node = MagicMock()
-    pm_client = MagicMock(); pm_client._execution_active = False
-    oe_client = MagicMock(); oe_client._execution_active = False
+    pm_client = MagicMock(); pm_client._pair_execution_active = lambda pair_id, resolve: False
+    oe_client = MagicMock(); oe_client._pair_execution_active = lambda pair_id, resolve: False
     node.kernel.exec_engine._clients = {"PM": pm_client, "OE": oe_client}
 
-    check = arb_node._make_is_execution_active(node)
-    assert check() is False
+    check = arb_node._make_is_pair_executing(node, PairRegistry())
+    assert check("ATP|A|B") is False
 
 
-def test_make_is_execution_active_true_when_any_session_in_flight(monkeypatch):
-    """Q19:任一 client `_execution_active=True` → 聚合返 True(StrategyEvaluator 跳过 evaluate)。"""
+def test_make_is_pair_executing_true_when_pair_session_in_flight(monkeypatch):
+    """§7.5:任一 client 对该 pair `_pair_execution_active=True` → 聚合返 True;跨 pair 不互相挡。"""
     _add_actors_setup(monkeypatch)
     node = MagicMock()
-    pm_client = MagicMock(); pm_client._execution_active = False
-    oe_client = MagicMock(); oe_client._execution_active = True   # OE 有 session 在飞
+    pm_client = MagicMock(); pm_client._pair_execution_active = lambda pair_id, resolve: False
+    oe_client = MagicMock(); oe_client._pair_execution_active = lambda pair_id, resolve: pair_id == "ATP|A|B"
     node.kernel.exec_engine._clients = {"PM": pm_client, "OE": oe_client}
 
-    check = arb_node._make_is_execution_active(node)
-    assert check() is True
+    check = arb_node._make_is_pair_executing(node, PairRegistry())
+    assert check("ATP|A|B") is True
+    assert check("OTHER|X|Y") is False   # 跨 pair 并发放行
 
 
-def test_make_is_execution_active_tolerates_clients_without_property(monkeypatch):
-    """非套利子类的 ExecClient(无 mixin)→ getattr 默认 False,不 raise。"""
+def test_make_is_pair_executing_tolerates_clients_without_method(monkeypatch):
+    """非套利子类的 ExecClient(无 mixin)→ getattr 默认 None,不 raise。"""
     _add_actors_setup(monkeypatch)
     node = MagicMock()
-    plain_client = object()    # 无 `_execution_active` 属性
+    plain_client = object()    # 无 `_pair_execution_active` 方法
     node.kernel.exec_engine._clients = {"PLAIN": plain_client}
 
-    check = arb_node._make_is_execution_active(node)
-    assert check() is False
+    check = arb_node._make_is_pair_executing(node, PairRegistry())
+    assert check("ATP|A|B") is False
 
 
-def test_add_actors_wires_strategy_evaluator_with_real_is_execution_active(monkeypatch):
-    """`add_actors` 装 StrategyEvaluator 时,`_is_execution_active` 是真聚合 callable,
-    跟 exec client 的 `_execution_active` 联动(不是 `lambda: False`)。"""
+def test_add_actors_wires_strategy_evaluator_with_real_is_pair_executing(monkeypatch):
+    """`add_actors` 装 StrategyEvaluator 时,`_is_pair_executing` 是真聚合 callable,
+    跟 exec client 的 `_pair_execution_active` 联动(不是 `lambda pid: False`)。"""
     _add_actors_setup(monkeypatch)
     node = MagicMock()
     node.kernel.portfolio = MagicMock()
-    pm_client = MagicMock(); pm_client._execution_active = True
+    state = {"active": True}
+    pm_client = MagicMock(); pm_client._pair_execution_active = lambda pair_id, resolve: state["active"]
     node.kernel.exec_engine._clients = {"PM": pm_client}
 
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
     strategy_evaluator = node.trader.add_strategy.call_args.args[0]
-    assert strategy_evaluator._is_execution_active() is True
+    assert strategy_evaluator._is_pair_executing("ATP|A|B") is True
     # 切换 client 状态后,callable 再调反映最新
-    pm_client._execution_active = False
-    assert strategy_evaluator._is_execution_active() is False
+    state["active"] = False
+    assert strategy_evaluator._is_pair_executing("ATP|A|B") is False
 
 
 def test_bootstrap_and_build_invokes_add_actors(monkeypatch):

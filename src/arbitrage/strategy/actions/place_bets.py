@@ -136,7 +136,6 @@ class PlaceBetsAction(Action):
                 "pair_id": ctx.pair_id,
                 "leg_key": leg_key,
                 "expected_legs": expected_legs,
-                "open_orders_digest": ctx.open_orders_digest,
                 "positions_digest": ctx.positions_digest,
                 "venue_required_balance": required_by_venue[draft["venue"]],
             }

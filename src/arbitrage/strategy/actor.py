@@ -35,7 +35,6 @@ from nautilus_trader.trading.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
-from src.arbitrage.common.open_orders import pair_open_orders_digest
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
@@ -86,7 +85,6 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 pair_id=str(spec["pair_id"]),
                 leg_key=str(spec["leg_key"]),
                 expected_legs=tuple(str(v) for v in spec["expected_legs"]),
-                open_orders_digest=spec.get("open_orders_digest"),
                 positions_digest=spec.get("positions_digest"),
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
@@ -122,7 +120,7 @@ class _RuntimeDeps:
     pair_registry: PairRegistry
     strategy_registry: StrategyRegistry
     portfolio: object                      # ArbitragePortfolio
-    is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
+    is_pair_executing: Callable[[str], bool]  # §7.5(#316):本 pair 执行在飞 → 跳过本 pair 评估
     loop: object                            # 单测兜底 loop;生产调度使用 NT register_executor 注入的 ActorExecutor loop
     arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share
     pair_inflight: object = None            # PairInFlightGate(§7);None → 不串行(测试/降级)
@@ -134,7 +132,7 @@ class StrategyEvaluator(Strategy):
         self._pair_registry = deps.pair_registry
         self._strategy_registry = deps.strategy_registry
         self._portfolio = deps.portfolio
-        self._is_execution_active = deps.is_execution_active
+        self._is_pair_executing = deps.is_pair_executing
         self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
         self._test_loop = deps.loop
         self._registered_task_loop = None
@@ -329,14 +327,14 @@ class StrategyEvaluator(Strategy):
     # ── 评估主流程 ────────────────────────────────────────────────────
     async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
         """本方法**不碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 无条件释放。"""
-        # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
-        if self._is_execution_active():
+        # §7.5(#316):本 pair 执行在飞 → 直接让路(策略前置 pre-check 放弃本 pair 机会;
+        # 跨 pair 不再互相饿死,recovery 树不被无关 pair 的执行活动挡住)。
+        if self._is_pair_executing(pair_id):
             if self._log_evaluations:
-                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_executing")
             return
         instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
-        open_orders_digest = pair_open_orders_digest(self.cache, instrument_ids)
-        positions_digest = pair_positions_digest(self.cache, instrument_ids)
+        positions_digest = pair_positions_digest(self.cache, instrument_ids)  # #317:仅 position
         sports_store = self._get_sports_store()
         # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
         # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
@@ -346,7 +344,6 @@ class StrategyEvaluator(Strategy):
             "cache": self.cache,
             "pair_registry": self._pair_registry,
             "sports_store": sports_store,
-            "open_orders_digest": open_orders_digest,
             "positions_digest": positions_digest,
             "submitter": submitter,
             "pair_order_canceler": self._make_pair_order_canceler(),

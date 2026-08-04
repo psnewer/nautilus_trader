@@ -7,9 +7,10 @@ ArbExecutionSessionMixin —— PM 子类 / OE 客户端共用的执行 session 
 - **session 入口**(`submit_order` **同步**调 `_begin_session`,#261):残留挂单检测 →
   cancel-only(撤残留 + 丢弃当次 submit,reject 让 strategy 下轮重发)vs submit+track。
 - **tracking 超时**(§4.2):NT clock 绝对超时,terminal 抢先取消;超时即结束 session 不补救。
-- **同步**(§3.4 / §6.10):`_execution_active` = 在飞 session 数 > 0。**#261 起它是全局 ≤1 执行的
-  派生源之一**(另一个是 barrier 的 `_arb_command_groups`),由 `ArbLiveExecutionEngine` 在新机会入场时
-  读取;strategy 侧 `is_execution_active` 前置只用于省算力,不承担正确性。
+- **同步**(§3.4 / §6.10):session 存 `pair_id` + `instrument_id`;`_pair_execution_active(pair_id, resolve)`
+  是 **#316 per-pair ≤1 执行的派生源之一**(另一个是 barrier 的**同 pair** `_arb_command_groups` ctx),
+  由 `ArbLiveExecutionEngine` 在新机会入场时读取;strategy 侧 `is_pair_executing` 前置只用于省算力,不承担正确性。
+  (`_execution_active` = 在飞 session 数 > 0 保留为全局便捷态,不再是 barrier 判据。)
   **#108**:`execution.*` 消息已退役(健康⊥执行互斥删除,无消费者)。
   **#261**:本类不再参与 pair 闸 —— 闸已收窄为 strategy 单层(评估串行)。
 
@@ -113,6 +114,19 @@ class ArbExecutionSessionMixin:
         """在飞 submit/cancel session 数 > 0(健康检查据此整 tick 让路,Q19/§6.10)。"""
         return len(self._active_sessions) > 0
 
+    def _pair_execution_active(self, pair_id: str, resolve_pair) -> bool:
+        """本 venue 是否有归属 `pair_id` 的在飞 session(#316 per-pair ≤1 执行判定的 session 源,§7.5)。
+
+        `resolve_pair`: instrument_id -> pair_id|None —— 补 tag-less 残单(session 无 stored `pair_id`)。
+        instrument 已注销(pair evicted)时 `resolve_pair` 返 None,该 session 归属不到任何 pair、不匹配
+        任何 pair_id(fail-open per-pair,见 §7.5)。
+        """
+        for sess in self._active_sessions.values():
+            sess_pair = sess.get("pair_id") or resolve_pair(sess.get("instrument_id"))
+            if sess_pair == pair_id:
+                return True
+        return False
+
     # ── NT 同步入口:session 必须在此建立(#261)─────────────────────────
     def submit_order(self, command) -> None:
         """覆盖 NT 同步入口,**同步**建 session 后再交 NT `create_task` 做 venue IO。
@@ -201,9 +215,13 @@ class ArbExecutionSessionMixin:
             alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
             callback=self._on_session_timeout,
         )
+        # #316:session 归属 pair —— submit/cancel 都读 meta 的 `pair_id`(per-pair ≤1 执行判定的 session 源,
+        # 见 synchronization §7.5)。tag-less 残单(崩溃恢复/外部单,meta 为 None)留 None,由查询侧
+        # `_pair_execution_active` 用 `PairRegistry.get(instrument_id)` 兜底。
+        order_meta = meta_from_order(order)
+        pair_id = order_meta.pair_id if order_meta is not None else None
         if kind == "submit":
-            submit_meta = meta_from_order(order)
-            enable_timeout = submit_meta.enable_timeout if submit_meta is not None else None
+            enable_timeout = order_meta.enable_timeout if order_meta is not None else None
         self._active_sessions[coid] = {
             "kind": kind,
             "qty": order.quantity.as_double(),
@@ -211,11 +229,10 @@ class ArbExecutionSessionMixin:
             "side": order.side,
             "filled": 0.0,
             "instrument_id": instrument_id,
+            "pair_id": pair_id,
             "venue_order_id": getattr(order, "venue_order_id", None),
             "enable_timeout": enable_timeout,
         }
-        # #261:session 不参与 pair 闸(闸已收窄为 strategy 评估串行),故也不再需要 `pair_id`
-        # —— 原先它只喂 `exec_started/exec_finished`,随之成为无消费者的死字段,一并删除。
         # #108:不再 publish `execution.started`(OE DataClient 的健康⊥执行互斥已退役,无消费者)。
         return True
 

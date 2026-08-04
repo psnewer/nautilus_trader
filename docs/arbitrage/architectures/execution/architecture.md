@@ -225,9 +225,9 @@ grouped-command 状态机，metadata 解析复用 `src/arbitrage/common/opportun
 
 **SubmitOrder policy 出口**:
 - `all allowed`:先执行 opportunity-level cancel-only 判定；若不触发，按
-  `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 open-order 与 position digest。
-  任一基线缺失、腿间 digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release
-  任一腿。只有两份摘要都一致时才取消 timer，并把所有 command 逐条交回父类进入各 venue
+  `PairRegistry.instrument_ids_for_pair(pair_id)` 重算当前 position digest（#317:open-order digest 已删,承 #316 per-pair ≤1）。
+  基线缺失、腿间 digest 不一致或当前摘要与基线不同，整组本地 `OrderDenied`，不 release
+  任一腿。只有 position 摘要一致时才取消 timer，并把所有 command 逐条交回父类进入各 venue
   `ExecutionClient`。字段与 cache 可见性边界见同步真理源 §8.4bis。
 - `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。显式补偿撤单使用同一 grouped-command barrier 的 CancelOrder policy，详细边界见同步真理源 §8.4bis。
 - `denied` / `timeout`:不 release 到 venue;对 `commands` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
@@ -717,7 +717,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 | 横切 | 约束 |
 |---|---|
 | Q19 同步(§6.10) | session 发 `execution.*`;pair_inflight 出口由 barrier/session 结构保证 |
-| 执行状态窗口校验 | barrier 读取 `open_orders_digest/positions_digest`,release 前以 common helpers 重算并比较 |
+| 执行状态窗口校验 | barrier 读取 `positions_digest`,release 前以 common helper 重算并比较(#317:open_orders_digest 已删,承 #316 per-pair ≤1) |
 | Q17 余额 | 账户状态本组件维护写 cache;可用余额计算在 Risk |
 | §6.6 Debug | ✅ #40/#93 落地:`SkipExecution{PM,OE}Client`(`src/arbitrage/debug/execution_clients.py`)子类化 `_submit_order`;`is_override_active("skip_execution")` 真时**保留 `_begin_session` / `execution.started/finished` / per-pair gate 生命周期**,只跳真 venue IO,随后 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=USD,commission=0,liquidity=TAKER);`_begin_session` 返回 False(cancel-only)时不 mock fill;否则透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Skip 子类传 `debug=cfg`)。**不实现订单 lifecycle 时序**(Q11.4 `timeline.py` 仅在真需要部分填 / 拒单 / 撤单时序时才做)。`skip_settlement`(健康检查路径不真上链)待后续。详见 `_cross-cutting/debug-injection.md` |
 | §6.7 锁 | 上游 ClobClient 不加外层锁(初版);遇问题再子类化只对写操作加锁 |

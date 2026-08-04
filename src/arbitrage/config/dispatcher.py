@@ -194,7 +194,7 @@ def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingConfig:
 
 def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig:
     """StrategyEvaluatorConfig 只有 `log_evaluations`;其余(registries / store / portfolio /
-    is_execution_active / loop)经 `_RuntimeDeps` 注入,launcher 装配。"""
+    is_pair_executing / loop)经 `_RuntimeDeps` 注入,launcher 装配。"""
     return StrategyEvaluatorConfig(log_evaluations=cfg.strategy.log_evaluations)
 
 

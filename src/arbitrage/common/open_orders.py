@@ -1,25 +1,14 @@
-"""Pair 级挂单基线。
+"""订单集合稳定摘要。
 
-Strategy 在评估开始时记录摘要，Execution barrier release 前用同一函数重算并比较。
+`orders_digest(orders)` 供各 venue reconciliation 的乐观并发校验(execution §4.6)。
 只保存不可变字段，不持有会被 NT Cache 原地更新的 Order 引用。
+(#317:pair 级 `pair_open_orders_digest` 已删 —— barrier 不再做 open-order 校验,承 #316 per-pair ≤1。)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-
-from nautilus_trader.model.identifiers import InstrumentId
-
-
-def pair_open_orders_digest(cache, instrument_ids) -> str:
-    """返回指定 instruments 当前 open orders 的稳定摘要。"""
-    orders = []
-    for raw_instrument_id in sorted({str(value) for value in instrument_ids}):
-        instrument_id = InstrumentId.from_str(raw_instrument_id)
-        for order in cache.orders_open(instrument_id=instrument_id) or ():
-            orders.append(order)
-    return orders_digest(orders)
 
 
 def orders_digest(orders) -> str:

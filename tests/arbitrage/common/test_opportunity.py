@@ -16,7 +16,6 @@ def test_opportunity_meta_round_trips_venue_required_balance():
         pair_id="pair-1",
         leg_key="pm:no:0:buy",
         expected_legs=("pm:no:0:reduce", "pm:no:0:buy"),
-        open_orders_digest="digest-1",
         positions_digest="positions-1",
         venue_required_balance=12.5,
     )

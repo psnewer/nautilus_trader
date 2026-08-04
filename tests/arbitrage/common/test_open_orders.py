@@ -1,9 +1,8 @@
-"""Pair open-order baseline 摘要契约。"""
+"""订单集合摘要契约(`orders_digest`;#317 pair 级 `pair_open_orders_digest` 已删)。"""
 
 from types import SimpleNamespace
 
 from src.arbitrage.common.open_orders import orders_digest
-from src.arbitrage.common.open_orders import pair_open_orders_digest
 
 
 def _order(
@@ -31,42 +30,20 @@ def _order(
     )
 
 
-class _Cache:
-    def __init__(self, orders):
-        self.orders = list(orders)
-
-    def orders_open(self, *, instrument_id):
-        return [
-            order
-            for order in self.orders
-            if str(order.instrument_id) == str(instrument_id)
-        ]
+def test_digest_is_stable_across_order_object_identity_and_ordering():
+    assert orders_digest([_order("a"), _order("b")]) == orders_digest([_order("b"), _order("a")])
 
 
-def test_digest_is_stable_across_order_object_identity_and_cache_order():
-    first = _Cache([_order("a"), _order("b")])
-    second = _Cache([_order("b"), _order("a")])
+def test_digest_changes_when_order_progress_changes():
+    baseline = orders_digest([_order("a")])
 
-    assert pair_open_orders_digest(first, ["A.POLYMARKET"]) == pair_open_orders_digest(
-        second,
-        ["A.POLYMARKET"],
-    )
+    assert orders_digest([_order("a", filled="2", leaves="8")]) != baseline
 
 
-def test_digest_changes_when_open_order_progress_changes():
-    cache = _Cache([_order("a")])
-    baseline = pair_open_orders_digest(cache, ["A.POLYMARKET"])
-    cache.orders = [_order("a", filled="2", leaves="8")]
+def test_digest_changes_when_order_disappears():
+    baseline = orders_digest([_order("a")])
 
-    assert pair_open_orders_digest(cache, ["A.POLYMARKET"]) != baseline
-
-
-def test_digest_changes_when_open_order_disappears():
-    cache = _Cache([_order("a")])
-    baseline = pair_open_orders_digest(cache, ["A.POLYMARKET"])
-    cache.orders = []
-
-    assert pair_open_orders_digest(cache, ["A.POLYMARKET"]) != baseline
+    assert orders_digest([]) != baseline
 
 
 def test_digest_supports_order_has_price_method_and_unpriced_orders():
@@ -76,7 +53,7 @@ def test_digest_supports_order_has_price_method_and_unpriced_orders():
     unpriced.has_price = lambda: False
     del unpriced.price
 
-    pair_open_orders_digest(_Cache([priced, unpriced]), ["A.POLYMARKET"])
+    orders_digest([priced, unpriced])
 
 
 def test_orders_digest_detects_event_generation_change_without_economic_change():

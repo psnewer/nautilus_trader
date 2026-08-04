@@ -102,7 +102,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 - 任一健康检查跑时 Strategy 放弃机会 → 下一轮(alert 重排后)重评。
 - per-venue 粒度:OE/PM 健康检查互不阻塞(OE 不再因 PM 执行而多等,#89)。
 
-**「≤1 执行」的来源(per-venue 后不再是本互斥的红利)**:"同时在飞的套利 ≤ 1" 现由 **Strategy 全局 `is_execution_active`(聚合所有 exec client)+ per-pair 闸(§7)** 保证,不再是 health-check⊥execution 互斥的连带红利(后者已 per-venue,PM/OE 各自独立)。Q20 机会快照并发数 ≤1 仍成立(靠 strategy 侧那道)。
+**「≤1 执行」的来源(per-venue 后不再是本互斥的红利)**:"同时在飞的套利 ≤ 1"(#316 起 **per-pair** ≤1,跨 pair 可并发)现由 **Strategy `is_pair_executing(pair_id)`(#316 前为全局 `is_execution_active`)+ per-pair 闸(§7)** 保证,不再是 health-check⊥execution 互斥的连带红利(后者已 per-venue,PM/OE 各自独立)。Q20 机会快照隔离本就 per-pair(refactor.md §Q20),不受影响:长命快照上界由"≤1 份"变为"每执行中 pair 各 1 份"。
 
 ---
 
@@ -162,28 +162,44 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 > 是打满 share limit 的常态路径),导致该 pair 永久停止评估。#261 取消跨组件交接后,
 > **不存在"该不该释放"的判据,也就没有可漏的出口**。
 
-### 7.5 全局 ≤1 执行(#261,barrier 单点 + 纯派生态)
+### 7.5 per-pair ≤1 执行(#261 全局;#316 收窄 per-pair,barrier 单点 + 纯派生态)
 
-**判定点**:`ArbLiveExecutionEngine._handle_opportunity_pass` —— 新 opportunity 入场(`ctx is None`)时
-调 `_other_execution_in_flight()`,为真则整个机会丢弃(`_deny_order` 各腿;不重试不排队,
-下一个 OBD tick 重评,同 cancel-only 既有纪律)。
+> **#316 收窄**:原为**全局** ≤1 执行(任一 pair 在飞就挡住所有新机会)。实盘取证发现:某 pair 单腿成交后,
+> 无关 pair 的持续下单让全局闸近乎恒真,承载 recovery 的 compensation_tree 被 strategy 前置(§7.4)长期饿死。
+> 定夺(余额/风险隔离不纳入)把粒度收到 **per-pair**:只有**同 pair** 在飞才 give-way/deny,跨 pair 并发执行放行。
+> **两道闸必须一起收窄**(strategy 前置 + 本 barrier):只改一侧会把"静默跳过评估"换成"到执行层才 deny"(deny 风暴)。
 
-**两个派生源**(都由现存状态派生,不维护独立布尔锁):
+**判定点**:`ArbLiveExecutionEngine._handle_opportunity_pass` / `_handle_cancel_opportunity` —— 新 opportunity 入场
+(`ctx is None`)时调 `_other_execution_in_flight_for_pair(meta.pair_id)`,为真则整个机会丢弃(`_deny_order` 各腿;
+不重试不排队,下一个 OBD tick 重评,同 cancel-only 既有纪律)。
+
+**两个派生源**(都由现存状态派生,不维护独立布尔锁;均**按入场机会的 `pair_id` 过滤**):
 
 | 源 | 覆盖 |
 |---|---|
-| `_arb_command_groups` 中的**非墓碑** ctx(`terminal is None`) | 统一覆盖 SubmitOrder 等腿与 tagged CancelOrder 等撤单命令 |
-| 任一 exec client 的 `_execution_active`(= `len(_active_sessions) > 0`) | session 建立 → 终态/超时(含撤单 session) |
+| `_arb_command_groups` 中**同 `pair_id` 的非墓碑** ctx(`terminal is None`) | 统一覆盖 SubmitOrder 等腿与 tagged CancelOrder 等撤单命令;ctx 本就带 `pair_id` |
+| 任一 exec client 上**归属该 pair** 的在飞 session(`_pair_execution_active(pair_id, resolve)`) | session 建立 → 终态/超时(含撤单 session) |
+
+**session 的 pair 归属**(`_active_sessions[coid]` 存 `pair_id` + `instrument_id`):`_begin_order_session` 从
+`meta_from_order(order)` 取 `pair_id`(submit/cancel 都读)。**tag-less 残单**(崩溃恢复/外部单经 order reconcile
+从 `OrderStatusReport` 重建,不带我们的 arb tags → `meta` 为 None)无 stored `pair_id`,查询侧用
+`resolve = PairRegistry.get(instrument_id)` 兜底(instrument 永远在,`get` 是现成的 instrument→pair 反查)。
+**fail-open 边角**:instrument 已从 registry 注销(pair 赛后 evicted)而残单撤销仍在飞 → `get` 返 `None` →
+该 session **归属不到任何 pair**,per-pair 谓词下它**既不挡任何 pair、也不被挡**。可接受:这是正在收尾的撤单,
+其所属 pair 已无 live 机会;活跃 pair 的 session 来自带 tag 的 submit,`pair_id` 已存、归属稳定,不受此影响。
 
 **为什么不需要锁**:所有 `SubmitOrder` / `CancelOrder` 经 `LiveExecutionEngine` 的单 `asyncio.Queue`、
 单 task 逐条 `_execute_command`,**构造上串行**,判定天然原子。
 
-**为什么不需要 `opportunity_id` 参数**:只在 `ctx is None`(全新机会)时调用,故在飞的执行必然不是它的
-—— 三个出口 `_release`/`_finish`/`_cancel_only` 都会 pop ctx。方案**不依赖识别执行归属**
-(`_active_sessions` 只存 `pair_id`,本就无法回答「属于哪次机会」;要更细的判定须先补该字段)。
+**取 `pair_id` 参数、不取 `opportunity_id`**:判定粒度是 pair 不是 opportunity —— 只在 `ctx is None`(全新机会)
+时调用,同 pair 的在飞执行必是**同 pair 的另一次机会**(每 pair ≤1 机会,见承重前提 1),三个出口
+`_release`/`_finish`/`_cancel_only` 都会 pop 本 pair 的 ctx。归属只到 pair 级即够:ctx 带 `pair_id`;session 存
+`pair_id`(tag-less 兜底 `PairRegistry.get(instrument_id)`,见上)。**#316 前**此处为全局判定、`_active_sessions`
+不带 `pair_id`(只存 `instrument_id`),故当时无法按 pair 过滤;per-pair 化即补上该归属。
 
 **承重前提(两条,改动时必须重新核对)**:
-1. `ctx is None` ⟺ 全新机会 ⟹ 在飞执行必非它的(依赖上面三个出口都 pop);
+1. `ctx is None` ⟺ **本 pair** 全新机会 ⟹ 同 pair 的在飞执行必非它的(依赖上面三个出口都 pop 本 pair ctx;
+   per-pair barrier 保证**每 pair 至多 1 个 live group**,故同 pair 归属唯一、无歧义);
 2. **每条被 release 的 submit/cancel 必须同步产生 session** —— 故
    `ArbExecutionSessionMixin.submit_order` / `cancel_order` 都覆盖 NT 同步入口，先建立对应 session，
    再交 NT `create_task` 做 venue IO。否则 barrier pop ctx 之后到 session 出现之间派生态为空,
@@ -195,11 +211,11 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 混用会重复拒单)集齐 `expected` 即提前 close。**barrier timer 保留为结构保证** —— 某腿可能根本没发出
 (`make_submitter` 的 `cache.instrument is None` 分支),`denied` 永远凑不齐时只能靠 timer。
 提前清理是路径,timer 是保证;**只留路径会漏**。
-`_other_execution_in_flight` 必须跳过墓碑,否则墓碑自己会挡住别人。
+`_other_execution_in_flight_for_pair` 必须跳过墓碑,否则墓碑自己会挡住别人(#316 后只挡同 pair)。
 
 ### 7.4 与既有机制的关系
 
-- **正交于全局互斥(§1-6)**:全局闸管「执行 ⊥ 健康检查」「≤1 全局执行」;per-pair 闸管「同 pair 不并发评估/执行」。两者并存,前置 pre-check 并列(`_health_check_active` / 全局 `_execution_active` / **per-pair in-flight** / settled / RiskEngine)。
+- **正交于全局互斥(§1-6)**:全局闸管「执行 ⊥ 健康检查」;**≤1 执行(#316 起 per-pair)** + per-pair 评估串行管「同 pair 不并发评估/执行」。前置 pre-check 并列(`_health_check_active` / **per-pair `is_pair_executing`**(#316 前为全局 `_execution_active`)/ **per-pair in-flight** / settled / RiskEngine)。
 - **补 settled gate / cancel-only 的并发洞**:它们读异步下游信号,对同毫秒并发无效;per-pair 闸在 OBD 回调同步置位,正好堵这个洞。
 
 ### 7.6 健康检查互斥(#85;#105 ② 后**不再清闸**)
@@ -278,11 +294,10 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 | 字段 | 落位 | 含义 |
 |---|---|---|
 | `arb:opportunity_id=<id>` | `Order.tags` | 本轮机会 ID,隔离同 pair 连续机会 |
-| `arb:pair_id=<pair>` | `Order.tags` | `PairRegistry` 产出的 pair_id,用于 pair-wide residual 与 open-order 校验 |
+| `arb:pair_id=<pair>` | `Order.tags` | `PairRegistry` 产出的 pair_id,用于 pair-wide residual 与 position 校验 |
 | `arb:leg_key=<key>` | `Order.tags` | 本轮机会内腿标识,如 `pm_home` / `oe_home` |
 | `arb:expected_legs=a,b,...` | `Order.tags` | 本轮应收齐的真实腿集合,包含自己;不发 0 qty 空单 |
-| `arb:open_orders_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 open-order 基线；同机会所有腿必须相同 |
-| `arb:positions_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 position 基线；同机会所有腿必须相同 |
+| `arb:positions_digest=<sha256>` | `Order.tags` | Strategy 评估开始时该 pair 的 position 基线；同机会所有腿必须相同(#317:open-orders-digest 已删,仅留 position) |
 | `arb:intent=<intent>` | `Order.tags` | 既有 intent 契约(`arbitrage` / `recovery`) |
 
 > metadata 放 `Order.tags`,不是仅放 `SubmitOrder.params`,因为 Risk deny 时 `_deny_order(order, reason)` 直接拿到的是 `order`;Execution 处理 `OrderDenied` 时也可经 cache 反查 order tags。
@@ -319,7 +334,7 @@ CANCEL_ONLY
   → 走统一 finish outlet
 
 RELEASED
-  pair 当前 open-order / position digest 均与评估基线相同
+  pair 当前 position digest 与评估基线相同(#317:open-orders-digest 已删)
   release 所有 pending SubmitOrder 到原生 ExecutionEngine._execute_command
   后续由各 ExecutionClient 独立维护 session 生命周期
 
@@ -361,17 +376,17 @@ BASELINE_DENIED / DENIED / TIMED_OUT
   撤单；release 后仍可能出现某 venue 成功、另一 venue 拒绝或超时。
 
 **评估窗口 execution-state 校验(#266/#284)**:
-- Strategy 不冻结 order book/instrument；在 evaluation 开始记录 pair-wide open-order 与
-  position 两份 digest，并随每条真实腿透传。
+- Strategy 不冻结 order book/instrument；在 evaluation 开始记录 pair-wide **position digest**，并随每条真实腿透传（#317:open-orders-digest 已删）。
 - position digest 直接读取 NT `Cache.positions(instrument_id=...)`，投影
   `position/account/instrument/strategy id + side + quantity + avg_px_open/close + realized_pnl`
   后排序、序列化、SHA256；不持有会被 cache 原地更新的 `Position` 引用。使用全部 positions
   而非仅 open positions，SELL 全平后 closed position 的 realized/均价变化也可见。
 - barrier 收齐全部 risk-pass legs 后，先执行既有 residual cancel-only；若未触发，再用同一
-  common helpers 对 pair registered instruments 重算两份 digest。
-- 任一 digest 缺失、腿间不同或当前值变化均 fail-closed，整组拒绝。比较只做一次，不能拆到各
+  common helper 对 pair registered instruments 重算 position digest。
+- digest 缺失、腿间不同或当前值变化均 fail-closed，整组拒绝。比较只做一次，不能拆到各
   venue 分支，否则会重新引入腿间时序窗口。
-- 两份 digest 都只观察**已经写入 NT Cache** 的状态。链上 merge 正在等待、第二次
+- **#317:去掉 open-orders-digest 校验**。承 #316(per-pair ≤1 执行):同 pair 执行期间无别的机会并发挂单，order-digest 失去防"并发新挂单"意义；而它会因窗口内**正常撤单**(改 order 集、不动 position)误拒新机会。威胁安全的 order 变化=成交，成交必改 position → 已由 position digest 抓住；纯撤单只让新机会保守一轮(自愈)。residual open orders 仍由上面的 cancel-only 优先处理(与本校验正交)。
+- position digest 只观察**已经写入 NT Cache** 的状态。链上 merge 正在等待、第二次
   `/positions` 尚未返回并由 NT reconcile 应用时，position digest 仍是旧值；按用户裁定不为
   该窗口恢复临时 position liveness，也不另加 settlement epoch。
 - 当前边界有意不覆盖 ABA：评估期间状态变化、比较前又完整恢复同一字段投影时，digest 无法

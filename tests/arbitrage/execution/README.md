@@ -79,14 +79,14 @@
   `test_cancel_barrier_timeout_rejects_arrived_commands`
 
 ### execution-3.5.7: evaluation 窗口内 pair orders/positions 变化则整组拒绝
-- 前置:所有腿携带相同 `open_orders_digest/positions_digest`,且已全部 Risk pass。
+- 前置:所有腿携带相同 `positions_digest`（#317:open_orders_digest 已删）,且已全部 Risk pass。
 - 输入:barrier release 前重算出的任一 pair-wide digest 与基线不同。
 - 期望:不向任何 venue ExecutionClient release；所有暂存腿生成本地 `OrderDenied`。
 - 验收:✅ `test_engine_barrier.py::test_barrier_denies_all_legs_when_pair_open_orders_changed`、
   `test_barrier_denies_all_legs_when_pair_positions_changed`
 
-### execution-3.5.8:缺失 order/position baseline 时 fail-closed
-- 前置:旧格式 opportunity 缺少 `arb:open_orders_digest` 或 `arb:positions_digest`。
+### execution-3.5.8:缺失 position baseline 时 fail-closed
+- 前置:旧格式 opportunity 缺少 `arb:positions_digest`（#317:open_orders_digest 校验已删）。
 - 输入:所有 expected legs 已收齐。
 - 期望:整组拒绝，不为兼容旧 metadata 绕过窗口校验。
 - 验收:✅ `test_engine_barrier.py::test_barrier_denies_legacy_opportunity_without_open_orders_baseline`、
@@ -136,8 +136,8 @@
 ### execution-4.2.2: watchdog 先 arm,异常不留半建立 session(#261 改写)
 - 前置:注入会抛的 `set_time_alert_ns`(`_begin_order_session` 内唯一可能抛的操作)。
 - 期望:session 不得半建立 —— `_active_sessions` 为空、`_execution_active` 为 False。
-  #261 后 `_execution_active` **直接决定 barrier 的全局闸**,留一条没有看门狗的悬挂 session
-  会让它恒 True,从此拒绝所有新机会。
+  #261 后 session 态**直接决定 barrier 闸**(#316 起为 per-pair `_pair_execution_active`),留一条没有看门狗
+  的悬挂 session 会让本 pair 恒被挡,从此拒绝该 pair 的所有新机会。
 - 验收:`test_session.py::test_alert_failure_leaves_no_half_built_session`
   + `test_begin_session_arms_watchdog`(正常路径:watchdog 已 arm)。
 

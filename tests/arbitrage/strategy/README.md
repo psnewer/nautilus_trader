@@ -170,7 +170,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 **当前框架边界**:
 - ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由无状态 `StateQuery` 与 AND/OR/NOT 组成，直接读取 `EvalContext`
-- ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 order/position digests
+- ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 position digest（#317:open_orders_digest 已删）
 - ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
 **用户域 Check/Action**(slice 9 #49):
@@ -275,7 +275,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 输入: 执行 `PlaceBetsAction.execute(ctx)`。
 - 步骤: 检查两次 submit spec。
 - 期望: 两条 spec 拥有相同 `opportunity_id` / `pair_id=P1`;各自 `leg_key` 不同;`expected_legs` 包含两条真实腿且包含自己。
-- 期望:两条 spec 同时携带本轮相同的 `open_orders_digest/positions_digest`。
+- 期望:两条 spec 同时携带本轮相同的 `positions_digest`（#317:open_orders_digest 已删）。
 - 验收: 不发送 0 qty 空单;没有真实下单的 outcome 不进入 `expected_legs`。
 - 状态:✅ `test_action_place_bets.py::test_action_calls_submitter_when_present`
 

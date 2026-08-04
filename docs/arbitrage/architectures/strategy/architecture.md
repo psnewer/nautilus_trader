@@ -206,17 +206,15 @@ class StrategyEvaluator(NTStrategy):
         # 2. 查 StrategyRegistry,有则 _create_task(self._evaluate_and_fire(strategy, pair_id))
 
     async def _evaluate_and_fire(self, strategy, pair_id):
-        if self._is_execution_active(): return    # Q19:让路
+        if self._is_pair_executing(pair_id): return    # §7.5(#316):本 pair 让路
         instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
-        open_orders_digest = pair_open_orders_digest(self.cache, instrument_ids)
-        positions_digest = pair_positions_digest(self.cache, instrument_ids)
+        positions_digest = pair_positions_digest(self.cache, instrument_ids)  # #317:仅 position
         submitter = self._make_submitter()
         common = dict(
             pair_id=pair_id,
             cache=self.cache,
             pair_registry=self._pair_registry,
             sports_store=self._get_sports_store(),
-            open_orders_digest=open_orders_digest,
             positions_digest=positions_digest,
             submitter=submitter,
             pair_order_canceler=self._make_pair_order_canceler(),
@@ -309,8 +307,8 @@ def _on_eval_done(self, pair_id, task):
 `await self._execute_actions(...)` 保留(原为 `create_task`):让 action 链的异常落进本 task,
 由 `_on_eval_done` 带 traceback 打出来,而不是变成无上下文的 asyncio
 "Task exception was never retrieved"。代价核对过为零 —— 本方法本就在自己的 task 里,
-await 不阻塞别的 pair、不阻塞 loop(actions 内部本就顺序 await)。挂单 digest 作为不可变字符串
-随 ctx 活到 actions 结束并写入每条 order metadata。
+await 不阻塞别的 pair、不阻塞 loop(actions 内部本就顺序 await)。position digest 作为不可变字符串
+随 ctx 活到 actions 结束并写入每条 order metadata（#317:open-orders-digest 已删）。
 
 `is_execution_active` 前置检查保留,但 **#261 起只用于省算力**(避免明知会被 barrier 拒还去评估),
 **不承担正确性**。用户明确不把 barrier ctx 纳入该判据:执行刚起步的那 ~2s 内仍会评估、
@@ -381,9 +379,9 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 - 所有 binary pair 的经济 outcome 固定为 `["yes","no"]`。`claim` 是经济 outcome；
   `selection_role` 只用于匹配/展示。claim=no 的候选腿仍可带
   `lay_price` 与 `exec_instrument_id`，执行转换语义不变。
-- 冻结项是 `open_orders_digest + positions_digest`:Evaluator 在评估开始时对 pair 全部可交易
-  instrument 的 orders/positions 分别取不可变摘要；Action 原样写入所有真实腿 metadata，
-  Execution barrier release 前统一重算比较。跨组件协议见
+- 冻结项是 `positions_digest`（#317:open_orders_digest 已删,承 #316 per-pair ≤1）:Evaluator 在评估开始时对 pair 全部可交易
+  instrument 的 positions 取不可变摘要；Action 原样写入所有真实腿 metadata，
+  Execution barrier release 前重算比较。跨组件协议见
   `_cross-cutting/synchronization.md §8.4bis`，摘要 helper 落点见 common architecture §9。
 
 **`EvalContext.scratch: dict`**:per-eval 自动隔离的 mutable scratch space。Check 算出的
@@ -497,8 +495,8 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
   4. Risk pass 后进入 `ExecEngine`;Execution opportunity barrier 等齐本轮 legs 后才 release 到 venue
      ExecClient。横切协议见 `_cross-cutting/synchronization.md §8.4bis`。
 - 原生 submit 写入 Cache 时订单仍为 `INITIALIZED`；NT `cache.orders_open()` 不把该状态计为 open，
-  因此本次机会的新腿不会污染评估开始时的 open-order digest，也不会被 barrier 当成 residual。
-- **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, intent?: "arbitrage"|"recovery", opportunity_id?: str, pair_id?: str, leg_key?: str, expected_legs?: list[str], open_orders_digest?: str, positions_digest?: str}`
+  因此本次机会的新腿不会被 barrier 当成 residual（#317:barrier 已不做 open-order digest 校验）。
+- **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, intent?: "arbitrage"|"recovery", opportunity_id?: str, pair_id?: str, leg_key?: str, expected_legs?: list[str], positions_digest?: str}`（#317:open_orders_digest 已删）
 - `instrument_id` 允许是策略 legs 使用的字符串视图,也允许是 NT 原生 `InstrumentId`;
   `make_submitter` 是边界适配点,统一转成 `InstrumentId` 后再调用 `cache.instrument(...)`
   和构造 `LimitOrder`。这是 Strategy 与 NT cache 的契约边界,避免 Action 层直接依赖 NT 标识对象。

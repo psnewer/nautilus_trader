@@ -251,17 +251,19 @@ def register_factories(node: TradingNode, cfg: ArbConfig | None = None) -> None:
             node.add_exec_client_factory(venue.venue_id, resolve_factory(venue.exec_factory))
 
 
-def _make_is_execution_active(node: TradingNode):
-    """Q19/§6.10 接线:聚合 PM+OE exec client 的 `_execution_active` property(`ArbExecutionSessionMixin`
-    维护的 ref-count `len(_active_sessions) > 0`)。任一在飞 → True,StrategyEvaluator 跳过本轮 evaluate。
-
-    跟健康检查共用同一 callable 语义(参 `_cross-cutting/synchronization.md` + `health_check.py:77`)。
+def _make_is_pair_executing(node: TradingNode, pair_registry: PairRegistry):
+    """§7.5(#316)接线:聚合 PM+OE exec client 上**归属该 pair** 的在飞 session
+    (`ArbExecutionSessionMixin._pair_execution_active`)。任一在飞 → True,StrategyEvaluator 跳过本 pair
+    本轮 evaluate;跨 pair 不再互相饿死。tag-less 残单(session 无 stored `pair_id`)用 `PairRegistry.get`
+    instrument→pair 反查兜底(§7.5)。
     """
     exec_engine = node.kernel.exec_engine
+    resolve = pair_registry.get
 
-    def check() -> bool:
+    def check(pair_id: str) -> bool:
         for client in exec_engine._clients.values():
-            if getattr(client, "_execution_active", False):
+            fn = getattr(client, "_pair_execution_active", None)
+            if fn is not None and fn(pair_id, resolve):
                 return True
         return False
 
@@ -283,7 +285,7 @@ def add_actors(
 
     构造运行组件:
       - `MarketMatchingActor`
-      - `StrategyEvaluator` Strategy(`is_execution_active` Q19 桥到 exec client 的 `_execution_active`)
+      - `StrategyEvaluator` Strategy(`is_pair_executing` §7.5/#316 桥到 exec client 的 per-pair session)
 
     `loop` 用 `asyncio.get_event_loop()`。
 
@@ -317,7 +319,7 @@ def add_actors(
                 pair_registry=pair_registry,
                 strategy_registry=to_strategy_registry(cfg),
                 portfolio=node.kernel.portfolio,
-                is_execution_active=_make_is_execution_active(node),  # Q19:桥到 exec client `_execution_active`
+                is_pair_executing=_make_is_pair_executing(node, pair_registry),  # §7.5(#316):桥到 exec client per-pair session
                 loop=loop,
                 arbitrage_params=to_arbitrage_params(cfg),  # Web Arbitrage 运行时默认 share/max_leg_share/fx
                 pair_inflight=pair_inflight,        # §7:per-pair 评估串行(#261:execution 不再共享)
