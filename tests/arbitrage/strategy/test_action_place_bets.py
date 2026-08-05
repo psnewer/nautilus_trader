@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nautilus_trader.model.identifiers import PositionId
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
@@ -593,13 +594,19 @@ def _pm_inventory_ctx(
     min_quantity: float = 5.0,
     min_buy_notional: float = 1.0,
     opposite_bid: float | None = 0.8,
+    positions=None,
 ):
     target = "ALCARAZ.POLYMARKET"
     opposite = "SINNER.POLYMARKET"
     return live_context(
         instrument_ids=[target, opposite],
         books={opposite: _BidBook(opposite_bid)} if opposite_bid is not None else {},
-        positions=[SimpleNamespace(instrument_id=opposite, side="LONG", quantity=_Qty(held_qty))],
+        positions=positions or [SimpleNamespace(
+            id=PositionId(f"{opposite}-EXTERNAL"),
+            instrument_id=opposite,
+            side="LONG",
+            quantity=_Qty(held_qty),
+        )],
         infos={
             target: {"selection_role": "away"},
             opposite: {"selection_role": "home"},
@@ -742,6 +749,53 @@ def test_probability_buy_fully_replaced_by_opposite_sell():
         ("SINNER.POLYMARKET", "SELL", 100.0, 0.8),
     ]
     assert calls[0]["venue_required_balance"] == 0.0
+    assert calls[0]["position_id"] == "SINNER.POLYMARKET-EXTERNAL"
+
+
+def test_probability_inventory_sell_splits_by_native_position_id():
+    opposite = "SINNER.POLYMARKET"
+    positions = [
+        SimpleNamespace(
+            id=PositionId(f"{opposite}-EXTERNAL"),
+            instrument_id=opposite,
+            side="LONG",
+            quantity=_Qty(40),
+        ),
+        SimpleNamespace(
+            id=PositionId(f"{opposite}-ARB-EVAL-001"),
+            instrument_id=opposite,
+            side="LONG",
+            quantity=_Qty(60),
+        ),
+    ]
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=0, positions=positions))
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert [(c["side"], c["qty"], c["position_id"]) for c in calls] == [
+        ("SELL", 60.0, "SINNER.POLYMARKET-ARB-EVAL-001"),
+        ("SELL", 40.0, "SINNER.POLYMARKET-EXTERNAL"),
+    ]
+    assert calls[0]["expected_legs"] == (
+        "polymarket:away:0:reduce:0",
+        "polymarket:away:0:reduce:1",
+    )
+
+
+def test_probability_inventory_without_position_id_falls_back_to_buy():
+    opposite = "SINNER.POLYMARKET"
+    position = SimpleNamespace(
+        instrument_id=opposite,
+        side="LONG",
+        quantity=_Qty(100),
+    )
+    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=0, positions=[position]))
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert [(c["instrument_id"], c["side"], c["qty"]) for c in calls] == [
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0),
+    ]
 
 
 def test_action_qty_override_beats_leg_qty():

@@ -641,8 +641,9 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   集合、状态、成交量、仓位经济字段、realized PnL 与 NT 对象 `event_count/ts_last` 仍参与各分格摘要。
 
   adapter 返回 `GuardedReports(list)`,把拉取前摘要作为 report batch 的一部分,并**总把摘要附到每份 report**
-  (供 per-report 的 per-pair 校验);连续对账、单份 QueryOrder、startup `ExecutionMassStatus` 的 order/position
-  两 batch 都走同一摘要。**adapter 不做并发或 liveness 判定**:远端拉取成功正常返回,网络失败继续 raise;
+  (供 per-report 的 per-pair 校验);连续对账(复数)、startup `ExecutionMassStatus` 的 order/position
+  两 batch 都走同一摘要。**单份 QueryOrder(单数 `generate_order_status_report`,inflight-check 专用)自 #319 起
+  豁免、不附摘要**(见下)。**adapter 不做并发或 liveness 判定**:远端拉取成功正常返回,网络失败继续 raise;
   启动/周期 reconciliation 上层据此标记 order/position alive/dead。PM `/closed-positions` 只生成 deferred
   realized 候选,随 position batch 下传,不在 adapter 中提交。
 
@@ -656,8 +657,18 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
     有 stale pair → 该 venue 进 `failed_venues`(保守跳过 cached-position flatten,免误平未验证的 stale pair)。
   - **startup mass-status**:不再整批 abort;摘要已附到每份 report,交 super 逐 report 走 `_reconciliation_report_is_current`
     (按 pair 判)过滤;offset 用预检出的通过 instrument 选择性 commit。
-  - 单份 QueryOrder / 合成 flat position report 在 `_reconcile_order_report` / `_reconcile_position_report` 最终入口
-    同样按该 report 的 pair 复核(covers 连续检查与 targeted QueryOrder / synthetic flat 各路径)。
+  - 合成 flat position report 在 `_reconcile_position_report` 最终入口同样按该 report 的 pair 复核。
+  - **⚠️ inflight-check / QueryOrder 单数路径豁免 staleness 闸(#319,2026-08-04,已落地 live-unvalidated)**:
+    三个 adapter 的**单数** `generate_order_status_report`(NT `_query_order` / inflight-check targeted query 专用)
+    **不再 attach 摘要** → report 上无 `_arb_reconciliation_snapshot` → `_reconciliation_report_is_current` 落
+    `snapshot is None → return True` 恒放行,报告无条件应用。**理由**:该路径的天职是拿 venue 真实态解析
+    INFLIGHT(SUBMITTED 未 ack)单,往返期间状态在变本是常态;附摘要会把「订单存活」的解析报告判 stale 丢掉,
+    致单子悬到 session 超时被 `_resolve_inflight_order` 误置 REJECTED(实盘 nohup ARB-5939df5b:活单被误 fail,
+    随后 open-check 拉到活单想补 `OrderAccepted` 却因 REJECTED 终态 → `InvalidStateTrigger: REJECTED->ACCEPTED`
+    无法回收)。**回归安全**:查询返回旧态而期间 WS 已推更新态时,由 NT 订单状态机正向兜底(对已 FILLED 单套
+    ACCEPTED 走 InvalidStateTrigger 被安全跳过);乐观并发闸对单单路径冗余,其代价恰是上述误 fail。
+    **仅单数豁免**;复数周期 `generate_order_status_reports` / mass-status 的 staleness 闸不变(本条 supersede #318
+    对单数路径的 per-pair 复核)。
 
   position 批通过后 PM 才提交 realized,并立即**重取应用阶段 fresh 摘要**附到通过的 report(供 NT 逐 report 应用前复核);
   同步步骤之间无 `await`。**liveness 与应用资格正交**:远端查询成功即 `mark_*_alive`,即便随后某 pair 因本地变化被丢也不回写 dead。

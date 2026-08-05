@@ -1220,6 +1220,22 @@ def test_reconcile_reports_stale_snapshot_reload_success_stays_alive():
     assert c._venue_liveness.venue_alive("ORBITEXCH")
 
 
+def test_single_order_report_exempt_from_staleness_guard():
+    """#319:OE inflight-check 单数路径不附 snapshot(恒被 `_reconciliation_report_is_current` 放行)。"""
+    c = _client()
+    report = SimpleNamespace(client_order_id=ClientOrderId("O-1"))
+    c._build_order_report = lambda bet: report
+    c._on_current_bets([{"offerId": "A"}])       # 填 _current_bets + _last_current_bets_ns
+    c._mark_exec_frame()                          # WS 帧锚新鲜 → _ensure_exec_snapshot_fresh 直接 True
+
+    out = _run(c.generate_order_status_report(
+        SimpleNamespace(venue_order_id=VenueOrderId("A"), client_order_id=None),
+    ))
+
+    assert out is report
+    assert not hasattr(out, "_arb_reconciliation_snapshot")
+
+
 # ── #105 撤单纳入 exec_count(cancel-only 也由 exec_count→0 兜底,不靠 max-hold)──
 async def _noop_cancel(order):
     pass

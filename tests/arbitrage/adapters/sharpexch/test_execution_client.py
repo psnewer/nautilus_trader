@@ -745,6 +745,8 @@ def test_single_order_status_report_filters_by_venue_order_id():
 
     assert report.venue_order_id == VenueOrderId("B")
     assert report.order_status == OrderStatus.FILLED
+    # #319:inflight-check 单数路径豁免 staleness 闸 —— report 不附 snapshot。
+    assert not hasattr(report, "_arb_reconciliation_snapshot")
 
 
 def test_position_status_reports_aggregate_current_bets():

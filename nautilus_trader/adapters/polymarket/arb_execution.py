@@ -43,7 +43,6 @@ from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
-from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 
@@ -312,7 +311,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command, *, retry: bool = True):
-        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
+        # #319:单数=NT inflight-check / QueryOrder 解析专用路径,**不附 snapshot**、豁免 staleness 闸。
+        # 该路径的天职是拿 venue 真实态解析 INFLIGHT 单,往返期间状态在变本是常态;附 snapshot 会把
+        # 「订单存活」的解析报告判 stale 丢掉 → 单子悬到超时被误置 REJECTED。回归由 NT 状态机兜底。
         if not retry:
             try:
                 report = await super().generate_order_status_report(command, retry=False)
@@ -322,7 +323,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 if self._log is not None:
                     self._log.warning(f"PM one-shot order query failed (raise): {e!r}")
                 raise
-            return attach_reconciliation_snapshot(report, snapshot)
+            return report
 
         try:
             report = await super().generate_order_status_report(command)
@@ -330,7 +331,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             if self._log is not None:
                 self._log.warning(f"PM order report query failed (raise): {e!r}")
             raise
-        return attach_reconciliation_snapshot(report, snapshot)
+        return report
 
     async def generate_position_status_reports(self, command):
         snapshot = self._capture_reconciliation_state_snapshot(kind="position")

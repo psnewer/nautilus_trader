@@ -55,23 +55,23 @@ ExecutionClient (维护账户)
 - 前置: ExecutionClient 已写入 cache.account_state
 - 输入: 提交一个超出**可用余额**的订单
 - 期望: `ArbitrageLiveRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
-- 验收: 检查依据 = `account.balance_free(currency)`。ExecutionClient 已把 venue 真值余额和 accepted 后本地预扣都写成 `total=free=available, locked=0`;Risk 不再按 venue 自己扣 open orders。
+- 验收: 检查依据 = `account.balance_total(currency)`(**2026-08-04 起改用 total,不再 free**)。OE/SE 的 WS 余额恒 `total=free=available, locked=0`(读 total 与 free 等价);PM 是 #264 calculated account,`free=total-locked`,读 total = 不扣本地 pending 占用(把并发占用保护交给 #264 native locking);Risk 不再按 venue 自己扣 open orders。
 
-### risk-6.3b: 订单成本按 venue capability 计算,余额来源不按 venue 分支(Q17 修订已落地)
+### risk-6.3b: 订单成本按 venue capability 计算,余额来源不按 venue 分支(Q17 修订已落地;2026-08-04 free→total)
 - **probability venue(当前 PM)**
-  - 前置: PM cache `free=40`;订单 `quantity=50 shares`,`price=0.9`。
+  - 前置: PM cache `total=40`;订单 `quantity=50 shares`,`price=0.9`。
   - 输入: 提交该订单。
-  - 期望: `_check_balance` 经 Venue Registry `probability_from_price` 算成本 `50*0.9=45`,因 `free=40` 拒绝。
-  - 验收: 成本公式按 `odds_model=probability` 派生;余额只读 `free`,不再 `total - open_orders`。
-- **decimal venue(当前 OE/SE)**
-  - 前置: OE/SE cache `free=40 USD`;订单 `quantity=50`,`price=2.0`。
+  - 期望: `_check_balance` 经 Venue Registry `probability_from_price` 算成本 `50*0.9=45`,因 `total=40` 拒绝。
+  - 验收: 成本公式按 `odds_model=probability` 派生;余额读 `total`,不再 `total - open_orders`。`test_balance_pm_uses_total_and_probability_cost`。
+- **decimal venue(当前 OE/SE)—— 判别读 total 非 free**
+  - 前置: OE/SE cache `total=100, free=40`(free<cost≤total);订单 `quantity=50`,`price=2.0`,cost=50。
   - 输入: 提交该订单。
-  - 期望: `_check_balance` 算成本 `50`,因 `free=40` 拒绝。
-  - 验收: 成本公式按 `odds_model=decimal` 派生;新增 decimal venue 只需配置 Venue Registry,不改 Risk 分支。
+  - 期望: 读 free(40)会拒,读 total(100)**放行** → `_check_balance` 返 True、无 deny,证明门控读 total。
+  - 验收: `test_balance_oe_uses_total_not_free` / `test_balance_sharpexch_uses_total_not_free`。
 - **decimal LAY**
-  - 前置:cache `free=30 USD`;SELL/LAY 订单 `quantity=10`,`price=5.0`。
+  - 前置:OE cache `total=free=30 USD`(locked=0);SELL/LAY 订单 `quantity=10`,`price=5.0`。
   - 输入:提交该订单。
-  - 期望:`_check_balance` 按 liability `10*(5-1)=40` 拒绝,不能按 stake 10 放行。
+  - 期望:`_check_balance` 按 liability `10*(5-1)=40` 拒绝(`40>total 30`),不能按 stake 10 放行。
   - 验收:`test_balance_decimal_lay_uses_liability_not_stake`。
 
 ### risk-6.3c: accepted 本地预扣后 Risk 不双扣 PM open orders(Q17 修订已落地)
@@ -80,10 +80,10 @@ ExecutionClient (维护账户)
 
 - `test_balance_uses_opportunity_venue_total_for_each_leg`:单腿 cost 虽小于 free，只要 metadata 中同 venue 整组需求超过 free 即拒绝。
 - `test_balance_pm_sell_reduction_requires_no_quote_balance`:probability SELL 减仓不占 quote balance。
-- 前置:PM ExecutionClient 已在 `OrderAccepted` 后把账户从 `free=100` 本地预扣为 `free=90`;cache 中同时存在该 open order。
-- 输入:再提交成本 `95` 的 PM 订单。
-- 期望:`_check_balance` 只读 `free=90`,拒绝;不会再额外扫描 open orders 得到 `80/更低`。
-- 验收:旧 `_probability_open_notional` 路径已删除;测试证明 `_check_balance` 的可用余额来源只看 `free`。
+- 前置:PM ExecutionClient 已在 `OrderAccepted` 后把账户 `locked` 增加(#264 native locking);cache 中同时存在该 open order。
+- 输入:再提交 PM 订单。
+- 期望:`_check_balance` 读 `total`(不扣本地 pending),拒绝逻辑只看 total;不会再额外扫描 open orders 自扣。
+- 验收:旧 `_probability_open_notional` 路径已删除;测试证明 `_check_balance` 的可用余额来源 = `balance_total`(2026-08-04 起,原 free)。
 
 ### risk-6.4: cache stale 时由 venue 拒绝兜底
 - 前置: cache 余额过期,venue 真实余额已不够
@@ -118,6 +118,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,**override 被 Cython `_handle_submit_order` 派发到(已用真实 SubmitOrder 跑通:覆盖触发 1 次 + deny 事件发出 + 订单不泄漏到 exec)**。⚠️ 自定义 deny 必须自调 `self._deny_order(order, reason)`,否则订单静默丢弃、`on_order_denied` 不触发
 
 ### risk-6.7.1b: VenueExecutionLiveness gate 顺序与 fail-closed(2026-06-15)
+> ⚠️ **临时禁用(2026-08-04)**:`_check_order` 里对 `_check_required_venues_alive(order)` 的调用已被**注释掉**(`src/arbitrage/risk/engine.py`,"后面可能还会启用")。方法本体、`VenueExecutionLiveness` 注入、`_required_venues` 均保留,重启用只需去掉两行注释。下述 1b~1d 用例暂不作为当前门控行为的验收(`test_liveness_gate_*` 直接测 `_check_required_venues_alive`,仍通过;但它已不在 `_check_order` 链路上被调用)。
 - 前置: `ArbitrageLiveRiskEngine` 注入 `VenueExecutionLiveness`;某 opportunity 的 `expected_legs=("pm:home:0","oe:away:1")` 或 `("pm:home:0","sharpexch:away:1")`;PM `order_alive=true/position_alive=true`,外部 venue `order_alive=false/position_alive=true`。
 - 输入: PM leg 或 OE leg 任一 SubmitOrder 进入 `_check_order`。
 - 期望: `super()._check_order` 通过后,`_check_required_venues_alive` 发现 required venues 中 OE 不 alive → `_deny_order`。

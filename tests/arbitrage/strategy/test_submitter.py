@@ -8,6 +8,7 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.orders import LimitOrder
 
@@ -78,6 +79,37 @@ def test_submit_with_sell_side():
     _run(submit({"instrument_id": iid, "side": "SELL", "qty": 1.0, "price": 2.5}))
 
     assert submitted[0].side == OrderSide.SELL
+
+
+def test_submit_passes_inventory_position_id_to_native_strategy_submit():
+    cache = MagicMock()
+    cache.instrument.return_value = _fake_instrument()
+    submit_order = MagicMock()
+    order_factory = OrderFactory(
+        trader_id=TraderId("TEST-001"),
+        strategy_id=StrategyId("ARB-EVAL-001"),
+        clock=TestClock(),
+    )
+    submit = make_submitter(
+        cache=cache,
+        order_factory=order_factory,
+        submit_order=submit_order,
+        log=MagicMock(),
+    )
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "SELL",
+        "qty": 5.0,
+        "price": 0.8,
+        "position_id": "X-1.POLYMARKET-EXTERNAL",
+    }))
+
+    order = submit_order.call_args.args[0]
+    assert order.side == OrderSide.SELL
+    assert submit_order.call_args.kwargs == {
+        "position_id": PositionId("X-1.POLYMARKET-EXTERNAL"),
+    }
 
 
 def test_submit_marks_recovery_intent_tag():

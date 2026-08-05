@@ -66,6 +66,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
     from nautilus_trader.model.enums import TimeInForce
     from nautilus_trader.model.identifiers import ClientOrderId
     from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.identifiers import PositionId
     from nautilus_trader.model.objects import Price
     from nautilus_trader.model.objects import Quantity
 
@@ -99,7 +100,16 @@ def make_submitter(*, cache, order_factory, submit_order, log):
             tags=tags,
             client_order_id=ClientOrderId(f"ARB-{UUID4().value[:8]}"),
         )
-        submit_order(order)
+        raw_position_id = spec.get("position_id")
+        if raw_position_id is None:
+            submit_order(order)
+        else:
+            position_id = (
+                raw_position_id
+                if isinstance(raw_position_id, PositionId)
+                else PositionId(str(raw_position_id))
+            )
+            submit_order(order, position_id=position_id)
 
     return submit
 

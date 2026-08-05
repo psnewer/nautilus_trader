@@ -344,14 +344,14 @@ def test_probability_bounds_hot_update_rejects_invalid_interval():
 
 
 # ── 余额(Q17:统一读 account free,成本按 venue capability）────────────
-def test_balance_pm_uses_free_and_probability_cost():
+def test_balance_pm_uses_total_and_probability_cost():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
     ctx.cache.add_account(_pm_account(ctx, total=40))
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
-    order = _DuckOrder(pm.id, price=0.9, qty=Quantity.from_int(50))  # cost = 45 > free 40
+    order = _DuckOrder(pm.id, price=0.9, qty=Quantity.from_int(50))  # cost = 45 > total 40
     assert ctx.engine._check_balance(pm, order) is False
     assert any("Insufficient balance" in d for d in denials)
 
@@ -361,7 +361,7 @@ def test_balance_pm_does_not_self_deduct_open_orders():
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
     ctx.cache.add_account(_pm_account(ctx, total=30))
-    order = _DuckOrder(pm.id, price=0.2, qty=Quantity.from_int(100))   # cost = 20 < free 30
+    order = _DuckOrder(pm.id, price=0.2, qty=Quantity.from_int(100))   # cost = 20 < total 30
     assert ctx.engine._check_balance(pm, order) is True
 
 
@@ -402,23 +402,25 @@ def test_pm_sell_does_not_apply_buy_notional_minimum():
     assert ctx.engine._check_min_buy_notional(pm, order) is True
 
 
-def test_balance_oe_uses_free_and_decimal_quantity_cost():
+def test_balance_oe_uses_total_not_free():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
     ctx.cache.add_instrument(oe)
-    ctx.cache.add_account(_oe_account(ctx, total=100, free=40))  # WS free 已含占用
+    # 判别性:free(40) < cost(50) ≤ total(100)。读 free 会 deny,读 total 放行 → 证明门控读 total。
+    ctx.cache.add_account(_oe_account(ctx, total=100, free=40))
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
-    order = _DuckOrder(oe.id, price=2.5, qty=Quantity.from_int(50))    # OE cost = USD size = 50 > free 40
-    assert ctx.engine._check_balance(oe, order) is False
-    assert any("Insufficient balance" in d for d in denials)
+    order = _DuckOrder(oe.id, price=2.5, qty=Quantity.from_int(50))    # OE cost = USD size = 50
+    assert ctx.engine._check_balance(oe, order) is True
+    assert denials == []
 
 
 def test_balance_decimal_lay_uses_liability_not_stake():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
     ctx.cache.add_instrument(oe)
-    ctx.cache.add_account(_oe_account(ctx, total=100, free=30))
+    # OE free==total(locked=0,#319 前后 WS 余额恒等);cost=liability(40)>total(30) → deny。
+    ctx.cache.add_account(_oe_account(ctx, total=30, free=30))
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
     order = _DuckOrder(oe.id, price=5.0, qty=Quantity.from_int(10), side="SELL")
@@ -451,17 +453,18 @@ def test_balance_uses_opportunity_venue_total_for_each_leg():
     assert any("cost=12.0000" in reason for reason in denials)
 
 
-def test_balance_sharpexch_uses_free_and_decimal_quantity_cost():
+def test_balance_sharpexch_uses_total_not_free():
     ctx = _Ctx()
     se = se_instrument("match_X", "away", 2)
     ctx.cache.add_instrument(se)
+    # 判别性:free(40) < cost(50) ≤ total(100)。读 free 会 deny,读 total 放行 → 证明门控读 total。
     ctx.cache.add_account(_se_account(ctx, total=100, free=40))
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
     order = _DuckOrder(se.id, price=2.5, qty=Quantity.from_int(50))
 
-    assert ctx.engine._check_balance(se, order) is False
-    assert any("Insufficient balance" in d for d in denials)
+    assert ctx.engine._check_balance(se, order) is True
+    assert denials == []
 
 
 def _pm_account(ctx, total):

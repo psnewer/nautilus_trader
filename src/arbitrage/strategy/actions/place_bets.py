@@ -139,6 +139,8 @@ class PlaceBetsAction(Action):
                 "positions_digest": ctx.positions_digest,
                 "venue_required_balance": required_by_venue[draft["venue"]],
             }
+            if draft.get("position_id") is not None:
+                spec["position_id"] = draft["position_id"]
             if self._enable_timeout is not None:
                 spec["enable_timeout"] = self._enable_timeout
             prepared.append(
@@ -274,7 +276,8 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     opposite_iid = _opposite_real_instrument(ctx, leg, draft)
     if opposite_iid is None:
         return [draft]
-    available = _long_position_quantity(ctx.cache, opposite_iid)
+    long_positions = _long_positions(ctx.cache, opposite_iid)
+    available = sum(quantity for _, quantity in long_positions)
     if available <= 0:
         return [draft]
 
@@ -311,21 +314,37 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     if sell_qty <= 0:
         return [draft]
 
-    sell = dict(draft)
-    sell.update({
-        "instrument_id": str(opposite_iid),
-        "side": "SELL",
-        "qty": sell_qty,
-        "price": 1.0 - target_price,
-        "key_suffix": "reduce",
-    })
-    remainder = target_qty - sell_qty
+    reductions = _allocate_position_reductions(
+        target_qty=target_qty,
+        requested_sell_qty=sell_qty,
+        long_positions=long_positions,
+        sell_min=sell_min,
+        buy_min=buy_min,
+    )
+    if not reductions:
+        return [draft]
+
+    sells = []
+    multiple = len(reductions) > 1
+    for index, (position_id, quantity) in enumerate(reductions):
+        sell = dict(draft)
+        sell.update({
+            "instrument_id": str(opposite_iid),
+            "side": "SELL",
+            "qty": quantity,
+            "price": 1.0 - target_price,
+            "position_id": position_id,
+            "key_suffix": f"reduce:{index}" if multiple else "reduce",
+        })
+        sells.append(sell)
+
+    remainder = target_qty - sum(quantity for _, quantity in reductions)
     if remainder <= 1e-9:
-        return [sell]
+        return sells
 
     buy = dict(draft)
     buy.update({"qty": remainder, "key_suffix": "buy"})
-    return [sell, buy]
+    return [*sells, buy]
 
 
 def _best_bid_price(cache, instrument_id: str) -> float | None:
@@ -377,19 +396,70 @@ def _opposite_real_instrument(ctx, leg: dict, draft: dict) -> str | None:
     return None
 
 
-def _long_position_quantity(cache, instrument_id: str) -> float:
-    total = 0.0
+def _long_positions(cache, instrument_id: str) -> list[tuple[str, float]]:
+    """返回可被 NT 原生 submit `position_id` 精确关闭的 LONG 仓位。"""
+    result = []
     for position in cache.positions_open(instrument_id=_as_instrument_id(instrument_id)) or []:
         side = str(getattr(getattr(position, "side", None), "name", getattr(position, "side", ""))).upper()
         if side and side != "LONG":
             continue
+        position_id = getattr(position, "id", None) or getattr(position, "position_id", None)
+        if position_id is None:
+            continue
         quantity = getattr(position, "quantity", None)
         value = quantity.as_double() if hasattr(quantity, "as_double") else quantity
         try:
-            total += abs(float(value))
+            parsed = abs(float(value))
         except (TypeError, ValueError):
             continue
-    return total
+        if parsed > 0:
+            result.append((str(position_id), parsed))
+    return sorted(result)
+
+
+def _allocate_position_reductions(
+    *,
+    target_qty: float,
+    requested_sell_qty: float,
+    long_positions: list[tuple[str, float]],
+    sell_min: float,
+    buy_min: float,
+) -> list[tuple[str, float]]:
+    """把减仓量分配到具体 Position，并保证每条 SELL 与剩余 BUY 均可下单。"""
+    remaining = requested_sell_qty
+    reductions: list[list] = []
+    for position_id, available in long_positions:
+        quantity = min(available, remaining)
+        if quantity + 1e-9 < sell_min:
+            continue
+        reductions.append([position_id, quantity])
+        remaining -= quantity
+        if remaining <= 1e-9:
+            break
+
+    sold = sum(quantity for _, quantity in reductions)
+    buy_remainder = target_qty - sold
+    if sold <= 1e-9:
+        return []
+    if buy_remainder <= 1e-9 or buy_remainder + 1e-9 >= buy_min:
+        return [(position_id, quantity) for position_id, quantity in reductions]
+
+    needed = buy_min - buy_remainder
+    for reduction in reversed(reductions):
+        reducible = reduction[1] - sell_min
+        if reducible <= 1e-9:
+            continue
+        adjustment = min(reducible, needed)
+        reduction[1] -= adjustment
+        needed -= adjustment
+        if needed <= 1e-9:
+            break
+
+    while needed > 1e-9 and reductions:
+        _, removed = reductions.pop()
+        needed -= removed
+
+    return [(position_id, quantity) for position_id, quantity in reductions]
 
 
 def _minimum_quantity(constraint: dict) -> float:

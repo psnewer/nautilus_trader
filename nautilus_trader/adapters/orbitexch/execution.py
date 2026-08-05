@@ -43,7 +43,6 @@ from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessagePa
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
-from src.arbitrage.execution.reconciliation import attach_reconciliation_snapshot
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 
@@ -956,8 +955,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         return self._guard_reconciliation_reports("order", reports, snapshot)
 
     async def generate_order_status_report(self, command):
-        """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。"""
-        snapshot = self._capture_reconciliation_state_snapshot(kind="order")
+        """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。
+
+        #319:单数=NT inflight-check / QueryOrder 解析专用路径,**不附 snapshot**、豁免 staleness 闸
+        (理由见 PM `generate_order_status_report`)。
+        """
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             # #259:**查询失败**(快照不可信)→ 抛;下方「快照里找不到该单」仍返 None(NT 契约合法值)。
             raise RuntimeError(
@@ -974,7 +976,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 continue
             if target_coid is not None and report.client_order_id != target_coid:
                 continue
-            return attach_reconciliation_snapshot(report, snapshot)
+            return report
         return None
 
     async def generate_fill_reports(self, command) -> list:

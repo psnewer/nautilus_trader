@@ -1771,6 +1771,30 @@ def test_arb_generate_single_order_report_failure_does_not_write_liveness(monkey
     _run(scenario())
 
 
+def test_arb_generate_single_order_report_exempt_from_staleness_guard(monkeypatch):
+    """#319:inflight-check 单数路径**不附 snapshot** → 落 `_reconciliation_report_is_current`
+
+    的 `snapshot is None → return True` 恒放行,避免「订单存活」的解析报告被判 stale 丢掉致误 fail。
+    """
+
+    async def fake_super(self, command, *, retry=True):
+        return SimpleNamespace(name="inflight-report")
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        # 即便 reconciliation state 就绪,单数路径也不该捕获/附摘要。
+        _stable_reconciliation_state(client)
+
+        report = await client.generate_order_status_report(SimpleNamespace())
+
+        assert report.name == "inflight-report"
+        assert not hasattr(report, "_arb_reconciliation_snapshot")
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
+    _run(scenario())
+
+
 def test_arb_generate_order_reports_returns_stale_guard_when_local_state_changes(monkeypatch):
     state = {"version": 0}
 

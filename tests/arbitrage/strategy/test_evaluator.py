@@ -541,6 +541,34 @@ def test_submitter_uses_native_strategy_submit_order_path():
     assert actor.cache.orders_open(instrument_id=instrument.id) == []
 
 
+def test_submitter_binds_inventory_sell_to_existing_position_id():
+    """PM inventory SELL 经 NT 原生 SubmitOrder 绑定要关闭的 Position。"""
+    from nautilus_trader.execution.messages import SubmitOrder
+    from nautilus_trader.model.identifiers import PositionId
+    from tests.arbitrage.risk._factories import pm_instrument
+
+    actor, *_ = _harness()
+    instrument = pm_instrument("ATP-native-reduce", "home")
+    actor.cache.add_instrument(instrument)
+    commands = []
+    actor.msgbus.register(endpoint="RiskEngine.execute", handler=commands.append)
+    position_id = PositionId(f"{instrument.id}-EXTERNAL")
+
+    _run(actor._make_submitter()({
+        "instrument_id": instrument.id,
+        "side": "SELL",
+        "qty": 5.0,
+        "price": 0.8,
+        "position_id": position_id,
+    }))
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, SubmitOrder)
+    assert command.position_id == position_id
+    assert actor.cache.position_id(command.order.client_order_id) == position_id
+
+
 # ── 非目标数据类型(无 pair 信息)→ silently no-op ──────────────
 def test_non_routable_data_silently_skipped():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
