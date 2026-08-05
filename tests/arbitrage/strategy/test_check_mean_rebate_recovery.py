@@ -38,12 +38,15 @@ class _InstrumentIdOnlyInfoMap(dict):
         return super().get(key, default)
 
 
-def _ctx(*, books, infos, positions, outcomes=None):
+def _ctx(*, books, infos, positions, outcomes=None, share=10.0):
+    # #321:recovery 费率分母 = 配置的意向 share(`strategy_defaults["share"]`)。缺省 10.0
+    # 使既有断言的 pass/fail 侧不变(各 case 的 net/10 与旧的 net/max-actual 同在阈值一侧)。
     return live_context(
         books=books,
         infos=infos,
         positions=positions,
         instrument_ids=list(infos.keys()),
+        strategy_defaults={"share": share},
     )
 
 
@@ -75,7 +78,69 @@ def test_recovery_adds_missing_outcome_to_max_actual_share():
         "qty": 5.0,
         "claim": "no",
     }]
-    assert ctx.scratch["mean_rebate_recovery"]["target_share"] == 5.0
+    assert ctx.scratch["mean_rebate_recovery"]["target_share"] == 5.0    # 补单目标位 = max 在场
+    assert ctx.scratch["mean_rebate_recovery"]["denominator_share"] == 10.0  # #321 分母 = 配置 share
+
+
+def test_recovery_denominator_uses_configured_share_not_max_actual():
+    """#321:费率分母 = arbitrage `share`(`strategy_defaults["share"]`),不再是 max(在场 share)。
+
+    同一份轻微失衡的仓位(worst net = -0.5):
+      share 小(1.0)→ 率 -0.5 < 阈值 → 触发补救;
+      share 大(20.0)→ 率 -0.025 >= 阈值 → 前置门判「当前已达标」→ 不补。
+    仅 arbitrage share 变、仓位不变即翻转结论 → 证明分母取的是配置 share。
+    (旧实现分母恒为 max 在场 share=10,配置 share 再变都会走同一结论,无从区分。)
+    补单目标位仍是 max 在场 share=10(下方 target_share 断言),与分母分家。
+    """
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+
+    def _fresh(share):
+        return _ctx(
+            books=books,
+            infos=infos,
+            positions=[
+                _position("H.POLYMARKET", qty=10.0, price=0.50),
+                _position("A.POLYMARKET", qty=9.0, price=0.50),   # 轻微失衡
+            ],
+            share=share,
+        )
+
+    small = _fresh(1.0)
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(small) is True
+    assert small.scratch["mean_rebate_recovery"]["denominator_share"] == 1.0
+    assert small.scratch["mean_rebate_recovery"]["target_share"] == 10.0
+
+    large = _fresh(20.0)
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(large) is False
+    assert "legs" not in large.scratch
+
+
+def test_recovery_no_configured_share_fails_closed():
+    """#321:配置 share 缺失/≤0 → 无从算率 → 保守不补(fail-closed)。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+        share=0.0,
+    )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is False
+    assert "legs" not in ctx.scratch
 
 
 def test_recovery_uses_portfolio_net_profit_including_realized_pnl():

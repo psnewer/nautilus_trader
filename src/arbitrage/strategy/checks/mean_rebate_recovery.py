@@ -7,7 +7,11 @@ MeanRebateRecoveryCheck —— mean_rebate 补救检查。
 - **要不要补**:当前最差 outcome 的 rebate **低于**该值才需要补救(否则仓位已达标,不该花钱);
 - **补了有没有用**:补齐后的最差 rebate 必须**不低于**该值。
 
-两者共用同一分母(当前最大实际 share),口径一致、直接可比。
+两者共用同一分母(#321:**arbitrage `share` 参数**,经 `strategy_defaults["share"]` 透传),口径
+一致、直接可比。分子 `net` 含 realizedPNL(已平部分落袋
+盈亏,经 Portfolio `outcome_exposures` 叠加);用波动的「在场 share」当分母与含 realized 的分子
+口径不自洽,配置 share 是 open+已平共同的意向规模,作分母才同基准。**仅费率分母改用配置 share;
+补单目标位仍取当前最大实际 share `target_share`**(见下方 `missing`),下单量不变。
 命中时只写缺口 legs,供 `PlaceBetsAction(intent="recovery")` 下补救单。
 """
 
@@ -95,8 +99,14 @@ class MeanRebateRecoveryCheck(Check):
         if not existing:
             return False
         actual_by_role = _actual_share_by_role(existing)
-        target_share = max(actual_by_role.values())
+        target_share = max(actual_by_role.values())  # 补单目标位(fill target),非费率分母
         if target_share <= _EPS:
+            return False
+
+        # #321:费率分母 = 配置的意向 share(不再是 max 在场 share)。分子含 realizedPNL,
+        # 用固定意向规模归一才口径自洽。取不到(未配置/≤0)→ 无从判率 → 保守不补。
+        denom = self._configured_share(ctx)
+        if denom <= _EPS:
             return False
 
         # #262 前置门:**当前**最差 outcome 已达标 → 本就不需要补救,直接放弃。
@@ -104,10 +114,10 @@ class MeanRebateRecoveryCheck(Check):
         # 算出极小的补单被 Risk 以 `min_notional` 拒掉,且状态不变 → 每个 OBD tick 重复一次。
         # 加上之后 `min_repaired_rebate` 才自洽地同时定义两件事:
         #   current  < 阈值 → 需要补;   repaired >= 阈值 → 补了确实有用。
-        # 与 `repaired` 共用同一分母 `target_share`,两个数直接可比、同一把尺子。
+        # 与 `repaired` 共用同一分母 `denom`(#321 配置 share),两个数直接可比、同一把尺子。
         # 放在取盘口候选之前:本判据不需要行情,能早退就早退。
         current_net = _current_net_by_outcome(ctx, existing, sorted(valid_outcomes))
-        current = _rates_from_net(current_net, target_share)
+        current = _rates_from_net(current_net, denom)
         if current and min(current.values()) >= self._min_repaired_rebate:
             return False
 
@@ -151,17 +161,22 @@ class MeanRebateRecoveryCheck(Check):
             return False
 
         repaired_net = _add_legs_to_net(current_net, repair_legs, roles_present)
-        repaired = _rates_from_net(repaired_net, target_share)
+        repaired = _rates_from_net(repaired_net, denom)
         if not repaired or min(repaired.values()) < self._min_repaired_rebate:
             return False
 
         ctx.scratch["legs"] = recovery_specs
         ctx.scratch["mean_rebate_recovery"] = {
-            "target_share": target_share,
+            "target_share": target_share,        # 补单目标位(fill target)
+            "denominator_share": denom,          # #321 费率分母(配置意向 share)
             "repaired_rebate": repaired,
             "min_repaired_rebate": min(repaired.values()),
         }
         return True
+
+    def _configured_share(self, ctx: EvalContext) -> float:
+        # #321:费率分母 = arbitrage `share` 参数(经 `strategy_defaults` 透传),不单设 Check 参数。
+        return float((ctx.strategy_defaults or {}).get("share") or 0.0)
 
 
 def _existing_legs(ctx, outcomes: tuple[str, ...]) -> list[_CalcLeg]:
