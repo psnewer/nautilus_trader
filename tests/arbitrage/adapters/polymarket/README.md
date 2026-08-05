@@ -497,17 +497,22 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 - `test_parsing_min_size.py` 同时锁定市场 `minimum_order_size → BinaryOption.min_quantity` 与 `info["min_buy_notional"]=1.0`；`BinaryOption.min_notional` 保持 None，防止 SELL 被错误套用 1 USD 下限。
 
-## #250:PMSPORTS CustomData 状态管线(已落地,`test_sports.py`)
+## #250/#322:PMSPORTS CustomData 状态管线(已落地,`test_sports.py`)
+
+> #322(2026-08-05,live-unvalidated):单通道整帧广播 → **按语义分通道(phase/score)+ 每通道变化才发**。
+> phase 从统一布尔 `live`/`ended` 派生(PRE/IN_PLAY/POST),score 从 `score` 串 diff;matching/strategy 均只订 `phase`。
+> 见 data §3.4.2、refactor #322。
 
 ### pm-adapter-sports.state.1:准入更新先写 Cache 再发布
 
 **用例**:`test_processor_writes_store_before_publish`。
 **期望/验收**:调用顺序严格为 `store.put` → publish;发布时 Store 已可读到本次完整状态。
+#322:首帧对每个已订阅通道都视作变化 → put 后逐通道发布(`phase` 先于 `score`)。
 
 ### pm-adapter-sports.state.2:兴趣门控(定了就推,不定就不推)
 
 **用例**:`test_processor_interest_gate_drops_unsubscribed_games`。
-**期望/验收**:未订阅比赛的帧不存不推;已订阅比赛正常入库并发布。
+**期望/验收**:未订阅**任何通道**的比赛的帧不存不推;已订阅比赛正常入库并按通道发布。
 
 ### pm-adapter-sports.state.3:附加 filter 拒绝不污染 Cache
 
@@ -519,21 +524,32 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **用例**:`test_processor_store_write_failure_blocks_publish_and_retries`。
 **期望/验收**:不发布;下一条更新仍可重试成功。
 
-### pm-adapter-sports.state.5:per-game DataType/topic
+### pm-adapter-sports.state.5:per-(game,channel) DataType/topic
 
-**用例**:`test_per_game_data_types_route_to_distinct_topics` +
-matching/strategy README 的接线用例(经 NT per-game topic 路由到 consumer)。
-**期望/验收**:每场独立 topic `SportsGameUpdate.game_id=<gid>`;metadata 参与 DataType 身份;
-`game_id_of_data_type` 正确反解;不再依赖裸 `data.SportsGameUpdate*` 与 channel 通道。
+**用例**:`test_per_game_channel_data_types_route_to_distinct_topics` +
+matching/strategy README 的接线用例(经 NT per-(game,channel) topic 路由到 consumer)。
+**期望/验收**:每场每通道独立 topic `SportsGameUpdate.game_id=<gid>.channel=<ch>`;metadata 两键
+参与 DataType 身份且键序固定(game_id→channel,保 publish/subscribe topic 串一致);
+`game_id_of_data_type` / `channel_of_data_type` 正确反解。
 
 ### pm-adapter-sports.state.6:有效性规则与归零回收
 
-**用例**:`test_processor_duplicate_frame_refreshes_cache_without_publish` /
+**用例**:`test_processor_no_channel_change_refreshes_cache_without_publish` /
 `test_processor_stale_frame_dropped` / `test_processor_rejects_frames_after_ended_terminal_state` /
 `test_store_roundtrip_and_delete`。
-**期望/验收**:重复业务帧只刷时戳不发布;`ts_event` 倒退丢弃;ended 放行一次后该场帧全拒
-(终态,覆盖退订异步小窗);Store codec roundtrip 正确,`delete` 真删除
-(归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,不写 `Instrument.info`。
+**期望/验收**:phase 与 score 均未变的帧只刷时戳不发布(#322 逐通道"只存不发");`ts_event` 倒退丢弃;
+ended 在 `phase` 通道放行一次后该场帧全拒(终态,覆盖退订异步小窗);Store codec roundtrip 正确,
+`delete` 真删除(归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,不写 `Instrument.info`。
+
+### pm-adapter-sports.state.8:#322 逐通道分发 + 多通道 Store 回收
+
+**用例**:`test_processor_score_change_only_publishes_score_channel` /
+`test_processor_phase_change_only_publishes_phase_channel` /
+`test_processor_only_publishes_subscribed_channels` /
+`test_multichannel_store_reclaim_waits_for_all_channels`。
+**期望/验收**:phase 不变只比分变 → 只发 `score`;比分不变 phase 跃迁 → 只发 `phase`;
+未订阅的通道其字段变化不发布(但仍写 Store);同场订了 phase+score 时退订其一 Store 不回收,
+两通道全归零才 `delete`(依赖基类先 `_remove_subscription` 再调 `_unsubscribe` 的时序)。
 
 ### pm-adapter-sports.state.7:NT 原生 WS 与显式代理
 

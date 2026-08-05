@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
@@ -139,7 +140,8 @@ class MarketMatchingActor(Actor):
             return
         self._sports_subscribed.add(game_id)
         try:
-            self.subscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
+            # #322:matching 只需 ended → 订 phase 通道(比分/钟表帧不再唤醒 eviction 检查)。
+            self.subscribe_data(sports_data_type(game_id, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
         except Exception as e:  # noqa: BLE001 — 单场订阅失败不挡扫描;下轮扫描重试
             self._sports_subscribed.discard(game_id)
             self._log.warning(f"sports subscribe game {game_id} failed: {e!r}")
@@ -149,7 +151,7 @@ class MarketMatchingActor(Actor):
             return
         self._sports_subscribed.discard(game_id)
         try:
-            self.unsubscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
+            self.unsubscribe_data(sports_data_type(game_id, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
         except Exception as e:  # noqa: BLE001
             self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
 

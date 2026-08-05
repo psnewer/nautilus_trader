@@ -19,7 +19,10 @@ from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumen
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataFilter
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataProcessor
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+from nautilus_trader.adapters.polymarket.sports import channel_of_data_type
 from nautilus_trader.adapters.polymarket.sports import game_id_of_data_type
 from nautilus_trader.adapters.polymarket.sports import parse_sport_result
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
@@ -220,7 +223,7 @@ def _update(game_id=1, *, ts=100, score="0-0", live=True, ended=False, finished_
     )
 
 
-def _processor(store=None, *, data_filter=None, is_subscribed=None):
+def _processor(store=None, *, data_filter=None, subscribed_channels=None):
     calls: list = []
     store = store or SportsGameStateStore(_MemCache())
     orig_put = store.put
@@ -231,30 +234,36 @@ def _processor(store=None, *, data_filter=None, is_subscribed=None):
     proc = SportsGameDataProcessor(
         store=store,
         data_filter=data_filter or SportsGameDataFilter(),
-        is_subscribed=is_subscribed if is_subscribed is not None else (lambda gid: True),
-        publish=lambda update: calls.append(("publish", update.game_id)),
+        subscribed_channels=(
+            subscribed_channels if subscribed_channels is not None
+            else (lambda gid: {SPORTS_CHANNEL_PHASE, SPORTS_CHANNEL_SCORE})
+        ),
+        publish=lambda update, channel: calls.append(("publish", update.game_id, channel)),
         log=logging.getLogger("test_sports"),
     )
     return proc, store, calls
 
 
 def test_processor_writes_store_before_publish():
-    """pm-adapter-sports.state.1:准入更新严格先 store.put 再 publish;发布时 Store 已是新状态。"""
+    """pm-adapter-sports.state.1:准入更新严格先 store.put 再 publish;发布时 Store 已是新状态。
+    #322:首帧对每个已订阅通道都视作变化 → put 后逐通道发布(phase 先于 score)。"""
     proc, store, calls = _processor()
     proc.process(_update(game_id=7, ts=100, score="1-0"))
 
-    assert calls == [("put", 7), ("publish", 7)]
+    assert calls == [("put", 7), ("publish", 7, SPORTS_CHANNEL_PHASE), ("publish", 7, SPORTS_CHANNEL_SCORE)]
     assert store.get(7).score == "1-0"
 
 
 def test_processor_interest_gate_drops_unsubscribed_games():
-    """pm-adapter-sports.state.2(兴趣门控):未订阅比赛不存不推(定了就推,不定就不推)。"""
-    proc, store, calls = _processor(is_subscribed=lambda gid: gid == 8)
+    """pm-adapter-sports.state.2(兴趣门控):未订阅任何通道的比赛不存不推。"""
+    proc, store, calls = _processor(
+        subscribed_channels=lambda gid: {SPORTS_CHANNEL_PHASE} if gid == 8 else set(),
+    )
     proc.process(_update(game_id=7, ts=100))
     assert store.get(7) is None and calls == []
 
     proc.process(_update(game_id=8, ts=100))
-    assert store.get(8) is not None and ("publish", 8) in calls
+    assert store.get(8) is not None and ("publish", 8, SPORTS_CHANNEL_PHASE) in calls
 
 
 def test_processor_filter_reject_keeps_store():
@@ -279,16 +288,16 @@ def test_processor_store_write_failure_blocks_publish_and_retries():
 
     store.put = orig_put
     proc.process(_update(game_id=7, ts=101))
-    assert ("publish", 7) in calls
+    assert any(c[0] == "publish" and c[1] == 7 for c in calls)
 
 
-def test_processor_duplicate_frame_refreshes_cache_without_publish():
-    """去重:业务字段与旧状态相同的重复帧 → 刷新 Cache 时戳,不发布。"""
+def test_processor_no_channel_change_refreshes_cache_without_publish():
+    """#322:phase 与 score 均未变的帧 → 无通道发布,只刷新 Cache 时戳(只存不发)。"""
     proc, store, calls = _processor()
-    proc.process(_update(game_id=7, ts=100, score="1-0"))
+    proc.process(_update(game_id=7, ts=100, score="1-0", live=True))
     publishes_before = len([c for c in calls if c[0] == "publish"])
 
-    proc.process(_update(game_id=7, ts=200, score="1-0"))   # 同业务字段,仅时戳新
+    proc.process(_update(game_id=7, ts=200, score="1-0", live=True))  # phase/score 同,仅时戳新
     assert len([c for c in calls if c[0] == "publish"]) == publishes_before
     assert store.get(7).ts_event == 200                      # Cache 时戳已刷新
 
@@ -307,7 +316,7 @@ def test_processor_rejects_frames_after_ended_terminal_state():
     proc, store, calls = _processor()
     proc.process(_update(game_id=7, ts=100, score="2-1", live=False, ended=True,
                          finished_ts="2026-07-17T00:00:00Z"))
-    assert ("publish", 7) in calls                             # ended 本身放行(eviction 依赖)
+    assert ("publish", 7, SPORTS_CHANNEL_PHASE) in calls       # ended 在 phase 通道放行(eviction 依赖)
     n_calls = len(calls)
 
     proc.process(_update(game_id=7, ts=200, score="2-1", live=False, ended=True,
@@ -330,20 +339,59 @@ def test_store_roundtrip_and_delete():
     assert store.get(9) is None
 
 
-def test_per_game_data_types_route_to_distinct_topics():
-    """pm-adapter-sports.state.5:game_id 即订阅键 —— 每场独立 DataType/topic;
-    metadata 参与身份,engine 逐场转发命令。"""
-    dt_888 = sports_data_type(888)
-    dt_999 = sports_data_type(999)
-    assert dt_888.topic == "SportsGameUpdate.game_id=888"
-    assert dt_999.topic == "SportsGameUpdate.game_id=999"
+def test_per_game_channel_data_types_route_to_distinct_topics():
+    """pm-adapter-sports.state.5:(game_id, channel) 即订阅键 —— 每场每通道独立 DataType/topic;
+    metadata 两键参与身份且键序固定(game_id→channel),engine 逐 (场,通道) 转发命令。"""
+    dt_888 = sports_data_type(888, SPORTS_CHANNEL_PHASE)
+    dt_999 = sports_data_type(999, SPORTS_CHANNEL_PHASE)
+    assert dt_888.topic == "SportsGameUpdate.game_id=888.channel=phase"
+    assert dt_999.topic == "SportsGameUpdate.game_id=999.channel=phase"
     assert dt_888 != dt_999
+    # 同场不同通道 → 不同 DataType/topic
+    dt_888_score = sports_data_type(888, SPORTS_CHANNEL_SCORE)
+    assert dt_888_score.topic == "SportsGameUpdate.game_id=888.channel=score"
+    assert dt_888 != dt_888_score
     assert game_id_of_data_type(dt_888) == 888
-    assert game_id_of_data_type(sports_data_type("777")) == 777
+    assert channel_of_data_type(dt_888) == SPORTS_CHANNEL_PHASE
+    assert channel_of_data_type(dt_888_score) == SPORTS_CHANNEL_SCORE
+    assert game_id_of_data_type(sports_data_type("777", SPORTS_CHANNEL_PHASE)) == 777
 
     from nautilus_trader.model.data import DataType
     assert game_id_of_data_type(DataType(SportsGameUpdate)) is None          # 无 game_id
     assert game_id_of_data_type(DataType(SportsGameUpdate, {"game_id": "x"})) is None
+    assert channel_of_data_type(DataType(SportsGameUpdate, {"game_id": 1})) is None  # 无 channel
+
+
+def test_processor_score_change_only_publishes_score_channel():
+    """#322:phase 不变(IN_PLAY→IN_PLAY)、只有比分变 → 只发 score 通道,不发 phase。"""
+    proc, store, calls = _processor()
+    proc.process(_update(game_id=7, ts=100, score="1-0", live=True))   # 首帧发 phase+score
+    calls.clear()
+
+    proc.process(_update(game_id=7, ts=200, score="2-1", live=True))   # phase 同,score 变
+    assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_SCORE)]
+
+
+def test_processor_phase_change_only_publishes_phase_channel():
+    """#322:比分不变、phase 跃迁(IN_PLAY→POST)→ 只发 phase 通道,不发 score。"""
+    proc, store, calls = _processor()
+    proc.process(_update(game_id=7, ts=100, score="1-0", live=True))   # 首帧发 phase+score
+    calls.clear()
+
+    proc.process(_update(game_id=7, ts=200, score="1-0", live=False, ended=True,
+                         finished_ts="2026-07-17T00:00:00Z"))          # score 同,phase 变
+    assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_PHASE)]
+
+
+def test_processor_only_publishes_subscribed_channels():
+    """#322:只订 phase 时,score 变化不发布(该通道无订阅);phase 变化才发。"""
+    proc, store, calls = _processor(subscribed_channels=lambda gid: {SPORTS_CHANNEL_PHASE})
+    proc.process(_update(game_id=7, ts=100, score="1-0", live=True))   # 首帧:仅 phase 订阅 → 只发 phase
+    assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_PHASE)]
+
+    proc.process(_update(game_id=7, ts=200, score="2-1", live=True))   # 只有 score 变,但 score 未订阅
+    assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_PHASE)]  # 无新发布
+    assert store.get(7).ts_event == 200                                # 仍写 Store
 
 
 def test_sports_factory_uses_data_source_context(monkeypatch):
@@ -406,7 +454,7 @@ def test_engine_zero_count_unsubscribe_reclaims_store():
         )
         engine.register_client(client)
 
-        dt = sports_data_type(888)
+        dt = sports_data_type(888, SPORTS_CHANNEL_PHASE)
         topic = f"data.{dt.topic}"
         handler_a = lambda x: None   # noqa: E731 — 模拟 matching 的 msgbus handler
         handler_b = lambda x: None   # noqa: E731 — 模拟 strategy 的 msgbus handler
@@ -438,6 +486,77 @@ def test_engine_zero_count_unsubscribe_reclaims_store():
         engine.execute(_cmd(UnsubscribeData))
         await asyncio.sleep(0)
         assert not client._is_game_subscribed(888)
+        assert client._sports_store.get(888) is None
+
+    asyncio.run(run())
+
+
+def test_multichannel_store_reclaim_waits_for_all_channels():
+    """#322:同一 game 订了 phase+score 两通道 —— 退订其一时 Store 不回收(另一通道仍需),
+    两通道全归零才回收。验证 `_unsubscribe` 的"还剩别的通道就不删"判据(依赖基类
+    先 `_remove_subscription` 再调钩子的时序)。"""
+    import asyncio
+
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
+    from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
+    from nautilus_trader.cache.cache import Cache
+    from nautilus_trader.common.component import MessageBus
+    from nautilus_trader.common.component import TestClock
+    from nautilus_trader.core.uuid import UUID4
+    from nautilus_trader.data.engine import DataEngine
+    from nautilus_trader.data.messages import SubscribeData
+    from nautilus_trader.data.messages import UnsubscribeData
+    from nautilus_trader.model.identifiers import ClientId
+    from nautilus_trader.model.identifiers import TraderId
+
+    async def run():
+        clock = TestClock()
+        msgbus = MessageBus(trader_id=TraderId("T-001"), clock=clock)
+        cache = Cache()
+        engine = DataEngine(msgbus=msgbus, cache=cache, clock=clock)
+        client = PolymarketSportsDataClient(
+            loop=asyncio.get_running_loop(),
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            instrument_provider=PolymarketSportsInstrumentProvider(),
+            config=PolymarketSportsDataClientConfig(),
+        )
+        engine.register_client(client)
+
+        dt_phase = sports_data_type(888, SPORTS_CHANNEL_PHASE)
+        dt_score = sports_data_type(888, SPORTS_CHANNEL_SCORE)
+        h = lambda x: None  # noqa: E731
+        msgbus.subscribe(topic=f"data.{dt_phase.topic}", handler=h)
+        msgbus.subscribe(topic=f"data.{dt_score.topic}", handler=h)
+
+        def _cmd(cls, dt):
+            return cls(
+                data_type=dt, instrument_id=None, client_id=ClientId(SPORTS_CLIENT),
+                venue=None, command_id=UUID4(), ts_init=0, params={"start_ns": None},
+            )
+
+        engine.execute(_cmd(SubscribeData, dt_phase))
+        engine.execute(_cmd(SubscribeData, dt_score))
+        await asyncio.sleep(0)
+        assert client._subscribed_channels(888) == {SPORTS_CHANNEL_PHASE, SPORTS_CHANNEL_SCORE}
+
+        client._sports_store.put(_update(game_id=888, ts=1))
+        assert client._sports_store.get(888) is not None
+
+        # 退订 phase → score 仍在 → Store 不回收
+        msgbus.unsubscribe(topic=f"data.{dt_phase.topic}", handler=h)
+        engine.execute(_cmd(UnsubscribeData, dt_phase))
+        await asyncio.sleep(0)
+        assert client._subscribed_channels(888) == {SPORTS_CHANNEL_SCORE}
+        assert client._sports_store.get(888) is not None
+
+        # 退订 score → 全通道归零 → Store 回收
+        msgbus.unsubscribe(topic=f"data.{dt_score.topic}", handler=h)
+        engine.execute(_cmd(UnsubscribeData, dt_score))
+        await asyncio.sleep(0)
+        assert client._subscribed_channels(888) == set()
         assert client._sports_store.get(888) is None
 
     asyncio.run(run())

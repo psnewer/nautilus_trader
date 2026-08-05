@@ -779,6 +779,7 @@ def _sports_update(game_id=888, *, ts=0, ended=False, live=False):
 def test_per_game_subscription_drives_eviction_and_unsubscribe():
     """matching-3.sports.2:per-game topic 发布经 NT 路由到达 → eviction 关联 pair,
     并退订本场 sports(归零后 client 回收 Store 条目;client 侧行为见 PM adapter 用例)。"""
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
     from nautilus_trader.adapters.polymarket.sports import sports_data_type
 
     actor, clock, cache, registry, msgbus = _harness()
@@ -790,7 +791,7 @@ def test_per_game_subscription_drives_eviction_and_unsubscribe():
     actor._emitted_pairs.add("p1")
 
     msgbus.publish(
-        topic=f"data.{sports_data_type(888).topic}",
+        topic=f"data.{sports_data_type(888, SPORTS_CHANNEL_PHASE).topic}",
         msg=_sports_update(888, ts=2, ended=True),
     )
 
@@ -801,6 +802,7 @@ def test_per_game_subscription_drives_eviction_and_unsubscribe():
 
 def test_unsubscribed_game_topic_does_not_reach_matching():
     """matching-3.sports.1:per-game topic 隔离 —— 未订阅比赛的发布不触发 eviction。"""
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
     from nautilus_trader.adapters.polymarket.sports import sports_data_type
 
     actor, clock, cache, registry, msgbus = _harness()
@@ -810,7 +812,7 @@ def test_unsubscribed_game_topic_does_not_reach_matching():
     actor._game_to_pair[999] = {"p1"}
 
     msgbus.publish(
-        topic=f"data.{sports_data_type(999).topic}",   # 999 未订阅 → 无 handler
+        topic=f"data.{sports_data_type(999, SPORTS_CHANNEL_PHASE).topic}",   # 999 未订阅 → 无 handler
         msg=_sports_update(999, ts=2, ended=True),
     )
 

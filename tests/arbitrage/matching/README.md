@@ -239,7 +239,10 @@
   路径中任一 role 少于两个 tradable venue 时整组不发布。
 - 与 PMSPORTS-anchor 路径使用相同“每 role 至少两个 tradable venue”门槛；不恢复 role 独立发布。
 
-## #250:PMSPORTS per-game 订阅(已落地,`test_actor.py` / `test_pair_registry.py`)
+## #250/#322:PMSPORTS per-(game,channel) 订阅(已落地,`test_actor.py` / `test_pair_registry.py`)
+
+> #322:matching 只需 `ended` → 订 **`phase` 通道**(`sports_data_type(gid, SPORTS_CHANNEL_PHASE)`);
+> 下列"per-game topic"均指该场 `phase` 通道 topic。比分/钟表帧不再唤醒 eviction 检查。见 data §3.4.2。
 
 ### matching-3.sports.1:per-game topic 隔离
 

@@ -786,6 +786,7 @@ def test_sports_fanout_respects_pair_inflight_gate():
 def test_matched_pair_subscribes_per_game_topic_and_routes_events():
     """strategy-4.sports.1:MatchedPair 到达 → 按场订阅;per-game topic 发布经 NT
     路由到 on_data 并触发评估;不再依赖裸 `data.SportsGameUpdate*`。"""
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
     from nautilus_trader.adapters.polymarket.sports import sports_data_type
 
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
@@ -800,7 +801,7 @@ def test_matched_pair_subscribes_per_game_topic_and_routes_events():
     calls_after_mp = action.calls
 
     actor.msgbus.publish(
-        topic=f"data.{sports_data_type(888).topic}",
+        topic=f"data.{sports_data_type(888, SPORTS_CHANNEL_PHASE).topic}",
         msg=_sports_update(888),
     )
     _run(_drain(loop))

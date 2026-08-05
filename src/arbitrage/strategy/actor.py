@@ -25,6 +25,7 @@ from dataclasses import replace
 from functools import partial
 
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
@@ -227,7 +228,8 @@ class StrategyEvaluator(Strategy):
             return
         self._sports_subscribed.add(gid)
         try:
-            self.subscribe_data(sports_data_type(gid), client_id=ClientId(SPORTS_CLIENT))
+            # #322:strategy 只用 ended → 订 phase 通道(不再被比分/钟表帧噪声唤醒)。
+            self.subscribe_data(sports_data_type(gid, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
         except Exception as e:  # noqa: BLE001 — 订阅失败不挡 OBD 主链路;同场下个 MatchedPair 重试
             self._sports_subscribed.discard(gid)
             self._log.warning(f"sports subscribe game {gid} failed: {e!r}")
@@ -240,7 +242,7 @@ class StrategyEvaluator(Strategy):
         if game_id in self._sports_subscribed:
             self._sports_subscribed.discard(game_id)
             try:
-                self.unsubscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
+                self.unsubscribe_data(sports_data_type(game_id, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
             except Exception as e:  # noqa: BLE001
                 self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
         for iid_str in sorted(self._game_obd.pop(game_id, set())):

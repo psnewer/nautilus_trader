@@ -17,10 +17,10 @@ firehose 推所有活跃赛事状态(事件驱动、稀疏)。NT 原生 PM 适�
   `SportsGameDataFilter`(二级内容过滤 seam)+
   `SportsGameDataProcessor`(固定顺序:兴趣门控 → 过滤 → 有效性 → 先写 Cache → 发布)。
 - `PolymarketSportsDataClient`:`LiveMarketDataClient` 子类,`_connect` 开 WS firehose →
-  processor 处理;**game_id 即订阅键**,消费者按场
-  `subscribe_data(sports_data_type(game_id), client_id=PMSPORTS)`,发布走该场 per-game topic。
-  兴趣记账复用 NT 原生订阅注册表(engine 逐场转发命令);订阅归零时 `_unsubscribe` 回收
-  Store 条目。
+  processor 处理;**(game_id, channel) 即订阅键**(#322 分 phase/score 通道),消费者按 (场,通道)
+  `subscribe_data(sports_data_type(game_id, channel), client_id=PMSPORTS)`,发布走该 (场,通道) topic。
+  兴趣记账复用 NT 原生订阅注册表(engine 逐 (场,通道) 转发命令);某场全部通道订阅归零时
+  `_unsubscribe` 回收 Store 条目。
 
 映射:`gameId` 与 gamma `event["gameId"]` 同值(本会话实采证实:wnba 13002300 双向对上,
 ATP 36 events 全有 gameId)→ 下游经 `info["game_id"]` 查 pair(#250 路由键统一 game_id)。
@@ -340,14 +340,33 @@ def parse_sport_result(d: dict, *, ts: int) -> SportsGameUpdate | None:
 _STORE_KEY_PREFIX = "pmsports:game:"
 
 
-def sports_data_type(game_id) -> DataType:
-    """game_id → NT `DataType`(metadata 进 topic:`data.SportsGameUpdate.game_id=<gid>`)。
+# #322:sports 数据分通道(phase / score),各自独立 topic;见 data §3.4.2。
+SPORTS_CHANNEL_PHASE = "phase"
+SPORTS_CHANNEL_SCORE = "score"
+_SPORTS_CHANNELS = (SPORTS_CHANNEL_PHASE, SPORTS_CHANNEL_SCORE)
 
-    **game_id 即订阅键**:每场比赛一个独立 DataType/topic,消费者按场 `subscribe_data`。
-    metadata 参与 DataType 身份,engine 因此逐场转发 subscribe/unsubscribe,NT client 基类
-    原生记账(严格对标 OE 赔率链路的 routing 表)。无通道概念:推送内容统一,消费者自选所用。
+
+def sports_phase(update: SportsGameUpdate) -> str:
+    """归一化三态,**sport-agnostic** —— 仅凭统一布尔 `live`/`ended`,不解析逐 sport 的
+    `status`/`period`(#322,data §3.4.2)。实盘核实 firehose 基本不推赛前帧,PRE 极少作为
+    事件出现(首帧多已 IN_PLAY)。"""
+    if update.ended:
+        return "POST"
+    if update.live:
+        return "IN_PLAY"
+    return "PRE"
+
+
+def sports_data_type(game_id, channel) -> DataType:
+    """(game_id, channel) → NT `DataType`(metadata 两键进 topic:
+    `data.SportsGameUpdate.game_id=<gid>.channel=<ch>`)。
+
+    **(game_id, channel) 即订阅键**:每场每通道一个独立 DataType/topic,消费者按 (场,通道)
+    `subscribe_data`。metadata 参与 DataType 身份,engine 逐 (场,通道) 转发 subscribe/unsubscribe,
+    NT client 基类原生记账(对标 OE 赔率链路 routing 表)。**键顺序固定 game_id→channel**:
+    `DataType.topic` 按 metadata 插入序渲染,固定键序保证 publish/subscribe 两侧 topic 串一致。
     """
-    return DataType(SportsGameUpdate, metadata={"game_id": int(game_id)})
+    return DataType(SportsGameUpdate, metadata={"game_id": int(game_id), "channel": str(channel)})
 
 
 def game_id_of_data_type(data_type: DataType) -> int | None:
@@ -359,6 +378,14 @@ def game_id_of_data_type(data_type: DataType) -> int | None:
         return int(gid)
     except (TypeError, ValueError):
         return None
+
+
+def channel_of_data_type(data_type: DataType) -> str | None:
+    """从 DataType 反解 channel;缺失/非本模型返 None。"""
+    if data_type.type is not SportsGameUpdate:
+        return None
+    ch = (data_type.metadata or {}).get("channel")
+    return str(ch) if ch else None
 
 
 class SportsGameStateStore:
@@ -401,32 +428,39 @@ class SportsGameDataFilter:
         return True
 
 
-def _business_fields(update: SportsGameUpdate) -> dict[str, Any]:
-    d = update.to_dict()
-    d.pop("ts_event", None)
-    d.pop("ts_init", None)
-    return d
+def _channel_changed(channel: str, previous, update: SportsGameUpdate) -> bool:
+    """#322 逐通道 diff:该通道关注的字段相对旧状态是否变化。`previous is None`(首帧)一律
+    视作变化(该场首次入 Store,唤醒订阅者建立初态)。"""
+    if previous is None:
+        return True
+    if channel == SPORTS_CHANNEL_PHASE:
+        return sports_phase(previous) != sports_phase(update)
+    if channel == SPORTS_CHANNEL_SCORE:
+        return previous.score != update.score
+    return False
 
 
 class SportsGameDataProcessor:
-    """固定顺序:**兴趣门控(未订阅:不存不推)** → filter → 终态拒收 → 过期拒收 → 去重
-    → **先写 Store** → 发布到该场 per-game topic。
+    """固定顺序:**兴趣门控(未订阅任何通道:不存不推)** → filter → 终态拒收 → 过期拒收
+    → **先写 Store** → 逐通道 diff、变化的通道各自发布(#322,data §3.4.2)。
 
-    错误边界(data §3.4.1):Store 写失败 → 不发布(消费者不能被唤醒后读到旧状态);
-    publish 失败 → Cache 不回滚。去重:业务字段与旧状态完全相同的重复帧只刷新 Cache 时戳,
-    不发布。终态:ended 帧放行恰好一次(eviction 依赖),覆盖退订命令异步生效前的小窗。
+    错误边界:Store 写失败 → 不发布;publish 失败 → Cache 不回滚。**逐通道 diff**:某帧无任何
+    已订阅通道发生变化 → 只刷新 Cache 时戳、不发布(§3.4.1 的"只存不发"按通道推广)。
+    **终态**:ended 帧放行恰好一次(eviction 依赖 —— POST 是一次 phase 跃迁而发一次,后续
+    ended 帧无跃迁且被终态拒收拦下),覆盖退订命令异步生效前的小窗。
     """
 
-    def __init__(self, *, store, data_filter, is_subscribed, publish, log) -> None:
+    def __init__(self, *, store, data_filter, subscribed_channels, publish, log) -> None:
         self._store = store
         self._filter = data_filter
-        self._is_subscribed = is_subscribed   # callable(game_id) -> bool — client 兴趣集合
-        self._publish = publish               # callable(update) — client 注入
+        self._subscribed_channels = subscribed_channels  # callable(game_id) -> set[str]
+        self._publish = publish                           # callable(update, channel) — client 注入
         self._log = log
 
     def process(self, update: SportsGameUpdate) -> None:
-        if not self._is_subscribed(update.game_id):
-            return   # 定了就推,不定就不推:未订阅比赛不存不推(对标 OE 未路由帧静默丢弃)
+        channels = self._subscribed_channels(update.game_id)
+        if not channels:
+            return   # 未订阅任何通道:不存不推(定了就推,不定就不推)
         if not self._filter.accepts(update):
             return
         try:
@@ -438,25 +472,28 @@ class SportsGameDataProcessor:
             return   # 终态:ended 帧已放行过一次(eviction 依赖),后续该场所有帧准入层拒收
         if previous is not None and update.ts_event < previous.ts_event:
             return
-        duplicate = previous is not None and _business_fields(previous) == _business_fields(update)
+        # 逐通道 diff:只发"已订阅 且 本通道关注字段变化"的通道(确定性顺序)。
+        to_publish = [
+            ch for ch in _SPORTS_CHANNELS
+            if ch in channels and _channel_changed(ch, previous, update)
+        ]
         try:
             self._store.put(update)
         except Exception as e:  # noqa: BLE001
             self._log.error(f"sports store write game {update.game_id} failed: {e!r}; not published")
             return
-        if duplicate:
-            return
-        try:
-            self._publish(update)
-        except Exception as e:  # noqa: BLE001 — Cache 已是新状态,不回滚
-            self._log.error(f"sports publish game {update.game_id} failed: {e!r}")
+        for ch in to_publish:   # 空 → 只存不发
+            try:
+                self._publish(update, ch)
+            except Exception as e:  # noqa: BLE001 — Cache 已是新状态,不回滚
+                self._log.error(f"sports publish game {update.game_id} channel {ch} failed: {e!r}")
 
 
 class PolymarketSportsDataClient(LiveMarketDataClient):
-    """PM Sports WS firehose → #250 状态管线(兴趣门控 → 先写 Store → per-game 发布)。
+    """PM Sports WS firehose → #250/#322 状态管线(兴趣门控 → 先写 Store → 逐通道变化发布)。
 
-    无 instrument 订阅:`_connect` 即开 WS 流式收;消费者按场经
-    `subscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))`。
+    无 instrument 订阅:`_connect` 即开 WS 流式收;消费者按 (场,通道) 经
+    `subscribe_data(sports_data_type(game_id, channel), client_id=ClientId(SPORTS_CLIENT))`。
     服务端协议层 ping 由 NT WebSocketClient 自动回 pong;另兼容偶发 app-level text
     `"ping"`(回 `"pong"`)。
     """
@@ -495,7 +532,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
         self._processor = SportsGameDataProcessor(
             store=self._sports_store,
             data_filter=data_filter or SportsGameDataFilter(),
-            is_subscribed=self._is_game_subscribed,
+            subscribed_channels=self._subscribed_channels,
             publish=self._publish_update,
             log=self._log,
         )
@@ -589,33 +626,53 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
                     )
                 self._processor.process(update)
 
-    def _publish_update(self, update: SportsGameUpdate) -> None:
-        # CustomData 经 DataEngine 路由到该场 per-game topic(`data.SportsGameUpdate.game_id=<gid>`)。
-        self._handle_data(CustomData(sports_data_type(update.game_id), update))
+    def _publish_update(self, update: SportsGameUpdate, channel: str) -> None:
+        # CustomData 经 DataEngine 路由到 (场,通道) topic
+        # (`data.SportsGameUpdate.game_id=<gid>.channel=<ch>`)。
+        self._handle_data(CustomData(sports_data_type(update.game_id, channel), update))
 
-    # ── NT per-game 订阅(#250)──────────────────────────────────────
-    # 上游是无订阅 firehose,"断某场的 feed" = 订阅注册表移除(对标 OE 路由表)。
+    # ── NT per-(game,channel) 订阅(#250/#322)────────────────────────
+    # 上游是无订阅 firehose,"断某场某通道的 feed" = 订阅注册表移除(对标 OE 路由表)。
     # 兴趣记账由 NT client 基类原生维护(`subscribed_custom_data()`,engine 首订转发/
     # 归零退订时同步更新);`_subscribe/_unsubscribe` 只补日志与归零回收。
+    def _subscribed_channels(self, game_id) -> set:
+        """#322:该 game 当前被订阅的通道集合(扫 NT 原生订阅注册表按 game_id 过滤)。"""
+        gid = int(game_id)
+        out: set = set()
+        for dt in self.subscribed_custom_data():
+            if game_id_of_data_type(dt) != gid:
+                continue
+            ch = channel_of_data_type(dt)
+            if ch:
+                out.add(ch)
+        return out
+
     def _is_game_subscribed(self, game_id) -> bool:
-        return sports_data_type(game_id) in self.subscribed_custom_data()
+        return bool(self._subscribed_channels(game_id))
 
     async def _subscribe(self, command) -> None:
         gid = game_id_of_data_type(command.data_type)
         if gid is None:
             self._log.warning(f"PMSPORTS ignoring subscribe for unsupported data type: {command.data_type}")
             return
-        self._log.info(f"PMSPORTS game subscribed: {gid}")
+        self._log.info(f"PMSPORTS subscribed: game {gid} channel {channel_of_data_type(command.data_type)}")
 
     async def _unsubscribe(self, command) -> None:
         gid = game_id_of_data_type(command.data_type)
         if gid is None:
             return
+        ch = channel_of_data_type(command.data_type)
+        # 基类 unsubscribe 先 `_remove_subscription` 再调本钩子(live/data_client.py:262)→
+        # `subscribed_custom_data()` 已不含本通道。该 game 仍有别的通道订阅 → 不回收 Store
+        # (别的消费者还需要);全部通道归零才回收。
+        if self._subscribed_channels(gid):
+            self._log.info(f"PMSPORTS channel {ch} unsubscribed for game {gid}; other channels remain")
+            return
         try:
             self._sports_store.delete(gid)
         except Exception as e:  # noqa: BLE001 — 回收失败不影响退订本体
             self._log.warning(f"PMSPORTS store reclaim for game {gid} failed: {e!r}")
-        self._log.info(f"PMSPORTS game unsubscribed (zero subscribers), store reclaimed: {gid}")
+        self._log.info(f"PMSPORTS game unsubscribed (all channels zero), store reclaimed: {gid}")
 
 
 def _parse_start_ts(date_str: str) -> int:

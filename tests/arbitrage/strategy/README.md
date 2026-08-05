@@ -461,13 +461,16 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   产生补单。
 - target share 仍只取 open positions，不用 realized PnL 虚增 share。
 
-## #250:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py`)
+## #250/#322:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py`)
 
-### strategy-4.sports.1:MatchedPair 按场订阅 + per-game topic 触发评估
+> #322:strategy 只用 `ended` → 订 **`phase` 通道**(`sports_data_type(gid, SPORTS_CHANNEL_PHASE)`);
+> 下列"per-game topic"均指该场 `phase` 通道 topic。比分/钟表帧不再噪声唤醒评估。见 data §3.4.2。
+
+### strategy-4.sports.1:MatchedPair 按场订阅 + per-(game,phase) topic 触发评估
 
 **用例**:`test_matched_pair_subscribes_per_game_topic_and_routes_events`。
-**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场;per-game topic 发布
-经 NT 路由到 `on_data` 并恰好触发一次评估;不再依赖裸 topic 或 channel 通道。
+**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场 `phase` 通道;该 topic 发布
+经 NT 路由到 `on_data` 并恰好触发一次评估。
 
 ### strategy-4.sports.2:同 game 的全部 pair 均被触发
 

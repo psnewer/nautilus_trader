@@ -271,7 +271,9 @@ sports_data_type(game_id)  # = DataType(SportsGameUpdate, metadata={"game_id": g
   订阅注册表**(`subscribed_custom_data()`,engine 首订转发/归零退订时同步更新;
   对标 OE `_market_to_instruments` 路由表),不另建集合。
 - **无 lifecycle/strategy 通道、无 PublishPolicy**:推送内容统一(完整 `SportsGameUpdate`),
-  消费者自选所用字段;字段级筛选属二级架构(`SportsGameDataFilter` seam 占位,未设计)。
+  消费者自选所用字段;字段级筛选属二级架构(`SportsGameDataFilter` seam 占位)。
+  **⚠️ 已被 #322 取代**:该 seam 自 #322 按 §3.4.2 具体化为"按语义分通道(phase/score)+ 变化才发",
+  **已落地**;本节的"单通道 / step 5 全字段去重 / per-game 发布"以 §3.4.2 为准。
 
 **数据面固定顺序**(`SportsGameDataProcessor.process`):
 
@@ -313,6 +315,46 @@ strategy 的订阅先于 matching 释放建立,校验 book 不会中途归零。
 
 **已接受残差**:订阅建立前到达的帧丢弃(matching 在发现扫描即订,窗口极小;PMS 重复推送可补);
 ended 的发布只有一次,无重复帧兜底(会话内 matching 订阅早于 WS 首帧,错过窗口不存在)。
+
+#### 3.4.2 按变化分通道(#322,已落地 · live-unvalidated · as-of 2026-08-05)
+
+> 承 §3.4.1。§3.4.1 原是**单通道**(整条 `SportsGameUpdate` 一个 per-game topic,step 5 全字段去重一刀切);本节把 §3.4.1 末尾"字段级筛选(`SportsGameDataFilter` seam 占位)"**具体化**为按语义分通道 + 每通道"变化才发",**已替换 §3.4.1 的单通道/全字段去重**(§3.4.1 的 step 5 去重、per-game 发布描述以本节为准)。代码:`adapters/polymarket/sports.py`(`sports_data_type(game_id, channel)` / `sports_phase` / `SportsGameDataProcessor` 逐通道 diff);消费端 matching/strategy 均改订 `phase` 通道。**live-unvalidated**(单元测试覆盖,实盘未验)。
+
+**动机**:strategy 对 sports **只消费 `ended`**(唤醒+定位靠 game_id,状态判断从 Store 读,strategy §3.8.1);`score`/`elapsed`/`period` 帧对它是纯噪声唤醒。未来若有比分/阶段消费者,又需各订各的、互不惊动。
+
+**通道 = DataType metadata 再加一个 `channel` 键**(复用 §3.4.1 那个"NT 泛型 SubscribeData 唯一参数槽",零新机制、零新 Cython 补丁):
+```python
+sports_data_type(gid, channel="score")   # → 独立 topic(metadata 两键进 topic 串)
+sports_data_type(gid, channel="phase")   # → 另一个独立 topic
+```
+engine 逐 `(game, channel)` 转发 sub/unsub,client 基类 `subscribed_custom_data()` 原生记账,#250 的 `_handle_unsubscribe_data` metadata-topic 补丁照用。**消息带整份 `SportsGameUpdate` 对象(引用,零拷贝),不设 per-channel 切片 payload**(用户定,2026-08-05)。理由:sports 帧低频、in-process msgbus 传对象引用不序列化,"带整份"= 传已有引用零分配、**最快**;切片(各通道带各自字段)反而多一次对象分配/帧,且把"phase 切片装什么"重新拽回 per-sport 格式问题;纯唤醒(不带数据)逼消费者回 Store 解码,更慢。与 OBD 同模型:消息带数据,**消费者可直接读 payload、也可查 `SportsGameStateStore`(=Cache)**——通道只决定"变化时唤醒谁"(省 re-eval),不决定"给什么字段"。故 strategy 可继续从 payload 读 `game_id`/`ended`(actor.py 不改),Store 仍供"非唤醒时刻按需查状态"。
+
+**每通道独立"变化才发"**:把 §3.4.1 step 5 的全字段去重(`_business_fields` 一刀切)换成**逐通道 diff**——写完 Store(仍单份全量真理、单次写)后,对每个通道各判:
+
+| 通道 | 判据(new vs prev) | 语义 |
+|---|---|---|
+| score | `new.score != prev.score` | 比分变 |
+| phase | `phase(new) != phase(prev)` | 三态跃迁 |
+
+prev/new 同源(同一 Store 读),两 diff 独立;都不变 = 全不发(退化回 §3.4.1 的"只存不发")。**"只发不存"仍禁止**、Store 仍是 publish 前置(§3.4.1 错误边界不变)。
+
+**phase 三态在 sport-agnostic 层派生**(关键:躲开跨 sport 格式差异):
+```
+PRE     = not live and not ended
+IN_PLAY = live
+POST    = ended
+```
+派生跑在**归一化后的扁平 `SportsGameUpdate`** 上,不在原始帧上——这是本设计能"零 per-sport 逻辑"的前提。**原始 firehose(`wss://sports-api.polymarket.com/ws`)结构逐 sport 并不统一**(实盘抓帧核实 2026-08-05):电竞(cs2/dota2/lol/mlbb/val/hok)扁平,顶层直接 `status/score/period/live/ended`(`status` 小写 `running/finished`,`score` 复合串如 `"000-000|1-0|Bo3"`,`period` 如 `2/3`);**网球/足球(challenger/wta/uwcl)嵌套在 `eventState` 里、顶层再复制一份**。这些差异被 **`parse_sport_result`(sports.py:313,只读顶层,依赖"顶层==eventState 同值"假设)吸收**,归一化后 `live`/`ended` 是统一布尔、`score` 是统一串 → score 通道(串 diff)与三态 phase 通道(布尔派生)在归一层零 per-sport 逻辑;归一化已保留 `status/period` 原始串,细粒度 phase 可纯下游做。**残留假设**:parser 的"顶层复制 eventState"(2026-08-05 抓帧旁证:0 赛前帧 ⇒ 网球/足球顶层确有 `live/ended`,否则会误判 PRE);若某帧顶层缺失而只有 `eventState` 有,网球/足球会误判——低概率、需 parser 兜底才彻底消除。
+
+**承重不变量(与机制共址)**:
+- **`ended` 必在 phase 通道恰好发一次** —— eviction(matching `_evict_game` / strategy `_release_game_subscriptions`)依赖它。POST 是一次 phase 跃迁 → 自然发一次;后续 POST 帧无跃迁 → 不发;叠加 §3.4.1 step 3 终态拒收(ended 后帧整体拦),与现语义一致。**若拆分实现破坏"ended 恰好一次",eviction 会漏 → 订阅永不归零、Store 不回收**,是本设计头号回归面。
+- **细粒度 phase(半场/加时/点球/局节边界)= 唯一被 sport 格式咬住处**:需 per-sport 解析 `status`/`period`。落地时**所有 league 分支知识只住一个 `league → 规范 phase 枚举` 归一模块**(单一真理源),不得撒进 processor/strategy。**当前不做**(无消费者,YAGNI),留占位。
+
+**待验证 / 待展开**:
+- [x] **B(赛前帧)—— 已核实 2026-08-05(75s / 9 league / 64 帧)**:**0 帧赛前**(63 IN_PLAY + 1 POST),无一帧 `Scheduled`/`not_started`。窗口窄(仅电竞/网球/足球在打),非铁证但强烈倾向:**firehose 只推进行中比赛,赛前不作 live tick 推**。故 **PRE→IN_PLAY 跃迁基本不作为事件发生,一场比赛首帧即 IN_PLAY**;phase 通道有意义的事件 = 首帧(进 IN_PLAY)+ IN_PLAY→POST(ended)。PRE 订不订都基本收不到 tick,不必为它单开通道。
+- [ ] 细粒度 phase per-league 归一模块(有消费者再上)。
+
+**分期建议**:先落 agnostic 双通道 + 变化才发(strategy 改订 phase-only,甚至 ended-only);score 通道等真有消费者、细粒度 phase 等有需求再上。
 
 ---
 
