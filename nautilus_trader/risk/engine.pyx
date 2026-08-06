@@ -933,12 +933,15 @@ cdef class RiskEngine(Component):
                 self._log.debug(f"Balance impact: {order_balance_impact!r}", LogColor.MAGENTA)
 
             # Skip balance check when borrowing is enabled (e.g. spot margin trading)
-            if not allow_borrowing and free is not None and (free._mem.raw + order_balance_impact._mem.raw) < 0:
-                self._deny_order(
-                    order=order,
-                    reason=f"NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, balance_impact={order_balance_impact}",
-                )
-                return False  # Denied
+            # [DISABLED 2026-08-06 用户决定:余额治理交给应用层 total 门
+            #  (ArbitrageLiveRiskEngine._check_balance),停用 NT 核心 free 预检。
+            #  核心补丁,NT 升级时须保留;恢复 = 取消下面注释。]
+            # if not allow_borrowing and free is not None and (free._mem.raw + order_balance_impact._mem.raw) < 0:
+            #     self._deny_order(
+            #         order=order,
+            #         reason=f"NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, balance_impact={order_balance_impact}",
+            #     )
+            #     return False  # Denied
 
             if base_currency is None:
                 base_currency = instrument.get_base_currency()
@@ -952,12 +955,13 @@ cdef class RiskEngine(Component):
                 if self.debug:
                     self._log.debug(f"Cumulative notional BUY: {cum_notional_buy!r}")
 
-                if not allow_borrowing and free is not None and cum_notional_buy._mem.raw > free._mem.raw:
-                    self._deny_order(
-                        order=order,
-                        reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_buy}",
-                    )
-                    return False  # Denied
+                # [DISABLED 2026-08-06 同上:停用核心 free 门(累计 BUY)]
+                # if not allow_borrowing and free is not None and cum_notional_buy._mem.raw > free._mem.raw:
+                #     self._deny_order(
+                #         order=order,
+                #         reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_buy}",
+                #     )
+                #     return False  # Denied
             elif order.is_sell_c():
                 pending_sell_qty = Quantity.from_raw_c(
                     cum_sell_qty._mem.raw + effective_quantity._mem.raw,
@@ -985,12 +989,13 @@ cdef class RiskEngine(Component):
 
                     if self.debug:
                         self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
-                    if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
-                        self._deny_order(
-                            order=order,
-                            reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
-                        )
-                        return False  # Denied
+                    # [DISABLED 2026-08-06 同上:停用核心 free 门(累计 SELL)]
+                    # if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
+                    #     self._deny_order(
+                    #         order=order,
+                    #         reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
+                    #     )
+                    #     return False  # Denied
                 elif base_currency is not None and account.type == AccountType.CASH:
                     cash_value = Money(effective_quantity.as_f64_c(), base_currency)
                     free = account.balance_free(base_currency)
@@ -1010,12 +1015,13 @@ cdef class RiskEngine(Component):
 
                     if self.debug:
                         self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
-                    if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
-                        self._deny_order(
-                            order=order,
-                            reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
-                        )
-                        return False  # Denied
+                    # [DISABLED 2026-08-06 同上:停用核心 free 门(累计 SELL)]
+                    # if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
+                    #     self._deny_order(
+                    #         order=order,
+                    #         reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
+                    #     )
+                    #     return False  # Denied
 
         # Finally
         return True  # Passed
