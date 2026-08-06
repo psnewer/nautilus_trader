@@ -271,6 +271,66 @@ class TestPortfolio:
         with pytest.raises(AccountBalanceNegative):
             self.exec_engine.process(fill)
 
+    def test_external_strategy_fill_does_not_update_calculated_balance(self):
+        # [ARB PATCH] Reconciliation self-heal (`generate_missing_orders`) mints EXTERNAL-strategy
+        # orders for venue-authoritative positions the cache never saw; their inferred fills must
+        # NOT touch a calculated CASH balance (the venue-pulled connect balance already reflects the
+        # position's cost), else a slight overshoot raises AccountBalanceNegative and aborts startup
+        # reconciliation. Genuine strategy fills still update balances — covered by
+        # test_exceed_free_balance_single_currency_raises_account_balance_negative_exception, which
+        # uses the *same* fill under a real strategy_id and DOES raise.
+        # Arrange
+        AccountFactory.register_calculated_account("SIM")
+
+        account_id = AccountId("SIM-000")
+        state = AccountState(
+            account_id=account_id,
+            account_type=AccountType.CASH,
+            base_currency=USD,  # Single-currency account
+            reported=True,
+            balances=[
+                AccountBalance(
+                    Money(100000.00, USD),
+                    Money(0.00, USD),
+                    Money(100000.00, USD),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        self.portfolio.update_account(state)
+
+        external_factory = OrderFactory(
+            trader_id=self.trader_id,
+            strategy_id=StrategyId("EXTERNAL"),
+            clock=TestClock(),
+        )
+        order = external_factory.market(  # order value 150_000 USD — would overshoot balance
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_str("1000000.0"),
+        )
+
+        self.cache.add_order(order, position_id=None)
+        self.exec_engine.process(TestEventStubs.order_submitted(order, account_id=account_id))
+
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=AUDUSD_SIM,
+            account_id=account_id,
+        )
+
+        # Act: the same fill that raises for a real strategy is a no-op for EXTERNAL
+        self.exec_engine.process(fill)
+
+        # Assert: no raise, calculated balance untouched
+        account = self.portfolio.account(SIM)
+        assert account.balances_total()[USD] == Money(100000.00, USD)
+
     def test_limit_order_consumes_entire_balance_of_multi_currency_cash_account(self):
         # Arrange
         AccountFactory.register_calculated_account("BINANCE")

@@ -528,7 +528,18 @@ cdef class Portfolio(PortfolioFacade):
             # Skip balance updates for spread instrument fills (combo fills)
             # Spread instruments don't create positions, and only leg fills should update balances
             # to avoid double-counting (combo fill + leg fills)
-            if not instrument.is_spread():
+            #
+            # [ARB PATCH] Skip balance updates for EXTERNAL-strategy fills. Reconciliation
+            # self-heal (`generate_missing_orders`, commit 8e2370ee22) mints local orders for
+            # venue-authoritative positions the cache never saw; their inferred fills carry
+            # strategy_id "EXTERNAL" (tags RECONCILIATION/VENUE). On a calculated CASH account
+            # (Polymarket #264) the venue-pulled connect balance already reflects those positions'
+            # cost, so re-applying the synthetic fill double-debits and can drive total negative
+            # → CashAccount raises AccountBalanceNegative and aborts startup reconciliation.
+            # Genuine strategy orders (real strategy_id) — including missed-fill inferred fills for
+            # them — still update balances. NT-core patch: preserve across upgrades; see execution
+            # architecture (#264 interaction) + memory project_nt_core_patched_build.
+            if not instrument.is_spread() and event.strategy_id.value != "EXTERNAL":
                 self._accounts.update_balances(
                     account=account,
                     instrument=instrument,
