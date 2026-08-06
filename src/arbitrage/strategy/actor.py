@@ -18,14 +18,15 @@ StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 
 from __future__ import annotations
 
 import asyncio
+import math
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace
 from functools import partial
 
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
@@ -36,15 +37,19 @@ from nautilus_trader.trading.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
-from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
+from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.opportunity import tags_from_meta
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.positions import pair_positions_digest
+from src.arbitrage.common.venues import POLYMARKET
+from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.strategy.checks.quote_legs import best_ask
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
@@ -153,6 +158,11 @@ class StrategyEvaluator(Strategy):
         self._sports_store = None                 # #250:SportsGameStateStore(lazy,注册后经 self.cache 建)
         self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
         self._game_obd: dict[int, set[str]] = {}   # #250:gameId → 本 actor 订过的 OBD 腿(ended 全退)
+        self._pair_price_store = None
+        self._price_pairs_by_game: dict[int, set[str]] = {}
+        self._price_game_by_pair: dict[str, int] = {}
+        self._price_cleanup_pending: set[str] = set()
+        self._eval_tasks_by_pair: dict[str, int] = {}
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def register_executor(self, loop, executor) -> None:
@@ -183,10 +193,12 @@ class StrategyEvaluator(Strategy):
         # 1. slice 10e:MatchedPair fire → per-iid 订阅 OBD,把真实赔率引进 cache。
         #    #250:同时按场订阅 sports 状态 + 记录该场的 OBD 腿(ended 时全退)
         if isinstance(data, MatchedPair):
+            self._initialize_pair_prices(data)
             self._ensure_obd_subscribed(data)
             self._ensure_sports_subscribed(data)
         # 2. 路由评估(#250:sports 事件按 game_id 扇出全部注册 pair;其余单 pair 路由)
         if isinstance(data, SportsGameUpdate):
+            self._capture_start_prices(data)
             self._route_eval_sports(data)
             return
         self._route_eval(data)
@@ -194,6 +206,7 @@ class StrategyEvaluator(Strategy):
     def on_order_book_deltas(self, deltas) -> None:
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         # 所有 tradable venue 的 OBD 都可触发;NT 已在本回调前更新对应 book cache。
+        self._capture_first_price(deltas)
         self._route_eval(deltas)
 
     def _route_eval(self, data) -> None:
@@ -208,9 +221,22 @@ class StrategyEvaluator(Strategy):
         按确定性顺序逐 pair 调度(各自受 PairInFlightGate 约束,无 event 级全局锁);
         未注册 game no-op。评估时从 Store 读取当前状态,不直接信事件 payload。
         ended:分发完毕后释放本场全部订阅(sports + 各 pair 腿 OBD)→ 归零回收。"""
-        for pair_id in sorted(self._pair_registry.pair_ids_for_game(update.game_id)):
+        pair_ids = (
+            self._pair_registry.pair_ids_for_game(update.game_id)
+            | self._price_pairs_by_game.get(int(update.game_id), set())
+        )
+        if update.ended:
+            self._price_cleanup_pending.update(pair_ids)
+        for pair_id in sorted(pair_ids):
             sport, competition = self._pair_scope(pair_id)
-            self._dispatch_eval(pair_id, sport, competition, event_name=type(update).__name__)
+            waiting = self._dispatch_eval(
+                pair_id,
+                sport,
+                competition,
+                event_name=type(update).__name__,
+            )
+            if update.ended and not waiting:
+                self._delete_pair_price(pair_id)
         if update.ended:
             self._release_game_subscriptions(update.game_id)
 
@@ -265,7 +291,7 @@ class StrategyEvaluator(Strategy):
                 return info.get("sport"), info.get("competition")
         return None, None
 
-    def _dispatch_eval(self, pair_id: str, sport, competition, *, event_name: str) -> None:
+    def _dispatch_eval(self, pair_id: str, sport, competition, *, event_name: str) -> bool:
         # scope-priority 查策略(挂载存在锁定,Q21-a)
         strategy = self._strategy_registry.get_for(pair_id, competition, sport)
         if strategy is None:
@@ -274,7 +300,7 @@ class StrategyEvaluator(Strategy):
                     f"Strategy evaluate skipped: pair_id={pair_id}, sport={sport}, "
                     f"competition={competition}, reason=no_strategy",
                 )
-            return
+            return self._eval_tasks_by_pair.get(pair_id, 0) > 0
         if self._log_evaluations:
             self._log.info(
                 f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
@@ -285,7 +311,7 @@ class StrategyEvaluator(Strategy):
         if self._pair_inflight is not None and not self._pair_inflight.try_enter(pair_id):
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
-            return
+            return self._eval_tasks_by_pair.get(pair_id, 0) > 0
         # acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
         # #261:闸只管"同 pair 不并发评估";全局 ≤1 执行由 barrier 判定,strategy 不参与。
         coro = self._evaluate_and_fire(strategy, pair_id)
@@ -298,7 +324,9 @@ class StrategyEvaluator(Strategy):
             if self._pair_inflight is not None:
                 self._pair_inflight.release(pair_id)
             raise                                     # 不吞:排程失败是真故障,要响亮暴露
+        self._eval_tasks_by_pair[pair_id] = self._eval_tasks_by_pair.get(pair_id, 0) + 1
         task.add_done_callback(partial(self._on_eval_done, pair_id))
+        return True
 
     def _on_eval_done(self, pair_id: str, task) -> None:
         """评估 task 的**唯一**闸出口(#261:无条件释放)。
@@ -315,6 +343,99 @@ class StrategyEvaluator(Strategy):
             self._log.error(f"Strategy evaluate failed: pair_id={pair_id}\n{tb}")
         if self._pair_inflight is not None:
             self._pair_inflight.release(pair_id)
+        remaining = self._eval_tasks_by_pair.get(pair_id, 0) - 1
+        if remaining > 0:
+            self._eval_tasks_by_pair[pair_id] = remaining
+        else:
+            self._eval_tasks_by_pair.pop(pair_id, None)
+            if pair_id in self._price_cleanup_pending:
+                self._delete_pair_price(pair_id)
+
+    def _initialize_pair_prices(self, mp: MatchedPair) -> None:
+        game_id = self._pair_registry.game_id_for_pair(mp.pair_id)
+        if game_id is None:
+            return
+        store = self._get_pair_price_store()
+        if store is None:
+            return
+        store.initialize(mp.pair_id, mp.outcomes)
+        gid = int(game_id)
+        self._price_pairs_by_game.setdefault(gid, set()).add(mp.pair_id)
+        self._price_game_by_pair[mp.pair_id] = gid
+
+    def _capture_first_price(self, deltas) -> None:
+        instrument_id = getattr(deltas, "instrument_id", None)
+        if instrument_id is None or venue_id_from_instrument_id(instrument_id) != POLYMARKET:
+            return
+        pair_id = self._pair_registry.get(instrument_id)
+        game_id = self._price_game_by_pair.get(pair_id) if pair_id is not None else None
+        if pair_id is None or game_id is None:
+            return
+        sports_store = self._get_sports_store()
+        sports_state = sports_store.get(game_id) if sports_store is not None else None
+        if sports_state is not None and (sports_state.live or sports_state.ended):
+            return
+        store = self._get_pair_price_store()
+        state = store.get(pair_id) if store is not None else None
+        if state is None or state.first_price:
+            return
+        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+        if prices is None or not 0.95 <= sum(prices.values()) <= 1.05:
+            return
+        store.capture_first(pair_id, prices)
+
+    def _capture_start_prices(self, update: SportsGameUpdate) -> None:
+        if not update.live or update.ended:
+            return
+        store = self._get_pair_price_store()
+        if store is None:
+            return
+        for pair_id in sorted(self._price_pairs_by_game.get(int(update.game_id), set())):
+            state = store.get(pair_id)
+            if state is None:
+                continue
+            prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+            if prices is not None:
+                store.capture_start(pair_id, prices)
+
+    def _pm_ask_prices(self, pair_id: str, outcomes: tuple[str, ...]) -> dict[str, float] | None:
+        expected = set(outcomes)
+        prices: dict[str, float] = {}
+        for iid_str in sorted(self._pair_registry.instrument_ids_for_pair(pair_id)):
+            instrument_id = InstrumentId.from_str(iid_str)
+            if venue_id_from_instrument_id(instrument_id) != POLYMARKET:
+                continue
+            instrument = self.cache.instrument(instrument_id)
+            info = getattr(instrument, "info", None) if instrument is not None else None
+            outcome = str(
+                (info or {}).get("claim")
+                or (info or {}).get("selection_role")
+                or "",
+            ).strip().lower()
+            if outcome not in expected or outcome in prices:
+                return None
+            price = best_ask(self.cache.order_book(instrument_id))
+            if price is None or not math.isfinite(price) or price <= 0:
+                return None
+            prices[outcome] = float(price)
+        if set(prices) != expected:
+            return None
+        return {outcome: prices[outcome] for outcome in outcomes}
+
+    def _delete_pair_price(self, pair_id: str) -> None:
+        self._price_cleanup_pending.discard(pair_id)
+        store = self._get_pair_price_store()
+        if store is not None:
+            store.delete(pair_id)
+        game_id = self._price_game_by_pair.pop(pair_id, None)
+        if game_id is None:
+            return
+        pair_ids = self._price_pairs_by_game.get(game_id)
+        if pair_ids is None:
+            return
+        pair_ids.discard(pair_id)
+        if not pair_ids:
+            self._price_pairs_by_game.pop(game_id, None)
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
         """slice 10e:MatchedPair 的两边各腿首次见到时订阅 OrderBookDeltas(去重)。
@@ -418,6 +539,15 @@ class StrategyEvaluator(Strategy):
             except Exception:  # noqa: BLE001 — 未注册 harness 无 cache
                 return None
         return self._sports_store
+
+    def _get_pair_price_store(self):
+        """lazy 建 PairPriceStore，保存 PM 初始/开赛完整价格向量。"""
+        if self._pair_price_store is None:
+            try:
+                self._pair_price_store = PairPriceStore(self.cache)
+            except Exception:  # noqa: BLE001 — 未注册 harness 无 cache
+                return None
+        return self._pair_price_store
 
     def _create_task(self, coro):
         """把 coroutine 投递到 NT kernel 为组件注册的运行 loop。

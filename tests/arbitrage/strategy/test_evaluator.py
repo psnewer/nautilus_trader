@@ -230,6 +230,7 @@ def _mp(
     pair_id: str = "match_X",
     *,
     confidence: float = 0,
+    outcomes: list[str] | None = None,
     tradable_instrument_ids: list[str] | None = None,
     venue_instrument_ids: dict[str, list[str]] | None = None,
     anchor_instrument_ids: list[str] | None = None,
@@ -245,6 +246,7 @@ def _mp(
         sport="Soccer",
         competition="EPL",
         confidence=confidence,
+        outcomes=list(outcomes or ["yes", "no"]),
         anchor_instrument_ids=list(anchor_instrument_ids or []),
         tradable_instrument_ids=list(tradable_instrument_ids or []),
         venue_instrument_ids=dict(venue_instrument_ids or {}),
@@ -829,6 +831,88 @@ def test_ended_releases_sports_and_obd_subscriptions():
     assert 888 not in actor._sports_subscribed
     assert 888 not in actor._game_obd
     assert actor._obd_subscribed == set()           # 各腿 OBD 已退订(归零 → book 回收)
+
+
+# ── PairPriceStore:PM 初始/开赛价格快照──────────────────────────────
+def _wire_pair_price_books(actor, pair_reg, *, yes_ask: float, no_ask: float, game_id=888):
+    from tests.arbitrage.matching.test_actor import _add_order_book
+    from tests.arbitrage.matching.test_actor import _pm
+
+    yes = _pm("EPL", "Arsenal", "Chelsea", "home", f"price-y-{game_id}", claim="yes")
+    no = _pm("EPL", "Arsenal", "Chelsea", "home", f"price-n-{game_id}", claim="no")
+    actor.cache.add_instrument(yes)
+    actor.cache.add_instrument(no)
+    _add_order_book(actor.cache, yes.id, yes_ask)
+    _add_order_book(actor.cache, no.id, no_ask)
+    pair_reg.register("match_X", [str(yes.id), str(no.id)], game_id=game_id)
+    actor.on_data(_mp(
+        "match_X",
+        outcomes=["yes", "no"],
+        tradable_instrument_ids=[str(yes.id), str(no.id)],
+        venue_instrument_ids={"POLYMARKET": [str(yes.id), str(no.id)]},
+    ))
+    return yes, no
+
+
+def test_first_price_captures_complete_clean_pm_vector_once():
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.first_price == {"yes": 0.44, "no": 0.56}
+    assert state.start_price == {"yes": 0.6, "no": 0.6}
+
+
+def test_first_price_rejects_dirty_sum_and_non_pm_obd():
+    actor, _, pair_reg, _, loop, _ = _harness()
+    _, _wire_no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.7)
+
+    actor.on_order_book_deltas(_obd("A.ORBITEXCH"))
+    actor.on_order_book_deltas(_obd(str(_wire_no.id)))
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").first_price == {}
+
+
+def test_first_price_is_not_captured_after_game_is_live():
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    actor._get_sports_store().put(_sports_update(888, live=True, ended=False))
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").first_price == {}
+
+
+def test_start_price_captures_in_play_without_probability_sum_check():
+    actor, _, pair_reg, _, loop, _ = _harness()
+    _wire_pair_price_books(actor, pair_reg, yes_ask=0.8, no_ask=0.7)
+
+    actor.on_data(_sports_update(888, live=True, ended=False))
+    _run(_drain(loop))
+
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.first_price == {}
+    assert state.start_price == {"yes": 0.8, "no": 0.7}
+
+
+def test_ended_deletes_pair_prices_after_last_evaluation_finishes():
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=_RecordingAction("m1")))
+    _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X") is not None
+
+    actor.on_data(_sports_update(888, live=False, ended=True))
+    assert actor._get_pair_price_store().get("match_X") is not None
+
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X") is None
+    assert 888 not in actor._price_pairs_by_game
 
 # ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────
 class _RaisingAction(Action):

@@ -472,6 +472,33 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 5. Strategy 不冻结 sports state。新 phase update 由 per-(game,phase) topic 触发下一轮评估；
    查询发生时读取当时的 Store 当前值。
 
+#### 3.8.2 PM 初始/开赛价格采集(#323,已落地)
+
+`StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
+`first_price/start_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
+一个 3-way event 仍是 home/draw/away 三个 binary pair，每个 pair 按自身 `yes/no` outcomes
+独立保存，不聚合成 event 级价格。
+
+**初始化**：MatchedPair 到达且能经 PairRegistry 取得 `game_id` 时，按
+`MatchedPair.outcomes` 幂等初始化；同时登记 `game_id → pair_ids`，该映射既用于 phase 扇出，
+也避免 matching 先 unregister 后 Strategy 无法找到待回收价格。
+
+**first_price**：仅 PM instrument 的 OBD 可触发。NT 已在回调前更新 managed OrderBook，
+Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整的 best ask 概率向量。
+Sports Store 无状态或处于 PRE 才视为未开赛；`live/ended` 均禁止写。完整向量的概率和位于
+闭区间 `[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持
+空值，后续赛前 PM OBD 可重试。OE/SE OBD 只继续触发既有策略评估，不参与参考价采集。
+
+**start_price**：收到 `live=True && ended=False` 的 phase 消息时，按 game 扇出全部 pair；
+若该 pair 的所有 start values 仍为默认 `0.6`，读取当时 Cache 中完整 PM best ask 向量并
+整组首次写入，不执行概率和校验。phase 时缺完整 PM 盘口则保留默认值，后续 OBD 不补写，
+避免把开赛后一段时间的赔率误称 start price。
+
+**释放**：ended 到达后仍先调度该场最后一次策略评估，并立即沿用 §3.8.1 释放 sports/OBD
+订阅；价格记录进入 pending cleanup。Evaluator 按 pair 统计已排程 task，最后一个 task 的
+done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在途 task 的 pair 立即删除，
+保证不会在异步评估开始前先清 Cache。
+
 ### 3.9 树内执行计划 + Evaluator 统一分发
 
 **状态：已落地，2026-07-31（#301）。**

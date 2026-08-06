@@ -80,6 +80,23 @@ Strategy 记录与 Execution 重算的执行状态基线是 `pair_positions_dige
   `pair_ids_for_game`,防止同场的 3-way pair 只触发排序后的第一个。
 - MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。
 
+### 3.1 PairPriceStore(已落地,#323)
+
+`src/arbitrage/common/pair_prices.py` 在 NT Cache 通用对象区保存 market-level pair 的 PM
+参考价格，key 为 `arb:pair_price:{pair_id}`。采集时机和 PM 盘口完整性规则归 Strategy
+§3.8.2；common 只定义状态与原子写入接口。
+
+| 字段 / API | 语义 |
+|---|---|
+| `first_price` | outcome → PM best ask 概率；初始化为空字典，首次完整写入后不可覆盖 |
+| `start_price` | outcome → PM best ask 概率；初始化时每个 outcome 为 `0.6`，首次完整写入后不可覆盖 |
+| `initialize(pair_id, outcomes)` | 幂等初始化；已有记录保持不变，重新收到 MatchedPair 不重置参考价 |
+| `capture_first` / `capture_start` | 比较并整组写入；禁止逐 outcome 更新造成混合时点向量 |
+| `delete(pair_id)` | Strategy 在比赛 ended 的最后一轮评估完成后删除记录 |
+
+Store 不保存独立的 captured 标志：`first_price` 是否为空、`start_price` 是否仍全部为默认值
+就是写入判据。所有 compare-and-write 均在 Strategy Actor 同一同步回调内完成，中间没有 `await`。
+
 ## 4. 控制台命令(`control.py`,#119)
 
 `src/arbitrage/common/control.py` = Web 控制台 → 组件的运行时控制命令(topic 常量 + frozen dataclass):

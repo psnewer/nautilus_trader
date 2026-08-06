@@ -501,6 +501,20 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 **期望/验收**:ended 扇出分发完毕后,退订本场 sports 与自记的各 pair 腿 OBD;与 matching 侧
 退订汇合归零 → NT 收尾 + 内存回收(Store 条目、managed book)。
 
+### strategy-4.sports.7:PM first/start price Cache
+
+**用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
+`test_start_price_captures_in_play_without_probability_sum_check`、
+`test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
+
+**期望/验收**:
+- MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`；
+- 只有赛前 PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]` 内才首次写 first price；
+  非 PM OBD与不干净向量不写；
+- IN_PLAY phase 对完整 PM 向量首次写 start price且不做概率和校验；
+- ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
+  game 索引。
+
 ## strategy-4.30:one_side_rebate 近价挂单撤单补偿
 
 - `test_check_spread_cancel_recovery.py`:无挂单或概率差未达阈值不命中；PM BUY 挂单与当前
