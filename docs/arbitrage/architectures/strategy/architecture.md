@@ -323,7 +323,7 @@ strategy evaluate,默认 `False` 保持生产路径安静。
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / NT per-game `SportsGameUpdate` CustomData(#250) | `submit_order`(经 Action;走 RiskEngine 标准管道)|
+| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / NT per-(game,phase) `SportsGameUpdate` CustomData(#250/#322) | `submit_order`(经 Action;走 RiskEngine 标准管道)|
 | `Action` 类 | (无订阅) | `submit_order` / `cancel_order`(NT 标准 client 接口)|
 
 ### 3.7 StateQuery/Check/Action 类型注册 + JSON loader
@@ -456,10 +456,11 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 
 接线:
 
-1. **按场订阅**:`MatchedPair` 到达时,gid 经 PairRegistry `game_id_for_pair(pair_id)` 反查
-   (matching 注册先于发布,同步时序安全),`subscribe_data(sports_data_type(gid),
-   client_id=PMSPORTS)`;同时自记 `game→OBD 腿` 映射。无 gid 的 pair 静默跳过。
-2. **`game_id` 是事件路由键**:一次 per-game 事件按确定性顺序(`sorted`)对
+1. **按场订阅 phase 通道**:`MatchedPair` 到达时,gid 经 PairRegistry
+   `game_id_for_pair(pair_id)` 反查(matching 注册先于发布,同步时序安全),
+   `subscribe_data(sports_data_type(gid, SPORTS_CHANNEL_PHASE), client_id=PMSPORTS)`；
+   同时自记 `game→OBD 腿` 映射。当前 Strategy 只消费 phase/ended，不订阅 score；无 gid 的 pair 静默跳过。
+2. **`game_id` 是事件路由键**:一次 per-(game,phase) 事件按确定性顺序(`sorted`)对
    `pair_ids_for_game(gid)` 的全部注册 pair 走 `_route_eval_sports` → `_dispatch_eval`;
    未注册 game no-op。每个 pair 仍受既有 `PairInFlightGate` 约束,不引入 event 级全局锁。
 3. **事件 payload 只负责唤醒和定位**。PMS processor 已先把最新状态写入
@@ -468,7 +469,7 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 4. **ended 释放**:ended 事件扇出分发完毕后,退订本场 sports 与该场各 pair 腿的 OBD
    (自记映射,不依赖 registry)→ 与 matching 侧退订汇合归零 → NT 收尾 + 内存回收
    (Store 条目、managed book;见 data §3.4.1)。
-5. Strategy 不冻结 sports state。新 sports update 由 per-game topic 触发下一轮评估；
+5. Strategy 不冻结 sports state。新 phase update 由 per-(game,phase) topic 触发下一轮评估；
    查询发生时读取当时的 Store 当前值。
 
 ### 3.9 树内执行计划 + Evaluator 统一分发
@@ -721,7 +722,7 @@ sequenceDiagram
 
 **外部事件接入(part of Step 4 + Step 7)**:
 - [x] PMSPORTS sports firehose / synthetic anchor 已经接入 matching→strategy 主链路;Strategy 只订阅 `tradable_instrument_ids`,不订阅/不下单 non-tradable anchor。
-- [x] #250:per-game CustomData subscription(MatchedPair 订 / ended 释放)→ `game_id`
+- [x] #250/#322:per-(game,phase) CustomData subscription(MatchedPair 订 / ended 释放)→ `game_id`
   扇出全部注册 pair → Store-backed live sports state 已落地(§3.8.1);
   覆盖见 `test_evaluator.py` sports 用例。
 - [ ] 通用比分/比赛开始等第三方外部事件 DSL 与具体 publish policy 仍未设计;#250 只锁数据/触发架构。

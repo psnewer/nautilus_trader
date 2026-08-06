@@ -5,7 +5,8 @@
 > anchor/tradable 分离、MatchedPair 新字段、Strategy OBD/snapshot 隔离、MatchingActor
 > PMSPORTS anchor 聚合、ended eviction、launcher/config 独立 data source enablement 已落地并有离线测试;
 > target competitions 默认复用 `discovery.polymarket.sports`;`data_sources.sports_status.sports`
-> 仅作为可选覆盖。#250:CustomData 状态管线 + per-game 订阅 + 归零回收已落地(game_id 即订阅键与路由键)。
+> 仅作为可选覆盖。#250/#322:CustomData 状态管线 + per-(game,channel) 订阅 + 归零回收已落地
+> (`game_id` 是赛事路由键，`channel` 是变化通知维度)。
 > **归属判据**:该机制同时约束 PMSPORTS data source、matching、PairRegistry、Strategy 输入边界与
 > launcher/config,没有单一组件能完整拥有不变量,按 P11 放在横切章节。
 
@@ -47,7 +48,7 @@
 | Strategy 只消费 tradable ids | MatchedPair 触发 OBD 订阅与 snapshot 构造时跳过 anchor ids |
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
 | 实时状态先缓存后发布 | 最新 `SportsGameUpdate` 的真理源是 data 层 Store;事件只负责唤醒 consumer |
-| game_id 即订阅键 | 每场独立 per-game DataType/topic;matching(candidate 订 / ended 或差集退,#252)与 strategy(MatchedPair 订 / ended 退)双侧退订汇合归零 → 回收 Store 条目与 OBD book |
+| `(game_id, channel)` 即订阅键 | 每场每通道独立 DataType/topic；matching 与 strategy 当前均订 `phase`，全部通道订阅汇合归零后回收 Store 条目；OBD book 仍按原订阅生命周期回收 |
 
 ---
 
@@ -108,9 +109,9 @@ account   = None
 2. Lifecycle:
    - 连接公开 `wss://sports-api.polymarket.com/ws` firehose。
    - 解析 `SportsGameUpdate`。
-   - **#250 已落地**:经 data architecture §3.4.1 的 StateStore/Processor,
-     兴趣门控(未订阅不存不推)→ 先写最新状态 → 发布到该场 per-game topic(旧裸 publish 与
-     lifecycle/strategy 双通道均已废除);字段级筛选属二级架构,未设计。
+   - **#250/#322 已落地**:经 data architecture §3.4.1/§3.4.2 的 StateStore/Processor,
+     兴趣门控(该场无任何通道订阅则不存不推)→ 先写最新状态 → 按变化发布到该场
+     `phase`/`score` topic；payload 均为完整 `SportsGameUpdate`。
 
 3. 数据准入与发布:
    - data source 的主准入门是订阅本身(#250 兴趣门控);字段级 filter seam 留后续设计。
@@ -118,8 +119,8 @@ account   = None
      (死盘无健康双边 book,PENDING 永不 PASS)+ 每 tick candidate 差集清理(卡死 PENDING 回收)
      承担;gamma closed=false 延迟的死比赛因配不出 candidate 而零状态。
    - 通过 filter 的有效数据先写 Cache;publish policy 再独立决定发布目标,可以返回空集合形成 cache-only。
-   - lifecycle 通道保留 matching 的 `ended` 可达性;strategy 通道只负责触发计算。完整接口与错误边界
-     只在 data architecture §3.4.1 定义,本文不复述。
+   - matching/strategy 当前均订 `phase`，以保证 `ended` 可达；`score` 通道已具备但当前无消费者。
+     完整接口与错误边界只在 data architecture §3.4.1/§3.4.2 定义,本文不复述。
 
 当前代码 `adapters/polymarket/sports.py` 已经是独立 client 形态。注册生命周期由
 `DATA_SOURCE_REGISTRY["sports_status"]` 与 `data_sources.sports_status.enabled` 控制,
@@ -277,8 +278,8 @@ Venue Registry 仍只描述 trading venues。若需要 registry,新增 `DATA_SOU
 | MatchingActor 增 `anchor_venue="PMSPORTS"` 路径,用 PMSPORTS anchors 匹配 enabled tradable venues | 已落地 |
 | Eviction 从 `game_id -> pair_id` 继续工作,game_id 来源改为 anchor instrument | 已落地 |
 | launcher/config 将 PMSPORTS 注册从 PM descriptor 下移到 data source enablement | 已落地 |
-| SportsGameUpdate 最新状态 Store + per-game CustomData 订阅 + 归零回收 | 已落地(#250) |
-| Strategy 按 game_id 触发同场全部 pair,并从 Store 冻结 sports_state;ended 释放全部订阅 | 已落地(#250) |
+| SportsGameUpdate 最新状态 Store + per-(game,channel) CustomData 订阅 + 归零回收 | 已落地(#250/#322) |
+| Strategy 按 game_id 触发同场全部 pair，并在评估时查询 Store 当前状态；ended 释放全部订阅 | 已落地(#250/#266/#322) |
 | PM/OE、PM/SE、OE/SE、PM/OE/SE skip smoke | 待第二阶段 smoke;OE/SE-only 离线注册/dispatcher 已可表达 |
 
 ---

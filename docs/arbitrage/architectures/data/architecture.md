@@ -244,9 +244,9 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
   keepalive，协议层 ping/pong 由 client 处理，仍兼容 app-level text `"ping"`→`"pong"`；
   `_disconnect` 先取消初连 task，再断开 client。不得改回 `websockets.connect`：其 15/16
   新 asyncio 代理实现存在握手超时后的清理竞态，会额外抛出 callback traceback。
-- 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate`；processor 对已订阅比赛先写
-  `SportsGameStateStore`，再以 `CustomData(sports_data_type(game_id), update)` 交给 DataEngine，
-  路由到该场 per-game topic。
+- 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate`；processor 对至少有一个已订阅
+  channel 的比赛先写 `SportsGameStateStore`，再按变化通道以
+  `CustomData(sports_data_type(game_id, channel), update)` 交给 DataEngine，路由到该场该通道的 topic。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
 - 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 收到该场更新后触发评估，
   条件判断按需查询 `SportsGameStateStore`。详见 strategy architecture §3.1/§3.8.1。
@@ -258,33 +258,33 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 NT/OE 赔率链路**:消费者按键下发订阅命令 → client 持订阅注册表 → 未订阅帧在源头静默丢弃
 → 命中帧归一后经 DataEngine 路由到 per-key topic。实现位于 `adapters/polymarket/sports.py`。
 
-**订阅模型:game_id 即订阅键。**
+**订阅模型:`(game_id, channel)` 即订阅键。**
 
 ```python
-sports_data_type(game_id)  # = DataType(SportsGameUpdate, metadata={"game_id": gid})
-#  → topic "data.SportsGameUpdate.game_id=<gid>"
+sports_data_type(game_id, "phase")
+# = DataType(SportsGameUpdate, metadata={"game_id": gid, "channel": "phase"})
+# → topic "data.SportsGameUpdate.game_id=<gid>.channel=phase"
 ```
 
-- 每场比赛一个独立 DataType/topic。metadata 参与 DataType 身份(NT 泛型 SubscribeData 路径
+- 每场比赛的每个通道一个独立 DataType/topic。metadata 参与 DataType 身份(NT 泛型 SubscribeData 路径
   唯一的参数槽;`instrument_id` 变体不可用 —— engine 转发去重按 DataType 键,忽略 instrument_id),
-  engine 因此**逐场转发** subscribe/unsubscribe → 兴趣记账直接复用 **NT client 基类原生
+  engine 因此**逐 `(game_id, channel)` 转发** subscribe/unsubscribe → 兴趣记账直接复用 **NT client 基类原生
   订阅注册表**(`subscribed_custom_data()`,engine 首订转发/归零退订时同步更新;
   对标 OE `_market_to_instruments` 路由表),不另建集合。
-- **无 lifecycle/strategy 通道、无 PublishPolicy**:推送内容统一(完整 `SportsGameUpdate`),
-  消费者自选所用字段;字段级筛选属二级架构(`SportsGameDataFilter` seam 占位)。
-  **⚠️ 已被 #322 取代**:该 seam 自 #322 按 §3.4.2 具体化为"按语义分通道(phase/score)+ 变化才发",
-  **已落地**;本节的"单通道 / step 5 全字段去重 / per-game 发布"以 §3.4.2 为准。
+- 当前通道为 `phase` / `score`，payload 均为完整 `SportsGameUpdate`；通道只决定变化时唤醒谁。
+  逐通道变化判据及 payload 契约见 §3.4.2。
 
 **数据面固定顺序**(`SportsGameDataProcessor.process`):
 
-1. **兴趣门控**:未订阅比赛整体丢弃,不存不推("定了就推,不定就不推")。
+1. **兴趣门控**:比赛没有任何 channel 订阅时整体丢弃,不存不推("定了就推,不定就不推")。
 2. filter seam(二级占位,默认全收)。
 3. **终态拒收**:Store 旧状态 `ended=True` 即终态,后续任何帧丢弃;ended 帧本身放行恰好一次
    (eviction 依赖),覆盖退订命令异步生效前的小窗。
 4. **过期拒收**:`ts_event` 倒退整体丢弃,Store 不回退。
-5. **去重**:业务字段(除 `ts_event/ts_init`)与旧状态相同的重复帧只刷新 Cache 时戳,不发布。
+5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串；无已订阅通道发生变化时只刷新 Cache 时戳。
 6. **先写 `SportsGameStateStore`**(key `pmsports:game:{gid}`,NT Cache 通用对象区,codec Store 私有)。
-7. 发布 `CustomData(sports_data_type(gid), update)` → DataEngine → per-game topic。
+7. 对发生变化且已订阅的通道发布 `CustomData(sports_data_type(gid, channel), update)`
+   → DataEngine → per-(game,channel) topic。
 
 **错误边界**:Store 写失败 → 不发布(记录 error,后续帧重试);publish 失败 → Cache 不回滚。
 
@@ -296,8 +296,8 @@ sports_data_type(game_id)  # = DataType(SportsGameUpdate, metadata={"game_id": g
 | Strategy | `MatchedPair` 到达(gid 经 PairRegistry `game_id_for_pair`)| 收到 ended、扇出分发完毕后 |
 
 双侧退订汇合 → msgbus 订阅数归零 → engine 转发 unsubscribe → client `_unsubscribe`:
-移出兴趣集合(= 断该场"feed")+ **`store.delete(gid)` 回收 Store 条目**。Store 条目生命周期
-= 订阅生命周期;进程重启即清(纯内存)。
+移出对应 channel；该场全部 channel 归零后才 **`store.delete(gid)` 回收 Store 条目**。
+Store 条目生命周期 = 该场所有通道订阅的并集生命周期；进程重启即清(纯内存)。
 
 **本轮 NT Cython 核心修补**(#250 定夺;升级合并时需保留):
 
@@ -318,7 +318,10 @@ ended 的发布只有一次,无重复帧兜底(会话内 matching 订阅早于 W
 
 #### 3.4.2 按变化分通道(#322,已落地 · live-unvalidated · as-of 2026-08-05)
 
-> 承 §3.4.1。§3.4.1 原是**单通道**(整条 `SportsGameUpdate` 一个 per-game topic,step 5 全字段去重一刀切);本节把 §3.4.1 末尾"字段级筛选(`SportsGameDataFilter` seam 占位)"**具体化**为按语义分通道 + 每通道"变化才发",**已替换 §3.4.1 的单通道/全字段去重**(§3.4.1 的 step 5 去重、per-game 发布描述以本节为准)。代码:`adapters/polymarket/sports.py`(`sports_data_type(game_id, channel)` / `sports_phase` / `SportsGameDataProcessor` 逐通道 diff);消费端 matching/strategy 均改订 `phase` 通道。**live-unvalidated**(单元测试覆盖,实盘未验)。
+> 承 §3.4.1。本节记录从旧“单通道整帧广播”演进到按语义分通道 + 每通道变化才发的
+> 具体契约；§3.4.1 已回写为当前总流程。代码:`adapters/polymarket/sports.py`
+> (`sports_data_type(game_id, channel)` / `sports_phase` / `SportsGameDataProcessor` 逐通道 diff)；
+> 消费端 matching/strategy 当前均订 `phase` 通道。**live-unvalidated**(单元测试覆盖,实盘未验)。
 
 **动机**:strategy 对 sports **只消费 `ended`**(唤醒+定位靠 game_id,状态判断从 Store 读,strategy §3.8.1);`score`/`elapsed`/`period` 帧对它是纯噪声唤醒。未来若有比分/阶段消费者,又需各订各的、互不惊动。
 
