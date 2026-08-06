@@ -184,6 +184,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价保持当前 order 的隐含概率**(`price=prob=` 原腿 `prob`,不用 PM ask;PM `qty=share`、`cost=share×prob`),合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
+- ✅ `test_action_dash_gate.py`:`candi_select` 后按对应 `start_price` 的 50% 严格过滤 BUY 腿；覆盖低于删除、等于保留、SELL 保留、`claim/role` outcome 映射、默认 0.6 开赛价、缺概率/outcome/state 不误删，以及 candidate 元数据与两份 legs 视图同步
 - ✅ `test_action_place_bets.py` +2:提交 intent 优先读本树 `selected_candidate["intent"]`；
   无标记时回退 Action 配置值
 - ✅ `test_evaluator.py`(#301):arb/comp 两条 Action 链分别生成 plan；两者都有 plan 时只分发补偿计划且补偿不继承套利 spread；补偿无 plan 时回退套利计划
