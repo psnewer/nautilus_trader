@@ -392,7 +392,12 @@ class StrategyEvaluator(Strategy):
             return
         for pair_id in sorted(self._price_pairs_by_game.get(int(update.game_id), set())):
             state = store.get(pair_id)
-            if state is None:
+            # late-join 护栏:仅当已采到 first_price(= 见证过赛前盘口)才认这帧 live 为开赛价。
+            # firehose 不推赛前帧、一场首帧即 IN_PLAY(data §3.4.2),"phase live 帧"本身分不清
+            # "赛前订上、首帧≈开赛"与"中途接入、首帧已深盘中";first_price 只在赛前 OBD 可采
+            # (live/ended 禁写)→ 它非空即证明见证过赛前。中途接入采不到 first_price → start_price
+            # 保持默认 0.6,不把盘中(可能已崩)赔率误当开赛价污染 dash_gate 阈值(#322 修订,strategy §3.8.2)。
+            if state is None or not state.first_price:
                 continue
             prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
             if prices is not None:

@@ -888,7 +888,9 @@ def test_first_price_is_not_captured_after_game_is_live():
     assert actor._get_pair_price_store().get("match_X").first_price == {}
 
 
-def test_start_price_captures_in_play_without_probability_sum_check():
+def test_start_price_not_captured_without_witnessed_first_price():
+    # late-join 护栏(#322 修订):没采到 first_price(赛前盘口)→ 收到 live phase 也不采
+    # start_price,保持默认 —— 避免把中途接入时的盘中赔率误当开赛价污染 dash_gate 阈值。
     actor, _, pair_reg, _, loop, _ = _harness()
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.8, no_ask=0.7)
 
@@ -897,6 +899,27 @@ def test_start_price_captures_in_play_without_probability_sum_check():
 
     state = actor._get_pair_price_store().get("match_X")
     assert state.first_price == {}
+    assert state.start_price == {"yes": 0.6, "no": 0.6}
+
+
+def test_start_price_captures_in_play_after_first_price_witnessed():
+    # happy-path:赛前 OBD 先采到 first_price → live phase 帧才把当时完整 PM 盘口整组写成
+    # start_price(不做概率和校验),证明 first_price 前置不误伤赛前订上的 pair。
+    from tests.arbitrage.matching.test_actor import _add_order_book
+
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))     # 赛前采 first_price
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").first_price == {"yes": 0.44, "no": 0.56}
+
+    _add_order_book(actor.cache, yes.id, 0.8)          # 开赛前后盘口移动
+    _add_order_book(actor.cache, no.id, 0.7)
+    actor.on_data(_sports_update(888, live=True, ended=False))
+    _run(_drain(loop))
+
+    state = actor._get_pair_price_store().get("match_X")
     assert state.start_price == {"yes": 0.8, "no": 0.7}
 
 
