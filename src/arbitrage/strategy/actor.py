@@ -67,6 +67,9 @@ def make_submitter(*, cache, order_factory, submit_order, log):
 
     `cache.instrument(iid)` 返 None(冷启动 / 未订阅)→ 跳过 + warning,不 raise。
     """
+    from decimal import ROUND_DOWN
+    from decimal import Decimal
+
     from nautilus_trader.core.uuid import UUID4
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.enums import TimeInForce
@@ -97,10 +100,21 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 venue_required_balance=spec.get("venue_required_balance"),
                 enable_timeout=spec.get("enable_timeout"),
             ))
+        # 下单量落 venue 可撮网格:PM instrument 精度存 token 真值(1e-6),但下单必须 floor 到
+        # info["order_size_increment"](0.01)——否则 order.quantity(6 位)与 venue 撮到的量不一致,
+        # NT 眼里永远差尾量填不满(#280 搬进账本);SELL floor ≤ 真实持有,绝不超卖。OE/SE 无此键 → 原样。
+        qty_value = float(spec["qty"])
+        grid = (getattr(inst, "info", None) or {}).get("order_size_increment")
+        if grid:
+            g = Decimal(str(grid))
+            qty_value = float((Decimal(str(qty_value)) / g).to_integral_value(rounding=ROUND_DOWN) * g)
+            if qty_value <= 0:
+                log.warning(f"submit: {iid} qty {spec['qty']} floors below order grid {grid}; skip")
+                return
         order = order_factory.limit(
             instrument_id=iid,
             order_side=order_side,
-            quantity=Quantity(float(spec["qty"]), precision=inst.size_precision),
+            quantity=Quantity(qty_value, precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
             time_in_force=TimeInForce.GTC,
             tags=tags,
@@ -373,7 +387,13 @@ class StrategyEvaluator(Strategy):
             return
         sports_store = self._get_sports_store()
         sports_state = sports_store.get(game_id) if sports_store is not None else None
-        if sports_state is not None and (sports_state.live or sports_state.ended):
+        # None = 未确认赛前,不采(#322 修订续):late-join 时 match 才刚订 sports、firehose 首帧未到
+        # → sports_store 必空 = None;而 firehose 不推赛前帧 → 真赛前的 game 也是 None,两者同为 None
+        # 采集时刻无法区分。旧逻辑把 None 当赛前 → late-join 把盘中盘口误采成 first_price,进而污染
+        # start_price(0.6→盘中价)、dash_gate 阈值塌陷。改为**仅 sports_state 正面确认 PRE**(存在且
+        # not live/ended)才采;None/live/ended 一律不采。代价:firehose 无 PRE 帧 → 实盘 first_price
+        # 基本不再采 → start_price 恒默认 0.6、gate 用固定 0.5×0.6=0.30 阈值(late-join 正确删崩腿)。
+        if sports_state is None or sports_state.live or sports_state.ended:
             return
         store = self._get_pair_price_store()
         state = store.get(pair_id) if store is not None else None

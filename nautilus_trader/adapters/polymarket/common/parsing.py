@@ -216,12 +216,16 @@ def parse_polymarket_instrument(
     description = market_info["question"]
     price_increment = Price.from_str(str(market_info["minimum_tick_size"]))
     min_quantity = Quantity.from_str(str(market_info.get("minimum_order_size", 5)))
-    # PM 下单量可撮粒度(#281):真实增量是 0.01(个别市场 0.001)。此前硬编码 USDC.e 的 0.000001
-    # (精度 6),把"成交报表记账精度"误当"下单可撮粒度",导致下单量带 6 位小数(如 28.7525)、venue
-    # 只撮到 0.01、余下 sub-0.01 尾量无法挂单成交 → 订单卡 PARTIALLY_FILLED(#280 dust 根源)。
-    # 改用 0.01:它是任何更细真实增量(0.001)的整数倍,发 venue 永远合法,且把下单量量化到 0.01
-    # → 从源头不再产生 sub-0.01 dust。#280 的 fill-handler cancel 收口作为残余兜底保留。
-    size_increment = Quantity.from_str("0.01")
+    # PM 精度双轨(修正 #281,见 execution §4.7 / refactor):**持仓精度 ≠ 下单网格**。
+    # - size_increment = token 真实精度 0.000001(精度 6)→ Position/fill/order 的 Quantity 按真值存。
+    #   旧 #281 为堵 #280 把 size_increment 定成 0.01,顺带**把仓位量化到 0.01(nearest,向上偏)**——
+    #   17.046151 → 17.05,reduce 整仓平时卖超真实持有被 venue 拒(not enough balance)+ churn。
+    # - 下单可撮网格仍是 0.01(个别市场 0.001,0.01 是其整数倍、发 venue 永远合法),经
+    #   info["order_size_increment"] 传给 `make_submitter`,在**下单量生成处**把 order.quantity
+    #   **向下取整(floor)到 0.01**:①不产生 sub-0.01 尾量(#280 防护不变,只是落点从 instrument 精度
+    #   挪到下单层);②SELL floor ≤ 真实持有,绝不超卖。#280 的 fill-handler cancel 收口仍作残余兜底。
+    size_increment = Quantity.from_str("0.000001")
+    order_size_increment = 0.01
     end_date_iso = market_info["end_date_iso"]
 
     if end_date_iso:
@@ -234,6 +238,9 @@ def parse_polymarket_instrument(
     instrument_info = dict(market_info)
     # PM 的 1 USD 下限只适用于 BUY；BinaryOption.min_notional 无法表达侧别约束。
     instrument_info.setdefault("min_buy_notional", 1.0)
+    # 下单可撮网格(与持仓精度 size_increment 分轨,见上）：make_submitter 据此把 order.quantity
+    # floor 到该网格；OE/SE instrument 不带此键,不受影响。
+    instrument_info["order_size_increment"] = order_size_increment
 
     ts_init = ts_init if ts_init is not None else time.time_ns()
 

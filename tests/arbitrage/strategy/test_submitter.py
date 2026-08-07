@@ -19,6 +19,15 @@ def _fake_instrument(size_precision=2, price_precision=2):
     return SimpleNamespace(size_precision=size_precision, price_precision=price_precision)
 
 
+def _pm_like_instrument(size_precision=6, order_size_increment=0.01):
+    # PM 双轨精度:持仓精度存 token 真值(6),下单网格经 info 传(0.01)。
+    return SimpleNamespace(
+        size_precision=size_precision,
+        price_precision=2,
+        info={"order_size_increment": order_size_increment},
+    )
+
+
 def _build():
     """共享 fixture:返 (submit, cache_mock, submitted_orders)。"""
     cache = MagicMock()
@@ -180,3 +189,41 @@ def test_submit_accepts_string_instrument_id_from_strategy_specs():
     iid_obj = InstrumentId.from_str(iid)
     cache.instrument.assert_called_once_with(iid_obj)
     assert submitted[0].instrument_id == iid_obj
+
+
+def test_submit_floors_pm_sell_qty_to_order_grid():
+    """PM 持仓精度存真值(6),下单量 floor 到 info['order_size_increment']=0.01:
+    SELL 平仓 17.046151 → 17.04(≤ 真实持有、绝不超卖,也不留 sub-0.01 尾量 #280)。"""
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _pm_like_instrument()
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    iid = InstrumentId(Symbol("0xabc-123"), Venue("POLYMARKET"))
+
+    _run(submit({"instrument_id": iid, "side": "SELL", "qty": 17.046151, "price": 0.35}))
+
+    assert len(submitted) == 1
+    assert float(submitted[0].quantity) == 17.04
+
+
+def test_submit_floors_pm_buy_qty_to_order_grid():
+    """BUY 入场 28.6615 → 28.66(floor 到 0.01,防 6 位小数下单量重踩 #280)。"""
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _pm_like_instrument()
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    iid = InstrumentId(Symbol("0xabc-123"), Venue("POLYMARKET"))
+
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 28.6615, "price": 0.49}))
+
+    assert float(submitted[0].quantity) == 28.66
+
+
+def test_submit_no_floor_without_order_grid_key():
+    """OE/SE instrument 不带 order_size_increment → 不 floor,原样按 size_precision 量化。"""
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _fake_instrument(size_precision=3)
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
+
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 5.625, "price": 4.0}))
+
+    assert float(submitted[0].quantity) == 5.625

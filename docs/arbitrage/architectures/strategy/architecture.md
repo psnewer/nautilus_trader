@@ -488,9 +488,22 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 
 **first_price**：仅 PM instrument 的 OBD 可触发。NT 已在回调前更新 managed OrderBook，
 Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整的 best ask 概率向量。
-Sports Store 无状态或处于 PRE 才视为未开赛；`live/ended` 均禁止写。完整向量的概率和位于
-闭区间 `[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持
-空值，后续赛前 PM OBD 可重试。OE/SE OBD 只继续触发既有策略评估，不参与参考价采集。
+**Sports Store 必须正面确认 PRE（存在且 `not live/ended`）才视为未开赛并采集；`None`（无状态）
+与 `live/ended` 一律不采**（#322 修订续，2026-08-06）。完整向量的概率和位于闭区间
+`[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持空值。OE/SE OBD
+只继续触发既有策略评估，不参与参考价采集。
+
+> **为何 `None` 不再当赛前(late-join 根因)**：旧逻辑把 `None` 当"未开赛"采集,理由是 firehose
+> 不推赛前帧、真赛前 game 的 Sports Store 本就是 `None`——但 `None` 二义:它**也**是 late-join 的
+> 状态。matching 用 **Gamma discovery anchor**(非 firehose)成型 MatchedPair,sports 订阅在
+> `_emit_pair` 同步发布之时/之后才发生(matching `_reconcile_sports_subscriptions`),故 MatchedPair
+> 到达、strategy 订 OBD 的**那一刻 Sports Store 对该 game 必空 = `None`**;PM OBD 紧随 OBD 订阅先到、
+> firehose 首帧未到 → `_capture_first_price` 把盘中盘口误采成 first_price → 进而污染 start_price
+> (0.6→盘中价)、`DashGateAction` 阈值塌陷不删崩腿(实盘 2026-08-06 ATP 复现:start_price 0.6→0.13,
+> no@0.06 腿本该删却被买 30 手)。因两种 `None` 采集时刻无法区分、且 firehose 无 PRE 帧 → 无法正面
+> 确认赛前 → **实盘 first_price 基本不再采集,start_price 恒默认 `0.6`、gate 用固定 `0.5×0.6=0.30`
+> 阈值**(late-join 正确删崩腿)。这是有意放弃 adaptive 开赛价采集换 robust——它与 late-join 污染
+> 共用同一 `None` 窗口、无法只留 happy-path。
 
 **start_price**：收到 `live=True && ended=False` 的 phase 消息时，按 game 扇出全部 pair；
 **仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且所有 start values 仍为默认 `0.6` 时，
