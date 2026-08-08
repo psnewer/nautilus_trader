@@ -87,7 +87,7 @@ def test_market_order_price_is_applied_at_place_bets_boundary(side, expected_pri
         order,
         fx=1.0,
         timestamp_ms=123456,
-        market_order_enabled=True,
+        market=True,
     )
 
     assert payload["1.259502313"][0]["price"] == expected_price

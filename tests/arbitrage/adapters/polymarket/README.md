@@ -112,19 +112,18 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 订单生命周期完整(submitted → accepted → filled)
 - `bug_polymarket_order_version_mismatch` **不复现**(PM adapter 使用 `py_clob_client_v2` L2 client)
 
-### pm-adapter-5.1a: 顶层市价开关在 PM 最终提交边界转官方 market order
+### pm-adapter-5.1a: 订单级市价标记在 PM 最终提交边界转官方 market order
 
-**前置**:`execution.market_order_enabled` 分别关闭/开启；输入仍是 Strategy 生成的 NT
-`LimitOrder`。
+**前置**:订单 metadata 的 `market` 分别缺失/`false`/`true`；输入仍是 Strategy 生成的 NT
+`LimitOrder`，计划 price/qty 不变。
 **输入**:BUY `quantity=10,price=0.40` 与 SELL `quantity=10`。
-**步骤**:Factory 把开关注入 Arb PM ExecutionClient；订单通过通用校验后进入
-`_submit_limit_order`。
-**期望**:关闭时委托上游 limit 提交；开启时构造 `MarketOrderArgs` 并以 FOK 提交。BUY
+**步骤**:订单通过通用校验后进入 `_submit_limit_order`，adapter 在提交边界读取 metadata。
+**期望**:缺失/`false` 时委托上游 limit 提交；`true` 时构造 `MarketOrderArgs` 并以 FOK 提交。BUY
 `amount=10×0.40=4 USDC`，SELL `amount=10 shares`；BUY 从 SDK 真实 `SignedOrderV2` 的扁平
 `takerAmount` 字段取得 base quantity，并通过 `OrderUpdated` 对齐 NT 本地订单数量。不得把 BUY 的 10 shares
 直接作为极端价格限价单的 size，避免扩大为约 10 USDC 的实际支出。
-**验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_market_order_disabled_delegates_to_upstream_limit` /
-`test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary`。
+**验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_order_without_market_metadata_delegates_to_upstream_limit` /
+`test_pm_market_metadata_uses_official_market_order_at_submit_boundary`。
 
 ### pm-adapter-5.1b: PM py_clob_client_v2 surface 锁定
 

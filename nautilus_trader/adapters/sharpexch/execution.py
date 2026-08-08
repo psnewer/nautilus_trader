@@ -27,6 +27,7 @@ from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.opportunity import order_requests_market
 from src.arbitrage.common.venues import normalize_order_price
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
@@ -97,7 +98,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         fx: float = 1.0,
         browser_lock: asyncio.Lock | None = None,
         login_state: SharpExchLoginState | None = None,
-        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -121,12 +121,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._parser = SharpExchMessageParser()
         self._venue_liveness = venue_liveness
         self._fx = float(fx) if fx > 0 else 1.0
-        self._market_order_enabled = bool(market_order_enabled)
         from nautilus_trader.adapters.sharpexch.executor import SharpExchExecutor
 
         self._executor = SharpExchExecutor(
             fx_getter=self._current_fx,
-            market_order_enabled=self._market_order_enabled,
         )
         self._page = None
         self._ws_handler = None
@@ -340,7 +338,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("SE place: executor is not initialized")
             return None
-        if self._market_order_enabled and legacy.side == "LAY":
+        market = order_requests_market(nt_order)
+        if market and legacy.side == "LAY":
             planned_price = legacy.price
             legacy = replace(
                 legacy,
@@ -359,8 +358,12 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             client_order_id=nt_order.client_order_id,
             ts_event=self._clock.timestamp_ns(),
         )
+        if market:
+            place = lambda: self._executor.place_order(legacy, self._page, market=True)
+        else:
+            place = lambda: self._executor.place_order(legacy, self._page)
         return await asyncio.wait_for(
-            self._run_page_write(lambda: self._executor.place_order(legacy, self._page)),
+            self._run_page_write(place),
             timeout=self._order_io_timeout_secs,
         )
 
@@ -856,7 +859,7 @@ def se_order_to_place_bets_payload(
     timestamp_ms: int | None = None,
     persistence_type: str = "LAPSE",
     uuid_suffix: str | None = None,
-    market_order_enabled: bool = False,
+    market: bool = False,
 ) -> tuple[dict, str]:
     """SE legacy order → `/customer/api/placeBets` payload。
 
@@ -872,7 +875,7 @@ def se_order_to_place_bets_payload(
         alphabet = string.ascii_lowercase + string.digits
         uuid_suffix = "".join(random.choice(alphabet) for _ in range(5))
 
-    if market_order_enabled:
+    if market:
         planned_price = 1.01 if order.side == "BACK" else order.price
     else:
         planned_price = order.price

@@ -25,6 +25,7 @@ class OpportunityMeta:
     intent: str = "arbitrage"
     venue_required_balance: float | None = None
     enable_timeout: bool | None = None
+    market: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         tags.append(f"{TAG_PREFIX}venue_required_balance={meta.venue_required_balance}")
     if meta.enable_timeout is not None:
         tags.append(f"{TAG_PREFIX}enable_timeout={str(meta.enable_timeout).lower()}")
+    if meta.market is not None:
+        tags.append(f"{TAG_PREFIX}market={str(meta.market).lower()}")
     return tags
 
 
@@ -81,11 +84,22 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
             if values.get("enable_timeout", "").lower() in {"true", "false"}
             else None
         ),
+        market=(
+            values["market"].lower() == "true"
+            if values.get("market", "").lower() in {"true", "false"}
+            else None
+        ),
     )
 
 
 def meta_from_order(order) -> OpportunityMeta | None:
     return meta_from_tags(getattr(order, "tags", None) or [])
+
+
+def order_requests_market(order) -> bool:
+    """订单显式携带 `arb:market=true` 时才请求 adapter 做市价转换。"""
+    meta = meta_from_order(order)
+    return meta is not None and meta.market is True
 
 
 def order_intent(order) -> str:

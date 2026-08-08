@@ -277,3 +277,29 @@ def test_place_bets_spread_param_loads_from_strategy_json():
     action = strategy.arbitrage_tree.actions[0]
     assert isinstance(action, PlaceBetsAction)
     assert action._spread == 0.02
+
+
+def test_place_bets_market_param_loads_from_strategy_json():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_market": {
+                    "arbitrage_tree": {
+                        "checktion": {
+                            "type": "mean_rebate",
+                            "params": {"min_rate": 0.01},
+                        },
+                        "actions": [{"type": "place_bets", "params": {"market": True}}],
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_market"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    action = strategy.arbitrage_tree.actions[0]
+    assert isinstance(action, PlaceBetsAction)
+    assert action._market is True

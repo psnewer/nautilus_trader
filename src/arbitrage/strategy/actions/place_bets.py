@@ -13,6 +13,7 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
     优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
   - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
     cancel session 收到正常撤单响应即结束，不消费该参数。
+  - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -50,14 +51,18 @@ class PlaceBetsAction(Action):
         intent: str = "arbitrage",
         spread: float | None = None,
         enable_timeout: bool | None = None,
+        market: bool | None = None,
     ) -> None:
         if enable_timeout is not None and not isinstance(enable_timeout, bool):
             raise ValueError("enable_timeout must be a boolean")
+        if market is not None and not isinstance(market, bool):
+            raise ValueError("market must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
         self._spread = _normalize_spread(spread)
         self._enable_timeout = enable_timeout
+        self._market = market
 
     async def execute(self, ctx: EvalContext) -> None:
         ctx.scratch.pop("execution_plan", None)
@@ -143,6 +148,8 @@ class PlaceBetsAction(Action):
                 spec["position_id"] = draft["position_id"]
             if self._enable_timeout is not None:
                 spec["enable_timeout"] = self._enable_timeout
+            if self._market is not None:
+                spec["market"] = self._market
             prepared.append(
                 PreparedOrder(
                     spec=spec,

@@ -41,6 +41,7 @@ from nautilus_trader.adapters.orbitexch.executor import OrbitExchOrderRequest
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.opportunity import order_requests_market
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.market_price import worst_decimal_lay_price
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -292,7 +293,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         venue_liveness: VenueExecutionLiveness,
         session_timeout_secs: float = 30.0,
         fx: float = 1.0,
-        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -317,7 +317,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._parser = OrbitExchMessageParser()
         self._executor = None
         self._fx = float(fx) if fx > 0 else 1.0
-        self._market_order_enabled = bool(market_order_enabled)
         self._page = None
         self._ws_handler = None
         self._bet_fill_seq: dict = {}   # offerId → 成交序号(trade_id 唯一)
@@ -398,7 +397,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             await self._login()
         await self._wait_for_initial_business_state()
         self._executor = OrbitExchExecutor(
-            config=ExecutionConfig(market_order_enabled=self._market_order_enabled),
+            config=ExecutionConfig(),
             fx_getter=self._current_fx,
         )
         self._executor.set_page("default", self._page)
@@ -516,7 +515,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("OE place: executor 未初始化(_connect 未接线 / 非 live)")
             return None
-        if self._market_order_enabled and request.side == "LAY":
+        market = order_requests_market(nt_order)
+        if market and request.side == "LAY":
             planned_price = request.price
             request = replace(
                 request,
@@ -535,8 +535,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             client_order_id=nt_order.client_order_id,
             ts_event=self._clock.timestamp_ns(),
         )
+        if market:
+            place = lambda: self._executor.place_order(request, self._page, market=True)
+        else:
+            place = lambda: self._executor.place_order(request, self._page)
         return await asyncio.wait_for(
-            self._run_page_write(lambda: self._executor.place_order(request, self._page)),
+            self._run_page_write(place),
             timeout=self._order_io_timeout_secs,
         )
 

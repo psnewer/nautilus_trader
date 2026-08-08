@@ -41,6 +41,7 @@ from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.opportunity import order_requests_market
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -112,7 +113,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         settlement: PolymarketSettlement | None = None,
         realized_pnl_ledger: RealizedPnlLedger | None = None,
         session_timeout_secs: float = 30.0,
-        market_order_enabled: bool = False,
     ) -> None:
         super().__init__(
             loop, http_client, msgbus, cache, clock,
@@ -124,7 +124,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._venue_liveness = venue_liveness
         self._settlement = settlement
         self._realized_pnl_ledger = realized_pnl_ledger
-        self._market_order_enabled = bool(market_order_enabled)
         # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
         # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
         self._settlement_inflight = False
@@ -147,8 +146,8 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         await super()._cancel_order(command, session_started=session_started)
 
     async def _submit_limit_order(self, command, instrument) -> None:
-        """按 execution 开关在最终 PM 出站边界选择普通限价或官方市价单。"""
-        if not self._market_order_enabled:
+        """按订单 metadata 在最终 PM 出站边界选择普通限价或官方市价单。"""
+        if not order_requests_market(command.order):
             await super()._submit_limit_order(command, instrument)
             return
 

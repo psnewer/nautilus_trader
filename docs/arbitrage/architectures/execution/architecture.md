@@ -242,12 +242,13 @@ grouped-command 状态机，metadata 解析复用 `src/arbitrage/common/opportun
 
 ### 3.6 市价提交边界
 
-顶层 `execution.market_order_enabled` 是所有 tradable venue 共用的启动配置。Factory 在创建
-PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportunity barrier 始终处理
-原计划的 NT `LimitOrder`，不读取该开关、不按 OrderBook 深度改价。只有订单已经通过上述链路、
-即将调用 venue 服务端接口时，adapter 才做最后一次 venue-specific 转换：
+市价意图是订单级 `OpportunityMeta.market`，由 `PlaceBetsAction(market=true)` 写入
+`Order.tags`。不存在全局市价开关；普通订单、缺失该 metadata 的旧订单及 `market=false`
+订单均按限价提交。Strategy、Risk 和 opportunity barrier 始终处理原计划的 NT
+`LimitOrder`，不按 OrderBook 深度改价。只有显式请求市价的订单已经通过上述链路、即将调用
+venue 服务端接口时，adapter 才做最后一次 venue-specific 转换：
 
-- **Polymarket**：关闭时沿用 GTC limit；开启时使用官方
+- **Polymarket**：普通订单沿用 GTC limit；`market=true` 时使用官方
   `create_market_order(MarketOrderArgs)` 并以 FOK 提交。PM 原生 `amount` 口径按 side
   区分：BUY 传计划成本 `计划 share × 计划 price`（USDC），SELL 传计划 share。BUY
   签名后从 SDK `SignedOrderV1/V2` 的扁平字段 `signed_order.takerAmount` 取得本次市价单预计
@@ -257,7 +258,7 @@ PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportun
   否则签名的 makerAmount 会按极端价格放大，价格改善将产生超出计划数量的 shares。
   签名、neg-risk、确定性 order hash、submitted/accepted/rejected 事件仍复用上游 PM
   ExecutionClient。
-- **OrbitExch / SharpExch**：关闭时 payload 使用计划 decimal odds；开启时只在最终
+- **OrbitExch / SharpExch**：普通订单 payload 使用计划 decimal odds；`market=true` 时只在最终
   `placeBets` payload 把 BACK price 设为 `1.01`；LAY 从真实执行 instrument 的 NT book
   `bids()` 最后一档读取当前最差 LAY 深度，再经 Venue Registry 还原成 decimal odds。
   缺 book/深度或换算失败时保留 Strategy 计划 LAY 价，绝不退到固定 `100`。side 和 stake
@@ -266,7 +267,7 @@ PM/OE/SE ExecutionClient 时冻结并注入该值；Strategy、Risk 和 opportun
   该转换不伪装为 PM FOK，也不改变入站 CURRENT_BETS 的真实成交价。
 
 Strategy 始终记录并提交计划 price/qty；OE/SE LAY 深度只在 ExecutionClient 最终 page write
-前读取。显式 debug `price_overrides` 仍只负责构造计划订单；开启市价提交后，最终 venue
+前读取。显式 debug `price_overrides` 仍只负责构造计划订单；订单请求市价提交后，最终 venue
 payload 仍按本节规则转换。
 
 ---

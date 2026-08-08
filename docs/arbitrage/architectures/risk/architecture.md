@@ -294,6 +294,13 @@ outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AN
   PM Data API realized 权威快照。merge 不另加 condition adjustment。
   该值是已经确定的现金结果，因此同额加到每个 outcome 的 `net_profit`，不改变
   `liability` 与 `outcome_shares`。共享账本契约见 common §8。
+- **`include_realized_pnl` 开关(#327,2026-08-08)**:`outcome_exposures(pair_id, account_id=None, include_realized_pnl=True)`。
+  缺省 `True` 保持上一条(realized 平摊进 `net_profit`),Risk 门控(`_check_profit_gates`,engine.py)
+  与既有 recovery 均走默认、行为不变。`False` 时返回**不含 realized 的开仓投影**(即上式,未叠加
+  已实现现金)。唯一消费方是 `MeanRebateRecoveryCheck(pnl=False)`(strategy §3.8):循环开平的策略
+  (pre_rebate)里 banked realized 会把 recovery 的**补后率**门抬过阈值 → 触发把补腿转成减仓 SELL →
+  再实现 → banked 再涨 → 即买即卖空转;排除 realized 让补后率只按当轮开仓投影判定。**决策史见
+  refactor #327。** `liability`/`outcome_shares` 不受该开关影响(realized 本就不进这两者)。
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 

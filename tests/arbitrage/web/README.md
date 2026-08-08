@@ -57,7 +57,7 @@
 
 ## 删除 / 延后(见 web/architecture.md §7)
 
-- **删除(NT 无对应)**:legacy Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution discount/take_off 与 venue-local market-order 字段;Risk global_sl/健康检查间隔/返水率面板。顶层 `execution.market_order_enabled` 保留为 restart-required 字段，页面说明 PM 使用官方 FOK market order(BUY 计划成本/SELL 计划 share)，OE/SE BACK 使用 `1.01`、LAY 使用当前盘口最差赔率。`/positions/{pair_id}` way_rebate 端点不恢复(way_rebate #121 退役)。
+- **删除(NT 无对应或已迁为订单级)**:legacy Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution discount/take_off 与全局/venue-local market-order 字段;Risk global_sl/健康检查间隔/返水率面板。市价由 strategy JSON 的 `place_bets.params.market` 声明，Web 不再显示全局开关。`/positions/{pair_id}` way_rebate 端点不恢复(way_rebate #121 退役)。
 - **延后**:OrderBookDelta firehose 实时推(现用 /odds 周期快照);strategy 可视化 Condition 树编辑(现 JSON 原始编辑)。
 ## #233 Live Odds claim/quote_claim
 

@@ -153,7 +153,7 @@ def test_recovery_uses_portfolio_net_profit_including_realized_pnl():
         "A.POLYMARKET": {"selection_role": "away"},
     }
     portfolio = SimpleNamespace(
-        outcome_exposures=lambda pair_id: {
+        outcome_exposures=lambda pair_id, include_realized_pnl=True: {
             "yes": OutcomeExposure(net_profit=5.5, liability=0.0),
             "no": OutcomeExposure(net_profit=0.5, liability=2.5),
         },
@@ -546,3 +546,87 @@ def test_threshold_governs_both_directions():
 
     assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(_fresh_ctx()) is False
     assert MeanRebateRecoveryCheck(min_repaired_rebate=0.0).passes(_fresh_ctx()) is True
+
+
+# ── #326 force / #327 pnl(pre_rebate 开赛强补 + 防即买即卖)──────────────────
+
+
+def test_force_recovers_regardless_of_rate():
+    """#326:force=True 旁路 #262 双向率门。同参下默认(test_recovery_rejects_...)不补,force 补。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.90),   # 补 no 昂贵 → 补后率低于阈值,默认不补
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos, positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)])
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, force=True).passes(ctx) is True
+    assert ctx.scratch["legs"][0]["instrument_id"] == "A.POLYMARKET"
+    assert ctx.scratch["mean_rebate_recovery"]["force"] is True
+
+
+def test_force_still_noops_when_no_gap():
+    """force 自终止:缺口补平后无补腿 → 仍 return False。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[
+            _position("H.POLYMARKET", qty=5.0, price=0.50),
+            _position("A.POLYMARKET", qty=5.0, price=0.50),
+        ],
+    )
+
+    assert MeanRebateRecoveryCheck(force=True).passes(ctx) is False
+    assert "legs" not in ctx.scratch
+
+
+def _realized_portfolio(realized):
+    """outcome_exposures 按 include_realized_pnl 决定是否叠加 banked realized。
+
+    开仓投影固定 {yes:1.0, no:-3.0}(与真仓无关,纯驱动 current_net);realized 平摊到每 outcome。
+    """
+    def exposures(pair_id, include_realized_pnl=True):
+        r = realized if include_realized_pnl else 0.0
+        return {
+            "yes": OutcomeExposure(net_profit=1.0 + r, liability=0.0),
+            "no": OutcomeExposure(net_profit=-3.0 + r, liability=3.0),
+        }
+    return SimpleNamespace(outcome_exposures=exposures)
+
+
+def test_pnl_false_excludes_realized_from_rebate_rate():
+    """#327:banked realized(2.0)会把补后率抬过阈值 → 触发(即买即卖风险)。
+
+    单边持仓 H(yes) 5@0.5,补 no @0.50(补腿 profit=2.5 / loss=2.5),denom=share=10:
+      pnl=True  → current_net 叠加 banked 2.0 → 补后率 min=+0.5/10 >= -0.05 → 触发;
+      pnl=False → 只按开仓投影({yes:1,no:-3})→ 补后率 min=-1.5/10 < -0.05 → 不触发(防即买即卖)。
+    仅 pnl 变、仓位/banked 不变即翻转结论 → 证明 realized 已按 flag 排除。
+    """
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+
+    ctx_true = _ctx(books=books, infos=infos, positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)])
+    ctx_true.portfolio = _realized_portfolio(2.0)
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, pnl=True).passes(ctx_true) is True
+
+    ctx_false = _ctx(books=books, infos=infos, positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)])
+    ctx_false.portfolio = _realized_portfolio(2.0)
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, pnl=False).passes(ctx_false) is False
+    assert "legs" not in ctx_false.scratch

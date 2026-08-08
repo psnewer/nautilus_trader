@@ -426,9 +426,9 @@ snapshot 处理。存入值是 `probability_from_price` 换算后的隐含概率
 - 缺 `market_id` 或 `selection_id` 时返回 `None`。
 - 为遵守“不改架构/逻辑/流程”,当前**不改共享** `src.arbitrage.common.order_models.Venue` enum,而是在 SE 子树内定义本地 `SharpExchLegacyOrder(venue="sharpexch")`。等 SE ExecutionClient 真接线时再决定是否推广到共享 order model。
 - 不做出站 FX 换算;SE place payload 直接使用 USD stake。
-- `se_order_to_place_bets_payload(order, fx, market_order_enabled=False)` 已落地:把 SE legacy order 转
+- `se_order_to_place_bets_payload(order, fx, market=False)` 已落地:把 SE legacy order 转
   `/customer/api/placeBets` payload,直接使用 USD stake `order.size`;同时生成 `betUuid`、
-  普通模式夹紧赔率到 `[1.01,1000]`。当顶层 `execution.market_order_enabled=true` 时，
+  普通模式夹紧赔率到 `[1.01,1000]`。当当前订单 metadata 显式 `market=true` 时，
   只在该最终 payload 边界把 BACK price 改为 `1.01`；LAY price 由 ExecutionClient 从
   真实执行 instrument 的 NT book 最差 LAY 档读取，缺深度时保留计划价。side 和 USD stake
   不变；Strategy/Risk/barrier 仍看到原计划价。

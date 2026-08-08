@@ -23,12 +23,14 @@ from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positions
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
 
 
-def _client(*, config=None, market_order_enabled=False):
+def _client(*, config=None):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     liveness = VenueExecutionLiveness()
@@ -41,7 +43,6 @@ def _client(*, config=None, market_order_enabled=False):
         instrument_provider=InstrumentProvider(),
         config=config or OrbitExchExecClientConfig(username="u", password="p"),
         venue_liveness=liveness,
-        market_order_enabled=market_order_enabled,
     )
 
 
@@ -356,7 +357,7 @@ def test_place_via_executor_market_lay_uses_worst_book_price():
     from nautilus_trader.model.identifiers import StrategyId
     from tests.arbitrage.risk._factories import oe_instrument
 
-    c = _client(market_order_enabled=True)
+    c = _client()
     inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
     c._cache.add_instrument(inst)
     book = OrderBook(inst.id, BookType.L2_MBP)
@@ -375,12 +376,27 @@ def test_place_via_executor_market_lay_uses_worst_book_price():
         trader_id=TraderId("T-000"),
         strategy_id=StrategyId("S-000"),
         clock=LiveClock(),
-    ).limit(inst.id, OrderSide.SELL, inst.make_qty(7), inst.make_price(2.0))
+    ).limit(
+        inst.id,
+        OrderSide.SELL,
+        inst.make_qty(7),
+        inst.make_price(2.0),
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-market",
+                pair_id="pair-market",
+                leg_key="oe:no:0",
+                expected_legs=("oe:no:0",),
+                market=True,
+            ),
+        ),
+    )
     captured = {}
 
     class _Executor:
-        async def place_order(self, request, page):
+        async def place_order(self, request, page, *, market=False):
             captured["request"] = request
+            captured["market"] = market
             return _fake_result(success=True, venue_order_id="OE-OFFER-1")
 
     c._executor = _Executor()
@@ -388,6 +404,8 @@ def test_place_via_executor_market_lay_uses_worst_book_price():
     c.generate_order_submitted = lambda **kwargs: None
 
     _run(c._place_via_executor(order))
+
+    assert captured["market"] is True
 
     assert captured["request"].price == pytest.approx(4.0)
 

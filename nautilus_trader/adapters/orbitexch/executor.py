@@ -73,6 +73,8 @@ class OrbitExchExecutor:
         self,
         order: OrbitExchOrderRequest,
         page: Page | None = None,
+        *,
+        market: bool = False,
     ) -> dict:
         """
         下单
@@ -107,7 +109,7 @@ class OrbitExchExecutor:
         try:
             # 转换方向
             side = "BACK" if order.side == "BACK" else "LAY"
-            if self.config.market_order_enabled:
+            if market:
                 planned_price = 1.01 if side == "BACK" else order.price
             else:
                 # order.price 已经是 OrbitExch 的 decimal 赔率。

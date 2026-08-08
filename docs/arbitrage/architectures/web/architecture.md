@@ -1,7 +1,7 @@
 # Web 组件详细设计(Step 7 —— 控制台)
 
 > **状态**:**完整控制台页面**(忠实照搬 legacy Bootstrap 5 标签页:Market Discovery / Market Matching / Odds Monitor / Strategy / Configuration)已落地,详见 §8。对应初设 `refactor.md §5.7`。
-> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,按 venue registry `odds_model` 前端换算成统一隐含概率)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、discount/global_sl/返水率面板)按用户裁定**删除**；#286 恢复的是有真实执行语义的顶层 `execution.market_order_enabled`，不是旧 venue-local 字段。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
+> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,按 venue registry `odds_model` 前端换算成统一隐含概率)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、discount/global_sl/返水率面板)按用户裁定**删除**；#325 后市价行为改由 strategy JSON 的 `place_bets.params.market` 声明，Configuration 不再显示全局开关。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
 
 ---
 
@@ -16,7 +16,7 @@
 - ✅ 控制:写经 MessageBus 命令(方案乙,§8.3);读经 `risk_engine` 引用 + 直接写 `arb_config.json`。
 - ❌ **不订 `OrderBookDelta` firehose**(量大;`/odds` 用周期快照读 cache 盘口代替)。
 - ❌ 不搬 legacy `services/web_gateway/` 代码(只照搬其 HTML 结构);pipeline start/stop、discovery/matching run、odds subscribe 在 NT 无意义 → 删。
-- ❌ 不显示 legacy 死字段/死面板(discount/take_off/global_sl、返水率/持仓返水面板 —— NT 已退役 way_rebate)。顶层 `execution.market_order_enabled` 是当前有效重启字段，继续显示。
+- ❌ 不显示 legacy 死字段/死面板(discount/take_off/global_sl、返水率/持仓返水面板、全局市价开关)。市价由 strategy JSON 的 `place_bets.params.market` 按 Action 声明。
 
 **位置(P9)**:本类不 venue-coupled,住 `src/arbitrage/web/`(非 adapter 目录)。
 
@@ -92,7 +92,7 @@ class WebGatewayActor(Actor):
 ## 7. 演进 / 延后
 
 - **#120 一度移除、#123 又加回**:监控 endpoint 在 #120 被裁掉(web 只留控制面),#123 用户要求照搬 legacy 完整页面时**重新加入**:`/accounts`(余额)、`/instruments`(发现)、`/matched_pairs`(匹配)、`/odds`(盘口)+ `GET /` serve HTML。`/positions/{pair_id}` way_rebate 端点**不恢复**(way_rebate 已 #121 退役)。
-- **删除(NT 无对应)**:legacy 的 Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution 的 discount/take_off 和 venue-local market-order 字段;Risk 的 global_sl、健康检查间隔、返水率/持仓返水状态面板。当前顶层 `execution.market_order_enabled` 按 #286 保留。
+- **删除(NT 无对应或已迁为订单级)**:legacy 的 Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution 的 discount/take_off 和全局/venue-local market-order 字段;Risk 的 global_sl、健康检查间隔、返水率/持仓返水状态面板。市价由 `place_bets.params.market` 声明。
 - **延后**:OrderBookDelta firehose 实时推(量大;现用 `/odds` 周期快照);strategy 的可视化 Condition 树编辑(现走 strategy JSON 原始编辑)。
 
 ---
@@ -119,11 +119,10 @@ class WebGatewayActor(Actor):
 | matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
 | venues | 凭证 / URL | **重启**(连接态,结构性) |
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
-| web / execution | host/port / 超时 / `market_order_enabled` | **重启** |
+| web / execution | host/port / 超时 | **重启** |
 
-Execution 配置页对 `market_order_enabled` 的说明必须与 execution §3.6 保持一致：开启后
-PM 使用官方 FOK market order（BUY 按计划成本、SELL 按计划 share）；OE/SE BACK 使用
-`1.01`，LAY 使用当前盘口最差赔率。该页面只编辑并持久化配置，不在 WebGateway 内实现改价。
+Execution 配置页不提供全局市价开关。需要市价执行的树在 strategy JSON 中配置
+`place_bets.params.market=true`；最终转换规则见 execution §3.6，WebGateway 不参与改价。
 
 Discovery 配置页展示约定:
 - `discovery.polymarket/orbitexch/sharpexch.sports` 通过 Polymarket / OrbitExch / SharpExch 三个标签页分别编辑。

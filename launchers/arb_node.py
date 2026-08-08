@@ -83,12 +83,15 @@ from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
+from src.arbitrage.strategy.check_action_registry import register_state_query
 from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
+from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
+from src.arbitrage.strategy.queries.in_game import InGameQuery
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
@@ -113,6 +116,8 @@ def register_builtin_checks_and_actions() -> None:
     register_check("neg_rebate", NegRebateCheck)
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
+    register_check("pre_move", PreMoveCheck)
+    register_state_query("in_game", InGameQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
     register_action("candi_select", CandiSelectAction)
@@ -374,7 +379,6 @@ def bootstrap_and_build(
         debug_config=debug_config,
         arbitrage_params=to_arbitrage_params(cfg),
         pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem
-        market_order_enabled=cfg.execution.market_order_enabled,  # #286:on_restart,重启生效
         **to_arb_context_init_kwargs(cfg),
     )
 

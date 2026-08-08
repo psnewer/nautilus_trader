@@ -349,7 +349,7 @@ def test_arb_pm_accepted_reserve_is_noop():
     assert result is None
 
 
-def test_pm_market_order_disabled_delegates_to_upstream_limit(monkeypatch):
+def test_pm_order_without_market_metadata_delegates_to_upstream_limit(monkeypatch):
     calls = []
 
     async def upstream(_self, command, instrument):
@@ -357,8 +357,7 @@ def test_pm_market_order_disabled_delegates_to_upstream_limit(monkeypatch):
 
     monkeypatch.setattr(PolymarketExecutionClient, "_submit_limit_order", upstream)
     client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
-    client._market_order_enabled = False
-    command = SimpleNamespace(order=SimpleNamespace())
+    command = SimpleNamespace(order=SimpleNamespace(tags=[]))
     instrument = SimpleNamespace()
 
     _run(ArbPolymarketExecutionClient._submit_limit_order(client, command, instrument))
@@ -373,7 +372,7 @@ def test_pm_market_order_disabled_delegates_to_upstream_limit(monkeypatch):
         (OrderSide.SELL, 10.0, None),
     ],
 )
-def test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary(
+def test_pm_market_metadata_uses_official_market_order_at_submit_boundary(
     side,
     expected_amount,
     expected_base_quantity,
@@ -415,9 +414,17 @@ def test_pm_market_order_enabled_uses_official_market_order_at_submit_boundary(
         side=side,
         quantity=10.0,
         price=0.4,
+        tags=tags_from_meta(
+            OpportunityMeta(
+                opportunity_id="opp-market",
+                pair_id="pair-market",
+                leg_key="pm:yes:0",
+                expected_legs=("pm:yes:0",),
+                market=True,
+            ),
+        ),
     )
     client = SimpleNamespace(
-        _market_order_enabled=True,
         _http_client=SimpleNamespace(create_market_order=create_market_order),
         _clock=_Clock(),
         _get_neg_risk_for_instrument=lambda _instrument: True,

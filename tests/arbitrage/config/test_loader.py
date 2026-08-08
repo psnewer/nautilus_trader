@@ -52,15 +52,11 @@ def test_default_empty_json(cfg_path):
     assert cfg.debug is None
 
 
-def test_execution_market_order_enabled_default_and_override(cfg_path):
-    """#286:全 venue 市价提交开关默认关闭,execution 段可显式打开。"""
-    cfg_path.write_text("{}")
-    cfg = load_arb_config(cfg_path)
-    assert cfg.execution.market_order_enabled is False
-
+def test_execution_market_order_enabled_is_rejected(cfg_path):
+    """市价语义已迁到 `place_bets.market`;旧全局字段必须 fail-fast。"""
     cfg_path.write_text(json.dumps({"execution": {"market_order_enabled": True}}))
-    cfg = load_arb_config(cfg_path)
-    assert cfg.execution.market_order_enabled is True
+    with pytest.raises(ConfigError, match="market_order_enabled"):
+        load_arb_config(cfg_path)
 
 
 def test_config_package_exports_current_schema_types():

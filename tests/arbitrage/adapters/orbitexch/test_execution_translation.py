@@ -143,11 +143,10 @@ def test_oe_market_order_price_is_applied_at_payload_boundary(side, expected_pri
             bet_uuid = payload["payload"]["1.23"][0]["betUuid"]
             return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
 
-    executor = OrbitExchExecutor(
-        config=ExecutionConfig(market_order_enabled=True),
-        fx_getter=lambda: 1.0,
+    executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=lambda: 1.0)
+    result = asyncio.run(
+        executor.place_order(_request(side=side, price=2.5), _Page(), market=True),
     )
-    result = asyncio.run(executor.place_order(_request(side=side, price=2.5), _Page()))
 
     assert result["success"] is True
     assert captured["payload"]["1.23"][0]["price"] == expected_price

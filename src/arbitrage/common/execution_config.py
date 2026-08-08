@@ -39,7 +39,6 @@ class ExecutionConfig:
     default_order_type: str = "GTC"  # GTC, FOK, FAK
     discount: float = 1.0  # size 调整折扣系数
     take_off: float = 0.0  # size 调整从其他方向持仓中拿走的比例
-    market_order_enabled: bool = False  # 是否强制按市价执行
     # 订单追踪参数
     tracking_timeout_sec: float = 30.0       # 追踪超时时间
     tracking_check_interval_sec: float = 5.0  # 追踪检查间隔
@@ -70,7 +69,6 @@ class ExecutionConfig:
             default_order_type=data.get("default_order_type", "GTC"),
             discount=data.get("discount", 1.0),
             take_off=data.get("take_off", 0.0),
-            market_order_enabled=data.get("market_order_enabled", False),
             tracking_timeout_sec=data.get("tracking_timeout_sec", 30.0),
             tracking_check_interval_sec=data.get("tracking_check_interval_sec", 5.0),
             max_failure_retries=data.get("max_failure_retries", 3),
@@ -88,7 +86,6 @@ class ExecutionConfig:
             "default_order_type": self.default_order_type,
             "discount": self.discount,
             "take_off": self.take_off,
-            "market_order_enabled": self.market_order_enabled,
             "tracking_timeout_sec": self.tracking_timeout_sec,
             "tracking_check_interval_sec": self.tracking_check_interval_sec,
             "max_failure_retries": self.max_failure_retries,

@@ -78,11 +78,24 @@ class _CalcLeg:
 class MeanRebateRecoveryCheck(Check):
     """补齐缺口后,若最差 outcome rebate 达标则写 recovery legs。"""
 
-    def __init__(self, min_repaired_rebate: float = -0.05, venue_select: bool = False) -> None:
+    def __init__(
+        self,
+        min_repaired_rebate: float = -0.05,
+        venue_select: bool = False,
+        force: bool = False,
+        pnl: bool = True,
+    ) -> None:
         self._min_repaired_rebate = float(min_repaired_rebate)
         # venue_select=True:补救腿只在 PM 里选(某 outcome 无 PM 报价则该 role 缺席 →
         # 后续 roles_present 校验 fail-closed,不补)。缺省/False 保持现状:各 venue 取最优赔率。
         self._venue_select = bool(venue_select)
+        # #326 force=True:旁路 #262 双向率门(当前率前置门 + 补后率后置门),只要有缺口就补到
+        # target_share(供 pre_rebate 开赛兜底强平衡)。仅设很低 min_repaired_rebate 无效——
+        # 前置门 `current >= 阈值` 会反拦。缺口为空时仍 return False(自终止)。
+        self._force = bool(force)
+        # #327 pnl=False:当前率/补后率均不含 realizedPNL(经 outcome_exposures(include_realized_pnl=False)),
+        # 只按当轮开仓投影判率。防 pre_rebate 循环开平里 banked realized 抬高补后率 → 即买即卖空转。
+        self._pnl = bool(pnl)
 
     def passes(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:
@@ -116,10 +129,13 @@ class MeanRebateRecoveryCheck(Check):
         #   current  < 阈值 → 需要补;   repaired >= 阈值 → 补了确实有用。
         # 与 `repaired` 共用同一分母 `denom`(#321 配置 share),两个数直接可比、同一把尺子。
         # 放在取盘口候选之前:本判据不需要行情,能早退就早退。
-        current_net = _current_net_by_outcome(ctx, existing, sorted(valid_outcomes))
-        current = _rates_from_net(current_net, denom)
-        if current and min(current.values()) >= self._min_repaired_rebate:
-            return False
+        current_net = _current_net_by_outcome(
+            ctx, existing, sorted(valid_outcomes), include_realized_pnl=self._pnl,
+        )
+        if not self._force:
+            current = _rates_from_net(current_net, denom)
+            if current and min(current.values()) >= self._min_repaired_rebate:
+                return False
 
         candidates = _best_candidates_by_role(ctx, valid_outcomes, pm_only=self._venue_select)
         roles_present = sorted(candidates.keys())
@@ -162,7 +178,7 @@ class MeanRebateRecoveryCheck(Check):
 
         repaired_net = _add_legs_to_net(current_net, repair_legs, roles_present)
         repaired = _rates_from_net(repaired_net, denom)
-        if not repaired or min(repaired.values()) < self._min_repaired_rebate:
+        if not self._force and (not repaired or min(repaired.values()) < self._min_repaired_rebate):
             return False
 
         ctx.scratch["legs"] = recovery_specs
@@ -170,7 +186,9 @@ class MeanRebateRecoveryCheck(Check):
             "target_share": target_share,        # 补单目标位(fill target)
             "denominator_share": denom,          # #321 费率分母(配置意向 share)
             "repaired_rebate": repaired,
-            "min_repaired_rebate": min(repaired.values()),
+            "min_repaired_rebate": min(repaired.values()) if repaired else None,
+            "force": self._force,                # #326
+            "pnl": self._pnl,                    # #327
         }
         return True
 
@@ -259,10 +277,13 @@ def _current_net_by_outcome(
     ctx: EvalContext,
     existing: list[_CalcLeg],
     outcomes: list[str],
+    include_realized_pnl: bool = True,
 ) -> dict[str, float]:
     portfolio = ctx.portfolio
     if portfolio is not None:
-        exposures = portfolio.outcome_exposures(ctx.pair_id)
+        exposures = portfolio.outcome_exposures(
+            ctx.pair_id, include_realized_pnl=include_realized_pnl
+        )
         if exposures:
             return {
                 outcome: float(exposures[outcome].net_profit)

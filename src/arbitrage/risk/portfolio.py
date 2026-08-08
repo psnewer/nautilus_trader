@@ -121,11 +121,20 @@ class ArbitragePortfolio(Portfolio):
         return getattr(self, "_arb_realized_pnl_ledger", None)
 
     # ── per-pair 指标 ────────────────────────────────────────────────
-    def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]:
-        """各 outcome 的绝对金额净利润与 liability。Risk 门控只读这个接口。"""
+    def outcome_exposures(
+        self, pair_id: str, account_id=None, include_realized_pnl: bool = True
+    ) -> dict[str, OutcomeExposure]:
+        """各 outcome 的绝对金额净利润与 liability。Risk 门控只读这个接口。
+
+        #327:`include_realized_pnl=False` 返回**不含 realized 的开仓投影**(供
+        `MeanRebateRecoveryCheck(pnl=False)` 防即买即卖,见 strategy §3.10 / risk §4.1b);
+        缺省 `True` 保持 realized 平摊进 `net_profit`(Risk profit gates 与既有 recovery 用)。
+        """
         legs = self._legs_for_pair(pair_id, account_id)
         outcomes = self._outcomes_for_pair(pair_id, legs)
         exposures = self._compute_outcome_exposures(legs, outcomes=outcomes)
+        if not include_realized_pnl:
+            return exposures
         realized_pnl = self._realized_pnl_for_pair(pair_id, account_id)
         if not exposures or abs(realized_pnl) <= 1e-12:
             return exposures

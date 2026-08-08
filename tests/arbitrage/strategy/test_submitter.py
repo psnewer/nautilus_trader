@@ -150,6 +150,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "expected_legs": ("pm:home:0", "oe:away:1"),
         "positions_digest": "positions-1",
         "enable_timeout": False,
+        "market": True,
     }))
 
     assert submitted[0].tags == [
@@ -160,6 +161,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "arb:intent=recovery",
         "arb:positions_digest=positions-1",
         "arb:enable_timeout=false",
+        "arb:market=true",
     ]
 
 

@@ -114,6 +114,39 @@ def test_outcome_exposures_adds_reconciled_realized_pnl_to_all_outcomes():
     assert exposures["no"].liability == pytest.approx(4.0)
 
 
+def test_outcome_exposures_excludes_realized_pnl_when_flag_false():
+    """#327:include_realized_pnl=False → 返回不含 realized 的开仓投影(供 recovery pnl=False)。"""
+    from src.arbitrage.common.pair_registry import PairRegistry
+
+    cache = TestComponentStubs.cache()
+    yes = pm_instrument("match_1", "home", token="yes")
+    yes.info.update({"claim": "yes"})
+    no = pm_instrument("match_1", "home", token="no")
+    no.info.update({"claim": "no"})
+    cache.add_instrument(yes)
+    cache.add_instrument(no)
+
+    registry = PairRegistry()
+    registry.register("match_1", [yes.id, no.id])
+    ledger = RealizedPnlLedger()
+    ledger.replace_instrument_snapshot(
+        "POLYMARKET-001",
+        external_realized={str(yes.id): 2.0},
+        native_realized={str(yes.id): 0.0},
+    )
+    pf = _portfolio(cache=cache)
+    pf.configure_arb(pair_registry=registry, realized_pnl_ledger=ledger)
+    _stub_legs(pf, [_Leg("polymarket", "yes", 10.0, 0.40)])
+
+    with_realized = pf.outcome_exposures("match_1")
+    without = pf.outcome_exposures("match_1", include_realized_pnl=False)
+
+    assert with_realized["yes"].net_profit == pytest.approx(8.0)   # 含 realized 2.0
+    assert without["yes"].net_profit == pytest.approx(6.0)         # 仅开仓投影
+    assert without["no"].net_profit == pytest.approx(-4.0)
+    assert without["no"].liability == pytest.approx(4.0)           # liability 不受 flag 影响
+
+
 def test_outcome_shares_aggregates_by_outcome():
     pf = _portfolio()
     _stub_legs(

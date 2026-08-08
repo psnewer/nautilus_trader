@@ -11,10 +11,11 @@
 
 | API | 用途 |
 |---|---|
-| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / positions_digest / intent / venue_required_balance / enable_timeout`；`positions_digest` 是 Strategy 评估开始时该 pair 的仓位基线（#317:open_orders_digest 已删）；`enable_timeout` 是三态字段，缺省不写 tag |
+| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / positions_digest / intent / venue_required_balance / enable_timeout / market`；`positions_digest` 是 Strategy 评估开始时该 pair 的仓位基线（#317:open_orders_digest 已删）；`enable_timeout`、`market` 都是三态字段，缺省不写 tag |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
+| `order_requests_market(order)` | 仅当订单 metadata 显式为 `market=true` 时返回真，供 venue 最终提交边界选择市价语义 |
 | `order_intent(order)` | Risk 读取 `arb:intent`,默认 `arbitrage` |
 | `RISK_LEG_DENIED_TOPIC` | `risk.opportunity.leg_denied` topic 常量 |
 | `CancelOpportunityMeta` | `opportunity_id / pair_id / cancel_key / expected_cancels`;只描述一组应同步进入 ExecutionClient 的标准撤单命令，不携带 submit tracking 策略 |
@@ -32,6 +33,9 @@
   保持旧订单兼容。只有显式 `false` 表示禁用 timeout 等待、ACK 后结束 submit session；
   缺失或 `true` 均继续既有跟踪。普通 CancelOrder/cancel-only 不读取原订单 tag，只有
   grouped cancel 的 command params 显式携带该字段时才应用；Risk 不改变门控。
+- `market=true/false` 分别写为对应 submit tag；只有显式 `true` 请求市价提交，缺失、非法值或
+  `false` 均按限价提交。该字段只影响 venue adapter 最终服务端提交，不改 NT LimitOrder 的
+  计划 price/qty，也不参与 Risk/barrier 判断。
 - common 模块只负责解析 / 构造,不维护 opportunity 状态；SubmitOrder 与 CancelOrder 共用的
   grouped-command 状态机归 Execution barrier。
 

@@ -179,7 +179,6 @@
                             </div>
                             <div class="row">
                                 <div class="col-12"><small class="text-muted fw-bold">全 Venue 市价提交</small></div>
-                                <div class="col-md-3"><label class="form-label small">market_order_enabled</label><div class="form-check"><input type="checkbox" class="form-check-input" id="e-market-order"></div></div>
                                 <div class="col-9 col-md-9 text-muted small align-self-center">打开后 PM 使用官方 FOK 市价单（BUY 按计划成本、SELL 按计划 share）；OE/SE BACK 使用 1.01，LAY 使用当前盘口最差赔率。改动需重启生效。</div>
                             </div>
                         </div></div></div>
@@ -290,7 +289,7 @@
     function jget(id){ try{ return JSON.parse($(id).value); }catch(e){ throw new Error(id+' JSON 非法'); } }
     const RISK=[['match_tp','num'],['match_sl','num'],['min_probability','num'],['max_probability','num']];
     // Execution 默认值
-    const EXEC_DEFAULTS={tracking_timeout_sec:30,cleanup_enabled:true,cleanup_merge_enabled:true,cleanup_claim_enabled:true,open_check_interval_secs:300,position_check_interval_secs:300,market_order_enabled:false};
+    const EXEC_DEFAULTS={tracking_timeout_sec:30,cleanup_enabled:true,cleanup_merge_enabled:true,cleanup_claim_enabled:true,open_check_interval_secs:300,position_check_interval_secs:300};
     function renderForm(host, fields, obj){ $(host).innerHTML=fields.map(([k,t])=>{ const v=obj[k];
       const inp=t==='bool'?`<input class="form-check-input" type="checkbox" id="f-${host}-${k}" ${v?'checked':''}>`:`<input class="form-control form-control-sm" id="f-${host}-${k}" type="${t==='num'?'number':'text'}" step="any" value="${v??''}">`;
       return `<div class="col-md-4 mb-2"><label class="form-label small mb-0">${k}</label>${inp}</div>`; }).join(''); }
@@ -306,7 +305,7 @@
       // Execution: 填入值或默认值
       const ex={...EXEC_DEFAULTS,...(state.cfg.execution||{})};
       $('e-track-timeout').value=ex.tracking_timeout_sec; $('e-cleanup').checked=ex.cleanup_enabled; $('e-merge').checked=ex.cleanup_merge_enabled; $('e-claim').checked=ex.cleanup_claim_enabled;
-      $('e-open-int').value=ex.open_check_interval_secs; $('e-pos-int').value=ex.position_check_interval_secs; $('e-market-order').checked=ex.market_order_enabled;
+      $('e-open-int').value=ex.open_check_interval_secs; $('e-pos-int').value=ex.position_check_interval_secs;
       renderForm('risk-form',RISK,r);
       jset('strategy-json',state.cfg.strategy||{});
     }
@@ -322,7 +321,7 @@
     function saveArbitrage(){ const a={...(state.cfg.arbitrage||{})}; for(const [id,k] of [['a-share','share'],['a-max-leg-share','max_leg_share'],['a-fx','fx']]) if($(id).value!=='')a[k]=num($(id).value); put('arbitrage',a,'arbitrage(share/max_leg_share/fx)'); }
     function saveExecution(){ put('execution',{...(state.cfg.execution||{}),
       tracking_timeout_sec:num($('e-track-timeout').value),cleanup_enabled:$('e-cleanup').checked,cleanup_merge_enabled:$('e-merge').checked,cleanup_claim_enabled:$('e-claim').checked,
-      open_check_interval_secs:num($('e-open-int').value),position_check_interval_secs:num($('e-pos-int').value),market_order_enabled:$('e-market-order').checked}); }
+      open_check_interval_secs:num($('e-open-int').value),position_check_interval_secs:num($('e-pos-int').value)}); }
     function saveRisk(){ put('risk',{...(state.cfg.risk||{}),...collect('risk-form',RISK)}); }
     function saveStrategy(){ try{ put('strategy',jget('strategy-json')); }catch(e){ toast(e.message,'error'); } }
 

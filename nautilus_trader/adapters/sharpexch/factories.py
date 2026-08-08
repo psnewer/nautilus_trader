@@ -226,7 +226,6 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             browser_lock=browser_lock,
             login_state=login_state,
-            market_order_enabled=ctx.market_order_enabled,
         )
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.execution_clients import SkipExecutionSharpExchClient

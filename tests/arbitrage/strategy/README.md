@@ -179,7 +179,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
-- ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价且不读取 `market_order_enabled`，市价转换留给 Execution adapter 的最终提交边界
+- ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价保持当前 order 的隐含概率**(`price=prob=` 原腿 `prob`,不用 PM ask;PM `qty=share`、`cost=share×prob`),合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
@@ -313,10 +313,55 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **.5**:per-venue `venue_required_balance` 使用 spread 后的最终价格
 - **.6**:Action 保留 spread 反算后的计划价格，不重复执行 OE/SE 分段赔率量化；合法档位只由
   Execution adapter 在最终 `placeBets` payload 边界保证
+
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
+
+### strategy-4.32: PlaceBetsAction 订单级市价意图
+- 前置:`PlaceBetsAction(market=true)` 生成多腿 submit spec。
+- 期望:每条真实腿都携带 `market=true`，submitter 编码为 `arb:market=true`；Action 保留原
+  price/qty，不读取盘口深度、不执行 venue-specific 改价。缺失或 `false` 均按限价提交；
+  非 boolean 配置 fail-fast。
+- 验收:✅ `test_action_place_bets.py::test_action_market_is_written_to_every_submit_spec` /
+  `test_action_rejects_non_boolean_market`，`test_submitter.py::test_submit_writes_opportunity_metadata_tags`，
+  `test_mean_rebate_e2e.py::test_place_bets_market_param_loads_from_strategy_json`，
+  `tests/arbitrage/common/test_opportunity.py::test_opportunity_meta_round_trips_market`。
+
+## pre_rebate 策略(#326,设计 · 组件未落地 · live-unvalidated)
+
+设计见 strategy §3.10。用例待 `pre_move` / `in_game` / `mean_rebate_recovery.force` 落地后补实现。
+
+### strategy-4.pre_rebate.1: in_game StateQuery 判态
+- sports_store `live=True, ended=False` → `in_game` True;`NOT in_game` False。
+- sports_store `None`(真赛前 / 未订上)→ `in_game` False;`NOT in_game` True。
+- sports_store `live=False`(赛前有帧)→ `in_game` False。
+- sports_store `ended=True` → `in_game` False(落入赛前支,已知边界)。
+- 缺 game_id / 缺 sports_store → `in_game` False(fail-closed)。
+
+### strategy-4.pre_rebate.2: pre_move 追腿命中/不命中
+- first_price `{yes:0.5, no:0.5}`、现价 `{yes:0.38, no:0.62}`、`move_threshold=0.1` → yes 跌 0.12 ≥ 阈 → 写单条 PM `BUY yes` leg,`qty=qty_from_share(PM, share, 0.38)`。
+- 同上但 `move_threshold=0.15` → 最大跌幅 0.12 < 0.15 → False,不写 leg。
+- 等于阈值(跌幅==阈)→ 命中(`>=`)。
+- first_price 空(`{}`)→ False(无基准,安全 no-op)。
+- PM 盘口缺腿 / 概率非法 / outcome 键不匹配 → False。
+
+### strategy-4.pre_rebate.3: 赛前门只赛前追腿
+- `NOT in_game` 为真(赛前)且 pre_move 命中 → arb 树出 submit plan。
+- `in_game` 为真(赛中)→ arb 树 self_hits False → 不追腿(即便 first_price 有 mover)。
+
+### strategy-4.pre_rebate.4: 赛前按率补 vs 开赛强补
+- 赛前失衡持仓,`mean_rebate_recovery(min_repaired_rebate)`:补后率 ≥ 阈 → B2 支命中补救;补后率 < 阈 → 不补。
+- 赛中同一失衡持仓,`force=true` → **无条件**补到 `target_share`,不看当前/补后率。判别性:同一仓位赛前前置门判"已达标不补",赛中 force 仍补。
+- 缺口补平后 force 支不再命中(自终止)。
+- **`pnl=false` 排除 realized(#327,防即买即卖)**:同一失衡持仓 + banked 正 realizedPNL(经 `RealizedPnlLedger`/Portfolio)→ `pnl=true`(默认)时补后率被 banked 抬过阈值 → recovery 触发;`pnl=false` 时补后率只按当轮开仓投影 → 低于阈值 → 不触发。判别性证明 realized 已被排除。`target_share`/denom 两种 pnl 下相同。
+- `outcome_exposures(pair_id, include_realized_pnl=False)` 返回不含 realized 的开仓投影;`True`(默认)与 Risk profit gates 口径一致(`test_portfolio` 补该 kwarg 用例)。
+
+### strategy-4.pre_rebate.5: 链路与树间取舍
+- 两条链均 `[place_bets]`,place_bets 直接消费 `legs`(无 candi_select 也能出 plan)。
+- 赛前 B1(arb)与 B2(comp)同轮命中 → comp_plan 优先(先补救)。
+- 低于最小下注额的腿 → 由 Risk 兜底拒(无 candi_select 早筛)。
 
 ## 策略内组合场景
 

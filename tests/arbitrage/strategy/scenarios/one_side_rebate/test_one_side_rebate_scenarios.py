@@ -67,7 +67,7 @@ class _Portfolio:
         self._oe = oe or {}
         self._profits = profits or {"yes": 0.0, "no": 0.0}
 
-    def outcome_exposures(self, pair_id):
+    def outcome_exposures(self, pair_id, include_realized_pnl=True):
         return {
             outcome: SimpleNamespace(net_profit=profit)
             for outcome, profit in self._profits.items()

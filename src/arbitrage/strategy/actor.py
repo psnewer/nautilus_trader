@@ -99,6 +99,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 intent=str(spec.get("intent", "arbitrage")),
                 venue_required_balance=spec.get("venue_required_balance"),
                 enable_timeout=spec.get("enable_timeout"),
+                market=spec.get("market"),
             ))
         # 下单量落 venue 可撮网格:PM instrument 精度存 token 真值(1e-6),但下单必须 floor 到
         # info["order_size_increment"](0.01)——否则 order.quantity(6 位)与 venue 撮到的量不一致,

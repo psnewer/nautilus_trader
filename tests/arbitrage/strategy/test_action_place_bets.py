@@ -266,6 +266,43 @@ def test_action_rejects_non_boolean_enable_timeout():
         PlaceBetsAction(enable_timeout="true")
 
 
+def test_action_market_is_written_to_every_submit_spec():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "A.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "home",
+            "price": 0.4,
+            "share_if_wins": 22.5,
+        },
+        {
+            "instrument_id": "A.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "BUY",
+            "role": "away",
+            "price": 2.5,
+            "share_if_wins": 22.5,
+        },
+    ]
+
+    _prepare_and_dispatch(PlaceBetsAction(market=True), ctx)
+
+    assert len(calls) == 2
+    assert all(spec["market"] is True for spec in calls)
+
+
+def test_action_rejects_non_boolean_market():
+    with pytest.raises(ValueError, match="market must be a boolean"):
+        PlaceBetsAction(market="true")
+
+
 def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
     calls = []
 

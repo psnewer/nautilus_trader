@@ -102,11 +102,9 @@ class SharpExchExecutor:
         *,
         fx_getter: Callable[[], float] | None = None,
         persistence_type: str = "LAPSE",
-        market_order_enabled: bool = False,
     ) -> None:
         self._fx_getter = fx_getter or (lambda: 1.0)
         self._persistence_type = persistence_type
-        self._market_order_enabled = bool(market_order_enabled)
 
     async def place_order(
         self,
@@ -114,6 +112,7 @@ class SharpExchExecutor:
         page,
         *,
         timestamp_ms: int | None = None,
+        market: bool = False,
     ) -> dict:
         if page is None:
             return {
@@ -127,7 +126,7 @@ class SharpExchExecutor:
                 self._fx_getter(),
                 timestamp_ms=timestamp_ms,
                 persistence_type=self._persistence_type,
-                market_order_enabled=self._market_order_enabled,
+                market=market,
             )
         except ValueError as exc:
             return {"success": False, "venue_order_id": None, "message": str(exc)}

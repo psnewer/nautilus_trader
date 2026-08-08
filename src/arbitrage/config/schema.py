@@ -200,11 +200,6 @@ class ExecutionSectionConfig(ConfigStruct):
     # position=持仓对账(#110,驱动 PM merge/redeem)。改后需重启(LiveExecEngineConfig build 时定)。
     open_check_interval_secs: float = 300.0
     position_check_interval_secs: float = 300.0
-    # 全 venue 市价提交开关(#286):各 Execution adapter 在最终服务端提交边界转换。
-    # 改后需重启(ArbContext 构造时定,见 bootstrap.py)。
-    market_order_enabled: bool = False
-
-
 class DebugSectionConfig(ConfigStruct):
     """与 `src/arbitrage/debug/config.py:DebugConfig` schema 对齐;dispatcher 转换。"""
 

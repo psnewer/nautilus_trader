@@ -407,13 +407,14 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `OneSideRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 从 live Cache 按固定 `yes/no` outcome 收集所有可买 leg，枚举 venue 组合与 target outcome；达阈值时写 `ctx.scratch["candidates"]`。qty 通过 Venue Registry 计算 |
 | `NegRebateCheck(max_rate=0.0)` | `src/arbitrage/strategy/checks/neg_rebate.py` | one_side_rebate 之后的候选方向门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母计算当前 rebate；按每个 candidate 的 `target_role` 过滤，只保留该 outcome 满足 `net_profit / max_share <= max_rate` 的 candidate。默认阈值为 0；无仓位时各 outcome rebate 视为 0，因此默认可通过。缺 candidates、Portfolio、完整 yes/no outcome 或经济投影异常时 fail-closed。只判断当前仓位，不预测加入 candidate 后的结果 |
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
-| `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1 |
+| `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False, force=False, pnl=True)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1。**`force`(#326)**:缺省 `False` 保持 #262 双向率门(当前率 < 阈值才补、补后率 ≥ 阈值才算有用);`True` 时**旁路这两道率门**,只要存在缺口 outcome 就无条件补到 `target_share`(供 pre_rebate 开赛兜底强平衡,见 §3.10)。仅设很低的 `min_repaired_rebate` **不能**达到强补效果——#262 前置门 `current >= 阈值` 反而会拦住。**`pnl`(#327)**:缺省 `True` 保持 #321(补后率分子含 realizedPNL);`False` 时经 `outcome_exposures(..., include_realized_pnl=False)` 取基线,**当前率/补后率均不含 realized**,只按当轮开仓投影判率(供 pre_rebate 循环开平防即买即卖,见 §3.10;不影响 `target_share`/denom)。 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，将订单价与当前 ask 都换算为 outcome exposure probability；严格概率差满足门限时写标准 `legs + cancel_pair_orders`。随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `ShareLimitModification(max_leg_share=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate |
 | `VenueReplaceAction()` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价保持当前 order 的隐含概率**:`price=prob=` 原腿 `prob`(两 venue 共享的 outcome 概率,**不用 PM 实时 ask、也不用原 decimal 赔率**);PM 为 probability venue,`qty=share`(不缩放),`cost=share×prob`(与原 decimal 腿 cost 口径一致);每腿 `share_if_wins` 保持不变。裸腿无 `prob` 时回退到 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
-| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 互斥 LONG 减仓只有在应用 spread 后的 SELL 限价 `<=` 该 instrument 当前 best bid 时才转换；缺盘口/bid 或价格不交叉则保留原 BUY。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。该门只保证价格可立即成交，暂不检查 bid 深度。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
+| `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追腿(#326):读 `PairPriceStore.first_price` 与当前 PM best ask 概率向量,对每个 outcome 算**绝对概率跌幅** `first - now`;最大跌幅 `>=` `move_threshold` 的 outcome = mover(赔率变大/概率变小),写单条 PM `BUY` leg(`qty=qty_from_share(PM, strategy_defaults["share"], now)`,带 `share_if_wins`)到 `ctx.scratch["legs"]`。`first_price` 空 / 缺完整 PM 盘口 / 概率非法 / 无 outcome 达阈 → False(安全 no-op)。赛前/赛中门由 self_hits `in_game` 负责(§3.10),本 Check 不自判 phase |
+| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 互斥 LONG 减仓只有在应用 spread 后的 SELL 限价 `<=` 该 instrument 当前 best bid 时才转换；缺盘口/bid 或价格不交叉则保留原 BUY。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。该门只保证价格可立即成交，暂不检查 bid 深度。`market=true` 只写订单 metadata，不在 Action 改价；最终市价转换见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
 
 `mean_rebate`、`one_side_rebate` 与 `mean_rebate_recovery` 的行情候选腿统一由
 `src/arbitrage/strategy/checks/quote_legs.py::quote_legs_by_outcome` 构造。⚠️ 2026-07-20/21
@@ -421,7 +422,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 `quote_claim` 换算,见 `docs/arbitrage/architectures/data/architecture.md` §2/§3.1),不再
 在读侧二次调 `probability_from_price`;`leg["price"]`(真实下单价)经新增的
 `to_price`(`price_from_probability` 的容错包装)从这个概率换算回来。Strategy 不再用
-OrderBook 最深档覆盖计划价，也不读取 `market_order_enabled`。该开关属于 Execution 配置，
+OrderBook 最深档覆盖计划价。市价意图由 `place_bets.market` 写入订单 metadata，
 由 PM/OE/SE adapter 在最终服务端提交前完成 venue-specific 转换；详细契约见
 `docs/arbitrage/architectures/execution/architecture.md` §3.6。
 `claim/lay_price/exec_instrument_id` 透传只维护一份；三个 Check 只保留各自的组合与阈值算法。
@@ -570,14 +571,17 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
   `min_price/max_price`；PM 未显式给边界时按 `[price_increment, 1-price_increment]`，
   decimal venue 未显式给边界时按 `[1.01, 1000]` 裁剪。`price_overrides` 先于 spread；
   资金需求按 spread 后的计划价格计算。decimal 分段赔率量化属于 Execution adapter 的最终
-  payload 边界，不在 Action 重复执行。若 `market_order_enabled=true`，Execution adapter 的最终
-  市价转换仍可覆盖该限价，Strategy 不读取 execution 配置。
+  payload 边界，不在 Action 重复执行。若本 Action 显式 `market=true`，Execution adapter 的最终
+  市价转换可覆盖该限价；Action 仍保留原计划价格。
 - Action ACK 收口参数(#298/#300):`enable_timeout` 必须是 JSON boolean；对 submit，缺失/`true` 保持
   等待终态或 watchdog 的既有行为；显式 `false` 时
   `PlaceBetsAction` 为同一 opportunity 的每条真实 submit spec 写该字段，submitter 经
   `OpportunityMeta` 写入 `Order.tags`。普通 cancel-only 不读取原订单该字段；只有补偿树
   grouped cancel plan 显式携带时，才通过 `CancelOrder.params` 传给 cancel session；
   Strategy 只声明策略，不直接结束 execution session。
+- Action 市价参数(#325):`market` 必须是 JSON boolean；显式 `true` 时同一 opportunity 的每条
+  submit spec 都写入该值，经 `OpportunityMeta` 进入 `Order.tags`。缺失或 `false` 不请求市价；
+  Action 不改 price/qty，venue-specific 转换只发生在 execution §3.6 的最终提交边界。
 - `intent` 默认 `"arbitrage"`;compensation/recovery tree 应显式配置 `"recovery"`。submitter 将其写入 `Order.tags` 的 `arb:intent=<intent>` 标签。该标签是 Strategy → Risk 的跨组件契约:Risk 对 `recovery` 仍执行 NT 基础检查 + 余额检查,但跳过单场 profit gates(`match_tp/match_sl`),详见 risk 详设 §3.1。
 - **opportunity metadata(已落地代码,待 live 验证,2026-06-14)**:`PlaceBetsAction` 在同一次 `execute(ctx)` 内为所有真实 legs 生成同一个 `opportunity_id`,并为每条 spec 写 `pair_id=ctx.pair_id`、稳定 `leg_key`、`expected_legs`(所有真实腿 key,包含自己)。submitter 把这些字段写入 `Order.tags`:`arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`，并在 Action 显式配置时追加 `arb:enable_timeout=<true|false>`。不发送 0 qty 空单;没有真实下单的 outcome 不进 `expected_legs`。tag 构造/解析复用 `src/arbitrage/common/opportunity.py`。
 
@@ -632,6 +636,61 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 `strategy_id="ARB-EVAL"` + `order_id_tag="001"`，由 NT `Strategy` 生成最终 ID。所有 evaluator
 订单的 `order.strategy_id` 与 `SubmitOrder.strategy_id` 均来自该注册策略，不再手写 literal。
 
+### 3.10 pre_rebate 策略配置形态(#326,设计 · 组件未落地 · live-unvalidated · as-of 2026-08-08)
+
+**意图**:赛前"追赔率变大(概率变小)的腿"投机 + 返水补救,开赛兜底强平衡。三行为,用 condition
+(self_hits `in_game`)分赛前/赛中:
+
+| 行为 | 触发 | 命中条件 | 动作 |
+|---|---|---|---|
+| B1 赛前追腿 | PM OBD | 赛前(`NOT in_game`)且某 outcome 现价较 `first_price` **绝对概率跌幅 ≥ move_threshold** | PM `BUY` 该 outcome,量 = `arbitrage.share` |
+| B2 赛前返水补救 | OBD / phase | 赛前 且已有失衡持仓 且 `mean_rebate_recovery` 补后率 ≥ `min_repaired_rebate` | 补另一腿(recovery)|
+| B3 开赛强制补救 | phase `live` | 赛中(`in_game`)且仍失衡 | `mean_rebate_recovery(force=true)` 无条件补,不看率 |
+
+```jsonc
+"pre_rebate": {
+  "arbitrage_tree": {
+    "self_hits": {"NOT": {"type": "in_game"}},
+    "checktion": {"type": "pre_move", "params": {"move_threshold": 0.1}},
+    "actions": [{"type": "place_bets"}]
+  },
+  "compensation_tree": {
+    "sub_conditions": [
+      { "self_hits": {"type": "in_game"},
+        "checktion": {"type": "mean_rebate_recovery", "params": {"force": true, "pnl": false}},
+        "actions": [{"type": "place_bets", "params": {"intent": "recovery", "market": true}}] },
+      { "self_hits": {"NOT": {"type": "in_game"}},
+        "checktion": {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": 0.0, "pnl": false}},
+        "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}] }
+    ]
+  }
+}
+```
+
+语义与边界:
+- **链路精简到 `[place_bets]`**:pre_rebate 单腿、按 `share` 精确买、纯 PM,不需要
+  `venue_replace`(本就 PM)/ `share_limit`(不缩量)/ `candi_select`(≤1 candidate,组内选择空转)。
+  **代价**:candi_select 的最小下注门控被去掉 → 由 **Risk 侧 `min_notional`/`min_quantity` 兜底**;
+  某腿低于最小额时会走到 Risk 才被拒、且每 OBD tick 重复一次(噪声),pre_rebate 可接受。
+  `place_bets` 直接消费 `ctx.scratch["legs"]`(place_bets.py:72),不依赖 `selected_candidate`。
+- **condition 分赛前/赛中**:`in_game` StateQuery(§4.3)。`sub_conditions` 互斥、命中即停,
+  同轮只命中一支;B3 在前(赛中优先强补)。
+- **树间取舍不变**:comp_plan > arb_plan(§4.2)。赛前若已失衡且率达标 → B2 先于 B1
+  (先补救再谈新腿)。
+- **`pre_move` 依赖 `first_price` 已被采集**:first_price 的采集条件与 late-join 污染治理归
+  §3.8.2(与本策略解耦——`pre_move` 只**读**,不负责采);当前 §3.8.2 落地下**实盘 first_price
+  基本不采** → B1 生产命中率取决于 §3.8.2 是否放开赛前采集。这是**已知依赖,不由本策略修复**;
+  first_price 空时 `pre_move` 安全 no-op(不下单)。⚠️ 若要 B1 在实盘真正生效,需另行(在 §3.8.2)
+  引入正面赛前采集信号(如 anchor `market_start_time`),届时会连带影响 one_side_rebate 的
+  dash_gate 阈值,须单独决策。
+- **`force` 补救自终止**:B3 每 tick 命中直到缺口补平;补平后 `mean_rebate_recovery` 找不到
+  缺口 → 停。
+- **`pnl:false` 防即买即卖(#327)**:pre_rebate 循环开平会累积 banked realizedPNL;若 recovery 补后率
+  分子含 realized(#321 默认),banked 会把补后率门抬过阈值 → recovery 把补腿转成互斥减仓 SELL
+  (place_bets.py:263)→ 再实现 → banked 再涨 → 自我强化的即买即卖空转。故两支 recovery 均置
+  `pnl:false`,补后率只按当轮开仓投影判定,不含 banked。机制与 API 见 §3.8 表 / risk §4.1b / refactor #327。
+- **scope 绑定**由运营在 `bindings` 配置(pair/competition/sport),不写死。
+
 ---
 
 ## 4. 算法
@@ -676,6 +735,16 @@ order/position digests，但不能共享 `scratch`，也不能跨树搬运 candi
 - `AND/OR/NOT` 只负责组合，不保存状态。
 - 叶子 `StateQuery.matches(ctx)` 在每轮求值时查询 `EvalContext`。
 - 跨轮状态由 Cache、SportsGameStateStore、Portfolio 等自然归属组件维护。
+
+**已注册 StateQuery(#326,首个 self_hits 实用叶子)**:
+- `InGameQuery`(`src/arbitrage/strategy/queries/in_game.py`,注册名 `in_game`):经
+  `ctx.pair_registry.game_id_for_pair(pair_id)` → `ctx.sports_store.get(gid)`,`state` 存在且
+  `live` 且 `not ended` → True(= 比赛进行中)。**赛前门 = `{"NOT": {"type": "in_game"}}`**,
+  它同时覆盖真赛前(sports_store 为 `None` / 未 live)。**边界**:`ended` 落入 `NOT in_game`
+  (与赛前同支),因 ended 后 pair 立即回收(§3.8.1)、只触及最后一次评估,影响可忽略;
+  将来若需显式排除 ended,另加 `pre_game`(`not live and not ended`)叶子。此前框架里
+  `self_hits` 全是 `{}`(vacuous truth),`in_game` 是第一个实用叶子。注册经 §3.7
+  `register_state_query`,JSON 走 `bool_expr_from_json`(支持叶子 + `AND/OR/NOT`)。
 
 ### 4.4 scope 优先级查找(Q3 / Q6)
 
