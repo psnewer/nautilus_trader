@@ -622,7 +622,8 @@ def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
 
     assert "canceled" not in captured
     assert "rejected" not in captured
-    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
+    # 用户改:200 且本单真在 `canceled` 列表 → **不立即** ack 结束 session;等 WS 终态 / watchdog。
+    assert "cancel_ack" not in captured
 
     client._generate_cancel_success_event(
         strategy_id="S",
@@ -752,12 +753,14 @@ def test_polymarket_cancel_order_reject_generates_cancel_rejected_event():
     assert "canceled" not in captured
 
 
-def test_polymarket_cancel_order_unknown_result_keeps_session_active():
-    client, command, captured, _ = _cancel_test_client(None)
+def test_polymarket_cancel_order_unknown_result_ends_session():
+    # 用户改:除「200 且本单在 canceled 列表」外一律结束 session;unknown/无回执也 ack 结束
+    # session(没有本次撤单对应的 WS 终态可等)。
+    client, command, captured, expected_venue_order_id = _cancel_test_client(None)
 
     _run(client._cancel_order(command))
 
-    assert "cancel_ack" not in captured
+    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
     assert "rejected" not in captured
     assert "canceled" not in captured
 

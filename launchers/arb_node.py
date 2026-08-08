@@ -137,9 +137,9 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         logging=LoggingConfig(
             log_level="INFO",
             log_component_levels={
-                "ARB-EVAL": "ERROR",  # OrderInitialized(INFO)+ OrderDenied(WARN)都压掉
-                "StrategyEvaluator": "WARNING",  # SubmitOrder
-                "RiskEngine": "WARNING",  # deny order 只输出 ERROR 以上
+                "ARB-EVAL": "INFO",  # OrderInitialized(INFO)+ OrderDenied(WARN)都压掉
+                "StrategyEvaluator": "INFO",  # SubmitOrder
+                "RiskEngine": "ERROR",  # deny order 只输出 ERROR 以上
             },
         ),
         exec_engine=LiveExecEngineConfig(

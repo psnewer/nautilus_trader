@@ -1045,9 +1045,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     f"Cancel result unknown for {order.client_order_id!r}: "
                     f"{retry_manager.message}",
                 )
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
                 return
 
-            self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
             not_canceled = response.get("not_canceled") or {}
             reason = (
                 not_canceled.get(venue_order_id.value)
@@ -1055,7 +1055,12 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 else not_canceled
             )
 
+            # 只有「200 且本单真在 `canceled` 列表」才不立即结束 session —— 真撤到时 WS
+            # OrderCancellation 终态在路上,由该终态事件(`_send_order_event` 的 cancel-terminal)
+            # 或 watchdog 收尾。其余情形(200-not_canceled / 非200 / 无回执)一律 ack 结束 session,
+            # 因为没有本次撤单对应的 WS 终态可等(参考 PM docs:not_canceled 也是 200)。
             if reason:
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
                 self._generate_cancel_event(
                     strategy_id=order.strategy_id,
                     instrument_id=order.instrument_id,
@@ -1066,6 +1071,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 )
             elif response and venue_order_id.value in (response.get("canceled") or []):
                 self._log_cancel_request_accepted(order.client_order_id, venue_order_id)
+            else:
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
         finally:
             await self._retry_manager_pool.release(retry_manager)
 
@@ -1089,9 +1096,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     f"Deferred cancel result unknown for {order.client_order_id!r}: "
                     f"{retry_manager.message}",
                 )
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
                 return
 
-            self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
             not_canceled = response.get("not_canceled") or {}
             reason = (
                 not_canceled.get(venue_order_id.value)
@@ -1099,7 +1106,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 else not_canceled
             )
 
+            # 只有「200 且本单真在 `canceled` 列表」才不立即结束 session(WS 终态在路上);
+            # 其余(200-not_canceled / 非200 / 无回执)一律 ack 结束 session。见 `_cancel_order`。
             if reason:
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
                 self._generate_cancel_event(
                     strategy_id=order.strategy_id,
                     instrument_id=order.instrument_id,
@@ -1110,6 +1120,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 )
             elif response and venue_order_id.value in (response.get("canceled") or []):
                 self._log_cancel_request_accepted(order.client_order_id, venue_order_id)
+            else:
+                self._ack_normal_cancel_response(order.client_order_id, venue_order_id)
         finally:
             await self._retry_manager_pool.release(retry_manager)
 
