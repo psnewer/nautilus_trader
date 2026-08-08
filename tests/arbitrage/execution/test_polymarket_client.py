@@ -366,15 +366,16 @@ def test_pm_order_without_market_metadata_delegates_to_upstream_limit(monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("side", "expected_amount", "expected_base_quantity"),
+    ("side", "expected_amount", "expected_price", "expected_base_quantity"),
     [
-        (OrderSide.BUY, 4.0, 9.5),
-        (OrderSide.SELL, 10.0, None),
+        (OrderSide.BUY, 4.0, 0, 9.5),
+        (OrderSide.SELL, 10.0, 0.01, None),
     ],
 )
 def test_pm_market_metadata_uses_official_market_order_at_submit_boundary(
     side,
     expected_amount,
+    expected_price,
     expected_base_quantity,
 ):
     captured = {}
@@ -448,6 +449,7 @@ def test_pm_market_metadata_uses_official_market_order_at_submit_boundary(
     assert captured["args"].token_id == "123"
     assert captured["args"].amount == pytest.approx(expected_amount)
     assert captured["args"].side == ("BUY" if side == OrderSide.BUY else "SELL")
+    assert captured["args"].price == pytest.approx(expected_price)
     assert captured["args"].order_type == PolyOrderType.FOK
     assert captured["options"].neg_risk is True
     _, posted_signed, posted_type, base_quantity = captured["posted"]

@@ -120,8 +120,10 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **步骤**:订单通过通用校验后进入 `_submit_limit_order`，adapter 在提交边界读取 metadata。
 **期望**:缺失/`false` 时委托上游 limit 提交；`true` 时构造 `MarketOrderArgs` 并以 FOK 提交。BUY
 `amount=10×0.40=4 USDC`，SELL `amount=10 shares`；BUY 从 SDK 真实 `SignedOrderV2` 的扁平
-`takerAmount` 字段取得 base quantity，并通过 `OrderUpdated` 对齐 NT 本地订单数量。不得把 BUY 的 10 shares
-直接作为极端价格限价单的 size，避免扩大为约 10 USDC 的实际支出。
+`takerAmount` 字段取得 base quantity，并通过 `OrderUpdated` 对齐 NT 本地订单数量。BUY
+`price=0`，由 SDK 动态取价；SELL `price=0.01`，扩大 FOK 扫盘范围且卖出量仍为 10 shares。
+不得给 BUY 使用 `0.99` 极端签名价，也不得把 BUY 的 10 shares 直接作为极端价格限价单的
+size，避免破坏 share/quote 口径。
 **验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_order_without_market_metadata_delegates_to_upstream_limit` /
 `test_pm_market_metadata_uses_official_market_order_at_submit_boundary`。
 

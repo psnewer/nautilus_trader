@@ -250,7 +250,9 @@ venue 服务端接口时，adapter 才做最后一次 venue-specific 转换：
 
 - **Polymarket**：普通订单沿用 GTC limit；`market=true` 时使用官方
   `create_market_order(MarketOrderArgs)` 并以 FOK 提交。PM 原生 `amount` 口径按 side
-  区分：BUY 传计划成本 `计划 share × 计划 price`（USDC），SELL 传计划 share。BUY
+  区分：BUY 传计划成本 `计划 share × 计划 price`（USDC）且不显式传签名价，由 SDK 按
+  当前盘口动态计算，避免极端 BUY 价改变签名 `takerAmount` 与 NT share 口径；SELL 传计划
+  share，并显式使用最低允许价 `0.01`，扩大 FOK 可扫 bid 范围而不改变卖出 share。BUY
   签名后从 SDK `SignedOrderV1/V2` 的扁平字段 `signed_order.takerAmount` 取得本次市价单预计
   base quantity，并通过
   上游 `_post_signed_order(..., base_quantity=...)` 发出 `OrderUpdated`，使 NT 本地订单数量

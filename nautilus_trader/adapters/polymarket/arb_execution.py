@@ -161,6 +161,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             token_id=get_polymarket_token_id(order.instrument_id),
             amount=amount,
             side=order_side_to_str(order.side),
+            price=0.01 if order.side == OrderSide.SELL else 0,
             order_type=PolyOrderType.FOK,
         )
         neg_risk = self._get_neg_risk_for_instrument(instrument)
