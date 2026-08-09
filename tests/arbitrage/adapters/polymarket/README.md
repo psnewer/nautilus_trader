@@ -178,6 +178,16 @@ size，避免破坏 share/quote 口径。
 **输入**:USER trade `CONFIRMED` 无本地 `client_order_id`，成交方向为 TAKER。
 **期望**:adapter 先发送同一 venue order 的 `OrderStatusReport(ACCEPTED)` 建立 NT external order，
 再发送真实 `FillReport`；不得让孤立 fill 因缺订单映射被 ExecEngine 丢弃。
+
+### pm-adapter-5.1g: USER WS 枚举外状态映射为 rejected
+
+**输入**:USER `order` 或 `trade` 消息的 `status` 不属于对应 Polymarket 枚举；实盘样本是
+`event_type=trade` 的 FOK 未完全成交回执把 `CANCELED_` 与错误说明拼进 `status`。
+**期望**:该消息不归入 timeout/断线/空回执；adapter 从原始 payload 提取 taker/maker/order id，
+反查本地订单并生成 `OrderRejected`。行为不读取 `enable_timeout`；已知枚举仍走原标准解析。
+**验收**:`test_polymarket_unknown_user_ws_status_generates_order_rejected` /
+`test_polymarket_known_user_ws_status_is_not_reclassified` /
+`test_polymarket_ws_decoder_routes_validation_error_to_unknown_status_handler`。
 **验收**:`test_polymarket_external_taker_fill_bootstraps_order_before_fill` 锁定 report 顺序、方向、
 数量与成交价。
 

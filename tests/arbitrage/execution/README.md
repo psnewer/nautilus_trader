@@ -117,6 +117,16 @@
   external order 并把成交应用到 Position。
 - 验收:✅ `test_polymarket_client.py::test_polymarket_external_taker_fill_bootstraps_order_before_fill`。
 
+### execution-4.1.4c: PM USER WS 枚举外状态统一拒单
+- 输入:`event_type=order/trade` 的 USER WS 消息携带不属于对应官方枚举的 `status`。
+- 期望:严格 decoder 的 `ValidationError` 转入未知状态处理；按 order id 找到本地订单并生成
+  `OrderRejected`，不区分 `enable_timeout`，由标准 terminal 路径结束 session。已知枚举值不被
+  重分类；网络无响应、断线和空 HTTP 回执仍属于传输结果未知。
+- 验收:`test_polymarket_unknown_user_ws_status_generates_order_rejected` /
+  `test_polymarket_known_user_ws_status_is_not_reclassified` /
+  `test_polymarket_ws_decoder_routes_validation_error_to_unknown_status_handler` /
+  `test_session.py::test_rejected_is_terminal`。
+
 ### execution-4.1.4c: in-flight QueryOrder 不改变 venue liveness
 - 输入:PM 单次 `get_order` 成功/失败，或 OE/SE 强制 reload 成功/失败。
 - 期望:查询与订单更新行为保持不变；任何分支都不调用 order/position

@@ -311,6 +311,12 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
     `status_code is None` 的抛错但 hash 已登记时不生成本地终态、不结束 session，订单保持
     `SUBMITTED`，等待 NT 的 in-flight threshold 判定。`RetryManager` 必须保留最后异常，不能只用
     message 抹掉“已收到 HTTP 响应”和“根本没有响应”的区别。
+    USER WS 的 `order.status` / `trade.status` 仍由官方枚举严格解码；实盘出现过 PM 在 FOK
+    未完全成交时把 `CANCELED_` 与错误说明拼进 `trade.status`，该 payload 违反官方枚举 schema。
+    这种枚举外文本说明 venue 已返回业务回执但本地无法按标准状态解析，不归入传输结果未知。
+    adapter 从原始消息的 order id
+    反查本地订单并生成标准 `OrderRejected`，由既有 terminal 漏斗结束 submit session，
+    不读取 `enable_timeout`。没有本地 order 映射时只记录 warning。
   - OE/SE 在本地 instrument/executor/payload 校验通过后、进入真实 `placeBets` 前生成
     `OrderSubmitted`。HTTP/业务响应明确拒绝时生成 `OrderRejected`；断线、execution context
     销毁、fetch transport error 等结果未知路径不生成终态、不结束 session，保留 `SUBMITTED`

@@ -40,6 +40,7 @@ from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeRep
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 from nautilus_trader.adapters.polymarket.settlement import SettlementResult
+from nautilus_trader.adapters.polymarket.websocket.types import USER_WS_MESSAGE
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.model.enums import LiquiditySide
@@ -347,6 +348,109 @@ def test_arb_pm_accepted_reserve_is_noop():
     )
 
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "venue_order_id"),
+    [
+        (
+            {
+                "event_type": "order",
+                "id": "PM-OID-UNKNOWN-ORDER",
+                "status": "UNKNOWN_ORDER_STATUS",
+            },
+            "PM-OID-UNKNOWN-ORDER",
+        ),
+        (
+            {
+                "event_type": "trade",
+                "taker_order_id": "PM-OID-UNKNOWN-TRADE",
+                "maker_orders": [],
+                "status": "CANCELED_order couldn't be fully filled",
+            },
+            "PM-OID-UNKNOWN-TRADE",
+        ),
+    ],
+)
+def test_polymarket_unknown_user_ws_status_generates_order_rejected(
+    payload,
+    venue_order_id,
+):
+    coid = ClientOrderId("O-UNKNOWN-STATUS")
+    order = SimpleNamespace(
+        strategy_id=StrategyId("S-1"),
+        instrument_id=InstrumentId.from_str("0xcond-token.POLYMARKET"),
+        client_order_id=coid,
+    )
+    rejected = []
+    client = SimpleNamespace(
+        _cache=SimpleNamespace(
+            client_order_id=lambda value: coid if value == VenueOrderId(venue_order_id) else None,
+            order=lambda value: order if value == coid else None,
+        ),
+        _clock=_Clock(),
+        _log=_TrackingLog(),
+        generate_order_rejected=lambda **kwargs: rejected.append(kwargs),
+    )
+
+    handled = PolymarketExecutionClient._reject_unknown_user_ws_status(
+        client,
+        msgspec.json.encode(payload),
+    )
+
+    assert handled is True
+    assert len(rejected) == 1
+    assert rejected[0]["client_order_id"] == coid
+    assert "Unrecognized Polymarket" in rejected[0]["reason"]
+
+
+def test_polymarket_known_user_ws_status_is_not_reclassified():
+    client = SimpleNamespace()
+    raw = msgspec.json.encode({
+        "event_type": "trade",
+        "taker_order_id": "PM-OID-KNOWN",
+        "maker_orders": [],
+        "status": "CONFIRMED",
+    })
+
+    assert PolymarketExecutionClient._reject_unknown_user_ws_status(client, raw) is False
+
+
+def test_polymarket_ws_decoder_routes_validation_error_to_unknown_status_handler():
+    handled = []
+    client = SimpleNamespace(
+        _config=SimpleNamespace(log_raw_ws_messages=False),
+        _decoder_user_msg=msgspec.json.Decoder(USER_WS_MESSAGE),
+        _reject_unknown_user_ws_status=lambda raw: handled.append(raw) or True,
+        _log=_TrackingLog(),
+    )
+    raw = msgspec.json.encode({
+        "event_type": "trade",
+        "asset_id": "token-1",
+        "bucket_index": 0,
+        "fee_rate_bps": "0",
+        "id": "trade-fok-killed",
+        "last_update": "1",
+        "maker_address": "0xmaker",
+        "maker_orders": [],
+        "market": "0xcondition",
+        "match_time": "1",
+        "outcome": "Yes",
+        "owner": "owner",
+        "price": "0.35",
+        "side": "SELL",
+        "size": "5.28",
+        "status": "CANCELED_order couldn't be fully filled. FOK orders are fully filled or killed.",
+        "taker_order_id": "PM-OID-FOK",
+        "timestamp": "1",
+        "trade_owner": "owner",
+        "trader_side": "TAKER",
+        "type": "TRADE",
+    })
+
+    PolymarketExecutionClient._handle_ws_message(client, raw)
+
+    assert handled == [raw]
 
 
 def test_pm_order_without_market_metadata_delegates_to_upstream_limit(monkeypatch):

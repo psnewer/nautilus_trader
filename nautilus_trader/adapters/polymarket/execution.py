@@ -50,6 +50,7 @@ from nautilus_trader.adapters.polymarket.common.constants import VALID_POLYMARKE
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderStatus
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.parsing import calculate_commission
 from nautilus_trader.adapters.polymarket.common.parsing import make_composite_trade_id
@@ -1974,12 +1975,77 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 self._handle_ws_trade_msg(msg, wait_for_ack=True)
             else:
                 self._log.error(f"Unrecognized websocket message {msg}")
+        except msgspec.ValidationError as e:
+            if self._reject_unknown_user_ws_status(raw):
+                return
+            self._log.exception(
+                f"Error handling websocket message: {e.__class__.__name__} - "
+                f"raw message: {raw.decode(errors='replace')}",
+                e,
+            )
         except Exception as e:
             self._log.exception(
                 f"Error handling websocket message: {e.__class__.__name__} - "
                 f"raw message: {raw.decode(errors='replace')}",
                 e,
             )
+
+    def _reject_unknown_user_ws_status(self, raw: bytes) -> bool:
+        """将 USER WS 枚举外状态映射为本地拒单；其它 schema 错误交回原异常路径。"""
+        try:
+            payload = msgspec.json.decode(raw)
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+
+        event_type = payload.get("event_type")
+        status = payload.get("status")
+        if event_type == "order":
+            valid_statuses = {item.value for item in PolymarketOrderStatus}
+            venue_order_ids = [payload.get("id")]
+        elif event_type == "trade":
+            valid_statuses = {item.value for item in PolymarketTradeStatus}
+            venue_order_ids = [payload.get("taker_order_id")]
+            venue_order_ids.extend(
+                item.get("order_id")
+                for item in (payload.get("maker_orders") or [])
+                if isinstance(item, dict)
+            )
+        else:
+            return False
+
+        if status in valid_statuses:
+            return False
+
+        reason = f"Unrecognized Polymarket {event_type} status: {status!r}"
+        rejected = set()
+        for value in venue_order_ids:
+            if not value:
+                continue
+            venue_order_id = VenueOrderId(str(value))
+            client_order_id = self._cache.client_order_id(venue_order_id)
+            if client_order_id is None or client_order_id in rejected:
+                continue
+            order = self._cache.order(client_order_id)
+            if order is None:
+                continue
+            rejected.add(client_order_id)
+            self._log.warning(
+                f"{reason}; rejecting client_order_id={client_order_id}, "
+                f"venue_order_id={venue_order_id}",
+            )
+            self.generate_order_rejected(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=client_order_id,
+                reason=reason,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+        if not rejected:
+            self._log.warning(f"{reason}; no local order mapping")
+        return True
 
     def _add_trade_to_cache(self, msg: PolymarketUserTrade, raw: bytes) -> None:
         start_us = self._clock.timestamp_us()

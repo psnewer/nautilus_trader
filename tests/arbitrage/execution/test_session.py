@@ -482,6 +482,18 @@ def test_canceled_is_terminal():
     assert published == []                               # #108:execution.* 退役
 
 
+def test_rejected_is_terminal():
+    client, clock, cache, published, factory = _harness()
+    pm = pm_instrument("match_1", "home")
+    cache.add_instrument(pm)
+    order = _order(factory, pm)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_rejected(order))
+
+    assert not client._execution_active
+
+
 def test_cancel_session_ignores_fill_until_cancel_terminal():
     # 成交不是撤单响应；订单成交照常上送，但 cancel session 只由撤单 ACK、撤单终态或 timeout 收口。
     client, clock, cache, published, factory = _harness()
