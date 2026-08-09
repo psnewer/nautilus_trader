@@ -363,6 +363,33 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 赛前 B1(arb)与 B2(comp)同轮命中 → comp_plan 优先(先补救)。
 - 低于最小下注额的腿 → 由 Risk 兜底拒(无 candi_select 早筛)。
 
+## 价格趋势 #trend(#328,plumbing 已落地 · 消费件未定)
+
+设计见 strategy §3.8.3。`test_price_trend.py` 覆盖 `StrategyEvaluator._update_price_trend`:
+
+### strategy-4.trend.1: 每帧 Δprob + 跨帧携带
+- 首帧只 seed `_price_last`,无趋势条目(无 prev)。
+- 第二帧起 `_price_trend[iid] = new - prev`;概率变大→正、变小→负;`_price_last` 滚动到当前。
+- 判别性:若"读 last 再比当前"会恒为 0,本用例证明趋势在覆盖前已算好存下。
+
+### strategy-4.trend.2: 分 venue / 分 leg
+- key = `str(instrument_id)`(含 venue+outcome);PM yes / PM no / OE 各腿趋势互相独立。
+
+### strategy-4.trend.3: 边界
+- 缺 book / best_ask ≤0 / 缺 instrument_id → 跳过,不覆盖 last、不写 trend。
+- (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
+
+### strategy-4.trend.4: trend_gate Action(#329,消费件;跨 venue/outcome 一致)
+`test_action_trend_gate.py`。**筛选 = 符合的留、不符合的删;不符合一致性 = 无腿符合 = 全删**。
+判据:某 outcome 各 venue 都 up/flat、互斥 outcome 各 venue 都 down/flat、至少一处严格移动 → 该 outcome 干净上升。
+- 默认 `up`:各 venue yes 涨/平、no 跌/平 → 只留 yes 腿;元数据不变。
+- `trend="down"`:留下降 outcome(no)的腿。
+- **跨 venue 不一致**(OE 的 yes 跌 vs PM 的 yes 涨)→ 无干净趋势 → **全删**。
+- **缺 venue 数据当 flat**:OE 无数据、PM yes 涨 no 跌 → 仍判 yes 上升、留 yes 删 no。
+- **全平**(含缺数据)→ 无严格移动 → **全删**。
+- `price_trend` None/{}(未预热)→ **全删**;无 `selected_candidate` / 撤单 candidate → no-op / 跳过。
+- `trend` 非法值 → 构造即 `ValueError`。
+
 ## 策略内组合场景
 
 目录约定:`tests/arbitrage/strategy/scenarios/<strategy_name>/`。这里放“单个策略内部”的组合场景测试:

@@ -177,6 +177,12 @@ class StrategyEvaluator(Strategy):
         self._price_pairs_by_game: dict[int, set[str]] = {}
         self._price_game_by_pair: dict[str, int] = {}
         self._price_cleanup_pending: set[str] = set()
+        # 价格趋势(#trend):key = str(instrument_id)(= venue + 该腿/outcome,唯一)。
+        # `_price_last` 仅内部滚动上一帧 best_ask(隐含概率,#256 写侧已换算,PM/OE/SE 同口径);
+        # `_price_trend` 是每帧覆盖前算好的 Δprob,供 Check 经 EvalContext.price_trend 读(正=概率变大)。
+        # 在 on_order_book_deltas 每帧更新(不受评估闸影响);ended 释放时随 OBD 退订清理。
+        self._price_last: dict[str, float] = {}
+        self._price_trend: dict[str, float] = {}
         self._eval_tasks_by_pair: dict[str, int] = {}
 
     # ── 生命周期 ─────────────────────────────────────────────────────
@@ -221,8 +227,27 @@ class StrategyEvaluator(Strategy):
     def on_order_book_deltas(self, deltas) -> None:
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         # 所有 tradable venue 的 OBD 都可触发;NT 已在本回调前更新对应 book cache。
+        self._update_price_trend(deltas)
         self._capture_first_price(deltas)
         self._route_eval(deltas)
+
+    def _update_price_trend(self, deltas) -> None:
+        """#trend:每帧更新该 instrument 的 Δprob(与评估解耦,回调不受 pair 闸影响)。
+
+        `best_ask(book)` 读到的已是隐含概率(#256 写侧换算,OE/SE 已与 PM 同向,不再转)。
+        覆盖 `_price_last` 前先把 `new - prev` 存进 `_price_trend`,否则评估读到的 last 会等于当前值。
+        """
+        iid = getattr(deltas, "instrument_id", None)
+        if iid is None:
+            return
+        key = str(iid)
+        new_best = best_ask(self.cache.order_book(iid))
+        if new_best is None or new_best <= 0:
+            return
+        prev = self._price_last.get(key)
+        if prev is not None:
+            self._price_trend[key] = new_best - prev
+        self._price_last[key] = new_best
 
     def _route_eval(self, data) -> None:
         target = self._extract_evaluation_target(data)
@@ -290,6 +315,8 @@ class StrategyEvaluator(Strategy):
             if iid_str not in self._obd_subscribed:
                 continue
             self._obd_subscribed.discard(iid_str)
+            self._price_last.pop(iid_str, None)      # #trend:随 OBD 退订清理趋势条目,防无界增长
+            self._price_trend.pop(iid_str, None)
             try:
                 self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid_str))
             except Exception as e:  # noqa: BLE001 — 单腿退订失败不挡其它
@@ -508,6 +535,7 @@ class StrategyEvaluator(Strategy):
             "pair_order_canceler": self._make_pair_order_canceler(),
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
+            "price_trend": self._price_trend,   # #trend:key=str(instrument_id) → Δprob(概率空间)
         }
         arb_ctx = EvalContext(**base_ctx)
         comp_ctx = EvalContext(**base_ctx)
