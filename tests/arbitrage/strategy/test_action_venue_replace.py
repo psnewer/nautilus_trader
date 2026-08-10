@@ -42,8 +42,7 @@ def _ctx():
     )
 
 
-def test_candidates_replace_non_pm_legs_and_preserve_each_leg_share():
-    ctx = _ctx()
+def _mixed_candidate():
     pm_yes = {
         "instrument_id": "Y.POLYMARKET",
         "venue": "POLYMARKET",
@@ -56,37 +55,41 @@ def test_candidates_replace_non_pm_legs_and_preserve_each_leg_share():
         "share_if_wins": 80.0,
         "cost": 32.0,
     }
-    ctx.scratch["candidates"] = [
-        {
-            "candidate_id": "mixed",
-            "rate": 0.1,
-            "legs": [
-                pm_yes,
-                {
-                    "instrument_id": "N.SHARPEXCH",
-                    "exec_instrument_id": "Y.SHARPEXCH",
-                    "lay_price": 2.0,
-                    "venue": "SHARPEXCH",
-                    "side": "BUY",
-                    "price": 2.0,
-                    "prob": 0.50,
-                    "role": "no",
-                    "claim": "no",
-                    "qty": 60.0,
-                    "share_if_wins": 120.0,
-                    "cost": 60.0,
-                },
-            ],
-        },
-    ]
+    return pm_yes, {
+        "candidate_id": "mixed",
+        "rate": 0.1,
+        "legs": [
+            pm_yes,
+            {
+                "instrument_id": "N.SHARPEXCH",
+                "exec_instrument_id": "Y.SHARPEXCH",
+                "lay_price": 2.0,
+                "venue": "SHARPEXCH",
+                "side": "BUY",
+                "price": 2.0,
+                "prob": 0.50,
+                "role": "no",
+                "claim": "no",
+                "qty": 60.0,
+                "share_if_wins": 120.0,
+                "cost": 60.0,
+            },
+        ],
+    }
 
-    _run(VenueReplaceAction().execute(ctx))
+
+def test_pm_price_false_keeps_original_order_prob():
+    ctx = _ctx()
+    pm_yes, candidate = _mixed_candidate()
+    ctx.scratch["candidates"] = [candidate]
+
+    _run(VenueReplaceAction(pm_price=False).execute(ctx))
 
     candidate = ctx.scratch["candidates"][0]
     yes_leg, no_leg = candidate["legs"]
     assert yes_leg == pm_yes
-    # 保持原 order 的隐含概率 0.50(不用 PM ask 0.55),PM price=prob,qty=share,
-    # cost=share×prob=60(与原 decimal 腿 cost 一致)。
+    # pm_price=False:保持原 order 隐含概率 0.50(不用 PM ask 0.55),PM price=prob,
+    # qty=share,cost=share×prob=60(与原 decimal 腿 cost 一致)。
     assert no_leg == {
         "instrument_id": "N.POLYMARKET",
         "venue": "POLYMARKET",
@@ -100,6 +103,40 @@ def test_candidates_replace_non_pm_legs_and_preserve_each_leg_share():
         "cost": 60.0,
     }
     assert candidate["rate"] == 0.1
+
+
+def test_default_uses_pm_live_price():
+    ctx = _ctx()
+    pm_yes, candidate = _mixed_candidate()
+    ctx.scratch["candidates"] = [candidate]
+
+    _run(VenueReplaceAction().execute(ctx))  # 默认 pm_price=True
+
+    candidate = ctx.scratch["candidates"][0]
+    yes_leg, no_leg = candidate["legs"]
+    assert yes_leg == pm_yes
+    # 默认用 PM 实时 ask 0.55(不用原 order prob 0.50);qty=share=120 不变,
+    # cost=share×prob=120×0.55=66。
+    assert no_leg == {
+        "instrument_id": "N.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "price": 0.55,
+        "prob": 0.55,
+        "role": "no",
+        "claim": "no",
+        "qty": 120.0,
+        "share_if_wins": 120.0,
+        "cost": 66.0,
+    }
+    assert candidate["rate"] == 0.1
+
+
+def test_invalid_pm_price_param_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        VenueReplaceAction(pm_price="yes")
 
 
 def test_legs_only_replaces_every_external_leg():

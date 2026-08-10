@@ -23,7 +23,18 @@ class VenueReplaceAction(Action):
     candidate 本质就是包了元数据的 legs 数组,`ctx.scratch["legs"]` 则是裸 legs 数组;两种
     表示的承重内容都是 legs,故 `legs` / `candidates` / candi_select 之后的
     `selected_candidate` 三种输入形态都支持。
+
+    `pm_price`(默认真)决定替换后 PM 腿的下单价:
+      - **不存在 / True**:用 PM 报价腿自身概率(= PM best_ask 隐含概率,PM 实时价);
+      - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
+    PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
     """
+
+    def __init__(self, pm_price: bool | None = None) -> None:
+        if pm_price is not None and not isinstance(pm_price, bool):
+            raise ValueError("pm_price must be a boolean")
+        # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
+        self._use_pm_price = pm_price is None or pm_price
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.scratch.get("cancel_pair_orders"):
@@ -35,7 +46,7 @@ class VenueReplaceAction(Action):
         if isinstance(selected, dict):
             if selected.get("cancel_pair_orders"):
                 return
-            replaced = _replace_candidate(selected, pm_legs, ctx.pair_id)
+            replaced = _replace_candidate(selected, pm_legs, ctx.pair_id, self._use_pm_price)
             if replaced is None:
                 ctx.scratch["selected_candidate"] = {}
                 ctx.scratch["legs"] = []
@@ -54,7 +65,7 @@ class VenueReplaceAction(Action):
             for candidate in candidates:
                 if not isinstance(candidate, dict):
                     continue
-                replaced = _replace_candidate(candidate, pm_legs, ctx.pair_id)
+                replaced = _replace_candidate(candidate, pm_legs, ctx.pair_id, self._use_pm_price)
                 if replaced is not None:
                     replaced_candidates.append(replaced)
             ctx.scratch["candidates"] = replaced_candidates
@@ -63,7 +74,7 @@ class VenueReplaceAction(Action):
         legs = ctx.scratch.get("legs")
         if not legs:
             return
-        replaced = _replace_legs(legs, pm_legs, ctx.pair_id)
+        replaced = _replace_legs(legs, pm_legs, ctx.pair_id, self._use_pm_price)
         ctx.scratch["legs"] = replaced or []
 
 
@@ -79,10 +90,15 @@ def _polymarket_legs_by_outcome(ctx: EvalContext) -> dict[str, dict]:
     return result
 
 
-def _replace_candidate(candidate: dict, pm_legs: dict[str, dict], pair_id: str) -> dict | None:
+def _replace_candidate(
+    candidate: dict,
+    pm_legs: dict[str, dict],
+    pair_id: str,
+    use_pm_price: bool,
+) -> dict | None:
     if candidate.get("cancel_pair_orders"):
         return deepcopy(candidate)
-    replaced_legs = _replace_legs(candidate.get("legs") or [], pm_legs, pair_id)
+    replaced_legs = _replace_legs(candidate.get("legs") or [], pm_legs, pair_id, use_pm_price)
     if replaced_legs is None:
         return None
     replaced = deepcopy(candidate)
@@ -94,6 +110,7 @@ def _replace_legs(
     legs: list[dict],
     pm_legs: dict[str, dict],
     pair_id: str,
+    use_pm_price: bool,
 ) -> list[dict] | None:
     if not legs:
         return None
@@ -115,10 +132,9 @@ def _replace_legs(
             return None
 
         replacement = deepcopy(pm_leg)
-        # 用当前 order 的隐含概率(两 venue 共享的 `prob`),不用 PM 实时 ask,也不重算价格。
-        # PM 是 probability venue,price 即概率;qty=share(不缩放),cost=share×prob,
-        # 与原 decimal 腿的 cost 口径一致。
-        prob = _order_prob(leg, pm_leg, pair_id)
+        # use_pm_price=True(默认):用 PM 报价腿概率(PM 实时 ask);False:用原腿共享 `prob`。
+        # PM 是 probability venue,price 即概率;qty=share(不缩放),cost=share×prob。
+        prob = _order_prob(leg, pm_leg, pair_id, use_pm_price)
         qty = qty_from_share(POLYMARKET, share, prob)
         replacement["price"] = prob
         replacement["prob"] = prob
@@ -147,16 +163,30 @@ def _positive_float(value) -> float | None:
     return result if result > 0 else None
 
 
-def _order_prob(leg: dict, pm_leg: dict, pair_id: str) -> float:
-    """当前 order 的隐含概率(PM 下单价)。
+def _pm_quote_prob(pm_leg: dict) -> float | None:
+    return _positive_float(pm_leg.get("prob")) or _positive_float(pm_leg.get("price"))
 
-    优先用原腿自身的 `prob`(与两 venue 共享的 outcome 概率);裸腿没有 committed
-    价格时回退到 PM 报价腿的概率,并告警。
+
+def _order_prob(leg: dict, pm_leg: dict, pair_id: str, use_pm_price: bool) -> float:
+    """PM 下单价的隐含概率。
+
+    use_pm_price=True(默认):用 PM 报价腿概率(PM 实时 ask);缺报价时告警回退 0。
+    use_pm_price=False:用原腿共享 `prob`(两 venue 共享 outcome 概率);裸腿无 committed
+    价格时回退 PM 报价腿概率并告警。
     """
+    if use_pm_price:
+        pm_prob = _pm_quote_prob(pm_leg)
+        if pm_prob is not None:
+            return pm_prob
+        _LOG.warning(
+            f"VenueReplace: pair={pair_id} leg={leg.get('instrument_id')} "
+            "missing PM quote prob, fallback 0",
+        )
+        return 0.0
     prob = _positive_float(leg.get("prob"))
     if prob is not None:
         return prob
-    fallback = _positive_float(pm_leg.get("prob")) or _positive_float(pm_leg.get("price"))
+    fallback = _pm_quote_prob(pm_leg)
     _LOG.warning(
         f"VenueReplace: pair={pair_id} leg={leg.get('instrument_id')} "
         f"missing prob, fallback to PM quote prob={fallback}",

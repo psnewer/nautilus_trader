@@ -12,6 +12,7 @@ from nautilus_trader.model.enums import PositionSide
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
+from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
@@ -35,6 +36,7 @@ def _run(coro):
 def _fake_book(ask_price):
     book = MagicMock()
     book.best_ask_price = MagicMock(return_value=ask_price)
+    book.best_bid_price = MagicMock(return_value=None)
     return book
 
 
@@ -120,15 +122,15 @@ def _ctx(*, positions=None, **kwargs) -> EvalContext:
 
 
 def _select_action(arb_res, comp_res):
-    if arb_res.hit and arb_res.pending_actions:
-        return arb_res.pending_actions[0]
     if comp_res.hit and comp_res.pending_actions:
         return comp_res.pending_actions[0]
+    if arb_res.hit and arb_res.pending_actions:
+        return arb_res.pending_actions[0]
     return None
 
 
-def test_existing_position_with_arb_and_recovery_fires_arbitrage_first():
-    """已有仓位且补偿可修复时,若同时出现 one_side 套利,本轮触发套利树。"""
+def test_existing_position_with_arb_and_recovery_fires_compensation_first():
+    """已有仓位且补偿可修复时,若同时出现 one_side 套利,本轮优先触发补偿树。"""
     positions = [_Position("H.POLYMARKET", quantity=100.0, avg_px_open=0.45)]
     arb_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
     comp_ctx = _ctx(positions=positions, strategy_defaults={"share": 100.0})
@@ -148,7 +150,86 @@ def test_existing_position_with_arb_and_recovery_fires_arbitrage_first():
 
     assert arb_res.hit is True
     assert comp_res.hit is True
-    assert _select_action(arb_res, comp_res).label == "arbitrage"
+    assert _select_action(arb_res, comp_res).label == "recovery"
+
+
+def test_live_case_no_filled_at_033_and_yes_ask_05714_prefers_recovery():
+    """复现 nohup.out 2342-2350:已有 NO 5.99@0.33 时,YES 0.5714 应走补偿。"""
+    books = {
+        "Y.POLYMARKET": _fake_book(0.57142857),
+        "N.POLYMARKET": _fake_book(0.36),
+    }
+    infos = {
+        "Y.POLYMARKET": {"selection_role": "yes", "claim": "yes"},
+        "N.POLYMARKET": {"selection_role": "no", "claim": "no"},
+    }
+    positions = [_Position("N.POLYMARKET", quantity=5.99, avg_px_open=0.33)]
+    portfolio = _Portfolio(profits={
+        "yes": -(5.99 * 0.33),
+        "no": 5.99 * (1.0 - 0.33),
+    })
+    arb_ctx = live_context(
+        books=books,
+        infos=infos,
+        positions=positions,
+        instrument_ids=list(books),
+        portfolio=portfolio,
+        strategy_defaults={"share": 5.0},
+    )
+    comp_ctx = live_context(
+        books=books,
+        infos=infos,
+        positions=positions,
+        instrument_ids=list(books),
+        portfolio=portfolio,
+        strategy_defaults={"share": 5.0},
+    )
+    arb_tree = Condition(
+        self_hits=AndExpr(),
+        checktion=AndCheckExpr(OneSideRebateCheck(min_rate=0.04)),
+        actions=[_MarkerAction("arbitrage")],
+    )
+    comp_tree = Condition(
+        self_hits=AndExpr(),
+        checktion=AndCheckExpr(
+            MeanRebateRecoveryCheck(min_repaired_rebate=0.0, venue_select=True),
+        ),
+        actions=[_MarkerAction("recovery")],
+    )
+
+    arb_res = evaluate_tree(arb_tree, arb_ctx)
+    comp_res = evaluate_tree(comp_tree, comp_ctx)
+
+    assert arb_res.hit is True
+    assert comp_res.hit is True
+    assert comp_ctx.scratch["legs"] == [{
+        "instrument_id": "Y.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "price": 0.57142857,
+        "prob": 0.57142857,
+        "role": "yes",
+        "qty": 5.99,
+        "claim": "yes",
+    }]
+    assert round(comp_ctx.scratch["mean_rebate_recovery"]["min_repaired_rebate"], 8) == 0.11808857
+    assert _select_action(arb_res, comp_res).label == "recovery"
+
+    # 按实盘配置走完 Action 链，最终统一分发必须选补偿计划的 5.99，
+    # 不能选 one_side_rebate 套利计划的配置 share=5.0。
+    _run(CandiSelectAction().execute(arb_ctx))
+    _run(PlaceBetsAction(enable_timeout=False).execute(arb_ctx))
+    _run(CandiSelectAction().execute(comp_ctx))
+    _run(PlaceBetsAction(enable_timeout=False, market=True).execute(comp_ctx))
+
+    arb_plan = arb_ctx.scratch["execution_plan"]
+    comp_plan = comp_ctx.scratch["execution_plan"]
+    selected_plan = comp_plan or arb_plan
+    assert selected_plan is comp_plan
+    assert len(selected_plan.orders) == 1
+    assert selected_plan.orders[0].spec["instrument_id"] == "Y.POLYMARKET"
+    assert selected_plan.orders[0].spec["qty"] == 5.99
+    assert selected_plan.orders[0].spec["market"] is True
 
 
 def test_existing_position_with_recovery_only_fires_compensation():

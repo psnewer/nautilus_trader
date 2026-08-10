@@ -181,7 +181,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
-- ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价保持当前 order 的隐含概率**(`price=prob=` 原腿 `prob`,不用 PM ask;PM `qty=share`、`cost=share×prob`),合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
+- ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价由 `pm_price` 决定**(#330):`test_default_uses_pm_live_price` 默认/不设 → 用 PM 实时 ask(0.55、cost=share×PM 价);`test_pm_price_false_keeps_original_order_prob` `pm_price=False` → 保留原 order prob(0.50、cost=share×原 prob);`test_invalid_pm_price_param_raises` 非法值 ValueError。PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
 - ✅ `test_action_dash_gate.py`:`candi_select` 后按对应 `start_price` 的 50% 严格过滤 BUY 腿；覆盖低于删除、等于保留、SELL 保留、`claim/role` outcome 映射、默认 0.6 开赛价、缺概率/outcome/state 不误删，以及 candidate 元数据与两份 legs 视图同步
@@ -396,7 +396,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 真实 Check/Action 可以串起来跑,但不启动 TradingNode,不进入 Risk/Execution/barrier,也不验证全链路真钱行为。
 
 `scenarios/one_side_rebate/test_one_side_rebate_scenarios.py`:
-- ✅ 已有仓位且 one_side 套利树与 mean_rebate_recovery 补偿树同轮命中时,套利树优先触发,补偿树不触发。
+- ✅ 已有仓位且 one_side 套利树与 mean_rebate_recovery 补偿树同轮命中时,补偿树优先触发；覆盖实盘数值 `NO 5.99@0.33 + YES ask 0.57142857`，补偿腿应为 `YES qty=5.99`。
 - ✅ 已有仓位、某腿需要补偿且 one_side 套利未达阈值时,补偿树触发。
 - ✅ 已有仓位时,one_side candidates 先经 `ShareLimitModification` 按剩余 share 缩放,再由 `CandiSelectAction` 选择缩放后最大 candidate。
 
