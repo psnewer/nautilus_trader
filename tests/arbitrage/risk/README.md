@@ -378,4 +378,5 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - `test_outcome_exposures_adds_reconciled_realized_pnl_to_all_outcomes`:Data API instrument
   基线差同额加到 yes/no `net_profit`；`liability` 与 `outcome_shares` 不变。
 - merge 不使用 condition adjustment：尝试 merge 后同轮重拉
-  `/positions + /closed-positions.realizedPnl`，由权威仓位与 realized 基线接管。
+  `/positions + /closed-positions.realizedPnl`，按 instrument 去重合并（current 覆盖重叠、保留
+  closed-only）后由权威仓位与 realized 基线接管。

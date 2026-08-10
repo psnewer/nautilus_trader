@@ -298,7 +298,8 @@
   再**逐 pair**在应用前识别失效并只丢该 pair,不改变 liveness。
 - 引擎边界(**per-pair**):stale pair 的 order 不参与 reconcile 且其本地 open/inflight ids 视为已报告(空批凭本地单判);
   stale pair 的 position 令该 venue 进 failed_venues;mass-status 不再整批 abort、交 super 逐 report per-pair 过滤;
-  单份 QueryOrder report 按其 pair 复核。realized offset 只对通过的 instrument 选择性 commit。
+  单份 QueryOrder report 按其 pair 复核。deferred realized payload 的 instrument 即使没有 PositionReport
+  也按 scope 复核；realized offset 只对通过的 instrument 选择性 commit。
 - 正交性:远端查询成功由启动/周期 reconciliation 上层标记对应 order/position alive；摘要过期只影响 report 应用，
   不把 venue 改回 dead。有效 position batch 在应用前提交 deferred payload，空 report batch 也不例外。
 - 最终入口:连续 report 在 `_reconcile_order_report/_reconcile_position_report` 再校验；空 position
@@ -308,6 +309,8 @@
   `tests/arbitrage/common/test_{open_orders,positions}.py` 覆盖，引擎应用边界由
   `test_engine_barrier.py::test_stale_*_at_engine_boundary`、
   `test_valid_position_report_batch_commits_deferred_payload` 与
+  `test_position_batch_{validates_and_commits,skips_stale}_closed_only_realized_instrument`、
+  `test_mass_status_commits_closed_only_realized_instrument_after_validation`、
   `test_deferred_realized_commit_refreshes_position_application_snapshot`、
   `test_stale_single_order_report_is_discarded_at_apply_boundary`、
   `test_flat_position_report_inherits_empty_batch_snapshot` 覆盖；startup mass report 携带

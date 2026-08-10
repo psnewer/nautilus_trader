@@ -724,7 +724,11 @@ def test_valid_position_batch_selective_offset_and_fresh_snapshot():
     applied = []
 
     async def fake_query(_command):
-        return GuardedReports([report], snapshot=snapshot, payload={"instrument": 1.25})
+        return GuardedReports(
+            [report],
+            snapshot=snapshot,
+            payload={str(ctx.instrument.id): 1.25},
+        )
 
     def apply_batch(kind, batch, applied_instruments):
         applied.append((kind, set(applied_instruments)))
@@ -741,6 +745,106 @@ def test_valid_position_batch_selective_offset_and_fresh_snapshot():
     assert applied == [("position", {str(ctx.instrument.id)})]
     assert isinstance(report._arb_reconciliation_snapshot, ReconciliationStateSnapshot)
     assert report._arb_reconciliation_snapshot.kind == "position"
+
+
+def test_position_batch_validates_and_commits_closed_only_realized_instrument():
+    """Realized payload 中没有 PositionReport 的 closed-only instrument 也必须经摘要校验后提交。"""
+    ctx = _Ctx()
+    current_id = str(ctx.instrument.id)
+    closed_only_id = "closed-only.POLYMARKET"
+    checked = []
+    snapshot = SimpleNamespace(
+        is_current_for_instruments=lambda client, instrument_ids: checked.append(
+            {str(instrument_id) for instrument_id in instrument_ids},
+        ) or True,
+        kind="position",
+    )
+    report = SimpleNamespace(instrument_id=ctx.instrument.id)
+    applied = []
+
+    async def fake_query(_command):
+        return GuardedReports(
+            [report],
+            snapshot=snapshot,
+            payload={current_id: 0.75, closed_only_id: -0.75},
+        )
+
+    ctx.client.generate_position_status_reports = fake_query
+    ctx.client.apply_reconciliation_batch = (
+        lambda kind, batch, applied_instruments: applied.append(set(applied_instruments))
+    )
+
+    ctx.loop.run_until_complete(ctx.engine._query_position_status_reports())
+
+    assert {current_id} in checked
+    assert {closed_only_id} in checked
+    assert applied == [{current_id, closed_only_id}]
+
+
+def test_position_batch_skips_stale_closed_only_realized_instrument():
+    """closed-only instrument 在请求期间变化时仍受 #318 保护,不得提交陈旧 realized。"""
+    ctx = _Ctx()
+    current_id = str(ctx.instrument.id)
+    closed_only_id = "closed-only.POLYMARKET"
+    snapshot = SimpleNamespace(
+        is_current_for_instruments=lambda client, instrument_ids: closed_only_id not in {
+            str(instrument_id) for instrument_id in instrument_ids
+        },
+        kind="position",
+    )
+    report = SimpleNamespace(instrument_id=ctx.instrument.id)
+    applied = []
+
+    async def fake_query(_command):
+        return GuardedReports(
+            [report],
+            snapshot=snapshot,
+            payload={current_id: 0.75, closed_only_id: -0.75},
+        )
+
+    ctx.client.generate_position_status_reports = fake_query
+    ctx.client.apply_reconciliation_batch = (
+        lambda kind, batch, applied_instruments: applied.append(set(applied_instruments))
+    )
+
+    venue_positions, failed_venues = ctx.loop.run_until_complete(
+        ctx.engine._query_position_status_reports(),
+    )
+
+    assert venue_positions == {ctx.instrument.id: report}
+    assert failed_venues == {ctx.client.venue}
+    assert applied == [{current_id}]
+
+
+def test_mass_status_commits_closed_only_realized_instrument_after_validation(monkeypatch):
+    """启动 mass-status 同样不能因 closed-only instrument 没有 report 而漏提交。"""
+    ctx = _Ctx()
+    closed_only_id = "closed-only.POLYMARKET"
+    checked = []
+    applied = []
+    snapshot = SimpleNamespace(
+        is_current_for_instruments=lambda client, instrument_ids: checked.append(
+            {str(instrument_id) for instrument_id in instrument_ids},
+        ) or True,
+    )
+    batch = GuardedReports([], snapshot=snapshot, payload={closed_only_id: -0.75})
+    mass_status = SimpleNamespace(
+        client_id=ctx.client.id,
+        _arb_reconciliation_batches={"position": batch},
+    )
+
+    monkeypatch.setattr(
+        LiveExecutionEngine,
+        "_reconcile_execution_mass_status",
+        lambda _engine, _mass_status: True,
+    )
+    ctx.client.apply_reconciliation_batch = (
+        lambda kind, deferred, applied_instruments: applied.append(set(applied_instruments))
+    )
+
+    assert ctx.engine._reconcile_execution_mass_status(mass_status) is True
+    assert checked == [{closed_only_id}]
+    assert applied == [{closed_only_id}]
 
 
 def test_stale_single_order_report_is_discarded_at_apply_boundary(monkeypatch):

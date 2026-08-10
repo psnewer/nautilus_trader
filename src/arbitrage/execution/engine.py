@@ -111,7 +111,10 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 for order in self._cache.orders(account_id=client.account_id)
                 if order.is_open or order.is_inflight
             ]
-            for instrument_ids, scoped_reports, scoped_local in self._collect_scopes(batch, local_orders):
+            for instrument_ids, scoped_reports, scoped_local, _deferred in self._collect_scopes(
+                batch,
+                local_orders,
+            ):
                 if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
                     self._log.warning(
                         f"Discarding stale order reports before reconciliation: client={client.id}",
@@ -164,10 +167,16 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             local_positions = list(
                 self._cache.positions(venue=client.venue, account_id=client.account_id) or (),
             )
+            payload = getattr(batch, "payload", None)
+            deferred_instruments = payload.keys() if isinstance(payload, dict) else ()
             passed_reports = []
             passed_instruments = set()
             any_stale = False
-            for instrument_ids, scoped_reports, _scoped_local in self._collect_scopes(batch, local_positions):
+            for instrument_ids, scoped_reports, _scoped_local, scoped_deferred in self._collect_scopes(
+                batch,
+                local_positions,
+                deferred_instruments,
+            ):
                 if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
                     any_stale = True
                     self._log.warning(
@@ -176,6 +185,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                     continue
                 passed_reports.extend(scoped_reports)
                 passed_instruments.update(str(report.instrument_id) for report in scoped_reports)
+                passed_instruments.update(scoped_deferred)
             if any_stale:
                 failed_venues.add(client.venue)
             # realized offset:只对通过校验的 instrument 选择性更新(offset 公式不变),与 position 同批做。
@@ -196,7 +206,17 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         client = self._clients.get(mass_status.client_id)
         batches = getattr(mass_status, "_arb_reconciliation_batches", {})
         for kind, batch in batches.items():
-            _passed, passed_instruments = self._partition_batch_by_pair(client, batch)
+            payload = getattr(batch, "payload", None)
+            deferred_instruments = (
+                payload.keys()
+                if kind == "position" and isinstance(payload, dict)
+                else ()
+            )
+            _passed, passed_instruments = self._partition_batch_by_pair(
+                client,
+                batch,
+                deferred_instruments,
+            )
             self._apply_reconciliation_batch(client, kind, batch, passed_instruments)
         return super()._reconcile_execution_mass_status(mass_status)
 
@@ -269,30 +289,42 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def _instruments_to_check_for(self, instrument_id) -> set:
         return self._scope_of(instrument_id)[1]
 
-    def _collect_scopes(self, reports, locals_):
+    def _collect_scopes(self, reports, locals_, deferred_instrument_ids=()):
         """把 reports 与本地对象(order/position)按 scope 归组。
 
-        返回 [(instrument_ids, [reports], [locals])];reports 与 locals 各按 `instrument_id` 归入其 pair scope。
+        deferred instrument 是没有 PositionReport 的 realized snapshot 候选,同样归入 scope
+        做 staleness 校验。返回 [(instrument_ids, [reports], [locals], {deferred ids})]。
         """
         scopes: dict = {}
         for report in reports:
             key, ids = self._scope_of(report.instrument_id)
-            scopes.setdefault(key, [ids, [], []])[1].append(report)
+            scopes.setdefault(key, [ids, [], [], set()])[1].append(report)
         for obj in locals_ or ():
             key, ids = self._scope_of(obj.instrument_id)
-            scopes.setdefault(key, [ids, [], []])[2].append(obj)
-        return [(ids, grp_reports, grp_local) for ids, grp_reports, grp_local in scopes.values()]
+            scopes.setdefault(key, [ids, [], [], set()])[2].append(obj)
+        for instrument_id in deferred_instrument_ids:
+            key, ids = self._scope_of(instrument_id)
+            scopes.setdefault(key, [ids, [], [], set()])[3].add(str(instrument_id))
+        return [
+            (ids, grp_reports, grp_local, grp_deferred)
+            for ids, grp_reports, grp_local, grp_deferred in scopes.values()
+        ]
 
-    def _partition_batch_by_pair(self, client, batch):
+    def _partition_batch_by_pair(self, client, batch, deferred_instrument_ids=()):
         """仅 report 驱动的 per-pair 通过判定(mass-status 用):返回 (通过的 reports, 通过的 instrument 集合)。"""
         snapshot = getattr(batch, "snapshot", None)
         passed_reports = []
         passed_instruments = set()
-        for instrument_ids, scoped_reports, _ in self._collect_scopes(batch, ()):
+        for instrument_ids, scoped_reports, _, scoped_deferred in self._collect_scopes(
+            batch,
+            (),
+            deferred_instrument_ids,
+        ):
             if snapshot is not None and not snapshot.is_current_for_instruments(client, instrument_ids):
                 continue
             passed_reports.extend(scoped_reports)
             passed_instruments.update(str(report.instrument_id) for report in scoped_reports)
+            passed_instruments.update(scoped_deferred)
         return passed_reports, passed_instruments
 
     def _execute_command(self, command) -> None:

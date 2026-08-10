@@ -397,7 +397,12 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._log.warning(f"PM realized PnL reconcile skipped: closed positions query failed: {exc!r}")
             return None
 
-        return _realized_by_instrument([*current_positions, *closed_positions])
+        # Data API 两个 endpoint 的 `realizedPnl` 都是 per-asset 累计快照,不是可相加的
+        # 交易流水。同一 asset 可能同时出现在 current 与 closed(部分平仓后仍留仓),必须
+        # 按 instrument 去重;current 表达仍在场 asset 的当前快照,故覆盖 closed 的重叠项。
+        closed_realized = _realized_by_instrument(closed_positions)
+        closed_realized.update(_realized_by_instrument(current_positions))
+        return closed_realized
 
     def _commit_realized_pnl_snapshot(self, external: dict[str, float] | None, applied_instruments=None) -> None:
         ledger = getattr(self, "_realized_pnl_ledger", None)

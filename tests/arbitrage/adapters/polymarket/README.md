@@ -304,12 +304,14 @@ size，避免破坏 share/quote 口径。
 - `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:
   `conditionId`/`size`/`negativeRisk`/`redeemable`)→
   `PolymarketSettlement.run` → merge/redeem。
-- #282:position reconcile 另读 `/closed-positions`，与 current rows 的 `realizedPnl` 按
-  instrument 聚合；最终本地状态校验通过后才写 `RealizedPnlLedger` 基线差，closed 查询失败保留旧基线。
+- #282/#331:position reconcile 另读 `/closed-positions`；current/closed 的 `realizedPnl` 是
+  per-asset 累计快照，分别聚合后以 current 覆盖重叠 instrument，closed-only instrument 保留；
+  最终本地状态校验通过后才写 `RealizedPnlLedger` 基线差，closed 查询失败保留旧基线。
 - #308:order/position reconcile 返回携带请求前摘要的 `GuardedReports`；拉取成功由上层先 mark alive。
   `/closed-positions` 只作为 deferred payload，不在 adapter 内提交。状态变化由 ExecEngine 应用前
   统一丢弃，不把过期空 order 响应解释成 venue 缺单；网络失败由 adapter raise、上层 mark dead。
-  position batch 准入并提交 deferred realized 后重取应用阶段摘要，避免 ledger revision 的预期变化
+  position batch 把 deferred realized instrument（含无 PositionReport 的 closed-only 腿）也纳入摘要校验，
+  准入并选择性提交后重取应用阶段摘要，避免 ledger revision 的预期变化
   让同批 report 自我失效；单份 report 与空 batch 派生的 flat report 均在最终 NT reconcile 入口复核。
   验收：`test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch`、
   `test_position_reconcile_defers_realized_when_state_changes_during_closed_fetch`、
@@ -318,7 +320,8 @@ size，避免破坏 share/quote 口径。
   `test_engine_barrier.py::test_stale_{order_report_batch,position_report_batch,mass_status}_*`。
 - merge 成功不另算 condition PnL、不生成 synthetic `OrderFilled`；真实账户样本确认 closed
   realized 已包含历史 merge，对账前旧持仓也已表达同一 outcome PnL。离线验收见
-  `test_realized_by_instrument_aggregates_current_and_closed_rows`、
+  `test_realized_by_instrument_aggregates_rows_within_one_snapshot`、
+  `test_position_reconcile_deduplicates_realized_snapshot_overlap`、
   `test_position_reconcile_sets_external_minus_native_realized_baseline`。
 - `PolymarketContractService` 对标准二元走 `CtfCollateralAdapter + pUSD`,对 negRisk 走 `NegRiskCtfCollateralAdapter`;两者使用 inherited collateral-adapter ABI,negRisk redeem 由 adapter 自行读取调用者 YES/NO 链上余额。不再直接打底层 CTF+USDC.e,避免 merge 后资金停在页面 `Confirm pending deposit / Activate Funds`。
 - 成功 merge/redeem 后当前默认不主动调用 `update_balance_allowance(COLLATERAL)`;切到 collateral adapter+pUSD 后先由 live 验证是否仍需手动同步。代码保留 `_sync_collateral_balance_allowance_after_settlement()` helper,恢复时也不主动 `_update_account_state`。

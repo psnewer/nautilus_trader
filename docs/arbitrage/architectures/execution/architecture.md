@@ -637,8 +637,10 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   第一次 reports 不返回给 NT，避免链上仓位已被 merge 后 Strategy 仍按旧 LONG 规划 SELL。
   失败回执不能证明 merge 尝试期间仓位未发生变化，因此也不能复用第一次 reports。
   不再需要注入独立 `_positions_fetcher`。
-- **realized PnL reconcile(#282)**:同一 override 另分页拉 `/closed-positions`，把 current +
-  closed 的 `realizedPnl` 按 `conditionId-asset.POLYMARKET` 聚合。拉取结果先保存在当前协程的
+- **realized PnL reconcile(#282/#331)**:同一 override 另分页拉 `/closed-positions`。两个 endpoint
+  的 `realizedPnl` 都是按 asset 的**累计快照**而非可相加流水：先分别按
+  `conditionId-asset.POLYMARKET` 聚合，再以 current 覆盖 closed 的重叠 instrument；closed-only
+  instrument 保留。因此同一 asset 同时出现在两端时只计一次，已全平的对侧腿也不会丢。结果先保存在当前协程的
   候选 map，最终并发校验通过后才让账本保存
   `Data API realized - NT 当前 instrument realized` 的基线差；后续 CONFIRMED fill 仍只走
   NT 原生 Position/Portfolio，不能在 adapter 再累计一份。closed 查询失败时保留上次完整基线，
@@ -662,7 +664,9 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   (空批也能凭本地对象判 stale):
   - **order**:通过的 pair 纳入 reports;stale 的 pair 只把该 pair 的本地 open/inflight ids 视为已报告
     (进 `venue_reported_ids`),避免陈旧/空响应让 NT 把 venue 上仍存活的合法单当缺单 reject。
-  - **position**:通过的 pair 纳入 `venue_positions` 并**只对通过的 instrument 选择性 commit realized offset**
+  - **position**:通过的 pair 纳入 `venue_positions`；deferred realized payload 的 instrument（包括无
+    `PositionReport` 的 closed-only 腿）也必须作为 scope 成员独立通过同一请求前摘要校验，之后才
+    **只对通过的 instrument 选择性 commit realized offset**
     (`RealizedPnlLedger.replace_instrument_snapshot(only_instruments=...)`,offset 公式 `external(fetch)-native(now)` 不变);
     有 stale pair → 该 venue 进 `failed_venues`(保守跳过 cached-position flatten,免误平未验证的 stale pair)。
   - **startup mass-status**:不再整批 abort;摘要已附到每份 report,交 super 逐 report 走 `_reconciliation_report_is_current`
@@ -701,7 +705,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 - **merge**:同 condition ≥2 outcome 持仓 →
   `merge_positions(condition, min(sizes), neg_risk)`。merge 不是 venue order，禁止生成
   synthetic `OrderFilled`，也不手工计算 condition realized PnL；对账以
-  `/positions + /closed-positions.realizedPnl` 为权威。真实账户样本已确认：三次各 10 share
+  `/positions + /closed-positions.realizedPnl` 去重合并后的快照为权威。真实账户样本已确认：三次各 10 share
   merge 后，两 outcome 的 closed realized 合计等于 `30 - 30×avg_yes - 30×avg_no`。
   **redeem**:`redeemable=true` →
   `redeem_positions(condition, neg_risk)`。settlement 不计算链上 token amounts。
@@ -717,7 +721,9 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   (生产约 5 分钟一条)，作对账与结算子系统心跳。
 - ⚠️ **验证边界**:2026-06-21 的 live 节点已验证 NT 连续 position 对账会周期触发
   override；#283 新增的 `positions → merge → positions → closed positions` 时序当前仅由离线
-  测试锁定，尚未重新做真实链上 merge/redeem live 验证。
+  测试锁定，尚未重新做真实链上 merge/redeem live 验证。#331 的 current/closed 去重与
+  closed-only 摘要准入已用真实账户 API 样本定位、离线回归测试通过；尚未等待下一次 live position
+  reconcile 验证运行中账本归零。
 
 ### 4.7 PM dust 尾量订单终态化(#280,2026-07-27,已落地 live-未验证)
 

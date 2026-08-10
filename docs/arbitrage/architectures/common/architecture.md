@@ -195,11 +195,13 @@ runtime 流程。
 - 正常 `OrderFilled` 仍由 NT Position/Portfolio 产生 instrument realized PnL。
 - PM reconcile 写入 `external_realized - native_realized` 的 instrument 基线差，使重启后
   Data API 历史值与本进程 NT 增量能相加而不重复。
-- PM `/positions + /closed-positions` 的 `realizedPnl` 是对账权威值，已包含 SELL 与历史
-  merge；merge 成功时不另写 condition 调整、不伪造 Fill。
+- PM `/positions + /closed-positions` 的 `realizedPnl` 是 per-asset 累计快照，已包含 SELL 与历史
+  merge；两端重叠 instrument 以 current 覆盖 closed、只计一次，closed-only instrument 保留。
+  merge 成功时不另写 condition 调整、不伪造 Fill。
 - Portfolio 经 PairRegistry 聚合 pair 下全部 instrument 的 NT realized 与账本基线差。
-- `replace_instrument_snapshot(only_instruments=...)`(#318):支持**per-instrument 选择性更新** —— 只更新
-  通过 per-pair reconcile 校验的 instrument 的 offset,其余保留(offset 公式 `external-native` 不变)。
+- `replace_instrument_snapshot(only_instruments=...)`(#318/#331):支持**per-instrument 选择性更新** —— 只更新
+  通过 reconcile 摘要校验的 instrument 的 offset,其余保留(offset 公式 `external-native` 不变)。
+  deferred payload 自身的 instrument 也参与 scope 收集，因此 closed-only 腿无需 PositionReport 也能在校验后提交。
   `only_instruments=None` 仍是整账户全量替换(旧语义)。
 - ⚠️ **#318**:账户级单调 `revision` 曾参与 execution §4.6 的 position batch 快照(realized_revision),
   该用途**已删** —— reconcile 快照收窄为 per-pair、realized staleness 由 position 摘要的 realized_pnl 覆盖。

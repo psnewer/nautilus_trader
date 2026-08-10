@@ -248,7 +248,7 @@ def test_raw_position_to_settlement_defaults():
     assert s.neg_risk is False and s.redeemable is False
 
 
-def test_realized_by_instrument_aggregates_current_and_closed_rows():
+def test_realized_by_instrument_aggregates_rows_within_one_snapshot():
     rows = [
         {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.25"},
         {"conditionId": "0xc", "asset": "1", "realizedPnl": "-0.25"},
@@ -259,6 +259,32 @@ def test_realized_by_instrument_aggregates_current_and_closed_rows():
         "0xc-1.POLYMARKET": 1.0,
         "0xc-2.POLYMARKET": 3.0,
     }
+
+
+def test_position_reconcile_deduplicates_realized_snapshot_overlap():
+    """同一 asset 同时出现在 current/closed 时是累计快照重叠,不得当两笔流水相加。"""
+    async def scenario():
+        client = SimpleNamespace(_realized_pnl_ledger=object())
+
+        async def closed_positions():
+            return [
+                {"conditionId": "0xc", "asset": "1", "realizedPnl": "0.75"},
+                {"conditionId": "0xc", "asset": "2", "realizedPnl": "-0.75"},
+            ]
+
+        client._fetch_closed_positions = closed_positions
+        load = ArbPolymarketExecutionClient._load_realized_pnl_snapshot.__get__(client)
+
+        snapshot = await load([
+            {"conditionId": "0xc", "asset": "1", "realizedPnl": "0.75"},
+        ])
+
+        assert snapshot == {
+            "0xc-1.POLYMARKET": 0.75,
+            "0xc-2.POLYMARKET": -0.75,
+        }
+
+    _run(scenario())
 
 
 def test_polymarket_execution_uses_py_clob_client_v2_surface():
@@ -1752,7 +1778,7 @@ def test_position_reconcile_sets_external_minus_native_realized_baseline():
         assert ledger.instrument_adjustment(
             instrument_id,
             client.account_id,
-        ) == pytest.approx(2.5)
+        ) == pytest.approx(0.5)
 
     _run(scenario())
 
