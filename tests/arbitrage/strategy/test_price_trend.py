@@ -67,6 +67,28 @@ def test_separates_by_instrument_id_venue_and_leg():
     assert fs._price_trend["H.ORBITEXCH"] == pytest.approx(0.01)
 
 
+def test_unchanged_price_keeps_prior_trend_not_flat():
+    # 纯深度帧(top-ask 价不变)不得把趋势冲成 flat,保留上次真实移动
+    fs = _fs({})
+    _feed(fs, "Y.POLYMARKET", 0.40)
+    _feed(fs, "Y.POLYMARKET", 0.50)
+    assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.10)
+    _feed(fs, "Y.POLYMARKET", 0.50)   # 价未变(只深度变)→ 趋势不动
+    assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.10)   # 仍是上次的 +0.10,非 0
+    assert fs._price_last["Y.POLYMARKET"] == pytest.approx(0.50)
+    _feed(fs, "Y.POLYMARKET", 0.53)   # 再真实移动 → 从上次真实价 0.50 算
+    assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.03)
+
+
+def test_unchanged_price_on_first_delta_seeds_no_trend():
+    # 首帧后紧跟同价帧:仍无 prev-move,趋势不应被造出 0
+    fs = _fs({})
+    _feed(fs, "Y.POLYMARKET", 0.40)
+    _feed(fs, "Y.POLYMARKET", 0.40)   # 价未变 → 直接返回,不写趋势
+    assert "Y.POLYMARKET" not in fs._price_trend
+    assert fs._price_last["Y.POLYMARKET"] == pytest.approx(0.40)
+
+
 def test_skips_missing_or_nonpositive_best_ask():
     fs = _fs({})
     _feed(fs, "Y.POLYMARKET", 0.40)

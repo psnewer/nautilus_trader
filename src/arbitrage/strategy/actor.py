@@ -236,6 +236,9 @@ class StrategyEvaluator(Strategy):
 
         `best_ask(book)` 读到的已是隐含概率(#256 写侧换算,OE/SE 已与 PM 同向,不再转)。
         覆盖 `_price_last` 前先把 `new - prev` 存进 `_price_trend`,否则评估读到的 last 会等于当前值。
+
+        **仅深度变化的帧不改趋势**:top-ask 价与上一帧完全相同(只是挂单量变)时直接返回,
+        保留上一次真实价格移动的 Δprob——否则评估会被纯深度帧把趋势冲成 flat。
         """
         iid = getattr(deltas, "instrument_id", None)
         if iid is None:
@@ -246,6 +249,8 @@ class StrategyEvaluator(Strategy):
             return
         prev = self._price_last.get(key)
         if prev is not None:
+            if new_best == prev:
+                return  # 价未变(纯深度帧)→ 不覆盖趋势,保留上次真实移动
             self._price_trend[key] = new_best - prev
         self._price_last[key] = new_best
 

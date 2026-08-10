@@ -377,6 +377,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.trend.3: 边界
 - 缺 book / best_ask ≤0 / 缺 instrument_id → 跳过,不覆盖 last、不写 trend。
+- **仅深度帧不冲趋势**(#trend 补,2026-08-10):`new_best == prev`(价未变、只深度变)→ 直接返回,趋势保留上次真实移动(非 0);下次真实移动仍从上次真实价算 Δ(`test_unchanged_price_keeps_prior_trend_not_flat`)。首帧后紧跟同价帧不造出 0 趋势(`test_unchanged_price_on_first_delta_seeds_no_trend`)。
 - (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
 
 ### strategy-4.trend.4: trend_gate Action(#329,消费件;跨 venue/outcome 一致)

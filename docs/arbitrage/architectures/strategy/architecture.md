@@ -551,6 +551,12 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
 `instrument.info.claim` / `venue_of` 反查 `instrument_id`,再取 `ctx.price_trend[str(iid)]`;
 "只看 PM"筛 venue,"每条腿各自"就遍历。`None`=未接入;某腿首帧无 prev → 无条目。
 
+**仅深度帧不冲趋势(#trend,2026-08-10)**:`new_best == prev`(top-ask 价与上一帧完全相同,只挂单量变)
+时 `_update_price_trend` **直接返回**,既不覆盖 `_price_trend` 也不动 `_price_last`,保留上一次真实价格
+移动的 Δprob。否则纯深度帧会把趋势冲成 flat(0),评估恰好落在这类帧时会误判"无趋势"→ 被 `trend_gate`
+全删。下一次真实移动仍从上次真实价算 Δ。判等用精确 `==`(概率由 `probability_from_price` 纯函数换算,
+同赔率必得同 float)。
+
 **边界**:首帧无趋势(只 seed `_price_last`);**无阈值**(存原始 Δprob,防抖/最小变动由消费 Check
 决定,不在存储层锁死);ended 释放时 `_release_game_subscriptions` 随 OBD 退订 pop 该 game 各腿条目
 (防无界增长);缺 book / best_ask ≤0 / 缺 instrument_id → 跳过。
