@@ -110,16 +110,42 @@ class MeanRebateRecoveryCheck(Check):
             _LOG.error(f"MeanRebateRecovery: pair={ctx.pair_id} portfolio invariant: {e}")
             return False
         if not existing:
+            raw_positions = pair_positions(ctx)
+            if raw_positions:
+                _LOG.info(
+                    "RECOVERY_DIAG pair=%s result=fail reason=no_existing_legs raw_positions=%s",
+                    ctx.pair_id,
+                    [
+                        {
+                            "instrument_id": str(getattr(position, "instrument_id", "")),
+                            "side": str(getattr(position, "side", "")),
+                            "quantity": str(getattr(position, "quantity", "")),
+                            "avg_px_open": str(getattr(position, "avg_px_open", "")),
+                        }
+                        for position in raw_positions
+                    ],
+                )
             return False
         actual_by_role = _actual_share_by_role(existing)
         target_share = max(actual_by_role.values())  # 补单目标位(fill target),非费率分母
         if target_share <= _EPS:
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=non_positive_target actual_by_role=%s",
+                ctx.pair_id,
+                actual_by_role,
+            )
             return False
 
         # #321:费率分母 = 配置的意向 share(不再是 max 在场 share)。分子含 realizedPNL,
         # 用固定意向规模归一才口径自洽。取不到(未配置/≤0)→ 无从判率 → 保守不补。
         denom = self._configured_share(ctx)
         if denom <= _EPS:
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=invalid_denominator denom=%s actual_by_role=%s",
+                ctx.pair_id,
+                denom,
+                actual_by_role,
+            )
             return False
 
         # #262 前置门:**当前**最差 outcome 已达标 → 本就不需要补救,直接放弃。
@@ -132,14 +158,47 @@ class MeanRebateRecoveryCheck(Check):
         current_net = _current_net_by_outcome(
             ctx, existing, sorted(valid_outcomes), include_realized_pnl=self._pnl,
         )
+        direct_net = {
+            outcome: sum(
+                leg.profit_if_wins() if leg.role == outcome else -leg.loss_if_loses()
+                for leg in existing
+            )
+            for outcome in sorted(valid_outcomes)
+        }
+        current = _rates_from_net(current_net, denom)
+        _LOG.info(
+            "RECOVERY_DIAG pair=%s stage=current pnl=%s denom=%s actual_by_role=%s "
+            "direct_net=%s selected_net=%s current_rate=%s",
+            ctx.pair_id,
+            self._pnl,
+            denom,
+            actual_by_role,
+            direct_net,
+            current_net,
+            current,
+        )
         if not self._force:
-            current = _rates_from_net(current_net, denom)
             if current and min(current.values()) >= self._min_repaired_rebate:
+                _LOG.info(
+                    "RECOVERY_DIAG pair=%s result=fail reason=current_rate_already_satisfied "
+                    "min_current=%s threshold=%s",
+                    ctx.pair_id,
+                    min(current.values()),
+                    self._min_repaired_rebate,
+                )
                 return False
 
         candidates = _best_candidates_by_role(ctx, valid_outcomes, pm_only=self._venue_select)
         roles_present = sorted(candidates.keys())
         if roles_present != sorted(valid_outcomes):
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=incomplete_candidates "
+                "roles_present=%s required=%s venue_select=%s",
+                ctx.pair_id,
+                roles_present,
+                sorted(valid_outcomes),
+                self._venue_select,
+            )
             return False
 
         recovery_specs = []
@@ -174,12 +233,36 @@ class MeanRebateRecoveryCheck(Check):
             ))
 
         if not recovery_specs:
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=no_missing_share "
+                "target_share=%s actual_by_role=%s",
+                ctx.pair_id,
+                target_share,
+                actual_by_role,
+            )
             return False
 
         repaired_net = _add_legs_to_net(current_net, repair_legs, roles_present)
         repaired = _rates_from_net(repaired_net, denom)
         if not self._force and (not repaired or min(repaired.values()) < self._min_repaired_rebate):
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=repaired_rate_below_threshold "
+                "repaired_net=%s repaired_rate=%s threshold=%s recovery_specs=%s",
+                ctx.pair_id,
+                repaired_net,
+                repaired,
+                self._min_repaired_rebate,
+                recovery_specs,
+            )
             return False
+
+        _LOG.info(
+            "RECOVERY_DIAG pair=%s result=pass repaired_net=%s repaired_rate=%s recovery_specs=%s",
+            ctx.pair_id,
+            repaired_net,
+            repaired,
+            recovery_specs,
+        )
 
         ctx.scratch["legs"] = recovery_specs
         ctx.scratch["mean_rebate_recovery"] = {
