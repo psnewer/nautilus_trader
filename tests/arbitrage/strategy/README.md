@@ -5,7 +5,7 @@
 **Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节)；所需策略语义已落到当前 Check / Action，迁移前 services 实现已删除。
 
 **测试结构**:
-- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 纯逻辑,可全单测
+- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 无外部执行副作用,可全单测；`head/reverse` 命中时会更新进程内 StrategyRuntimeStore
 - 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 已挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
@@ -169,7 +169,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 详设见 `architectures/strategy/architecture.md §3.8`(slice 9 落地段)+ `_cross-cutting/configuration.md §10`(slice 9 ✅)。
 
 **当前框架边界**:
-- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由无状态 `StateQuery` 与 AND/OR/NOT 组成，直接读取 `EvalContext`
+- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由当前状态 `StateQuery` 与 AND/OR/NOT 组成；普通叶子只读 `EvalContext`，`head/reverse` 是受控 Store 更新例外
 - ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 position digest（#317:open_orders_digest 已删）
 - ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
@@ -178,8 +178,8 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；缺 live state、缺 claim、缺 order book、非正价格、非正 share 均 fail-fast
 - ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
-- ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
-- ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
+- ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / `ignore_current=True` 仅跳过当前率前置门、默认/False 保持双向率门且补后率门始终保留 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
+- ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价由 `pm_price` 决定**(#330):`test_default_uses_pm_live_price` 默认/不设 → 用 PM 实时 ask(0.55、cost=share×PM 价);`test_pm_price_false_keeps_original_order_prob` `pm_price=False` → 保留原 order prob(0.50、cost=share×原 prob);`test_invalid_pm_price_param_raises` 非法值 ValueError。PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
@@ -315,7 +315,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   Execution adapter 在最终 `placeBets` payload 边界保证
 
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
-- ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
+- ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建；`ignore_current=true` 可由 JSON params 透传到 Check
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
 
@@ -328,6 +328,25 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_action_rejects_non_boolean_market`，`test_submitter.py::test_submit_writes_opportunity_metadata_tags`，
   `test_mean_rebate_e2e.py::test_place_bets_market_param_loads_from_strategy_json`，
   `tests/arbitrage/common/test_opportunity.py::test_opportunity_meta_round_trips_market`。
+
+### strategy-4.33: PlaceBetsAction 按盘口同侧挂限价
+- 前置:`PlaceBetsAction(limit=true)` 消费已选 legs，Cache OrderBook 使用统一概率空间。
+- 输入/ 期望:
+  - 普通 BUY 用其最终执行 instrument 的 best bid，SELL 用 best ask。
+  - decimal venue 按 instrument `quote_claim` 把盘口概率反算为原生 odds；未显式给 qty
+    时，以该最终限价计算 share 对应数量。
+  - PM 互斥库存先用互补参考价与 best bid 判断是否拆单；拆出的 SELL 子单再用
+    自身 instrument best ask，BUY 余量单用 target instrument best bid，因此不承诺即时成交。
+  - `limit` 缺失/`false` 保持原计划价；`true` 优先于 `price_overrides` / `spread`。
+  - 缺所需一侧盘口、缺 instrument 或价格非法时，整次 opportunity fail-closed；非 boolean
+    配置 fail-fast。
+- 验收:✅ `test_action_place_bets.py::test_limit_absent_or_false_keeps_existing_price` /
+  `test_limit_true_uses_best_bid_for_buy_and_best_ask_for_sell` /
+  `test_limit_true_converts_probability_book_price_for_decimal_venue` /
+  `test_limit_true_reprices_inventory_split_orders_from_each_book_side` /
+  `test_limit_true_aborts_when_required_book_side_is_missing` /
+  `test_action_rejects_non_boolean_limit`；✅
+  `test_mean_rebate_e2e.py::test_place_bets_limit_param_loads_from_strategy_json`。
 
 ## pre_rebate 策略(#326,设计 · 组件未落地 · live-unvalidated)
 
@@ -380,7 +399,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **仅深度帧不冲趋势**(#trend 补,2026-08-10):`new_best == prev`(价未变、只深度变)→ 直接返回,趋势保留上次真实移动(非 0);下次真实移动仍从上次真实价算 Δ(`test_unchanged_price_keeps_prior_trend_not_flat`)。首帧后紧跟同价帧不造出 0 趋势(`test_unchanged_price_on_first_delta_seeds_no_trend`)。
 - (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
 
-### strategy-4.trend.4: trend_gate Action(#329,消费件;跨 venue/outcome 一致)
+### strategy-4.trend.4: trend_gate Action(#329/#336,跨 venue/outcome 一致 + 可选累计 momentum)
 `test_action_trend_gate.py`。**筛选 = 符合的留、不符合的删;不符合一致性 = 无腿符合 = 全删**。
 判据:某 outcome 各 venue 都 up/flat、互斥 outcome 各 venue 都 down/flat、至少一处严格移动 → 该 outcome 干净上升。
 - 默认 `up`:各 venue yes 涨/平、no 跌/平 → 只留 yes 腿;元数据不变。
@@ -390,6 +409,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **全平**(含缺数据)→ 无严格移动 → **全删**。
 - `price_trend` None/{}(未预热)→ **全删**;无 `selected_candidate` / 撤单 candidate → no-op / 跳过。
 - `trend` 非法值 → 构造即 `ValueError`。
+- `steps` 缺失/`None` → 现有微小但严格一致的趋势仍通过，兼容旧配置。
+- `steps` 存在 → 对 PairRegistry 下全部 tradable legs 求 `Σ|momentum|`（缺失/不可解析值按 flat=0）；总和等于阈值通过，低于阈值全删。用例让 candidate 外 OE legs 参与求和，锁定不是只算 selected legs。
+- `steps < 0`、NaN 或 infinity → 构造即 `ValueError`。
 
 ## 策略内组合场景
 
@@ -420,6 +442,58 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 ---
 
 ## strategy-4.framework.x:Q21 新框架层用例(2026-05-24)
+
+### strategy-4.framework.runtime-store.{1-8}:策略跨轮变量 Store(#332/#333)
+
+- `strategy_id + pair_id` 双层隔离：同策略不同比赛、同比赛不同策略互不串值。
+- `update` 合并同一 pair 的变量且返回副本；读写嵌套 mutable 值均不暴露内部引用。
+- `delete_pair` 只清目标 pair 并回收空 strategy；`delete_strategy` 清该策略全部 pair，不影响其它策略。
+- 不存在的变量返回调用方提供的 default 副本。
+- `delete_pair_from_all_strategies` 在比赛 ended 收尾清同 pair 的全部策略变量。
+- Evaluator 给 arb/comp 上下文注入同一 Store 和配置策略 id；Action 可观察到准确身份与 Store 实例。
+
+### strategy-4.head-rebate.position-mode.{1-10}:head/reverse 判态、standard 与回撤 Check(#333/#335)
+
+- **.1 head 空仓**：yes/no share 均为 0 时命中，即时率用 pair realized PnL / 配置 share，覆盖 `standard`。
+- **.2 head 对冲仓**：yes/no 均有有效 share 时命中；按抗抖动盘口侧计算 unrealized，加 pair realized 后除以配置 share，并覆盖旧值（即使低于旧值）。
+- **.3 reverse 单向仓**：恰有一个 outcome 有有效 share 时命中；另两个形态不命中。
+- **.4 reverse 初始化**：`standard` 不存在时以即时率初始化，允许初值为负。
+- **.5 reverse 高水位**：已有值时仅“即时率 > 0 且高于旧值”才更新；较低、负数或 0 保持原值。
+- **.6 抗抖动估值报价**：LONG 用 best ask、SHORT 用 best bid；测试同时给出不同 bid/ask 并断言选边。decimal venue 先把概率还原成原生 decimal odds 后调用 Portfolio unrealized PnL。
+- **.7 fail-closed**：缺盘口、PnL、有效配置 share、runtime identity 或仓位投影非法均 no-hit 且不写 Store；已有 `standard` 非数值/非有限也 no-hit。
+- **.8 隔离/收尾**：key 为 `strategy_id + pair_id`，ended 后清该 pair；不同策略/比赛不串值。
+- **.9 ReverseCheck 公式**：`rt/retrieve` 为必填有限 params；即时率 `<`、`=`、`>` 于 `rt * standard - retrieve` 分别通过、通过、拒绝。
+- **.10 求值顺序与 fail-closed**：同一 Condition 先由 reverse StateQuery 更新/初始化 standard，再由 ReverseCheck 读取当轮值；缺即时率、standard、Store 身份或非法数值均拒绝。Check 不更新 standard、不生成 recovery legs。
+
+验收实现：`test_query_position_mode.py`、`test_check_reverse.py`、`test_runtime_store.py`、`test_evaluator.py`。
+
+### strategy-4.head-rebate.scenario.{1-6}:完整配置的连续实时状态(#338)
+
+`scenarios/head_rebate/test_head_rebate_scenarios.py` 从完整 JSON strategy spec 构建
+`head_rebate` 双树，用同一 `StrategyRuntimeStore` 串联评估轮次；执行命中树的
+整条 Action 链到 `ExecutionPlan`，不启动 TradingNode，不进入 Risk/Execution。配置锁定：
+head 链为 `head -> mean_rebate -> venue_replace(pm_price=true) -> share_limit ->
+candi_select -> trend_gate(steps=0.03) -> place_bets(limit=true)`；reverse 链为
+`reverse -> AND[reverse(rt=1,retrieve=0.1), mean_rebate_recovery(force=true)] ->
+candi_select -> place_bets(intent=recovery,market=true)`。
+
+- **.1 无仓位**：head 命中，`standard=0`；reverse 不命中。OE 优价腿经
+  `venue_replace(pm_price=true)` 转 PM，trend 留上涨 outcome，最终 `limit=true`
+  生成 PM `BUY@best_bid=0.40`，非 market 单。
+- **.2 一个仓位**：head 不命中，reverse 命中；standard 不存在时用当前率
+  `0.10` 初始化。当轮阈值为 `0`，不生成止损计划。
+- **.3 当前返水扩大**：单仓率从 standard `0.10` 升到 `0.25`，reverse 先把
+  standard 抬到 `0.25`；当前率高于新回撤线 `0.15`，不对冲。
+- **.4 减少至限定值**：`standard=0.25`、当前率恰为
+  `1.0 * 0.25 - 0.1 = 0.15`，等号命中；`force=true` 生成缺口 outcome
+  的计划，最终 spec 带 `intent=recovery, market=true`，standard 仍保持 `0.25`。
+- **.5 两个仓位**：对冲完成后回到 head，reverse 不命中；head 用双仓当前率
+  `0.08` 覆盖旧 standard `0.25`，并可继续生成新的单冲计划。
+- **.6 对冲后再进单仓**：先通过双仓 head 把 standard 重置为 `0.08`，再模拟
+  其中一腿平掉后当前率 `0.05`。回撤线按新 standard 为 `-0.02`，因此不止损；
+  若错用对冲前旧高点 `0.25`则会误命中，该用例专门锁定不串旧基准。
+
+验收：✅ 上述 6 例全部通过；属于离线实时状态模拟，**live-unvalidated**。
 
 新框架的纯逻辑件,可全单测。落地顺序见 `architectures/strategy/architecture.md §7`。
 

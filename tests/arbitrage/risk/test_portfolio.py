@@ -147,6 +147,13 @@ def test_outcome_exposures_excludes_realized_pnl_when_flag_false():
     assert without["no"].liability == pytest.approx(4.0)           # liability 不受 flag 影响
 
 
+def test_realized_pnl_for_pair_exposes_existing_aggregate(monkeypatch):
+    pf = _portfolio()
+    monkeypatch.setattr(pf, "_realized_pnl_for_pair", lambda pair_id, account_id=None: 1.25)
+
+    assert pf.realized_pnl_for_pair("match_1") == pytest.approx(1.25)
+
+
 def test_outcome_shares_aggregates_by_outcome():
     pf = _portfolio()
     _stub_legs(

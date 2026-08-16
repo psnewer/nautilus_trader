@@ -6,14 +6,16 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
   - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
-  - probability BUY 仅在互斥 LONG 的 SELL 最终限价不高于当前 best bid 时，
-    拆成 SELL 减仓 + BUY 剩余量；当前只判断价格，不检查盘口深度
+  - probability BUY 仅在互斥 LONG 的 SELL 参考价不高于当前 best bid 时，
+    拆成 SELL 减仓 + BUY 剩余量；limit=true 可再把最终 SELL 改挂 best ask
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
     优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
   - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
     cancel session 收到正常撤单响应即结束，不消费该参数。
   - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
+  - limit=true 时最终 BUY 使用 live best bid、SELL 使用 live best ask；盘口概率按 quote_claim
+    还原为 venue 原生价格。limit 定价优先于 price_overrides / spread。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -52,17 +54,21 @@ class PlaceBetsAction(Action):
         spread: float | None = None,
         enable_timeout: bool | None = None,
         market: bool | None = None,
+        limit: bool | None = None,
     ) -> None:
         if enable_timeout is not None and not isinstance(enable_timeout, bool):
             raise ValueError("enable_timeout must be a boolean")
         if market is not None and not isinstance(market, bool):
             raise ValueError("market must be a boolean")
+        if limit is not None and not isinstance(limit, bool):
+            raise ValueError("limit must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
         self._spread = _normalize_spread(spread)
         self._enable_timeout = enable_timeout
         self._market = market
+        self._limit = bool(limit)
 
     async def execute(self, ctx: EvalContext) -> None:
         ctx.scratch.pop("execution_plan", None)
@@ -95,6 +101,9 @@ class PlaceBetsAction(Action):
                 return
             venue = leg["venue"]
             side, price = _resolve_side_and_price(leg, venue, self._price_overrides)
+            instrument_id = leg.get("exec_instrument_id") or leg["instrument_id"]
+            if self._limit:
+                price = _book_limit_price(ctx.cache, instrument_id, venue, side)
             if price is None:
                 _LOG.warning(
                     f"PlaceBets: pair={ctx.pair_id} leg={leg.get('instrument_id')} "
@@ -115,7 +124,7 @@ class PlaceBetsAction(Action):
                 f"price={price} qty={size:.4f}",
             )
             draft = {
-                "instrument_id": leg.get("exec_instrument_id") or leg["instrument_id"],
+                "instrument_id": instrument_id,
                 "side": side,
                 "qty": size,
                 "price": price,
@@ -123,9 +132,14 @@ class PlaceBetsAction(Action):
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
             }
-            drafts.extend(_expand_probability_inventory(draft, leg, ctx, self._spread))
+            spread = 0.0 if self._limit else self._spread
+            drafts.extend(_expand_probability_inventory(draft, leg, ctx, spread))
 
-        _apply_spread_to_drafts(drafts, self._spread, ctx)
+        if self._limit:
+            if not _apply_book_limit_to_drafts(drafts, ctx):
+                return
+        else:
+            _apply_spread_to_drafts(drafts, self._spread, ctx)
 
         expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
         required_by_venue = _required_balance_by_venue(drafts)
@@ -206,6 +220,46 @@ def _apply_spread_to_drafts(drafts: list[dict], spread: float, ctx: EvalContext)
         )
 
 
+def _apply_book_limit_to_drafts(drafts: list[dict], ctx: EvalContext) -> bool:
+    for draft in drafts:
+        price = _book_limit_price(
+            ctx.cache,
+            draft["instrument_id"],
+            draft["venue"],
+            draft["side"],
+        )
+        if price is None:
+            _LOG.warning(
+                f"PlaceBets: pair={ctx.pair_id} leg={draft['instrument_id']} "
+                f"missing limit-side quote for {draft['side']}, abort opportunity",
+            )
+            return False
+        draft["price"] = price
+    return True
+
+
+def _book_limit_price(cache, instrument_id, venue: str, side: str) -> float | None:
+    if cache is None:
+        return None
+    probability = (
+        _best_bid_price(cache, instrument_id)
+        if str(side).upper() == "BUY"
+        else _best_ask_price(cache, instrument_id)
+    )
+    if probability is None or not math.isfinite(probability) or not 0 < probability < 1:
+        return None
+    instrument = cache.instrument(_as_instrument_id(instrument_id))
+    if instrument is None:
+        return None
+    info = getattr(instrument, "info", None) or {}
+    quote_claim = str(info.get("quote_claim") or "yes").lower()
+    try:
+        price = price_from_probability(venue, probability, quote_claim)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    return price if math.isfinite(price) and price > 0 else None
+
+
 def _price_with_spread(draft: dict, spread: float, cache) -> float:
     side = str(draft["side"]).upper()
     price = float(draft["price"])
@@ -263,8 +317,8 @@ def _is_non_tradable_leg(leg: dict) -> bool:
 def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0.0) -> list[dict]:
     """把 probability BUY 优先转换成“卖互斥仓位 + 买剩余量”。
 
-    仅当应用 spread 后的 SELL 限价不高于互斥 instrument 当前 best bid 时转换，
-    保证规划时该 SELL 可立即成交；暂不按盘口深度限制数量。
+    当前不要求应用 spread 后的 SELL 参考价与 best bid 交叉，因此转换出的 SELL 可能只是挂单；
+    limit=true 时最终 SELL 会在拆单后改挂 best ask。暂不按盘口深度限制数量。
     在 Action 执行时读取 live Cache；之后挂单变化由 Execution barrier 基线比较收口。
     """
     if ctx.cache is None or ctx.pair_registry is None or draft["side"] != "BUY":
@@ -288,22 +342,23 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     if available <= 0:
         return [draft]
 
-    sell_limit = 1.0 - target_price
-    sell_probe = dict(draft)
-    sell_probe.update({
-        "instrument_id": str(opposite_iid),
-        "side": "SELL",
-        "price": sell_limit,
-    })
-    if spread > 0:
-        sell_limit = _price_with_spread(sell_probe, spread, ctx.cache)
-    best_bid = _best_bid_price(ctx.cache, opposite_iid)
-    if best_bid is None or sell_limit > best_bid + 1e-9:
-        _LOG.debug(
-            f"PlaceBets: pair={ctx.pair_id} skip PM inventory SELL "
-            f"instrument={opposite_iid} limit={sell_limit} best_bid={best_bid}",
-        )
-        return [draft]
+    # 暂时禁用“SELL 限价必须不高于 best bid”的即时成交门，后续可能恢复：
+    # sell_limit = 1.0 - target_price
+    # sell_probe = dict(draft)
+    # sell_probe.update({
+    #     "instrument_id": str(opposite_iid),
+    #     "side": "SELL",
+    #     "price": sell_limit,
+    # })
+    # if spread > 0:
+    #     sell_limit = _price_with_spread(sell_probe, spread, ctx.cache)
+    # best_bid = _best_bid_price(ctx.cache, opposite_iid)
+    # if best_bid is None or sell_limit > best_bid + 1e-9:
+    #     _LOG.debug(
+    #         f"PlaceBets: pair={ctx.pair_id} skip PM inventory SELL "
+    #         f"instrument={opposite_iid} limit={sell_limit} best_bid={best_bid}",
+    #     )
+    #     return [draft]
 
     opposite_constraints = instrument_constraints(ctx.cache, opposite_iid)
     target_constraints = instrument_constraints(ctx.cache, draft["instrument_id"])
@@ -369,6 +424,27 @@ def _best_bid_price(cache, instrument_id: str) -> float | None:
     if isinstance(book, dict):
         try:
             value = book.get("bid") or book.get("best_bid")
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _best_ask_price(cache, instrument_id: str) -> float | None:
+    """读取 instrument 当前 best ask 概率；缺盘口或非法值时 fail-closed。"""
+    book = cache.order_book(_as_instrument_id(instrument_id))
+    if book is None:
+        return None
+    fn = getattr(book, "best_ask_price", None)
+    if callable(fn):
+        try:
+            value = fn()
+            return _numeric_value(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(book, dict):
+        try:
+            value = book.get("ask") or book.get("best_ask")
             return float(value) if value is not None else None
         except (TypeError, ValueError):
             return None

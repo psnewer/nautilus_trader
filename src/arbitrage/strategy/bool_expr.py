@@ -1,6 +1,7 @@
-"""`Condition.self_hits` 的无状态布尔查询 DSL。
+"""`Condition.self_hits` 的当前状态布尔查询 DSL。
 
-支持 AND/OR/NOT 嵌套；叶子 `StateQuery` 每次直接读取当前 `EvalContext`，不保存暂态或持久态。
+支持 AND/OR/NOT 嵌套；普通叶子只读当前 `EvalContext`。`head/reverse` 是受控例外：
+叶子命中时更新 StrategyRuntimeStore 中的动态基准，不产生下单等执行副作用。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ class BoolExpr(ABC):
 
 
 class StateQuery(BoolExpr):
-    """self_hits 叶子：直接查询当前上下文，不保存中间状态。"""
+    """self_hits 叶子：查询当前上下文；特定转态查询可在命中时更新运行时变量。"""
 
     @abstractmethod
     def matches(self, ctx: EvalContext) -> bool:

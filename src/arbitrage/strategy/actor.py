@@ -54,6 +54,7 @@ from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.registry import StrategyRegistry
+from src.arbitrage.strategy.runtime_store import StrategyRuntimeStore
 
 
 def make_submitter(*, cache, order_factory, submit_order, log):
@@ -184,6 +185,7 @@ class StrategyEvaluator(Strategy):
         self._price_last: dict[str, float] = {}
         self._price_trend: dict[str, float] = {}
         self._eval_tasks_by_pair: dict[str, int] = {}
+        self._runtime_store = StrategyRuntimeStore()
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def register_executor(self, loop, executor) -> None:
@@ -482,6 +484,7 @@ class StrategyEvaluator(Strategy):
 
     def _delete_pair_price(self, pair_id: str) -> None:
         self._price_cleanup_pending.discard(pair_id)
+        self._runtime_store.delete_pair_from_all_strategies(pair_id)
         store = self._get_pair_price_store()
         if store is not None:
             store.delete(pair_id)
@@ -541,6 +544,8 @@ class StrategyEvaluator(Strategy):
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
             "price_trend": self._price_trend,   # #trend:key=str(instrument_id) → Δprob(概率空间)
+            "strategy_id": str(strategy.metadata.get("id") or strategy.scope_key),
+            "runtime_store": self._runtime_store,
         }
         arb_ctx = EvalContext(**base_ctx)
         comp_ctx = EvalContext(**base_ctx)

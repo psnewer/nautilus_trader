@@ -91,8 +91,11 @@ from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecover
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
 from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
+from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
+from src.arbitrage.strategy.queries.position_mode import HeadQuery
+from src.arbitrage.strategy.queries.position_mode import ReverseQuery
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
@@ -106,10 +109,9 @@ _LOG = logging.getLogger(__name__)
 
 
 def register_builtin_checks_and_actions() -> None:
-    """slice 9(#49)用户域 Check / Action 注册。
+    """用户域 StateQuery / Check / Action 注册。
 
-    main() 顶部调一次;同名同类幂等(`register_check` / `register_action` 守门)。
-    用户加自己的 Check / Action 类时,在 main 顶部追加同样的 register 调用即可。
+    main() 顶部调一次;同名同类注册幂等。用户新增类型时在这里追加注册。
     """
     register_check("mean_rebate", MeanRebateCheck)
     register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
@@ -118,7 +120,10 @@ def register_builtin_checks_and_actions() -> None:
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
     register_check("pre_move", PreMoveCheck)
+    register_check("reverse", ReverseCheck)
     register_state_query("in_game", InGameQuery)
+    register_state_query("head", HeadQuery)
+    register_state_query("reverse", ReverseQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
     register_action("candi_select", CandiSelectAction)

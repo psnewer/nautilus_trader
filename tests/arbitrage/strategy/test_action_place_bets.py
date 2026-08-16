@@ -701,23 +701,39 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
     assert calls[1]["venue_required_balance"] == 8.0
 
 
-def test_probability_inventory_sell_requires_immediately_marketable_price():
+def test_limit_true_reprices_inventory_split_orders_from_each_book_side():
+    ctx = _pm_inventory_ctx(held_qty=60)
+    ctx.cache._books["ALCARAZ.POLYMARKET"] = {"bid": 0.2, "ask": 0.22}
+    ctx.cache._books["SINNER.POLYMARKET"] = {"bid": 0.8, "ask": 0.82}
+    ctx, calls = _pm_target_ctx(ctx)
+
+    _prepare_and_dispatch(PlaceBetsAction(limit=True), ctx)
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("SINNER.POLYMARKET", "SELL", 60.0, 0.82),
+        ("ALCARAZ.POLYMARKET", "BUY", 40.0, 0.2),
+    ]
+
+
+def test_probability_inventory_sell_does_not_require_marketable_price():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=0.79))
 
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
-        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.2),
+        ("SINNER.POLYMARKET", "SELL", 60.0, 0.8),
+        ("ALCARAZ.POLYMARKET", "BUY", 40.0, 0.2),
     ]
 
 
-def test_probability_inventory_sell_without_best_bid_falls_back_to_buy():
+def test_probability_inventory_sell_without_best_bid_still_converts():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=None))
 
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
-        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.2),
+        ("SINNER.POLYMARKET", "SELL", 60.0, 0.8),
+        ("ALCARAZ.POLYMARKET", "BUY", 40.0, 0.2),
     ]
 
 
@@ -734,13 +750,14 @@ def test_probability_inventory_split_applies_spread_after_sizing():
     assert calls[1]["venue_required_balance"] == 7.6
 
 
-def test_probability_inventory_sell_checks_price_after_spread():
+def test_probability_inventory_sell_ignores_crossing_after_spread():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=60, opposite_bid=0.8))
 
     _prepare_and_dispatch(PlaceBetsAction(spread=0.01), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
-        ("ALCARAZ.POLYMARKET", "BUY", 100.0, 0.19),
+        ("SINNER.POLYMARKET", "SELL", 60.0, 0.81),
+        ("ALCARAZ.POLYMARKET", "BUY", 40.0, 0.19),
     ]
 
 
@@ -934,6 +951,144 @@ def test_strategy_keeps_planned_price_for_execution_adapter():
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert calls[0]["price"] == 2.5
+
+
+@pytest.mark.parametrize("limit", [None, False])
+def test_limit_absent_or_false_keeps_existing_price(limit):
+    """limit 未开启时不读取盘口，保持原有计划价。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = live_context(
+        instrument_ids=["H.POLYMARKET"],
+        books={"H.POLYMARKET": {"bid": 0.38, "ask": 0.42}},
+        infos={"H.POLYMARKET": {"selection_role": "home"}},
+        submitter=fake_submitter,
+    )
+    ctx.scratch["legs"] = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "home",
+        "price": 0.4,
+        "qty": 5.0,
+    }]
+
+    action = PlaceBetsAction() if limit is None else PlaceBetsAction(limit=limit)
+    _prepare_and_dispatch(action, ctx)
+
+    assert calls[0]["price"] == 0.4
+
+
+def test_limit_true_uses_best_bid_for_buy_and_best_ask_for_sell():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = live_context(
+        instrument_ids=["H.POLYMARKET", "A.POLYMARKET"],
+        books={
+            "H.POLYMARKET": {"bid": 0.38, "ask": 0.42},
+            "A.POLYMARKET": {"bid": 0.58, "ask": 0.62},
+        },
+        infos={
+            "H.POLYMARKET": {"selection_role": "home"},
+            "A.POLYMARKET": {"selection_role": "away"},
+        },
+        submitter=fake_submitter,
+    )
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+         "role": "home", "price": 0.4, "qty": 5.0},
+        {"instrument_id": "A.POLYMARKET", "venue": "POLYMARKET", "side": "SELL",
+         "role": "away", "price": 0.6, "qty": 5.0},
+    ]
+
+    _prepare_and_dispatch(
+        PlaceBetsAction(
+            limit=True,
+            price_overrides={"POLYMARKET": 0.9},
+            spread=0.03,
+        ),
+        ctx,
+    )
+
+    assert [(spec["side"], spec["price"]) for spec in calls] == [
+        ("BUY", 0.38),
+        ("SELL", 0.62),
+    ]
+
+
+def test_limit_true_converts_probability_book_price_for_decimal_venue():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = live_context(
+        instrument_ids=["H.ORBITEXCH", "A.ORBITEXCH"],
+        books={
+            "H.ORBITEXCH": {"bid": 0.5, "ask": 0.55},
+            "A.ORBITEXCH": {"bid": 0.35, "ask": 0.4},
+        },
+        infos={
+            "H.ORBITEXCH": {"selection_role": "home", "quote_claim": "yes"},
+            "A.ORBITEXCH": {"selection_role": "away", "quote_claim": "yes"},
+        },
+        submitter=fake_submitter,
+    )
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "home", "price": 1.9, "share_if_wins": 20.0},
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "SELL",
+         "role": "away", "price": 2.4, "qty": 4.0},
+    ]
+
+    _prepare_and_dispatch(PlaceBetsAction(limit=True), ctx)
+
+    assert [(spec["side"], spec["price"], spec["qty"]) for spec in calls] == [
+        ("BUY", 2.0, 10.0),
+        ("SELL", 2.5, 4.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("side", "book"),
+    [("BUY", {"ask": 0.42}), ("SELL", {"bid": 0.38})],
+)
+def test_limit_true_aborts_when_required_book_side_is_missing(side, book):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = live_context(
+        instrument_ids=["H.POLYMARKET"],
+        books={"H.POLYMARKET": book},
+        infos={"H.POLYMARKET": {"selection_role": "home"}},
+        submitter=fake_submitter,
+    )
+    ctx.scratch["legs"] = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": side,
+        "role": "home",
+        "price": 0.4,
+        "qty": 5.0,
+    }]
+
+    plan = _prepare_and_dispatch(PlaceBetsAction(limit=True), ctx)
+
+    assert plan is None
+    assert calls == []
+
+
+def test_action_rejects_non_boolean_limit():
+    with pytest.raises(ValueError, match="limit must be a boolean"):
+        PlaceBetsAction(limit="true")
 
 
 # ── #277:intent 优先读 selected_candidate ────────────────────────

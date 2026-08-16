@@ -18,6 +18,11 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.strategy.check_action_registry import build_check
+from src.arbitrage.strategy.check_action_registry import build_state_query
+from src.arbitrage.strategy.checks.reverse import ReverseCheck
+from src.arbitrage.strategy.queries.position_mode import HeadQuery
+from src.arbitrage.strategy.queries.position_mode import ReverseQuery
 
 
 def _cfg(**overrides) -> ArbConfig:
@@ -29,6 +34,17 @@ def _reset_ctx():
     bootstrap.reset_arb_context()
     yield
     bootstrap.reset_arb_context()
+
+
+def test_register_builtin_checks_and_actions_registers_position_mode_queries():
+    arb_node.register_builtin_checks_and_actions()
+
+    assert isinstance(build_state_query({"type": "head"}), HeadQuery)
+    assert isinstance(build_state_query({"type": "reverse"}), ReverseQuery)
+    assert isinstance(
+        build_check({"type": "reverse", "params": {"rt": 1.0, "retrieve": 0.1}}),
+        ReverseCheck,
+    )
 
 
 # ─── build_trading_node_config(纯映射)─────────────────────────

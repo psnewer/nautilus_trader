@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.venues import ORBITEXCH
@@ -497,6 +499,37 @@ def test_no_recovery_when_current_rebate_already_meets_threshold():
 
     assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is False
     assert "legs" not in ctx.scratch                          # 没写补救腿 → 不会下单
+    assert MeanRebateRecoveryCheck(
+        min_repaired_rebate=-0.05,
+        ignore_current=False,
+    ).passes(ctx) is False
+
+
+def test_ignore_current_recovers_when_current_rebate_already_meets_threshold():
+    """ignore_current=True 只旁路当前率前置门，允许补齐仍存在的极小缺口。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[
+            _position("H.POLYMARKET", qty=10.0, price=0.50),
+            _position("A.POLYMARKET", qty=9.99, price=0.50),
+        ],
+    )
+
+    assert MeanRebateRecoveryCheck(
+        min_repaired_rebate=-0.05,
+        ignore_current=True,
+    ).passes(ctx) is True
+    assert ctx.scratch["legs"][0]["qty"] == pytest.approx(0.01)
+    assert ctx.scratch["mean_rebate_recovery"]["ignore_current"] is True
 
 
 def test_recovery_still_fires_when_current_rebate_below_threshold():
@@ -566,6 +599,25 @@ def test_force_recovers_regardless_of_rate():
     assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, force=True).passes(ctx) is True
     assert ctx.scratch["legs"][0]["instrument_id"] == "A.POLYMARKET"
     assert ctx.scratch["mean_rebate_recovery"]["force"] is True
+
+
+def test_ignore_current_still_requires_repaired_rate_to_meet_threshold():
+    """ignore_current 不旁路补后率门；昂贵补腿修复后仍不达标时继续拒绝。"""
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.POLYMARKET": _fake_book(0.90),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos, positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)])
+
+    assert MeanRebateRecoveryCheck(
+        min_repaired_rebate=-0.05,
+        ignore_current=True,
+    ).passes(ctx) is False
+    assert "legs" not in ctx.scratch
 
 
 def test_force_still_noops_when_no_gap():

@@ -168,6 +168,10 @@ class ArbitragePortfolio(Portfolio):
             for outcome in outcomes
         }
 
+    def realized_pnl_for_pair(self, pair_id: str, account_id=None) -> float:
+        """返回 pair 的 NT realized PnL 与外部对账修正之和。"""
+        return self._realized_pnl_for_pair(pair_id, account_id)
+
     # ── 内部 ─────────────────────────────────────────────────────────
     def _compute_outcome_exposures(
         self,

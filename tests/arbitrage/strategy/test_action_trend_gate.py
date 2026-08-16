@@ -89,6 +89,47 @@ def test_missing_venue_data_treated_as_flat():
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
 
 
+def test_steps_absent_keeps_existing_coherence_behavior():
+    trend = {"Y.POLYMARKET": 0.001, "N.POLYMARKET": -0.001}
+    ctx = _ctx(trend)
+    _install(ctx, _pm_legs())
+
+    _run(TrendGateAction().execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_steps_keeps_coherent_trend_when_all_leg_absolute_momentum_reaches_threshold():
+    trend = {
+        "Y.POLYMARKET": 0.02,
+        "Y.ORBITEXCH": 0.01,
+        "N.POLYMARKET": -0.03,
+        "N.ORBITEXCH": 0.0,
+    }
+    ctx = _ctx(trend)
+    _install(ctx, _pm_legs())
+
+    _run(TrendGateAction(steps=0.06).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_steps_drops_all_when_all_leg_absolute_momentum_is_below_threshold():
+    trend = {
+        "Y.POLYMARKET": 0.02,
+        "Y.ORBITEXCH": 0.01,
+        "N.POLYMARKET": -0.03,
+        "N.ORBITEXCH": 0.0,
+    }
+    ctx = _ctx(trend)
+    _install(ctx, _pm_legs())
+
+    _run(TrendGateAction(steps=0.061).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+    assert ctx.scratch["selected_candidate"]["legs"] == []
+
+
 def test_all_flat_drops_all():
     # 全平(含缺数据)→ 无严格移动 → 无趋势 → 全删
     trend = {"Y.POLYMARKET": 0.0, "N.POLYMARKET": 0.0}
@@ -129,3 +170,9 @@ def test_skips_cancel_pair_candidate():
 def test_invalid_trend_param_raises():
     with pytest.raises(ValueError):
         TrendGateAction(trend="sideways")
+
+
+@pytest.mark.parametrize("steps", [-0.01, float("nan"), float("inf")])
+def test_invalid_steps_param_raises(steps):
+    with pytest.raises(ValueError, match="steps must be"):
+        TrendGateAction(steps=steps)

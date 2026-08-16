@@ -220,6 +220,37 @@ def test_recovery_tree_config_builds_with_recovery_intent():
     assert isinstance(strategy.compensation_tree.actions[0], PlaceBetsAction)
 
 
+def test_mean_rebate_recovery_ignore_current_loads_from_strategy_json():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_ignore_current": {
+                    "arbitrage_tree": {
+                        "checktion": {"type": "mean_rebate", "params": {"min_rate": 0.30}},
+                    },
+                    "compensation_tree": {
+                        "checktion": {
+                            "type": "mean_rebate_recovery",
+                            "params": {
+                                "min_repaired_rebate": -0.05,
+                                "ignore_current": True,
+                            },
+                        },
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_ignore_current"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    check = strategy.compensation_tree.checktion
+    assert isinstance(check, MeanRebateRecoveryCheck)
+    assert check._ignore_current is True
+
+
 def test_spread_cancel_and_mean_recovery_build_as_or_expression():
     cfg = msgspec.convert({
         "strategy": {
@@ -303,3 +334,29 @@ def test_place_bets_market_param_loads_from_strategy_json():
     action = strategy.arbitrage_tree.actions[0]
     assert isinstance(action, PlaceBetsAction)
     assert action._market is True
+
+
+def test_place_bets_limit_param_loads_from_strategy_json():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_limit": {
+                    "arbitrage_tree": {
+                        "checktion": {
+                            "type": "mean_rebate",
+                            "params": {"min_rate": 0.01},
+                        },
+                        "actions": [{"type": "place_bets", "params": {"limit": True}}],
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_limit"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    action = strategy.arbitrage_tree.actions[0]
+    assert isinstance(action, PlaceBetsAction)
+    assert action._limit is True

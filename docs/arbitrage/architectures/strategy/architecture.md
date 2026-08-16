@@ -13,17 +13,18 @@
 | `StrategyRegistry` | 普通类 | 按 scope 索引策略;`get_for(pair_id) → Strategy or None`,按**挂载存在锁定**:具体比赛挂了就锁定本 scope,即使没命中也**不降级**(Q21-a) |
 | `Strategy` | 领域 dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }`；仅是配置树，不逐个注册为 NT Strategy |
 | `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: CheckExpr, actions: list[Action] }` |
-| `BoolExpr` / `StateQuery` | DSL | self_hits 的无状态布尔查询树；叶子直接读取当前 `EvalContext`，支持 AND/OR/NOT 嵌套 |
+| `BoolExpr` / `StateQuery` | DSL | self_hits 的当前状态布尔树；普通叶子只读 `EvalContext`，`head/reverse` 命中时受控更新动态 `standard`；支持 AND/OR/NOT 嵌套 |
 | `CheckExpr` / `Check` | DSL / abstract | checktion 的有副作用布尔树；`Check.passes(ctx) -> bool` 为叶子，支持 AND/OR/NOT 嵌套及 `scratch` 事务 |
 | `Action` | abstract | `async Action.execute(ctx)` 由 Evaluator 按顺序 await |
 | `EvalContext` | dataclass | 每轮评估上下文；Strategy 随用随读 live Cache，只冻结评估开始时的 pair order/position digests 并透传 Execution |
+| `StrategyRuntimeStore` | 普通类 | Strategy 组件拥有的进程内跨轮变量；按 `strategy_id → pair_id → variables` 隔离，由 Evaluator 注入 `EvalContext`，ended 时按 pair 清理 |
 
 **职责边界(继承自前期锁定)**:
 - ❌ **不引用 Risk**:透明拦截,strategy 只通过 `on_order_denied` 感知结果(§5.4)
 - ❌ **不缓存待下单意图**:每轮全量重算(Q13)
 - ❌ **不在策略层做 tp/sl/global 硬停**:归 RiskEngine(Q16)
 - ✅ 设计参数与决策逻辑归本组件
-- ✅ `self_hits` 只表达当前状态查询，不保存 persistent/transient signal；跨轮状态由其自然归属组件维护，查询时经 `EvalContext` 读取
+- ✅ `self_hits` 表达当前状态判定，不恢复旧 persistent/transient signal；跨轮状态由自然归属组件维护。唯一受控例外是 `head/reverse` 命中时更新 Strategy 自有的动态 `standard`
 
 ---
 
@@ -57,6 +58,7 @@ flowchart TB
 要点:
 - **OBD 触发(2026-07-30,已落地)**:`on_order_book_deltas` 不按 venue 类型过滤；PM(probability)与 OE/SE(decimal)的已订阅 OBD 都可触发机会评估。NT 在回调前已更新对应 order book cache，Evaluator 继续复用 `instrument_id → PairRegistry → pair_id` 路由及 per-pair 串行门控。修订理由见 refactor.md #297；测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_triggers_eval`。
 - evaluate **不执行 Action**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做；
+  `head/reverse` 命中时只更新进程内 StrategyRuntimeStore，不产生订单等外部执行副作用；
   Check 只可写本树独占的 per-eval `ctx.scratch`
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)
 - **树间取舍(#301)**在 Evaluator 统一分发阶段执行：两树各自完成门控、选择和计划构造，
@@ -77,7 +79,7 @@ class BoolExpr(ABC):
     def eval(self, ctx: EvalContext) -> bool: ...
 
 class StateQuery(BoolExpr):
-    """叶子：每次直接读取当前上下文。"""
+    """叶子：每次读取当前上下文；特定转态查询可在命中时更新运行时变量。"""
     @abstractmethod
     def matches(self, ctx: EvalContext) -> bool: ...
 
@@ -86,8 +88,9 @@ class AndExpr(BoolExpr):  # 同 OrExpr / NotExpr
     def eval(self, ctx): return all(e.eval(ctx) for e in self.exprs)
 ```
 
-`StateQuery` 与 `Check` 分开注册：前者只能查询状态并返回 bool；后者属于机会核查，可向
-`ctx.scratch` 写本轮派生数据。框架不维护任何 signal 状态。
+`StateQuery` 与 `Check` 分开注册：前者做当前状态判定并返回 bool；后者属于机会核查，可向
+`ctx.scratch` 写本轮派生数据。普通 StateQuery 是纯查询；`head/reverse` 是明确列出的转态查询，
+仅在叶子自身命中时更新 `StrategyRuntimeStore.standard`。框架不恢复 SignalStore。
 
 ### 3.2 `Condition` / `CheckExpr` / `Check` / `Action`
 
@@ -120,7 +123,8 @@ class Action(ABC):
 ```
 
 `CheckExpr` 与 `BoolExpr` 使用相同的 AND/OR/NOT 认知模型，但不能共用实现：
-`StateQuery` 是纯查询，`Check` 会把 `legs/candidates` 等派生结果写入 `ctx.scratch`。
+普通 `StateQuery` 是纯查询（`head/reverse` 的 Store 更新例外见 §4.3），`Check` 会把
+`legs/candidates` 等派生结果写入 `ctx.scratch`。
 `CheckExpr` 因而规定以下事务语义：
 
 - 所有节点同步执行，并按配置顺序短路，不并行调用 Check。
@@ -371,7 +375,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 | 数据类型 | 例子 | 落点 | 隔离 |
 |---|---|---|---|
 | 同 condition 树内 Check→Action 传值 | mean_rebate 算的 legs | `EvalContext.scratch: dict` | **per-eval 自动**(每次 evaluate 新建 ctx)|
-| 当前状态查询 | PMS 比赛状态、订单、持仓 | `StateQuery.matches(ctx)` 从 `EvalContext` 读取其自然归属 Store/Cache | 由 `pair_id` / `game_id` 查询键隔离 |
+| 当前状态查询 | PMS 比赛状态、订单、持仓 | `StateQuery.matches(ctx)` 从 `EvalContext` 读取其自然归属 Store/Cache；`head/reverse` 命中后更新 Strategy Store | 由 `strategy_id + pair_id` / `game_id` 查询键隔离 |
 
 **live state 契约(#266)**:
 - `EvalContext` 持 `cache / pair_registry / sports_store`,Check/Action 在实际使用点读取当前
@@ -389,6 +393,14 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 跨树注入 candidate。每条命中链最终只能写本树 `execution_plan`；Evaluator 等两条链都完成
 后读取两个 plan 做优先级选择。
 
+**`StrategyRuntimeStore`（#332/#333，已接线 · 2026-08-12）**：用于确有跨评估周期语义的
+策略私有变量，物理结构为 `strategy_id → pair_id → variables`。不能只按策略名保存：同一策略可绑定
+competition/sport 并同时服务多个 pair，只按策略名会让比赛间状态串扰。`update` 一次合并同一 pair
+的多个变量；`get/variables/snapshot` 与写入值均深拷贝，调用方不能持有内部 mutable 引用。
+Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时用 scope key）作为 `strategy_id`
+连同 Store 注入 arb/comp 两棵树的 `EvalContext`；比赛 ended 收尾从所有策略清该 pair，
+`delete_strategy` 可供策略整体卸载。Store 是进程内对象，重启不恢复。
+
 **`EvalContext.pair_order_canceler`**:Evaluator 注入的同步回调。调用时重新读取
 `PairRegistry` 下全部 instrument 的 live `cache.orders_open`，按 `client_order_id` 去重；
 随后为这一组订单生成共享 cancel opportunity metadata，并逐单调用 NT 原生
@@ -403,6 +415,8 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 
 | 类 | 文件 | 用 |
 |---|---|---|
+| `HeadQuery()` / `ReverseQuery()` | `src/arbitrage/strategy/queries/position_mode.py` | `head`：有效 outcome 仓位数为 0 或 2，表示无仓位或已有对冲仓位、准备单冲；命中总是以即时返水率覆盖 `standard`。`reverse`：恰有 1 个有效 outcome 仓位，表示单方向暴露、准备止损；无 `standard` 时以即时返水率初始化（允许负值），已有值时仅当即时率为正且更高才抬升。即时率 = `(按抗抖动盘口侧计算的 unrealized PnL + pair realized PnL) / strategy_defaults.share`；**LONG 用 best ask、SHORT 用 best bid**，decimal venue 的概率报价先还原原生 decimal price 再调用 Portfolio。缺盘口、PnL、合法 share、Store 身份或仓位不变量失败均 no-hit。回撤是否达到阈值由独立 `ReverseCheck` 判断 |
+| `ReverseCheck(rt, retrieve)` | `src/arbitrage/strategy/checks/reverse.py` | 注册名同为 `reverse`（Check 与 StateQuery registry 分离，不冲突）。重新按上述统一口径读取 `current_rate`，再读取本策略、本 pair 的 `standard`；当且仅当 `current_rate <= rt * standard - retrieve` 时通过，等号命中。`rt/retrieve` 均为必填 params 且必须是有限数；缺即时率、Store 身份、standard，或 standard/阈值非法时 fail-closed。不修改 standard、不生成 recovery legs，通常在 CheckExpr `AND` 中先做本门控，再交 `mean_rebate_recovery` 生成补救腿 |
 | `MeanRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 从 live Cache 按 canonical `claim=yes/no` 分组并校验完整性；每个 outcome 取跨 venue 最低隐含概率后求 rate。decimal 概率换算与执行字段语义不变 |
 | `OneSideRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 从 live Cache 按固定 `yes/no` outcome 收集所有可买 leg，枚举 venue 组合与 target outcome；达阈值时写 `ctx.scratch["candidates"]`。qty 通过 Venue Registry 计算 |
 | `NegRebateCheck(max_rate=0.0)` | `src/arbitrage/strategy/checks/neg_rebate.py` | one_side_rebate 之后的候选方向门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母计算当前 rebate；按每个 candidate 的 `target_role` 过滤，只保留该 outcome 满足 `net_profit / max_share <= max_rate` 的 candidate。默认阈值为 0；无仓位时各 outcome rebate 视为 0，因此默认可通过。缺 candidates、Portfolio、完整 yes/no outcome 或经济投影异常时 fail-closed。只判断当前仓位，不预测加入 candidate 后的结果 |
@@ -413,9 +427,16 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `VenueReplaceAction(pm_price=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价由 `pm_price` 决定**(#330):不存在或 `True`(默认)→ 用 **PM 报价腿概率**(= PM best_ask 隐含概率,PM 实时价);存在且 `False` → 沿用**原 order 隐含概率** `prob`(两 venue 共享 outcome 概率,不看 PM 实时价、也不用原 decimal 赔率)。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。`pm_price=True` 缺 PM 报价 → 告警回退 0;`pm_price=False` 裸腿无 `prob` → 回退 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
-| `TrendGateAction(trend="up")` | `src/arbitrage/strategy/actions/trend_gate.py` | 按 **pair 级跨 venue/outcome 一致**的价格趋势筛 `selected_candidate` 的 leg(#329,消费 #trend §3.8.3)。**一致判据**:某 outcome 的**所有 venue 腿 Δprob≥0(up/flat)**且互斥 outcome 的**所有 venue 腿 Δprob≤0(down/flat)**、至少一处严格移动 → 该 outcome 为"干净上升"(complement 即下降)。**筛选语义 = 符合要求的腿留、不符合的删**:`trend="up"`(**默认,概率变大**)只留上升 outcome 的腿,`trend="down"`(概率变小)只留下降 outcome 的腿。趋势读 `ctx.price_trend`(key=`str(instrument_id)`→Δprob,概率空间 PM/OE/SE 同口径,不二次转);一致判据**扫该 pair 全部 tradable 腿**(含未执行的 OE/SE),缺趋势数据的腿当 flat 参与。**任一 venue 反向 / 无严格移动 / `price_trend` 空 / 缺 pair_registry → 无干净趋势 → 没有腿符合 → 全删**(candidate 清空,本轮不下该单);outcome 无法解析的腿也不符合 → 删。只处理 `candi_select` 选出的 candidate,回写两份 legs 视图、元数据不变;撤单 candidate / 空 legs 不处理。`trend` 非法值构造即 `ValueError`。one_side_rebate 套利链用它替换 dash_gate。⚠️ 预热期(相关腿还没攒够两帧)或行情全平时会全删 → one_side_rebate 本轮不下单,属有意的严格取舍 |
+| `TrendGateAction(trend="up", steps=None)` | `src/arbitrage/strategy/actions/trend_gate.py` | 按 **pair 级跨 venue/outcome 一致**的价格趋势筛 `selected_candidate` 的 leg(#329/#336,消费 #trend §3.8.3)。**一致判据**:某 outcome 的**所有 venue 腿 Δprob≥0(up/flat)**且互斥 outcome 的**所有 venue 腿 Δprob≤0(down/flat)**、至少一处严格移动 → 该 outcome 为"干净上升"(complement 即下降)。`steps` 缺失/`None` 时完全保持该逻辑；存在时额外要求该 pair **全部参与一致性检查的 tradable legs**（不只 candidate）满足 `Σ|Δprob| >= steps`，缺失/不可解析的 momentum 按既有 flat=0 口径参与，等于阈值通过；`steps` 必须是有限非负数。**筛选语义 = 符合要求的腿留、不符合的删**:`trend="up"`(**默认,概率变大**)只留上升 outcome 的腿,`trend="down"`(概率变小)只留下降 outcome 的腿。趋势读 `ctx.price_trend`(key=`str(instrument_id)`→Δprob,概率空间 PM/OE/SE 同口径,不二次转);一致判据**扫该 pair 全部 tradable 腿**(含未执行的 OE/SE),缺趋势数据的腿当 flat 参与。**任一 venue 反向 / 无严格移动 / 配置 steps 未达 / `price_trend` 空 / 缺 pair_registry → 无干净趋势 → 没有腿符合 → 全删**(candidate 清空,本轮不下该单);outcome 无法解析的腿也不符合 → 删。只处理 `candi_select` 选出的 candidate,回写两份 legs 视图、元数据不变;撤单 candidate / 空 legs 不处理。`trend`/`steps` 非法值构造即 `ValueError`。one_side_rebate 套利链用它替换 dash_gate。⚠️ 预热期(相关腿还没攒够两帧)或行情全平时会全删 → one_side_rebate 本轮不下单,属有意的严格取舍 |
 | `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追腿(#326):读 `PairPriceStore.first_price` 与当前 PM best ask 概率向量,对每个 outcome 算**绝对概率跌幅** `first - now`;最大跌幅 `>=` `move_threshold` 的 outcome = mover(赔率变大/概率变小),写单条 PM `BUY` leg(`qty=qty_from_share(PM, strategy_defaults["share"], now)`,带 `share_if_wins`)到 `ctx.scratch["legs"]`。`first_price` 空 / 缺完整 PM 盘口 / 概率非法 / 无 outcome 达阈 → False(安全 no-op)。赛前/赛中门由 self_hits `in_game` 负责(§3.10),本 Check 不自判 phase |
-| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 互斥 LONG 减仓只有在应用 spread 后的 SELL 限价 `<=` 该 instrument 当前 best bid 时才转换；缺盘口/bid 或价格不交叉则保留原 BUY。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。该门只保证价格可立即成交，暂不检查 bid 深度。`market=true` 只写订单 metadata，不在 Action 改价；最终市价转换见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
+| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None, limit=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。旧交叉门代码保留为注释，供后续恢复。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 改挂 live best bid、SELL 改挂 live best ask。`market=true` 只写订单 metadata，最终市价转换见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
+
+**`head_rebate` 组合成熟度（离线已验证，live-unvalidated，2026-08-13）**：
+`head/reverse` + 动态 `standard` + `ReverseCheck` 已经完整 JSON 双树装配，并与
+`venue_replace(pm_price=true)` / `trend_gate(steps)` / `place_bets(limit=true|market=true)` 联合
+执行到 `ExecutionPlan`。跨转态场景覆盖无仓、单仓、双仓、高水位抬升、等号回撤、
+对冲后 standard 重置及再进单仓；验收数值见 strategy README
+`strategy-4.head-rebate.scenario.*`。
 
 `mean_rebate`、`one_side_rebate` 与 `mean_rebate_recovery` 的行情候选腿统一由
 `src/arbitrage/strategy/checks/quote_legs.py::quote_legs_by_outcome` 构造。⚠️ 2026-07-20/21
@@ -547,7 +568,7 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
 `oe_runner_to_book_deltas` 已 `probability_from_price` 换算、反向单调已配平),故 Δprob 跨 venue
 同向同口径,**不得再转一次**(会把 OE/SE 弄反)。原始 decimal 赔率那层才与 PM 反向,但策略不读原始赔率。
 
-**读法**:Check 按 (pair, outcome, venue) 经 `pair_registry.instrument_ids_for_pair` +
+**读法**:消费 Action 按 (pair, outcome, venue) 经 `pair_registry.instrument_ids_for_pair` +
 `instrument.info.claim` / `venue_of` 反查 `instrument_id`,再取 `ctx.price_trend[str(iid)]`;
 "只看 PM"筛 venue,"每条腿各自"就遍历。`None`=未接入;某腿首帧无 prev → 无条目。
 
@@ -557,13 +578,14 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
 全删。下一次真实移动仍从上次真实价算 Δ。判等用精确 `==`(概率由 `probability_from_price` 纯函数换算,
 同赔率必得同 float)。
 
-**边界**:首帧无趋势(只 seed `_price_last`);**无阈值**(存原始 Δprob,防抖/最小变动由消费 Check
-决定,不在存储层锁死);ended 释放时 `_release_game_subscriptions` 随 OBD 退订 pop 该 game 各腿条目
+**边界**:首帧无趋势(只 seed `_price_last`);存储层**无阈值**并保留原始 Δprob，最小累计变动由
+消费方 `TrendGateAction.steps` 可选控制，不在趋势存储层锁死；ended 释放时
+`_release_game_subscriptions` 随 OBD 退订 pop 该 game 各腿条目
 (防无界增长);缺 book / best_ask ≤0 / 缺 instrument_id → 跳过。
 
-**成熟度**:plumbing 已落地(`_update_price_trend` + `EvalContext.price_trend` + 释放清理 +
-`test_price_trend.py`);**消费 Check 尚未定**(给 pre_rebate 还是新件、阈值多少待定)。决策史见
-refactor #328。
+**成熟度**:plumbing 与消费 Action 均已落地并离线验证（2026-08-12）：`_update_price_trend` +
+`EvalContext.price_trend` + 释放清理 + `TrendGateAction(trend, steps)`；覆盖见
+`test_price_trend.py` / `test_action_trend_gate.py`。决策史见 refactor #328/#329/#336。
 
 ### 3.9 树内执行计划 + Evaluator 统一分发
 
@@ -623,6 +645,15 @@ refactor #328。
 - Action 市价参数(#325):`market` 必须是 JSON boolean；显式 `true` 时同一 opportunity 的每条
   submit spec 都写入该值，经 `OpportunityMeta` 进入 `Order.tags`。缺失或 `false` 不请求市价；
   Action 不改 price/qty，venue-specific 转换只发生在 execution §3.6 的最终提交边界。
+- Action 盘口限价参数(#337):`limit` 必须是 JSON boolean；缺失或 `false` 完全保持既有计划价、
+  `price_overrides` 与 `spread` 行为。显式 `true` 时，按每个**最终执行 instrument** 的 live
+  OrderBook 定价：BUY 取 best bid，SELL 取 best ask；PM 库存转换仍先用互补参考价与 best bid
+  判断是否值得转换，生成的 SELL 子单随后取其自身 instrument 的 best ask，故该模式不承诺立即成交。
+  Cache 盘口统一存 outcome 概率，因此 Action 按 instrument
+  `quote_claim` 经 Venue Registry 反算 PM/decimal venue 原生订单价。`limit=true` 是最终定价模式，
+  优先于 `price_overrides` / `spread`；显式 qty 保持不变，未给 qty 时按该盘口限价计算 share 对应
+  数量。任一最终订单缺所需盘口侧、instrument 或价格非法时整次 opportunity fail-closed。
+  `market=true` 的既有 adapter 最终转换语义不变。
 - `intent` 默认 `"arbitrage"`;compensation/recovery tree 应显式配置 `"recovery"`。submitter 将其写入 `Order.tags` 的 `arb:intent=<intent>` 标签。该标签是 Strategy → Risk 的跨组件契约:Risk 对 `recovery` 仍执行 NT 基础检查 + 余额检查,但跳过单场 profit gates(`match_tp/match_sl`),详见 risk 详设 §3.1。
 - **opportunity metadata(已落地代码,待 live 验证,2026-06-14)**:`PlaceBetsAction` 在同一次 `execute(ctx)` 内为所有真实 legs 生成同一个 `opportunity_id`,并为每条 spec 写 `pair_id=ctx.pair_id`、稳定 `leg_key`、`expected_legs`(所有真实腿 key,包含自己)。submitter 把这些字段写入 `Order.tags`:`arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`，并在 Action 显式配置时追加 `arb:enable_timeout=<true|false>`。不发送 0 qty 空单;没有真实下单的 outcome 不进 `expected_legs`。tag 构造/解析复用 `src/arbitrage/common/opportunity.py`。
 
@@ -661,7 +692,7 @@ refactor #328。
   分母用波动的「最大在场 share」会随平仓而缩、与含 realized 的分子口径不自洽;arbitrage `share`
   (`strategy_defaults["share"]`,不单设 Check 参数)是 open+已平共同的意向规模,作分母才同基准。**分母与补单目标位就此分家**:目标位仍是
   max 在场 share(决定买多少),分母是配置 share(决定率达不达标)。配置 share 缺失/≤0 → 无从算率 → 保守不补。
-- `min_repaired_rebate` 是补齐后允许的最差 outcome return rate 阈值(率 = `net_profit / 配置 share`);例如 `-0.05` 表示只允许修到不低于 -5%。同一阈值双向门控:当前率 < 阈值才补(#262 前置门)、补后率 >= 阈值才算有用。
+- `min_repaired_rebate` 是补齐后允许的最差 outcome return rate 阈值(率 = `net_profit / 配置 share`);例如 `-0.05` 表示只允许修到不低于 -5%。默认同一阈值双向门控:当前率 < 阈值才补(#262 前置门)、补后率 >= 阈值才算有用。`ignore_current=true` 时仅跳过当前率前置门，只要存在 share 缺口便继续计算补救；补后率仍必须 >= 该阈值。参数不存在或为 `false` 时保持默认双向门控。
 - 补救 legs 必须带最终 `qty`,由 `place_bets` 直接提交;不新增 `repair_mean_rebate` Action。
 - `RequireCrossVenueCheck` 只用于套利树,不用于补偿树。原因:套利树一般应是跨 venue 机会;补偿树可能是单腿补缺口,用该过滤器会误伤 recovery。
 - `arb_config.example.json` 的 `mean_rebate` 已默认启用该 `compensation_tree`;生产启动前需确认 `debug.skip_execution` 与真金开关符合预期。
@@ -740,7 +771,8 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 ### 4.1 evaluate 主流程(见 §3.4 `evaluate_tree`)
 
 伪代码上面已写。**关键不变量**:
-- evaluate 是**纯求值**(无副作用):返 `EvalResult { hit, pending_actions }`
+- evaluate 不产生订单等**外部执行副作用**：返 `EvalResult { hit, pending_actions }`；
+  `head/reverse` 叶子命中时允许更新 StrategyRuntimeStore 的 `standard`
 - Action 链在 evaluator 顶层执行；**树间补偿优先在统一分发阶段实现**(§4.2)
 - sub_conditions 互斥:命中第一个就停,不遍历后续
 
@@ -772,13 +804,14 @@ plan，补偿链没有生成 plan 才回退套利 plan。`spread_cancel_recovery
 order/position digests，但不能共享 `scratch`，也不能跨树搬运 candidates。由此保证补偿计划
 不会继承套利树的 spread/override/enable_timeout。
 
-### 4.3 self_hits 无状态查询
+### 4.3 self_hits 当前状态查询与转态更新
 
 - `AND/OR/NOT` 只负责组合，不保存状态。
 - 叶子 `StateQuery.matches(ctx)` 在每轮求值时查询 `EvalContext`。
-- 跨轮状态由 Cache、SportsGameStateStore、Portfolio 等自然归属组件维护。
+- 普通跨轮状态由 Cache、SportsGameStateStore、Portfolio 等自然归属组件维护；动态策略参数
+  `standard` 自然归属 StrategyRuntimeStore，由 `head/reverse` 叶子命中时更新。
 
-**已注册 StateQuery(#326,首个 self_hits 实用叶子)**:
+**已注册 StateQuery**:
 - `InGameQuery`(`src/arbitrage/strategy/queries/in_game.py`,注册名 `in_game`):经
   `ctx.pair_registry.game_id_for_pair(pair_id)` → `ctx.sports_store.get(gid)`,`state` 存在且
   `live` 且 `not ended` → True(= 比赛进行中)。**赛前门 = `{"NOT": {"type": "in_game"}}`**,
@@ -787,6 +820,43 @@ order/position digests，但不能共享 `scratch`，也不能跨树搬运 candi
   将来若需显式排除 ended,另加 `pre_game`(`not live and not ended`)叶子。此前框架里
   `self_hits` 全是 `{}`(vacuous truth),`in_game` 是第一个实用叶子。注册经 §3.7
   `register_state_query`,JSON 走 `bool_expr_from_json`(支持叶子 + `AND/OR/NOT`)。
+- `HeadQuery`（注册名 `head`）：`Portfolio.outcome_shares(pair_id)` 中有效 yes/no outcome 数为
+  0 或 2 时命中；命中后以当轮即时返水率覆盖 `standard`。
+- `ReverseQuery`（注册名 `reverse`）：有效 outcome 数恰为 1 时命中；`standard` 不存在时以当轮
+  即时返水率初始化，已有时只接受“即时率为正且高于旧值”的新高水位。
+
+即时返水率口径为：
+
+```text
+(Σ unrealized_pnl(position, anti_jitter_book_price) + realized_pnl_for_pair(pair_id))
+───────────────────────────────────────────────────────────────────────────────
+                         strategy_defaults.share
+```
+
+抗抖动估值价对 LONG 取 best ask、对 SHORT 取 best bid；这里故意不采用立即平仓侧报价，避免
+bid/ask 短时抖动频繁下修动态基准。decimal venue 先把 order book 的概率空间报价还原为该
+instrument 的原生 decimal price，再交给 NT Portfolio。缺报价、PnL、合法分母、
+Store 身份或合法 yes/no 仓位投影时 fail-closed，不命中也不写 Store。
+
+`head/reverse` 只回答“准备单冲/准备止损”并维护基准。独立 `ReverseCheck(rt, retrieve)` 判断：
+
+```text
+current_rate <= rt * standard - retrieve
+```
+
+Condition 的固定顺序是 `self_hits` 后 `checktion`，因此 reverse StateQuery 命中并完成初始化/抬升后，
+ReverseCheck 才读取当轮 standard。Check 本身不更新 standard，也不产生 recovery legs；后者继续由
+同一 CheckExpr AND 中后续的 `mean_rebate_recovery` 负责。推荐配置形态：
+
+```json
+{
+  "self_hits": {"type": "reverse"},
+  "checktion": {"AND": [
+    {"type": "reverse", "params": {"rt": 1.0, "retrieve": 0.1}},
+    {"type": "mean_rebate_recovery", "params": {"force": true}}
+  ]}
+}
+```
 
 ### 4.4 scope 优先级查找(Q3 / Q6)
 
@@ -862,8 +932,9 @@ sequenceDiagram
 
 **框架基础(纯逻辑,可全单测)**:
 - [x] `BoolExpr` / `StateQuery` / `AndExpr` / `OrExpr` / `NotExpr`(`bool_expr.py`)；
-  `self_hits` 叶子直接查询 `EvalContext`，无 SignalStore。覆盖见 `test_bool_expr.py` /
-  `test_json_loader.py` / `test_check_action_registry.py`。
+  `self_hits` 普通叶子直接查询 `EvalContext`，无 SignalStore；`head/reverse` 命中时受控更新
+  StrategyRuntimeStore。覆盖见 `test_bool_expr.py` / `test_json_loader.py` /
+  `test_check_action_registry.py` / `test_query_position_mode.py`。
 - [x] `Condition` / `EvalResult` dataclass + 抽象 `Check` / `Action`(`condition.py`)+ condition tree 测试(`test_condition.py`)
 - [x] `CheckExpr` / `AndCheckExpr` / `OrCheckExpr` / `NotCheckExpr`；checktion 支持
   AND/OR/NOT 顺序短路，未采用分支的 `scratch` 事务回滚
@@ -871,6 +942,7 @@ sequenceDiagram
 
 **评估器(NT Strategy)**:
 - [x] `StrategyEvaluator(Strategy)`(`actor.py`)+ `evaluate_tree` 递归 + `gather(arb,comp)` + 补偿候选优先选择 + OBD 订阅/重评 + per-pair in-flight gate 测试(`test_evaluator.py`)
+- [x] `StrategyRuntimeStore` 注入两树 EvalContext，`head/reverse` 注册与 standard 更新、ended 清理均已离线覆盖；live 尚未验证
 - [x] evaluator 以 `ARB-EVAL-001` 经 Trader `add_strategy` 注册；submitter 使用 NT `order_factory`
   与 `Strategy.submit_order`，不再手工发送 `RiskEngine.execute`
 - [x] 全状态 `OpportunitySnapshot` 已删除(#266)；Evaluator 记录 order/position digests，

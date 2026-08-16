@@ -13,7 +13,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 | 类 | 基类 | 职责 |
 |---|---|---|
 | `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **概率/赔率门控** + **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
-| `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `outcome_shares` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
+| `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `outcome_shares` / `realized_pnl_for_pair` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
 
 > **基类必须是 `LiveRiskEngine`(非基类 `RiskEngine`)**:实盘环境 kernel 实例化 `LiveRiskEngine`(`system/kernel.py:407`);基类 `RiskEngine` 仅 backtest 用。两者 `_handle_submit_order → _check_order` 派发链一致。(Step 6 核实修正,见 refactor.md 修订记录)
 
@@ -173,6 +173,7 @@ class ArbitragePortfolio(Portfolio):
     # ── per-pair(对应 unrealized_pnl 单数风格)──
     def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]: ...
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]: ...
+    def realized_pnl_for_pair(self, pair_id: str, account_id=None) -> float: ...
     def outcome_shares_for_venue(self, pair_id: str, venue: str, account_id=None) -> dict[str, float]:
         """某 venue 各 outcome 的 share。PM 单腿门控 / OE/SE 净敞口门控用。"""
         ...
@@ -294,6 +295,9 @@ outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AN
   PM Data API realized 权威快照。merge 不另加 condition adjustment。
   该值是已经确定的现金结果，因此同额加到每个 outcome 的 `net_profit`，不改变
   `liability` 与 `outcome_shares`。共享账本契约见 common §8。
+- `realized_pnl_for_pair(pair_id, account_id=None)` 公开同一份 native + reconcile-ledger 聚合，
+  不复制另一套算法。Strategy 的 `head/reverse` 以它和抗抖动盘口侧（LONG ask / SHORT bid）下的 NT `unrealized_pnl`
+  合成即时返水率；Portfolio 仍是 pull-based，不写 Cache/Store。
 - **`include_realized_pnl` 开关(#327,2026-08-08)**:`outcome_exposures(pair_id, account_id=None, include_realized_pnl=True)`。
   缺省 `True` 保持上一条(realized 平摊进 `net_profit`),Risk 门控(`_check_profit_gates`,engine.py)
   与既有 recovery 均走默认、行为不变。`False` 时返回**不含 realized 的开仓投影**(即上式,未叠加

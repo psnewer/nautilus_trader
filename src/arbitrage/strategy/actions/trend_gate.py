@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.condition import Action
@@ -22,6 +23,7 @@ class TrendGateAction(Action):
     O 的**所有 venue 腿都 Δprob ≥ 0(up 或不变)**,且互斥 outcome 的**所有 venue 腿都 Δprob ≤ 0
     (down 或不变)**,且至少一处严格移动(否则全平=无趋势)。complement 对称成立时它就是下降 outcome。
     任一 venue 反向(如某 venue 的 yes 跌而别处 yes 涨)→ 不是干净趋势 → 本轮不过滤。
+    `steps` 不存在时保持该判据;存在时还要求全部参与判定的 leg 满足 `Σ|Δprob| >= steps`。
 
     `trend="up"`(**默认,概率变大**)保留干净上升 outcome 的腿;`trend="down"`(概率变小)保留其
     互斥(下降)outcome 的腿。趋势读 `ctx.price_trend`(§3.8.3,key=`str(instrument_id)` → Δprob,
@@ -41,9 +43,10 @@ class TrendGateAction(Action):
     - 只处理 `candi_select` 选出的 `selected_candidate`,回写 `selected_candidate["legs"]` 与
       `scratch["legs"]`、元数据不变;撤单 candidate / 空 legs 不处理。
     - `trend` 非法值构造即 `ValueError`(fail-fast)。
+    - `steps` 若配置,必须是有限非负数;等于累计 momentum 阈值时通过。
     """
 
-    def __init__(self, trend: str = "up") -> None:
+    def __init__(self, trend: str = "up", steps: float | None = None) -> None:
         direction = str(trend).strip().lower()
         if direction in _DOWN:
             self._keep_rising = False
@@ -51,6 +54,9 @@ class TrendGateAction(Action):
             self._keep_rising = True
         else:
             raise ValueError(f"trend_gate: invalid trend={trend!r}, expected up/down")
+        self._steps = None if steps is None else float(steps)
+        if self._steps is not None and (not math.isfinite(self._steps) or self._steps < 0):
+            raise ValueError(f"trend_gate: steps must be a finite non-negative number, got {steps!r}")
 
     async def execute(self, ctx: EvalContext) -> None:
         selected = ctx.scratch.get("selected_candidate")
@@ -63,7 +69,7 @@ class TrendGateAction(Action):
         # 干净一致趋势才有目标 outcome;否则 target=None → 无腿符合 → 全删。
         rising = None
         if ctx.pair_registry is not None:
-            rising = _coherent_rising_outcome(ctx, ctx.price_trend or {})
+            rising = _coherent_rising_outcome(ctx, ctx.price_trend or {}, steps=self._steps)
         target = None if rising is None else (rising if self._keep_rising else _complement(rising))
 
         kept = []
@@ -81,12 +87,17 @@ class TrendGateAction(Action):
         ctx.scratch["legs"] = kept
 
 
-def _coherent_rising_outcome(ctx: EvalContext, trend: dict) -> str | None:
+def _coherent_rising_outcome(
+    ctx: EvalContext,
+    trend: dict,
+    *,
+    steps: float | None = None,
+) -> str | None:
     """返回跨 venue/outcome 一致的"概率变大"outcome;无干净趋势 → None。
 
     扫该 pair 全部 tradable 腿,按 outcome 聚合各 venue 的 Δprob(缺数据当 flat=0)。
     上升 outcome O 判据:O 各 venue 腿 Δ≥0(up/flat)、互斥 outcome 各 venue 腿 Δ≤0(down/flat),
-    且至少一处严格移动(O 涨或互斥跌均可)。
+    且至少一处严格移动(O 涨或互斥跌均可)。`steps` 存在时另要求全部腿 `Σ|Δprob| >= steps`。
     """
     by_outcome: dict[str, list[float]] = {"yes": [], "no": []}
     for iid in ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id):
@@ -101,6 +112,10 @@ def _coherent_rising_outcome(ctx: EvalContext, trend: dict) -> str | None:
             by_outcome[outcome].append(0.0)
     if not by_outcome["yes"] or not by_outcome["no"]:
         return None  # 缺任一 outcome 的腿 → 无从判互斥一致
+    if steps is not None:
+        total_momentum = sum(abs(delta) for values in by_outcome.values() for delta in values)
+        if total_momentum < steps:
+            return None
     for up_o, down_o in (("yes", "no"), ("no", "yes")):
         ups, downs = by_outcome[up_o], by_outcome[down_o]
         all_up_flat = all(d >= 0 for d in ups)

@@ -6,7 +6,8 @@ evaluate 流程(`StrategyEvaluator._evaluate_tree`):
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
   3. 叶子(sub_conditions 空)→ checktion.eval(ctx) → 返 (hit=True, pending_actions=actions)
 
-**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`。顶层让套利/补偿 Action
+**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`。`head/reverse` self_hits
+命中时可更新 StrategyRuntimeStore，但不产生订单等外部执行副作用。顶层让套利/补偿 Action
 链在各自上下文内生成执行计划，再统一选择和分发。Check 可向本树独占的 `ctx.scratch`
 写派生结果；actions 依次串行执行。
 """
@@ -49,6 +50,10 @@ class EvalContext:
     # key = str(instrument_id)(= venue + 该腿/outcome),value = 最近一帧 Δprob(概率空间,正=概率变大)。
     # Check 按 (pair, outcome, venue) 反查 instrument_id 读取;None = 未接入趋势。
     price_trend: dict | None = None
+    # 当前配置策略的稳定标识 + Strategy 组件拥有的跨轮变量 Store。
+    # head/reverse self_hits 命中时按 (strategy_id, pair_id) 更新 standard。
+    strategy_id: str | None = None
+    runtime_store: object | None = None  # StrategyRuntimeStore;运行时类型避循环 import
 
 
 class CheckExpr(ABC):
