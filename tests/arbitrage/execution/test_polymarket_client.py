@@ -180,9 +180,6 @@ def _cancel_test_client(response):
     client._generate_cancel_success_event = (
         PolymarketExecutionClient._generate_cancel_success_event.__get__(client)
     )
-    client._log_cancel_request_accepted = (
-        PolymarketExecutionClient._log_cancel_request_accepted.__get__(client)
-    )
     client._ack_normal_cancel_response = (
         PolymarketExecutionClient._ack_normal_cancel_response.__get__(client)
     )
@@ -750,7 +747,7 @@ def test_polymarket_single_report_without_retry_calls_http_once():
     assert calls == ["get_order"]
 
 
-def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
+def test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session():
     venue_order_id = "0x" + "a" * 64
     client, command, captured, expected_venue_order_id = _cancel_test_client({
         "canceled": [venue_order_id],
@@ -759,11 +756,12 @@ def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
 
     _run(client._cancel_order(command))
 
-    assert "canceled" not in captured
+    assert captured["canceled"]["client_order_id"] == ClientOrderId("O-1")
+    assert captured["canceled"]["venue_order_id"] == expected_venue_order_id
     assert "rejected" not in captured
-    # 用户改:200 且本单真在 `canceled` 列表 → **不立即** ack 结束 session;等 WS 终态 / watchdog。
-    assert "cancel_ack" not in captured
+    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
 
+    # 迟到的 USER WS CANCELLATION 复用同一 helper,不得重复发送撤单终态。
     client._generate_cancel_success_event(
         strategy_id="S",
         instrument_id=InstrumentId.from_str("1.POLYMARKET"),
@@ -772,8 +770,25 @@ def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
         ts_event=123,
     )
 
+    assert "rejected" not in captured
+
+
+def test_polymarket_deferred_cancel_success_generates_canceled_event_and_ends_session():
+    venue_order_id = "0x" + "a" * 64
+    client, command, captured, expected_venue_order_id = _cancel_test_client({
+        "canceled": [venue_order_id],
+        "not_canceled": {},
+    })
+    client._execute_deferred_cancel = (
+        PolymarketExecutionClient._execute_deferred_cancel.__get__(client)
+    )
+    order = client._cache.order(command.client_order_id)
+
+    _run(client._execute_deferred_cancel(order, expected_venue_order_id))
+
     assert captured["canceled"]["client_order_id"] == ClientOrderId("O-1")
     assert captured["canceled"]["venue_order_id"] == expected_venue_order_id
+    assert captured["cancel_ack"] == (ClientOrderId("O-1"), expected_venue_order_id)
     assert "rejected" not in captured
 
 

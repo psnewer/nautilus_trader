@@ -195,8 +195,8 @@ size，避免破坏 share/quote 口径。
 
 **前置**: 已下一笔挂单
 **输入**: `Strategy.cancel_order(...)`
-**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)`。响应 `canceled[]` 只表示撤单请求被 CLOB 接收,不立即 `generate_order_canceled`;真实完成以 USER WS `CANCELLATION` 事件为准。`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态;若第一条 cancel terminal 已发出但 cache 尚未 apply,也必须用 client 侧有界去重窗口跳过重复终态。
-**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
+**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)`。响应 `canceled[]` 包含目标 venue order ID 时立即 `generate_order_canceled` 并结束 cancel session；不等待可能缺失的 USER WS `CANCELLATION`。迟到的 WS cancellation 必须按 cache 状态和 client 侧有界窗口幂等跳过。`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session` / `test_polymarket_deferred_cancel_success_generates_canceled_event_and_ends_session` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
 
 ### pm-adapter-5.3: Reconciliation(启动重连对账)
 
@@ -589,8 +589,8 @@ test_cancel_track_marks_execution_active_before_dispatch` 覆盖；PM 已预建 
 ### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 
 **输入**:CLOB 返回任一正常撤单响应，再分别解析 `canceled[]` / `not_canceled`。
-**期望/验收**:adapter 先把统一 ACK 交给共用 cancel session；reason 文本不参与 session
-收口。`canceled[]` 仍不伪造 `OrderCanceled`，订单状态继续由 USER WS / 响应映射更新。
-接线由 `test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` 和
-`test_polymarket_cancel_order_reject_generates_cancel_rejected_event` 验收；无响应不 ACK、
-不生成拒绝事件由 `test_polymarket_cancel_order_unknown_result_keeps_session_active` 验收。
+**期望/验收**:adapter 把正常响应的统一 ACK 交给共用 cancel session；reason 文本不参与 session
+收口。`canceled[]` 包含目标订单时同时生成真实 `OrderCanceled`，不等待 USER WS。
+接线由 `test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session` 和
+`test_polymarket_cancel_order_reject_generates_cancel_rejected_event` 验收；结果未知时结束 session
+但不生成拒绝/撤单终态，由 `test_polymarket_cancel_order_unknown_result_ends_session` 验收。
