@@ -692,7 +692,7 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
   分母用波动的「最大在场 share」会随平仓而缩、与含 realized 的分子口径不自洽;arbitrage `share`
   (`strategy_defaults["share"]`,不单设 Check 参数)是 open+已平共同的意向规模,作分母才同基准。**分母与补单目标位就此分家**:目标位仍是
   max 在场 share(决定买多少),分母是配置 share(决定率达不达标)。配置 share 缺失/≤0 → 无从算率 → 保守不补。
-- `min_repaired_rebate` 是补齐后允许的最差 outcome return rate 阈值(率 = `net_profit / 配置 share`);例如 `-0.05` 表示只允许修到不低于 -5%。默认同一阈值双向门控:当前率 < 阈值才补(#262 前置门)、补后率 >= 阈值才算有用。`ignore_current=true` 时仅跳过当前率前置门，只要存在 share 缺口便继续计算补救；补后率仍必须 >= 该阈值。参数不存在或为 `false` 时保持默认双向门控。
+- `min_repaired_rebate` 是补齐后允许的最差 outcome return rate 阈值(率 = `net_profit / 配置 share`);例如 `-0.05` 表示只允许修到不低于 -5%。同一阈值始终双向门控:当前率 < 阈值才补(#262 前置门)、补后率 >= 阈值才算有用。只有 `force=true` 会同时旁路两道率门。
 - 补救 legs 必须带最终 `qty`,由 `place_bets` 直接提交;不新增 `repair_mean_rebate` Action。
 - `RequireCrossVenueCheck` 只用于套利树,不用于补偿树。原因:套利树一般应是跨 venue 机会;补偿树可能是单腿补缺口,用该过滤器会误伤 recovery。
 - `arb_config.example.json` 的 `mean_rebate` 已默认启用该 `compensation_tree`;生产启动前需确认 `debug.skip_execution` 与真金开关符合预期。

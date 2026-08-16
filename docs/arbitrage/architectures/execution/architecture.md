@@ -585,6 +585,15 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 
 **(7) NT 开关 / 配置(#105/#108/#110/#111/#256 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_threshold_ms=30_000, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`(`inflight_check_threshold_ms` 为 #256 追加,不再用 NT 默认 5s,配套 `tracking_timeout_sec=60`)。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
 
+**(8) 周期对账修复无效开仓均价(#339,2026-08-16)**:若同一 instrument 恰有一个本地
+open Position、venue 与本地的非零 signed quantity 完全相等、本地 `avg_px_open <= 0`，且
+venue report 给出正的 `avg_px_open`，ExecutionEngine 直接通过
+`Position.set_avg_px_open()` 原地修复该对象。该窄路径不合成 order/fill，不关闭或新建 Position，
+不改变 quantity、realized PnL 或事件序列；Strategy 与 Portfolio 后续读取同一 cache 对象时即可
+取得修复值。普通的正均价不一致仍沿用既有告警语义，不由本路径覆盖。限定单 Position 是因为
+venue 均价是 instrument 净仓的聚合值，不能无依据拆给多个内部 Position。该值有意不单独持久化；
+进程重启后仍由启动/周期 reconciliation 再次从 venue 权威 report 修复。
+
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
 ### 4.4 leg_settled 语义(§6.8.2,已失效)

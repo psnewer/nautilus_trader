@@ -6,7 +6,6 @@ MeanRebateRecoveryCheck —— mean_rebate 补救检查。
 `min_repaired_rebate` 是**双向**门槛(#262):
 - **要不要补**:当前最差 outcome 的 rebate **低于**该值才需要补救(否则仓位已达标,不该花钱);
 - **补了有没有用**:补齐后的最差 rebate 必须**不低于**该值。
-`ignore_current=True` 仅跳过第一道“要不要补”门，第二道补后率门保持不变；默认/False 仍双向门控。
 
 两者共用同一分母(#321:**arbitrage `share` 参数**,经 `strategy_defaults["share"]` 透传),口径
 一致、直接可比。分子 `net` 含 realizedPNL(已平部分落袋
@@ -77,7 +76,7 @@ class _CalcLeg:
 
 
 class MeanRebateRecoveryCheck(Check):
-    """按可选当前率前置门与补后率门判断，并为 outcome 缺口写 recovery legs。"""
+    """按当前率前置门与补后率门判断,并为 outcome 缺口写 recovery legs。"""
 
     def __init__(
         self,
@@ -85,7 +84,6 @@ class MeanRebateRecoveryCheck(Check):
         venue_select: bool = False,
         force: bool = False,
         pnl: bool = True,
-        ignore_current: bool = False,
     ) -> None:
         self._min_repaired_rebate = float(min_repaired_rebate)
         # venue_select=True:补救腿只在 PM 里选(某 outcome 无 PM 报价则该 role 缺席 →
@@ -98,8 +96,6 @@ class MeanRebateRecoveryCheck(Check):
         # #327 pnl=False:当前率/补后率均不含 realizedPNL(经 outcome_exposures(include_realized_pnl=False)),
         # 只按当轮开仓投影判率。防 pre_rebate 循环开平里 banked realized 抬高补后率 → 即买即卖空转。
         self._pnl = bool(pnl)
-        # ignore_current=True:仅跳过 #262 当前率前置门；补后率仍须达到 min_repaired_rebate。
-        self._ignore_current = bool(ignore_current)
 
     def passes(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:
@@ -181,16 +177,15 @@ class MeanRebateRecoveryCheck(Check):
             current_net,
             current,
         )
-        if not self._force and not self._ignore_current:
-            if current and min(current.values()) >= self._min_repaired_rebate:
-                _LOG.info(
-                    "RECOVERY_DIAG pair=%s result=fail reason=current_rate_already_satisfied "
-                    "min_current=%s threshold=%s",
-                    ctx.pair_id,
-                    min(current.values()),
-                    self._min_repaired_rebate,
-                )
-                return False
+        if not self._force and current and min(current.values()) >= self._min_repaired_rebate:
+            _LOG.info(
+                "RECOVERY_DIAG pair=%s result=fail reason=current_rate_already_satisfied "
+                "min_current=%s threshold=%s",
+                ctx.pair_id,
+                min(current.values()),
+                self._min_repaired_rebate,
+            )
+            return False
 
         candidates = _best_candidates_by_role(ctx, valid_outcomes, pm_only=self._venue_select)
         roles_present = sorted(candidates.keys())
@@ -276,7 +271,6 @@ class MeanRebateRecoveryCheck(Check):
             "min_repaired_rebate": min(repaired.values()) if repaired else None,
             "force": self._force,                # #326
             "pnl": self._pnl,                    # #327
-            "ignore_current": self._ignore_current,
         }
         return True
 

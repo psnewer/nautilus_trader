@@ -289,6 +289,12 @@
 - 期望:返回 `[]`,且**不触达上游**(不抛)。position 对账由 `_reconcile_position_report_netting` 凭 `/positions` 权威净仓 NET 合成,不需要真 fill;PM live 成交仍由 USER WS trade 累加,不受影响。
 - 验收:`test_polymarket_client.py::test_arb_generate_fill_reports_returns_empty_without_trades_api`。
 
+### execution-4.5.8a: 周期 position reconcile 原地修复零开仓均价(#339)
+- 前置:同一 instrument 恰有一个本地 open Position，`avg_px_open <= 0`；venue report 的非零 signed quantity 与本地完全相等，且 `avg_px_open > 0`。
+- 输入:执行真实周期入口 `_process_cached_position_discrepancies`，而非只调用底层 reconcile helper。
+- 期望:原 Position 的 `avg_px_open` 直接更新为 venue 值；quantity、realized PnL 与 Position 身份不变，不生成 EXTERNAL order、fill 或开平仓事件。已有正均价不一致、多个本地 Position、零仓或 venue 均价无效时不走该修复。
+- 验收:`tests/unit_tests/live/test_execution_recon.py::TestReconciliationEdgeCases::test_position_reconciliation_repairs_zero_avg_px_when_quantity_matches`；setter 边界由 `tests/unit_tests/model/test_position.py::TestPosition::test_set_avg_px_open_updates_in_place` 锁定。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);

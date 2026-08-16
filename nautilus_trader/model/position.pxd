@@ -127,6 +127,7 @@ cdef class Position:
     cpdef bint is_opposite_side(self, OrderSide side)
 
     cpdef void apply(self, OrderFilled fill)
+    cpdef void set_avg_px_open(self, double avg_px_open)
     cpdef void apply_adjustment(self, PositionAdjusted adjustment)
 
     cpdef Money notional_value(self, Price price, Currency target_currency=*, Price conversion_price=*)

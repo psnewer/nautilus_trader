@@ -2775,6 +2775,24 @@ class TestPosition:
         assert position.adjustments[0].quantity_change == Decimal("-0.001")
         assert position.adjustments[0].reason == "commission_adjustment"
 
+    def test_set_avg_px_open_updates_in_place(self) -> None:
+        order = self.order_factory.market(
+            BTCUSDT_BINANCE.id,
+            OrderSide.BUY,
+            Quantity.from_int(1),
+        )
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=BTCUSDT_BINANCE,
+            position_id=PositionId("P-AVG-REPAIR"),
+            last_px=Price.from_int(50000),
+        )
+        position = Position(instrument=BTCUSDT_BINANCE, fill=fill)
+
+        position.set_avg_px_open(51000.0)
+
+        assert position.avg_px_open == 51000.0
+
     def test_position_adjustment_funding_only_no_quantity_change(self) -> None:
         """
         Test creating a funding adjustment with no quantity change.

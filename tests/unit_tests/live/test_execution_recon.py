@@ -2748,6 +2748,61 @@ class TestReconciliationEdgeCases:
         assert close_report.venue_order_id != open_report.venue_order_id
 
     @pytest.mark.asyncio
+    async def test_position_reconciliation_repairs_zero_avg_px_when_quantity_matches(
+        self,
+        live_exec_engine,
+    ):
+        instrument = AUDUSD_SIM
+        self.cache.add_instrument(instrument)
+        live_exec_engine.generate_missing_orders = True
+
+        order = TestExecStubs.limit_order(instrument=instrument, order_side=OrderSide.BUY)
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=instrument,
+            position_id=PositionId("P-ZERO-AVG"),
+            last_qty=Quantity.from_int(100),
+            last_px=Price.from_str("0.00000"),
+        )
+        position = Position(instrument=instrument, fill=fill)
+        self.cache.add_position(position, OmsType.NETTING)
+        event_count_before = position.event_count
+
+        report = PositionStatusReport(
+            account_id=TestIdStubs.account_id(),
+            instrument_id=instrument.id,
+            position_side=PositionSide.LONG,
+            quantity=Quantity.from_int(100),
+            avg_px_open=Decimal("1.05000"),
+            report_id=UUID4(),
+            ts_last=1,
+            ts_init=1,
+        )
+
+        async def no_missing_fills(instrument_id, clients):
+            return [], False
+
+        live_exec_engine._query_and_find_missing_fills = no_missing_fills
+
+        await live_exec_engine._process_cached_position_discrepancies(
+            {instrument.id: [position]},
+            {instrument.id: report},
+        )
+
+        repaired = self.cache.positions_open(instrument_id=instrument.id)
+        assert len(repaired) == 1
+        assert repaired[0] is position
+        assert repaired[0].event_count == event_count_before
+        assert repaired[0].quantity == Quantity.from_int(100)
+        assert repaired[0].avg_px_open == 1.05
+        assert repaired[0].realized_pnl == Money("0.00", USD)
+
+        reconciliation_orders = [
+            order for order in self.cache.orders() if order.strategy_id.value == "EXTERNAL"
+        ]
+        assert reconciliation_orders == []
+
+    @pytest.mark.asyncio
     async def test_cross_zero_reconciliation_venue_order_ids_stable_on_equal_fills(
         self,
         live_exec_engine,

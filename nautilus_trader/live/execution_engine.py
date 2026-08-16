@@ -1070,7 +1070,7 @@ class LiveExecutionEngine(ExecutionEngine):
 
         # Check if quantities match (both could be zero)
         if cached_qty == venue_qty:
-            return False
+            return self._requires_avg_px_repair(cached_positions, venue_report)
 
         instrument = self._cache.instrument(instrument_id)
         if instrument is not None:
@@ -1086,6 +1086,22 @@ class LiveExecutionEngine(ExecutionEngine):
             )
 
         return True
+
+    @staticmethod
+    def _requires_avg_px_repair(
+        cached_positions: list[Position],
+        venue_report: PositionStatusReport,
+    ) -> bool:
+        if (
+            len(cached_positions) != 1
+            or venue_report.signed_decimal_qty == 0
+            or venue_report.avg_px_open is None
+            or venue_report.avg_px_open <= 0
+        ):
+            return False
+
+        avg_px_open = cached_positions[0].avg_px_open
+        return isinstance(avg_px_open, (int, float, Decimal)) and avg_px_open <= 0
 
     async def _process_venue_reported_positions(
         self,
@@ -2552,6 +2568,17 @@ class LiveExecutionEngine(ExecutionEngine):
             if diff_report:
                 self._reconcile_order_report(diff_report, trades=[], is_external=False)
         elif quantities_match and report.avg_px_open is not None:
+            if self._requires_avg_px_repair(positions_open, report):
+                position = positions_open[0]
+                old_avg_px_open = position.avg_px_open
+                position.set_avg_px_open(float(report.avg_px_open))
+                self._log.warning(
+                    f"Repaired invalid position avg_px_open for {report.instrument_id}: "
+                    f"internal={old_avg_px_open}, venue={report.avg_px_open}",
+                    LogColor.YELLOW,
+                )
+                return True
+
             # Quantities match, but verify avg_px_open also matches
             current_avg_px = None
 

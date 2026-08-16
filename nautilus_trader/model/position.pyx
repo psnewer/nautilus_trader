@@ -689,6 +689,12 @@ cdef class Position:
         self._adjustments.append(adjustment)
         self.ts_last = adjustment.ts_event
 
+    cpdef void set_avg_px_open(self, double avg_px_open):
+        """原地修复当前开仓均价，不生成仓位事件。"""
+        if avg_px_open <= 0.0:
+            raise ValueError("avg_px_open must be positive")
+        self.avg_px_open = avg_px_open
+
     cpdef Money notional_value(
         self,
         Price price,
