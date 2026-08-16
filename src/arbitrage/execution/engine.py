@@ -16,6 +16,8 @@ from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
+from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.opportunity import CANCEL_OPPORTUNITY_PARAM
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
@@ -71,6 +73,33 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             self._arb_venue_liveness = venue_liveness
         if barrier_timeout_secs is not None:
             self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
+
+    def _resolve_inflight_order(self, order) -> None:
+        if order.status != OrderStatus.PENDING_CANCEL:
+            super()._resolve_inflight_order(order)
+            return
+
+        # 与 SUBMITTED 的 UNKNOWN reject 语义对齐：查询不到状态不能证明撤单成功。
+        # cancel reject 会让 NT FSM 恢复撤单前的 ACCEPTED/PARTIALLY_FILLED 状态，
+        # 后续策略仍能把真实残单识别为 open 并再次走 cancel-only。
+        ts_now = self._clock.timestamp_ns()
+        cancel_rejected = OrderCancelRejected(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+            account_id=order.account_id,
+            reason="UNKNOWN",
+            event_id=UUID4(),
+            ts_event=ts_now,
+            ts_init=ts_now,
+            reconciliation=True,
+        )
+        self._log.debug(f"Generated {cancel_rejected}")
+        self._handle_event_with_tracking(cancel_rejected)
+        self._clear_recon_tracking(order.client_order_id)
+        self._order_local_activity_ns.pop(order.client_order_id, None)
 
     async def _query_order_status_reports(self):
         order_status_start = self._clock.utc_now() - pd.Timedelta(

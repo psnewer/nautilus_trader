@@ -14,6 +14,8 @@ from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import TraderId
@@ -162,6 +164,27 @@ def test_barrier_waits_until_all_legs_pass_before_release():
 
     ctx.engine._execute_command(second)
     assert len(ctx.client.commands) == 2
+
+
+def test_pending_cancel_inflight_failure_rejects_cancel_and_restores_open_state():
+    ctx = _Ctx()
+    order = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",)).order
+    order.apply(TestEventStubs.order_submitted(order, ctx.client.account_id))
+    order.apply(TestEventStubs.order_accepted(order, ctx.client.account_id))
+    order.apply(TestEventStubs.order_pending_cancel(order))
+    ctx.cache.add_order(order)
+    ctx.engine._recon_check_retries[order.client_order_id] = 1
+    ctx.engine._ts_last_query[order.client_order_id] = ctx.clock.timestamp_ns() - 1
+
+    ctx.engine._resolve_inflight_order(order)
+
+    assert order.status == OrderStatus.ACCEPTED
+    assert order.is_open
+    assert isinstance(order.last_event, OrderCancelRejected)
+    assert order.last_event.reason == "UNKNOWN"
+    assert order.last_event.reconciliation is True
+    assert order.client_order_id not in ctx.engine._recon_check_retries
+    assert order.client_order_id not in ctx.engine._ts_last_query
 
 
 def test_cancel_barrier_waits_until_all_commands_before_release():

@@ -119,6 +119,7 @@ def instrument_constraints(cache, instrument_id) -> dict:
     return {
         "min_quantity": object_value(getattr(instrument, "min_quantity", None)),
         "min_notional": object_value(getattr(instrument, "min_notional", None)),
+        "min_buy_quantity": object_value(info.get("min_buy_quantity")),
         "min_buy_notional": object_value(info.get("min_buy_notional")),
         "size_increment": object_value(getattr(instrument, "size_increment", None)),
     }

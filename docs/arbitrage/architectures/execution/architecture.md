@@ -84,6 +84,8 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 上游 `PolymarketExecutionClient` **已实现**(直接用):`_submit_order`/`_cancel_order`/`_modify_order`(`py_clob_client_v2` 签名 + CLOB L2)、`generate_order_*`(WS USER channel 回写)、`_update_account_state`、`generate_order_status_reports`/`generate_position_status_reports`。
 
+**最小下单边界(#344)**:ExecutionClient 不重做 Strategy/Risk 的侧别门控。PM `minimum_order_size` 作为 `info.min_buy_quantity` 仅约束 BUY；库存减仓 SELL 即使小于该值也按 Strategy 生成的真实 share 数提交（下单网格仍由 §4.7 的 `order_size_increment` floor 处理）。venue 返回的业务拒绝继续走标准 `OrderRejected`，不在 execution 层补第二套最小值常量。
+
 **PM CLOB SDK 约束(#97,已落地 / 待 live 复验)**:2026-06-10 NT live probe 中,旧 `py_clob_client` 虽可本地签名,但 POST `/order` 被 PM API 拒绝为 `invalid order version, please use the latest clob-client`;官方文档当前以 `py_clob_client_v2` / `@polymarket/clob-client-v2` 为下单、撤单、查询 L2 client。项目 PM adapter 主 HTTP client 因此统一由 `get_polymarket_http_client()` 构造 `py_clob_client_v2.ClobClient`。关键 v2 差异:
 - `generate_order_status_reports` 调 `get_open_orders(...)`,不再调旧 `get_orders(...)`。
 - 单笔撤单调 `cancel_order(OrderPayload(orderID=...))`。
@@ -296,10 +298,11 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
   检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
-- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)，但不消费 submit 的 `enable_timeout`。adapter 收到一次**正常撤单响应**后调用 `_ack_cancel_session`，立即结束 cancel session；这只释放 barrier tracking，不生成或修改任何订单状态。没有响应、传输结果未知时不 ACK，继续等待撤单终态、reconcile 或 watchdog。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
+- **撤单状态单一真理源(#343)**:标准 `Strategy.cancel_order` 已在命令发出前生成并发布 NT 原生 `OrderPendingCancel`;barrier/per-client cancel-only 因直接调用 client residual cancel 能力而绕过 Strategy,故由共用 `ArbExecutionSessionMixin._cancel_residual_orders` 在 venue IO 前补同一事件、更新 Cache 并发布 strategy order topic。已是 `PENDING_CANCEL` 的订单不重复发送 venue cancel,后续由 inflight-check 查询。adapter 只解析 venue 结果,不得自行置撤单意图。明确结果复用 NT FSM:`OrderCanceled → CANCELED`,`OrderCancelRejected → 撤单前状态`,`OrderFilled → PARTIALLY_FILLED/FILLED`;inflight 查询未知也生成 `OrderCancelRejected(reason=UNKNOWN)` 恢复撤单前 open 状态,使后续 cancel-only 可以重撤。session watchdog 只释放执行追踪,不修改订单状态。
+- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)，但不消费 submit 的 `enable_timeout`。adapter 收到一次**正常撤单响应**后调用 `_ack_cancel_session`，立即结束 cancel session；这只释放 barrier tracking，不生成或修改任何订单状态。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
 - cancel 等待期间到达的成交事件只按正常 fill/order 流程处理，不代表撤单请求已有响应，也不结束 cancel session。订单状态与 session 生命周期正交：ACK 负责释放 session；随后 adapter 仍解析响应并由 USER WS / `CURRENT_BETS` / reconcile 更新真实状态。
 - venue 终态映射:
-  - PM:CLOB 返回正常撤单响应后先统一 ACK session，再解析 `canceled[]` / `not_canceled`。`canceled[]` 不伪造撤单终态，真实撤单完成仍以 USER channel `CANCELLATION` 为准；`not_canceled` 的 reason 只参与既有订单事件映射，不决定 session 是否结束。
+  - PM:CLOB 返回正常撤单响应后先统一 ACK session，再解析 `canceled[]` / `not_canceled`。`canceled[]` 包含目标订单时生成 `OrderCanceled`；`not_canceled` 的 reason 只参与既有订单事件映射，不决定 session 是否结束。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
   - OE `CancelAllOrders` 只调用 `/customer/api/cancelAllUnmatchedBets`；API 失败直接返回失败，不再点击页面 UI 兜底。旧 `take-at-market/modify-and-take` 页面能力已删除：它不在 NT 套利执行链路内，且不能用固定 sleep 代替真实成交确认。
 - session mixin 只维护 `_active_sessions` 与 tracking timeout(**#261**:`execution.*` 消息与 `PairInFlightGate` 记账均已删除)。`_execution_active` = `len(_active_sessions) > 0` 是 barrier 全局 ≤1 判定的派生源之一。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
@@ -340,7 +343,7 @@ def _start_session(self, coid):
 def _on_order_terminal(self, coid):
     self._clock.cancel_timer(f"exec_timeout_{coid}")    # terminal 抢先取消
 def _on_session_timeout(self, event):
-    # 超时即结束 session,不撤不重试;order 在 venue 保持当时状态,留给 strategy 下一轮
+    # 超时只结束 session；订单状态继续由 NT inflight-check 收口
     self._log.warning(f"Session timeout: {event.name}")
     self._end_session(coid, timed_out=True)
 ```
@@ -510,7 +513,10 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   venue 广播式信号驱动后不是一次性回执,阈值放宽给信号到达留正常余量,同时仍小于
   `tracking_timeout_sec`=60 秒的 session 超时,保证 inflight-check 能在 session 结束前生效)后
   只发送一次 `QueryOrder`;若没有有效 report,下一次检查直接由 NT `_resolve_inflight_order()`
-  收口,不再次访问 venue。
+  收口,不再次访问 venue:`SUBMITTED → OrderRejected(reason=UNKNOWN)`；项目将
+  `PENDING_CANCEL` 对齐为 `OrderCancelRejected(reason=UNKNOWN)`,由 NT FSM 恢复撤单前的
+  `ACCEPTED/PARTIALLY_FILLED`，而不是沿用 NT 默认的本地 `OrderCanceled`。这样未知撤单不会
+  从 open-order 集合消失，strategy 后续仍可再次触发 cancel-only。
 - **PM 已卡在飞时序**:`ArbPolymarketExecutionClient._query_order` 按 POST 前缓存的 order hash
   执行一次且仅一次 `get_order`(该路径不使用 PM RetryManager)。失败/空响应/查不到/解析失败
   不发 report；成功则用 `_send_order_status_report(report)` 进入 NT 通用
@@ -738,7 +744,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 
 **问题**:下单量精度超过 venue 可撮粒度时(例:recovery `BUY 28.7525`,实成 28.75),尾量 0.0025 永不成交;venue 直接撮完/丢弃这笔单(不给它挂着),但**不发 NT 能消费的终态 WS 事件**。NT 侧订单停在 `PARTIALLY_FILLED`(open),之后该 pair 每来一次机会都被 opportunity barrier 当残单撞 **cancel-only**,而 venue 侧撤单又回 `already canceled or matched`(单已没),`_generate_cancel_event` 只 `awaiting WS event` 空等 → 卡死堵 pair(实盘 nohup 取证)。
 
-> **源头收紧(#281 → 精度双轨修订,2026-08-06)**:下单量必须落 venue 可撮网格(0.01)才不产生 sub-0.01 dust。#281 曾把 PM `size_increment` 直接设成 **0.01** 达成此目的,但那**顺带把 Position/fill 也量化到 0.01(nearest,向上偏)** → 链上真实持有 17.046151 被记成 `LONG 17.05`,reduce 整仓平时 SELL 17.05 > 真实持有 → venue 拒 `not enough balance` + churn(实盘 2026-08-06 取证)。**修订(用户定,精度双轨)**:`size_increment` 改回 token 真实精度 **0.000001**(持仓/成交按真值存),下单网格 0.01 经 `instrument.info["order_size_increment"]` 传出,在**下单量生成处** `make_submitter`(`strategy/actor.py`)把 `order.quantity` **floor 到 0.01**——覆盖 buy 入场 + sell/reduce(不只卖):①`order.quantity` 本身落网格 → 与 venue 撮到的量一致、能填满、不产生 sub-0.01 尾量(#280 防护点从 instrument 精度**平移**到下单层);②SELL floor ≤ 真实持有 → 绝不超卖。floor 落在下单量生成(非提交层),避免 `order.quantity`(6 位)与 venue size(0.01)不一致把尾量搬进 NT 账本。OE/SE instrument 不带该 info 键 → 不受影响。本节(#280)仍为**残余兜底**:即便部分成交/venue 取整仍出尾量,fill-handler 源头 cancel 收口。二者:**#281(双轨)治源、#280 兜底**。测试 `test_submitter.py`(PM buy/sell floor 到 0.01、OE/SE 不 floor)+ `test_parsing.py`(size_precision=6、info 带 order_size_increment)。
+> **源头收紧(#281 → #345 修订,2026-08-16)**:#281 曾把 PM `size_increment` 直接设成 **0.01**，顺带把 Position/fill 量化到 0.01(nearest,向上偏)，导致真实持有 17.046151 被记成 `LONG 17.05`，reduce SELL 超卖。现行双轨保持 `size_increment=0.000001` 存 token 真值，并经 `instrument.info["order_size_increment"]=0.01` 在 `make_submitter` 将两侧下单量保留到两位网格：**SELL/reduce 使用 `ROUND_DOWN`**，17.046151 → 17.04，保证不超过真实持有；**BUY 使用 `ROUND_HALF_UP`**，28.666 → 28.67。OE/SE instrument 不带该 info 键，不受影响。#280 fill-handler cancel 继续作残余兜底。测试 `test_submitter.py::test_submit_floors_pm_sell_qty_to_order_grid` / `test_submit_rounds_pm_buy_qty_to_order_grid` 与 `test_parsing.py`。
 
 **关键区分(#280 定夺)**:老 `check_dust_residual` 发 **synthetic fill** 收口,同时干了两件事——(a) 订单终态、(b) **移动 position**。(b) 正是祸根:reduce-SELL 补 fill 会卖穿成 dust SHORT(概率盘不变量),BUY 补 fill 造 phantom LONG。把它改 no-op 又把 (a) 一起扔了 → 订单再也收不了口。因此**收口订单要保留,移动持仓要禁止**,且**收口要在源头做,不能靠下游症状路径**:
 

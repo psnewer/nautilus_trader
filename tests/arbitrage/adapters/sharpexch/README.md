@@ -201,9 +201,9 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **期望/验收**:`_submit_order` 成功分支只登记 `_pending_accept[offerId] = client_order_id`,不调用 `generate_order_accepted`;`_on_current_bets` 每帧先检查 `_pending_accept` 中的 offerId 是否已出现在 `_current_bets`(不看是否已成交),命中即弹出并 ack;ack 与 fill 派生是独立的一次性状态跃迁,不受 #255 静默帧规则约束(reload 首帧也照常 ack)。同帧内若该 offerId 已开始成交,fill 派生经 `newly_acked` 兜底解析 client_order_id(cache 对刚 enqueue 的 accepted 事件是异步索引,同步调用内还查不到)。用例:`test_submit_order_success_registers_pending_accept_not_immediate_ack`、`test_pending_accept_acks_on_first_current_bets_sighting_unmatched`、`test_pending_accept_acks_during_reload_quiet_frame`、`test_pending_accept_same_frame_fill_resolves_via_newly_acked`。
 
 ### se-adapter-5.inflight.3:cancel-only 复用既有 session
-**前置**:execution mixin 已为残留单建立 cancel session。
+**前置**:execution mixin 已为残留单生成 `OrderPendingCancel` 并建立 cancel session。
 **输入**:调用 residual cancel。
-**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
+**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；一次 QueryOrder 后仍未知则 cancel reject 恢复 open，供下一轮重撤。离线用例覆盖 `session_started=True`，共用状态用例见 execution README `execution-4.2.5a`。
 
 ### se-adapter-5.inflight.4:grouped CancelOrder 复用同步预建 session
 **前置**:Execution grouped cancel barrier release 显式 SE CancelOrder。

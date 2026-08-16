@@ -18,7 +18,7 @@
 
 PM WS 配置约束:`ArbConfig.venues.polymarket.ws_url` 的推荐值是上游 base URL `.../ws/`。为兼容旧 discovery / odds 订阅配置,dispatcher 接受旧 full endpoint `.../ws/market` / `.../ws/user` 并归一化后再交给 PM Data/Exec client。
 
-最小下单元数据契约:PM 的 venue 最小 share 从市场 `minimum_order_size` 写入 `BinaryOption.min_quantity`(当前通常 5);PM 另有 BUY-only 1 USD 下限,因 `BinaryOption.min_notional` 无法表达 side 语义,解析层写入 `instrument.info["min_buy_notional"]=1.0`。OE 的 venue 最小值是 **stake 7 GBP**,但 adapter 外部 OE `quantity` 统一按 USD stake 解释,因此 Provider 写入 `BettingInstrument.min_notional = Money(7 * arbitrage.fx, USD)`。
+最小下单元数据契约:PM 的 `minimum_order_size` 是 BUY-only 最小 share，解析层写入 `instrument.info["min_buy_quantity"]`(当前通常 5)，并保持 `BinaryOption.min_quantity=None`，避免 NT 把通用 quantity 下限误用到减仓 SELL；PM 的 BUY-only 1 USD 下限同理写入 `info["min_buy_notional"]=1.0`。另写 `info["order_size_increment"]=0.01` 供 submitter 将两侧下单量保留到两位网格：SELL 向下取整，BUY 正常四舍五入。OE 的 venue 最小值是 **stake 7 GBP**,但 adapter 外部 OE `quantity` 统一按 USD stake 解释,因此 Provider 写入 `BettingInstrument.min_notional = Money(7 * arbitrage.fx, USD)`。
 
 **明确不做**:
 - ⚠️ ~~DataClient 不拥有调度(归 Refresher,Q8)~~ **#59 反转**:Q8 的"调度归 Refresher"被验证为重造 NT 原生(refresher 3 个 bug 都是脱离原生路径的症状)→ **调度迁回 DataClient 原生**(refactor.md #58/#59)。
@@ -131,7 +131,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断，当前由 `/events/keyset?series_id=` 游标分页取全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
-> **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。BUY 还要求 `quantity × price >= 1 USD`,SELL 无此金额下限；解析层把该侧别约束写成 `info["min_buy_notional"]=1.0`,不写 `BinaryOption.min_notional`，避免 NT 对 SELL 误用金额下限。
+> **交易最小值(#344)**:Gamma/CLOB 归一化字段 `minimum_order_size` 按 BUY-only share 下限解释。Provider 写 `info["min_buy_quantity"]`(当前默认/实盘为 5)，不写通用 `BinaryOption.min_quantity`；BUY 还要求 `quantity × price >= 1 USD`，写入 `info["min_buy_notional"]=1.0`。Strategy 与 Risk 只对 BUY 应用两项，PM 库存减仓 SELL 均不应用。
 
 **PMSPORTS event anchor discovery(#127,已落地 slice B)**:
 `PolymarketSportsInstrumentProvider` 复用同一组公开 Gamma discovery 目标(`ArbContext.target_competitions_by_data_source["PMSPORTS"]`,

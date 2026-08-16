@@ -207,16 +207,16 @@ def test_submit_floors_pm_sell_qty_to_order_grid():
     assert float(submitted[0].quantity) == 17.04
 
 
-def test_submit_floors_pm_buy_qty_to_order_grid():
-    """BUY 入场 28.6615 → 28.66(floor 到 0.01,防 6 位小数下单量重踩 #280)。"""
+def test_submit_rounds_pm_buy_qty_to_order_grid():
+    """PM BUY 保留两位小数，但按正常四舍五入而非 SELL 的向下取整。"""
     submit, cache, submitted = _build()
     cache.instrument.return_value = _pm_like_instrument()
     from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
     iid = InstrumentId(Symbol("0xabc-123"), Venue("POLYMARKET"))
 
-    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 28.6615, "price": 0.49}))
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 28.666, "price": 0.49}))
 
-    assert float(submitted[0].quantity) == 28.66
+    assert float(submitted[0].quantity) == 28.67
 
 
 def test_submit_no_floor_without_order_grid_key():

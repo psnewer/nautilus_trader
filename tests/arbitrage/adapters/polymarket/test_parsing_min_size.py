@@ -3,7 +3,7 @@
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
 
 
-def test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size():
+def test_parse_polymarket_instrument_sets_buy_only_minimums():
     token_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
     market_info = {
         "condition_id": "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
@@ -21,6 +21,7 @@ def test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size():
         ts_init=0,
     )
 
-    assert instrument.min_quantity.as_double() == 5.0
+    assert instrument.min_quantity is None
     assert instrument.min_notional is None
+    assert instrument.info["min_buy_quantity"] == 5.0
     assert instrument.info["min_buy_notional"] == 1.0

@@ -69,6 +69,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
     `cache.instrument(iid)` 返 None(冷启动 / 未订阅)→ 跳过 + warning,不 raise。
     """
     from decimal import ROUND_DOWN
+    from decimal import ROUND_HALF_UP
     from decimal import Decimal
 
     from nautilus_trader.core.uuid import UUID4
@@ -102,16 +103,17 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 enable_timeout=spec.get("enable_timeout"),
                 market=spec.get("market"),
             ))
-        # 下单量落 venue 可撮网格:PM instrument 精度存 token 真值(1e-6),但下单必须 floor 到
-        # info["order_size_increment"](0.01)——否则 order.quantity(6 位)与 venue 撮到的量不一致,
-        # NT 眼里永远差尾量填不满(#280 搬进账本);SELL floor ≤ 真实持有,绝不超卖。OE/SE 无此键 → 原样。
+        # PM 下单量统一保留到 order_size_increment 网格：SELL 向下取整保证不超卖，
+        # BUY 正常四舍五入。持仓仍保留 token 真值(1e-6)。
+        # OE/SE 无此键，不受影响。
         qty_value = float(spec["qty"])
         grid = (getattr(inst, "info", None) or {}).get("order_size_increment")
         if grid:
             g = Decimal(str(grid))
-            qty_value = float((Decimal(str(qty_value)) / g).to_integral_value(rounding=ROUND_DOWN) * g)
+            rounding = ROUND_DOWN if order_side == OrderSide.SELL else ROUND_HALF_UP
+            qty_value = float((Decimal(str(qty_value)) / g).to_integral_value(rounding=rounding) * g)
             if qty_value <= 0:
-                log.warning(f"submit: {iid} qty {spec['qty']} floors below order grid {grid}; skip")
+                log.warning(f"submit: {iid} qty {spec['qty']} rounds to zero on order grid {grid}; skip")
                 return
         order = order_factory.limit(
             instrument_id=iid,

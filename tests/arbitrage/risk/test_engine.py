@@ -402,6 +402,25 @@ def test_pm_sell_does_not_apply_buy_notional_minimum():
     assert ctx.engine._check_min_buy_notional(pm, order) is True
 
 
+def test_pm_buy_below_minimum_quantity_is_denied():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+    order = _DuckOrder(pm.id, price=0.5, qty=Quantity.from_str("4.99"), side="BUY")
+
+    assert ctx.engine._check_min_buy_quantity(pm, order) is False
+    assert any("min_buy_quantity=5.0000" in reason for reason in denials)
+
+
+def test_pm_sell_does_not_apply_buy_quantity_minimum():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(pm.id, price=0.5, qty=Quantity.from_str("0.50"), side="SELL")
+
+    assert ctx.engine._check_min_buy_quantity(pm, order) is True
+
+
 def test_balance_oe_uses_total_not_free():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
@@ -497,7 +516,12 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
     ctx.cache.add_account(_pm_account(ctx, total=100))
 
     # exec 链:用于断言 deny 时不路由到 execution
-    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    exec_engine = ExecutionEngine(
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+        config=ExecEngineConfig(),
+    )
     venue = Venue("POLYMARKET")
     exec_client = MockExecutionClient(
         client_id=ClientId("POLYMARKET"), venue=venue, account_type=AccountType.CASH,
@@ -569,6 +593,60 @@ def test_pm_buy_minimum_notional_denies_on_real_submit_path():
 
     assert denied
     assert exec_engine.command_count == 0
+
+
+def test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=100))
+
+    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    exec_client = MockExecutionClient(
+        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
+        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
+    )
+    exec_engine.register_client(exec_client)
+    strategy = Strategy()
+    strategy.register(
+        trader_id=ctx.trader_id,
+        portfolio=ctx.portfolio,
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+    )
+
+    buy = strategy.order_factory.limit(
+        pm.id,
+        OrderSide.BUY,
+        Quantity.from_str("4.99"),
+        pm.make_price(0.5),
+    )
+    ctx.engine._handle_submit_order(SubmitOrder(
+        trader_id=ctx.trader_id,
+        strategy_id=strategy.id,
+        position_id=None,
+        order=buy,
+        command_id=UUID4(),
+        ts_init=ctx.clock.timestamp_ns(),
+    ))
+    assert exec_engine.command_count == 0
+
+    sell = strategy.order_factory.limit(
+        pm.id,
+        OrderSide.SELL,
+        Quantity.from_str("4.99"),
+        pm.make_price(0.5),
+    )
+    ctx.engine._handle_submit_order(SubmitOrder(
+        trader_id=ctx.trader_id,
+        strategy_id=strategy.id,
+        position_id=None,
+        order=sell,
+        command_id=UUID4(),
+        ts_init=ctx.clock.timestamp_ns(),
+    ))
+    assert exec_engine.command_count == 1
 
 
 def test_recovery_intent_skips_profit_gates_on_real_submit_path():

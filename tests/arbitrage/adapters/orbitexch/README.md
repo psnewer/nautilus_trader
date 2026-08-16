@@ -326,6 +326,7 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **输入**: strategy 调 `submit_order(new_order)`,execution 入口检查到残留
 **期望**:
 - session 退化为 cancel-only,**丢弃 `new_order`**(不进队列,不延后下发)
+- 共用 residual cancel 入口在 venue IO 前生成 `OrderPendingCancel`，Cache 状态进入 `PENDING_CANCEL`，与标准 `Strategy.cancel_order` 对齐
 - 撤掉残留 → track 到 CANCELED terminal(#108:不再写 `leg_settled`;残单撤单纳入 `PairInFlightGate.exec_count`,见 synchronization §8.4)
 - strategy 端不到下一轮重发,系统不替它补发
 **验收**: cancel session 单一职责,submit 被显式丢弃
@@ -455,9 +456,9 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **输入**: strategy 调 submit 触发 cancel-only session → adapter 发 cancel → venue 不推 CANCELED → 30s timeout
 **期望**:
 - session 结束,**仅 log warning**,不再做任何动作(不重发 cancel、不进新 session)
-- order 在 cache / venue 仍可能是 `ACCEPTED` 或 `PARTIALLY_FILLED`
-- strategy 下一轮调 submit 时,残留检测仍会触发新一轮 cancel-only session(本质上是"再撤一次")
-**验收**: 避免无限循环;依靠 strategy 下轮自然重试
+- order 在 cache 保持 `PENDING_CANCEL` 直至事件/reconcile 更新；一次 inflight QueryOrder 仍无有效报告时生成 `OrderCancelRejected(UNKNOWN)` 并恢复撤单前 open 状态
+- strategy 下一轮调 submit 时重新识别该残单并再次走 cancel-only
+**验收**: 未知撤单结果不伪造 `CANCELED`，残单仍可重撤
 
 ### oe-adapter-5.timeout.5: 超时 alert 不被 partial fill 重设(Q15)
 
@@ -507,9 +508,9 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **期望/验收**:`_submit_order` 成功分支只登记 `_pending_accept[offerId] = client_order_id`,不调用 `generate_order_accepted`;`_on_current_bets` 每帧先检查 `_pending_accept` 中的 offerId 是否已出现在 `_current_bets`(不看是否已成交),命中即弹出并 ack;ack 与 fill 派生是独立的一次性状态跃迁,不受 #255 静默帧规则约束(reload 首帧也照常 ack)。同帧内若该 offerId 已开始成交,fill 派生经 `newly_acked` 兜底解析 client_order_id。用例:`test_submit_order_success_registers_pending_accept_not_immediate_ack`、`test_pending_accept_acks_on_first_current_bets_sighting_unmatched`、`test_pending_accept_acks_during_reload_quiet_frame`、`test_pending_accept_same_frame_fill_resolves_via_newly_acked`。
 
 ### oe-adapter-5.inflight.3:cancel-only 复用既有 session
-**前置**:execution mixin 已为残留单建立 cancel session。
+**前置**:execution mixin 已为残留单生成 `OrderPendingCancel` 并建立 cancel session。
 **输入**:调用 residual cancel。
-**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
+**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；一次 QueryOrder 后仍未知则 cancel reject 恢复 open，供下一轮重撤。离线用例覆盖 `session_started=True`，共用状态用例见 execution README `execution-4.2.5a`。
 
 ### oe-adapter-5.inflight.4:grouped CancelOrder 复用同步预建 session
 **前置**:Execution grouped cancel barrier release 显式 OE CancelOrder。

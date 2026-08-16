@@ -10,7 +10,7 @@
 
 **#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / `_pair_id_for_order` 原读 `info["competition"]` 是错读(`competition` 是联赛名,EPL/NFL...,非 pair_id)。现改读 matching 的 `PairRegistry`(`configure_arb(pair_registry=...)`);测试用例同步加 `PairRegistry.register(pair_id, [instrument_ids])`,见 `test_engine._gate_ctx` / `test_portfolio.test_resolve_pair_id_reads_from_pair_registry`。`_leg_from_position` 同步加 `selection_role`(Q9 标准 key)兼容 `market_type` fallback。
 
-**仍待落 .py / 延后**(需全节点 / discovery / execution 接线):risk-6.1/6.2(全管道透明拦截 + NT min_quantity 自动拒,需起节点)、risk-6.3/6.4(cache 真实持仓 + venue stale 兜底)、risk-6.5/6.6(账户状态维护,属 execution)、risk-6.7.5/6/9 与 6.9.{2全路径,3,5,7,8,10,11}(需 cache 真实 Position 而非 duck/stub)。
+**仍待落 .py / 延后**(需全节点 / discovery / execution 接线):risk-6.1/6.2(全节点透明拦截,需起节点)、risk-6.3/6.4(cache 真实持仓 + venue stale 兜底)、risk-6.5/6.6(账户状态维护,属 execution)、risk-6.7.5/6/9 与 6.9.{2全路径,3,5,7,8,10,11}(需 cache 真实 Position 而非 duck/stub)。
 
 ## 锁定的关键性约束(2026-05-09 三次修正后)
 
@@ -28,7 +28,7 @@ ExecutionClient (维护账户)
 ```
 
 **唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
-- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE/SE:`instrument.min_notional=Money(min_stake * fx, USD)`)
+- NT 父类自动处理通用最小限额(OE/SE:`instrument.min_notional=Money(min_stake * fx, USD)`);PM 的 BUY-only share/金额下限由子类读取 instrument info。
 - 子类加 `_check_balance` hook 做余额检查
 
 **删除**:
@@ -44,12 +44,12 @@ ExecutionClient (维护账户)
 - 期望: `ArbitrageLiveRiskEngine._check_order` 被调用 → 通过则路由到 ExecutionClient,被拒发 `OrderDenied`
 - 验收: Strategy 不需要主动调任何 risk API,完全透明
 
-### risk-6.2: NT 自动处理 venue 最小下单额
+### risk-6.2: venue 最小下单额透明门控
 - 输入:
-  - PM:提交一个 `quantity < instrument.min_quantity(5 shares)` 的订单
+  - PM:分别提交小于 `info.min_buy_quantity(5 shares)` 的 BUY 与 SELL
   - OE/SE:提交一个 USD stake/notional `< instrument.min_notional(min_stake * fx)` 的订单
-- 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
-- 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测。NT core 拒单日志已降为 DEBUG,默认日志不再把预期 min-notional/min-size 拒单刷成 WARN;验收应看 `OrderDenied` / strategy 回调 / barrier deny 事件,不要依赖 WARN 行。
+- 期望: PM BUY 被子类拒绝、PM SELL 放行；OE/SE 仍由 NT 父类按 `min_notional` 拒绝。拒绝时 `Strategy.on_order_denied` 触发。
+- 验收: Provider 元数据由 `test_parse_polymarket_instrument_sets_buy_only_minimums` / `test_build_legs_sets_orbitexch_min_stake` 锁定；`test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path` 覆盖真实 SubmitOrder→RiskEngine 路径。
 
 ### risk-6.3: 应用层余额检查(统一读可用余额,Q17 修订已落地)
 - 前置: ExecutionClient 已写入 cache.account_state
@@ -373,12 +373,13 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   均 fail-closed；不再用 `selection_role/market_type` 兜底成旧 outcome。
 - Risk 余额门控只消费 Venue Registry `order_required_balance`，不维护独立 liability 公式。
 
-## #234:PM BUY-only 1 USD 门控
+## #234/#344:PM BUY-only share 与 1 USD 门控
 
 - `test_pm_buy_below_minimum_notional_is_denied`:BUY 5 @ 0.10 的 0.50 USD 订单被拒。
 - `test_pm_buy_at_minimum_notional_passes`:BUY 5 @ 0.20 恰好 1 USD 放行。
-- `test_pm_sell_does_not_apply_buy_notional_minimum`:SELL 5 @ 0.10 不应用 BUY 金额下限；最小 5 shares 仍由 NT `min_quantity` 处理。
+- `test_pm_sell_does_not_apply_buy_notional_minimum` / `test_pm_sell_does_not_apply_buy_quantity_minimum`:SELL 不应用 BUY 金额或 share 下限。
 - `test_pm_buy_minimum_notional_denies_on_real_submit_path`:真实 `SubmitOrder → RiskEngine` 派发产生 deny，且订单不泄漏到 ExecutionEngine。
+- `test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path`:同一 PM instrument 上 BUY 4.99 被拒，SELL 4.99 通过父类与自定义 Risk 并进入 ExecutionEngine。
 
 ## #282:pair outcome exposure 纳入已实现盈亏
 

@@ -200,8 +200,16 @@
 - 输入:cancel-only 发出两条残单撤单请求；正常响应由 ACK 收口；测试替身不产生 ACK 时，随后以两条 `OrderCanceled` 收口。
 - 期望:每条 session 分别由正常响应 ACK、cancel terminal 或 watchdog 结束；仍有任一 session 在飞时 `_execution_active` 保持 True。
 - 验收:`test_session.py::test_base_cancel_only_tracks_residual_until_cancel_terminal` /
+  `test_base_cancel_only_marks_residual_pending_cancel_before_venue_io` /
   `test_orbitexch_client.py::test_cancel_residual_tracked_keeps_execution_active_until_all_terminal` /
   `test_cancel_residual_execution_active_held_until_last_cancel`。
+
+### execution-4.2.5a: cancel-only 对齐 PENDING_CANCEL 与 UNKNOWN reject 恢复
+
+- 前置:残单为 `ACCEPTED`，barrier/per-client cancel-only 绕过 `Strategy.cancel_order` 直接撤单。
+- 输入:共用 residual cancel 入口发起撤单；随后 inflight QueryOrder 没有返回有效 report。
+- 期望:venue IO 前先发布 `OrderPendingCancel` 并把 Cache 订单置为 `PENDING_CANCEL`；再次遇到该残单时不重复发 venue cancel；只发送一次 inflight `QueryOrder`，下个 threshold 仍无有效报告时生成 `OrderCancelRejected(reason=UNKNOWN)`、恢复撤单前的 `ACCEPTED/PARTIALLY_FILLED` 并清理 tracking，使下一轮 cancel-only 可以再次撤。
+- 验收:`test_session.py::test_base_cancel_only_marks_residual_pending_cancel_before_venue_io` / `test_engine_barrier.py::test_pending_cancel_inflight_failure_rejects_cancel_and_restores_open_state`。
 
 ## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)
 

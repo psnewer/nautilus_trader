@@ -16,7 +16,7 @@
 - ⬜ PM Provider 冷启动 / 字段完整度 / API 失败保 cache 需 Gamma/CLOB live smoke 验;不保留 skipped pytest 空壳。
 - ⬜ DataClient 原生发现 → cache → matching timer → MatchedPair 的全节点路径仍归上层 e2e/live smoke 验;不再以 Refresher/msgbus 事件作为验收对象。
 
-**2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
+**2026-08-16 BUY-only 最小 share 修正;2026-06-30 fx 口径校准**:PM 最小 share 只约束 BUY，Provider 产物为 `BinaryOption.min_quantity=None` + `info.min_buy_quantity=5`；OE 最小值是 stake 7 GBP,adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量。
 
 **OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。OE discovery fetcher 不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。SE 保持相同的登录边界,但其 discovery IO 已因 Cloudflare/TLS 差异改为整轮临时 page-native fetch。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events/keyset?series_id=...` 写入,不再是旧 enricher seam 待办。
 
@@ -85,7 +85,7 @@ pyo3 `WebSocketClient`，并复用 PM 显式代理；Gamma discovery、synthetic
 - `taker_fee` / `maker_fee`(从 Gamma API fee schedule 富化得到)
 - `info` dict(用于 §6.4 异构归一,见 Q9 章节)
 
-**验收标准**: 所有字段非空 AND fee_schedule 富化生效(taker_fee 不为 0);`min_quantity` 应等于 PM `minimum_order_size`(当前默认 5 shares),由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` 锁定。
+**验收标准**: 所有 matching 字段非空 AND fee_schedule 富化生效(taker_fee 不为 0);`info.min_buy_quantity` 应等于 PM `minimum_order_size`(当前默认 5 shares)，且 `min_quantity is None`，由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_buy_only_minimums` 锁定。
 
 ---
 
@@ -247,7 +247,8 @@ info 写入；完整 Gamma HTTP 路径仍由 live smoke 验。
 
 ### discovery-pm-minimum.2:PM BUY-only 最小金额(#234)
 
-- PM `minimum_order_size` 继续映射为 `BinaryOption.min_quantity`，同时 parsing 在 instrument info 写 `min_buy_notional=1.0`。
+- PM `minimum_order_size` 映射为 BUY-only `info.min_buy_quantity`，同时 parsing 写 `info.min_buy_notional=1.0`；通用 `BinaryOption.min_quantity/min_notional` 均保持 None。
+- PM parsing 写入 `info.order_size_increment=0.01` 作为两侧下单网格；SELL 使用 `ROUND_DOWN`，BUY 使用 `ROUND_HALF_UP`，Position/fill 仍保留 `size_precision=6` 真值。
 - 不写通用 `BinaryOption.min_notional`，因为 1 USD 仅约束 BUY、SELL 只受最小 shares 约束。
 - 验收：`tests/arbitrage/adapters/polymarket/test_parsing_min_size.py`。
 

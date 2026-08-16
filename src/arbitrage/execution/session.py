@@ -23,11 +23,14 @@ ArbExecutionSessionMixin —— PM 子类 / OE 客户端共用的执行 session 
 from __future__ import annotations
 
 from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.core.fsm import InvalidStateTrigger
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.events import OrderAccepted
 from nautilus_trader.model.events import OrderCanceled
 from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.events import OrderExpired
 from nautilus_trader.model.events import OrderFilled
+from nautilus_trader.model.events import OrderPendingCancel
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
@@ -364,8 +367,40 @@ class ArbExecutionSessionMixin:
         也由 watchdog 兜底(无需 max-hold 等兜底)。子类实现 `_cancel_residual_one(order)`
         (真实 venue 撤单请求,async),最终由 `OrderCanceled`/`OrderCancelRejected` 或 timeout 收口。"""
         for order in residual:
+            if not self._mark_residual_pending_cancel(order):
+                continue
             if self._begin_cancel_session(order):
                 self._loop.create_task(self._tracked_residual_cancel(order))
+
+    def _mark_residual_pending_cancel(self, order) -> bool:
+        """让绕过 Strategy 的 cancel-only 残单撤单进入 NT 原生 PENDING_CANCEL。"""
+        if order.is_closed or order.is_pending_cancel or order.is_active_local:
+            return order.is_active_local and not order.is_closed
+
+        ts_now = self._clock.timestamp_ns()
+        event = OrderPendingCancel(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+            account_id=order.account_id,
+            event_id=UUID4(),
+            ts_event=ts_now,
+            ts_init=ts_now,
+        )
+        try:
+            order.apply(event)
+        except InvalidStateTrigger as e:
+            self._log.warning(f"InvalidStateTrigger: {e}, did not apply {event}")
+            return False
+
+        self._cache.update_order(order)
+        self._msgbus.publish(
+            topic=f"events.order.{order.strategy_id}",
+            msg=event,
+        )
+        return True
 
     async def _tracked_residual_cancel(self, order) -> None:
         """#105:撤一条残单；session 由正常响应 ACK、cancel terminal 或 watchdog 收尾。"""

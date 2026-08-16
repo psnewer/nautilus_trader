@@ -16,6 +16,8 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.events import OrderPendingCancel
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Quantity
@@ -126,6 +128,9 @@ class _FakeCache:
 
     def add_residual(self, order):
         self._open.append(order)
+
+    def update_order(self, order):
+        self._orders[order.client_order_id] = order
 
     def orders_open(self, instrument_id=None):
         return [o for o in self._open if o.instrument_id == instrument_id]
@@ -584,6 +589,47 @@ def test_base_cancel_only_tracks_residual_until_cancel_terminal():
     client._send_order_event(TestEventStubs.order_canceled(residual))
 
     assert not client._execution_active
+
+
+def test_base_cancel_only_marks_residual_pending_cancel_before_venue_io():
+    clock = TestClock()
+    msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
+    cache = _FakeCache()
+    client = FakeTrackedCancelClient(clock, msgbus, cache, 30.0)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=clock,
+    )
+    residual = _order(factory, pm)
+    residual.apply(TestEventStubs.order_submitted(residual))
+    residual.apply(TestEventStubs.order_accepted(residual))
+    cache.add_order(residual)
+    cache.add_residual(residual)
+    pending_events = []
+    msgbus.subscribe(
+        topic=f"events.order.{residual.strategy_id}",
+        handler=pending_events.append,
+    )
+    scheduled = []
+
+    def _record_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace()
+
+    client._loop = SimpleNamespace(create_task=_record_task)
+
+    ArbExecutionSessionMixin._cancel_residual_orders(client, pm.id, [residual])
+    ArbExecutionSessionMixin._cancel_residual_orders(client, pm.id, [residual])
+
+    assert residual.status == OrderStatus.PENDING_CANCEL
+    assert residual.is_inflight
+    assert len(pending_events) == 1
+    assert isinstance(pending_events[0], OrderPendingCancel)
+    # 与 Strategy.cancel_order 对齐：已经 PENDING_CANCEL 时不再发 venue cancel。
+    assert len(scheduled) == 1
 
 
 def test_base_cancel_only_skips_residual_with_active_cancel_session(caplog):

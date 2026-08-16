@@ -6,7 +6,7 @@ CandiSelectAction —— 本树候选的最小下注门控 + 组内选择。
    逐腿按与 place_bets 共用的 `leg_plan`
    解析 side/price/qty,对实际提交 instrument(`exec_instrument_id` 优先)检查
    `min_quantity` / `min_notional`(经 `notional_value`,与 NT 原生口径一致)/
-   BUY `min_buy_notional`;任一腿不过整 candidate 淘汰。
+   BUY `min_buy_quantity` + `min_buy_notional`;任一腿不过整 candidate 淘汰。
 2. **组内选择**:legs 内最大 `share_if_wins` 最高者胜出,写
    `ctx.scratch["selected_candidate"]`(含 intent 标记)和 `ctx.scratch["legs"]`。
 
@@ -125,8 +125,8 @@ def _min_bet_violation(ctx: EvalContext, candidate: dict) -> str | None:
 
 def _instrument_min_violation(instrument, side: str, qty: float, price: float) -> str | None:
     """与 NT/Risk 同口径:qty 经 make_qty 规整后比 min_quantity;notional 经 notional_value
-    (OE/SE stake 口径由 instrument 自己定义);BUY 另比 info["min_buy_notional"]
-    (qty*price,同 Risk `_check_min_buy_notional`)。真 NT instrument 走原生方法;
+    (OE/SE stake 口径由 instrument 自己定义);BUY 另比 info 中的
+    `min_buy_quantity` / `min_buy_notional`。真 NT instrument 走原生方法;
     缺方法的对象(单测 mock)退回 float 口径。"""
     quantity = qty
     make_qty = getattr(instrument, "make_qty", None)
@@ -148,6 +148,12 @@ def _instrument_min_violation(instrument, side: str, qty: float, price: float) -
 
     if side == "BUY":
         info = getattr(instrument, "info", None) or {}
+        try:
+            min_buy_quantity = float(info.get("min_buy_quantity") or 0.0)
+        except (TypeError, ValueError):
+            min_buy_quantity = 0.0
+        if min_buy_quantity > 0 and quantity + _EPS < min_buy_quantity:
+            return f"qty={quantity:.4f} < min_buy_quantity={min_buy_quantity:.4f}"
         try:
             min_buy = float(info.get("min_buy_notional") or 0.0)
         except (TypeError, ValueError):
