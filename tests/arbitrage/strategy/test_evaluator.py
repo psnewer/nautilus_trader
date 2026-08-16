@@ -931,6 +931,36 @@ def test_first_price_is_not_captured_after_game_is_live():
     assert actor._get_pair_price_store().get("match_X").first_price == {}
 
 
+def test_extreme_prices_update_without_first_price_and_require_clean_sum():
+    from tests.arbitrage.matching.test_actor import _add_order_book
+
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.first_price == {}
+    assert state.up_price == {"yes": 0.44, "no": 0.56}
+    assert state.down_price == {"yes": 0.44, "no": 0.56}
+
+    _add_order_book(actor.cache, yes.id, 0.7)
+    _add_order_book(actor.cache, no.id, 0.3)
+    actor.on_order_book_deltas(_obd(str(no.id)))
+    _run(_drain(loop))
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.up_price == {"yes": 0.7, "no": 0.56}
+    assert state.down_price == {"yes": 0.44, "no": 0.3}
+
+    _add_order_book(actor.cache, yes.id, 0.9)
+    _add_order_book(actor.cache, no.id, 0.9)
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.up_price == {"yes": 0.7, "no": 0.56}
+    assert state.down_price == {"yes": 0.44, "no": 0.3}
+
+
 def test_start_price_not_captured_without_witnessed_first_price():
     # late-join 护栏:没采到 first_price → 收到 live phase 也不采 start_price,保持默认。
     # (sports_state=None 时 first_price 本就不采,此路径天然满足——避免盘中价污染 dash_gate 阈值。)

@@ -231,6 +231,7 @@ class StrategyEvaluator(Strategy):
         # 所有 tradable venue 的 OBD 都可触发;NT 已在本回调前更新对应 book cache。
         self._update_price_trend(deltas)
         self._capture_first_price(deltas)
+        self._update_extreme_prices(deltas)
         self._route_eval(deltas)
 
     def _update_price_trend(self, deltas) -> None:
@@ -439,6 +440,23 @@ class StrategyEvaluator(Strategy):
             return
         store.capture_first(pair_id, prices)
 
+    def _update_extreme_prices(self, deltas) -> None:
+        """用满足 commission 区间的完整 PM 向量更新 outcome 历史极值。"""
+        instrument_id = getattr(deltas, "instrument_id", None)
+        if instrument_id is None or venue_id_from_instrument_id(instrument_id) != POLYMARKET:
+            return
+        pair_id = self._pair_registry.get(instrument_id)
+        if pair_id is None:
+            return
+        store = self._get_pair_price_store()
+        state = store.get(pair_id) if store is not None else None
+        if state is None:
+            return
+        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+        if prices is None or not 0.95 <= sum(prices.values()) <= 1.05:
+            return
+        store.update_extremes(pair_id, prices)
+
     def _capture_start_prices(self, update: SportsGameUpdate) -> None:
         if not update.live or update.ended:
             return
@@ -605,7 +623,7 @@ class StrategyEvaluator(Strategy):
         return self._sports_store
 
     def _get_pair_price_store(self):
-        """lazy 建 PairPriceStore，保存 PM 初始/开赛完整价格向量。"""
+        """lazy 建 PairPriceStore，保存 PM 初始/开赛/极值价格向量。"""
         if self._pair_price_store is None:
             try:
                 self._pair_price_store = PairPriceStore(self.cache)

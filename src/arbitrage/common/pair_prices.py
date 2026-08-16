@@ -14,6 +14,8 @@ _STORE_KEY_PREFIX = "arb:pair_price:"
 class PairPriceState:
     first_price: dict[str, float]
     start_price: dict[str, float]
+    up_price: dict[str, float]
+    down_price: dict[str, float]
 
 
 class PairPriceStore:
@@ -34,6 +36,8 @@ class PairPriceStore:
         return PairPriceState(
             first_price={str(k): float(v) for k, v in values["first_price"].items()},
             start_price={str(k): float(v) for k, v in values["start_price"].items()},
+            up_price={str(k): float(v) for k, v in values.get("up_price", {}).items()},
+            down_price={str(k): float(v) for k, v in values.get("down_price", {}).items()},
         )
 
     def initialize(self, pair_id: str, outcomes) -> PairPriceState:
@@ -48,6 +52,8 @@ class PairPriceStore:
         state = PairPriceState(
             first_price={},
             start_price=dict.fromkeys(normalized, DEFAULT_START_PRICE),
+            up_price={},
+            down_price={},
         )
         self._put(pair_id, state)
         return state
@@ -56,7 +62,12 @@ class PairPriceStore:
         state = self.get(pair_id)
         if state is None or state.first_price or set(prices) != set(state.start_price):
             return False
-        self._put(pair_id, PairPriceState(first_price=dict(prices), start_price=state.start_price))
+        self._put(pair_id, PairPriceState(
+            first_price=dict(prices),
+            start_price=state.start_price,
+            up_price=state.up_price,
+            down_price=state.down_price,
+        ))
         return True
 
     def capture_start(self, pair_id: str, prices: dict[str, float]) -> bool:
@@ -65,7 +76,33 @@ class PairPriceStore:
             return False
         if any(value != DEFAULT_START_PRICE for value in state.start_price.values()):
             return False
-        self._put(pair_id, PairPriceState(first_price=state.first_price, start_price=dict(prices)))
+        self._put(pair_id, PairPriceState(
+            first_price=state.first_price,
+            start_price=dict(prices),
+            up_price=state.up_price,
+            down_price=state.down_price,
+        ))
+        return True
+
+    def update_extremes(self, pair_id: str, prices: dict[str, float]) -> bool:
+        """用一个完整同刻价格向量更新各 outcome 的历史最高/最低价。"""
+        state = self.get(pair_id)
+        if state is None or set(prices) != set(state.start_price):
+            return False
+        up_price = {
+            outcome: max(float(prices[outcome]), state.up_price.get(outcome, float("-inf")))
+            for outcome in state.start_price
+        }
+        down_price = {
+            outcome: min(float(prices[outcome]), state.down_price.get(outcome, float("inf")))
+            for outcome in state.start_price
+        }
+        self._put(pair_id, PairPriceState(
+            first_price=state.first_price,
+            start_price=state.start_price,
+            up_price=up_price,
+            down_price=down_price,
+        ))
         return True
 
     def delete(self, pair_id: str) -> None:
@@ -75,5 +112,7 @@ class PairPriceStore:
         raw = json.dumps({
             "first_price": state.first_price,
             "start_price": state.start_price,
+            "up_price": state.up_price,
+            "down_price": state.down_price,
         }).encode("utf-8")
         self._cache.add(self._key(pair_id), raw)

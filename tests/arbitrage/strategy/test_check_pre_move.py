@@ -32,7 +32,7 @@ def _fake_book(ask):
     return book
 
 
-def _ctx(*, now, first, share=5.0):
+def _ctx(*, now, extremes=None, share=5.0):
     infos = {"Y.POLYMARKET": {"claim": "yes"}, "N.POLYMARKET": {"claim": "no"}}
     books = {
         "Y.POLYMARKET": _fake_book(now["yes"]),
@@ -43,15 +43,18 @@ def _ctx(*, now, first, share=5.0):
     registry.register("p", list(infos.keys()))
     store = PairPriceStore(cache)
     store.initialize("p", ["yes", "no"])
-    if first is not None:
-        store.capture_first("p", first)
+    for prices in extremes or ():
+        store.update_extremes("p", prices)
     return EvalContext(
         pair_id="p", cache=cache, pair_registry=registry, strategy_defaults={"share": share},
     )
 
 
 def test_buys_outcome_whose_probability_dropped_enough():
-    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, first={"yes": 0.50, "no": 0.50})
+    ctx = _ctx(
+        now={"yes": 0.38, "no": 0.62},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
 
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is True
     legs = ctx.scratch["legs"]
@@ -66,31 +69,58 @@ def test_buys_outcome_whose_probability_dropped_enough():
 
 
 def test_no_hit_when_drop_below_threshold():
-    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, first={"yes": 0.50, "no": 0.50})
+    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, extremes=[{"yes": 0.50, "no": 0.50}])
     assert PreMoveCheck(move_threshold=0.15).passes(ctx) is False
     assert "legs" not in ctx.scratch
 
 
 def test_equal_threshold_hits():
-    ctx = _ctx(now={"yes": 0.40, "no": 0.60}, first={"yes": 0.50, "no": 0.50})
+    ctx = _ctx(now={"yes": 0.40, "no": 0.60}, extremes=[{"yes": 0.50, "no": 0.50}])
     assert PreMoveCheck(move_threshold=0.10).passes(ctx) is True
     assert ctx.scratch["legs"][0]["claim"] == "yes"
 
 
-def test_no_first_price_is_noop():
-    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, first=None)  # first_price 空
+def test_no_extreme_price_is_noop():
+    ctx = _ctx(now={"yes": 0.38, "no": 0.62})
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is False
     assert "legs" not in ctx.scratch
 
 
 def test_zero_share_fails_closed():
-    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, first={"yes": 0.50, "no": 0.50}, share=0.0)
+    ctx = _ctx(
+        now={"yes": 0.38, "no": 0.62},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+        share=0.0,
+    )
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is False
     assert "legs" not in ctx.scratch
 
 
 def test_picks_largest_drop_outcome():
     # yes 跌 0.05(不够),no 跌 0.20(够)→ 买 no
-    ctx = _ctx(now={"yes": 0.45, "no": 0.30}, first={"yes": 0.50, "no": 0.50})
+    ctx = _ctx(
+        now={"yes": 0.65, "no": 0.30},
+        extremes=[{"yes": 0.70, "no": 0.30}, {"yes": 0.50, "no": 0.50}],
+    )
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is True
     assert ctx.scratch["legs"][0]["claim"] == "no"
+
+
+def test_price_rise_buys_opposite_probability_down_outcome():
+    ctx = _ctx(
+        now={"yes": 0.62, "no": 0.38},
+        extremes=[{"yes": 0.40, "no": 0.60}],
+    )
+
+    assert PreMoveCheck(move_threshold=0.2).passes(ctx) is True
+    assert ctx.scratch["legs"][0]["claim"] == "no"
+
+
+def test_current_prices_outside_commission_range_do_not_trigger():
+    ctx = _ctx(
+        now={"yes": 0.20, "no": 0.20},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
+
+    assert PreMoveCheck(move_threshold=0.1).passes(ctx) is False
+    assert "legs" not in ctx.scratch

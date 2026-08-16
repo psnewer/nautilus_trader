@@ -348,9 +348,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_action_rejects_non_boolean_limit`；✅
   `test_mean_rebate_e2e.py::test_place_bets_limit_param_loads_from_strategy_json`。
 
-## pre_rebate 策略(#326,设计 · 组件未落地 · live-unvalidated)
+## pre_rebate 策略(#326/#341,已落地 · 离线已验证 · live-unvalidated)
 
-设计见 strategy §3.10。用例待 `pre_move` / `in_game` / `mean_rebate_recovery.force` 落地后补实现。
+设计见 strategy §3.10。
 
 ### strategy-4.pre_rebate.1: in_game StateQuery 判态
 - sports_store `live=True, ended=False` → `in_game` True;`NOT in_game` False。
@@ -360,15 +360,15 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 缺 game_id / 缺 sports_store → `in_game` False(fail-closed)。
 
 ### strategy-4.pre_rebate.2: pre_move 追腿命中/不命中
-- first_price `{yes:0.5, no:0.5}`、现价 `{yes:0.38, no:0.62}`、`move_threshold=0.1` → yes 跌 0.12 ≥ 阈 → 写单条 PM `BUY yes` leg,`qty=qty_from_share(PM, share, 0.38)`。
-- 同上但 `move_threshold=0.15` → 最大跌幅 0.12 < 0.15 → False,不写 leg。
-- 等于阈值(跌幅==阈)→ 命中(`>=`)。
-- first_price 空(`{}`)→ False(无基准,安全 no-op)。
-- PM 盘口缺腿 / 概率非法 / outcome 键不匹配 → False。
+- 极值 `{up:{yes:0.5,no:0.5}, down:{yes:0.5,no:0.5}}`、现价 `{yes:0.38,no:0.62}`、`move_threshold=0.1` → yes 从高点下跌 0.12 → PM `BUY yes`。
+- 极值低点 `{yes:0.4,no:0.6}`、现价 `{yes:0.62,no:0.38}`、`move_threshold=0.2` → yes 上涨 0.22，概率下行方是 no → PM `BUY no`。
+- 同一轮多个信号达阈时取绝对变化幅度最大者；等于阈值命中。
+- `up_price/down_price` 空、PM 盘口缺腿/键不匹配、或当前概率和不在 `[0.95,1.05]` → False。
+- OBD 极值采集仅接受完整 PM 向量且概率和在 `[0.95,1.05]`；新高/新低分别更新 `up_price/down_price`，脏向量不改极值。
 
 ### strategy-4.pre_rebate.3: 赛前门只赛前追腿
 - `NOT in_game` 为真(赛前)且 pre_move 命中 → arb 树出 submit plan。
-- `in_game` 为真(赛中)→ arb 树 self_hits False → 不追腿(即便 first_price 有 mover)。
+- `in_game` 为真(赛中)→ arb 树 self_hits False → 不追腿(即便极值变化已达阈)。
 
 ### strategy-4.pre_rebate.4: 赛前按率补 vs 开赛强补
 - 赛前失衡持仓,`mean_rebate_recovery(min_repaired_rebate)`:补后率 ≥ 阈 → B2 支命中补救;补后率 < 阈 → 不补。
@@ -649,17 +649,20 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 **期望/验收**:ended 扇出分发完毕后,退订本场 sports 与自记的各 pair 腿 OBD;与 matching 侧
 退订汇合归零 → NT 收尾 + 内存回收(Store 条目、managed book)。
 
-### strategy-4.sports.7:PM first/start price Cache
+### strategy-4.sports.7:PM first/start/extreme price Cache
 
 **用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
+`test_extreme_prices_update_without_first_price_and_require_clean_sum`、
 `test_start_price_not_captured_without_witnessed_first_price`、
 `test_start_price_captures_in_play_after_first_price_witnessed`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
 
 **期望/验收**:
-- MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`；
+- MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`；
 - 只有赛前 PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]` 内才首次写 first price；
   非 PM OBD与不干净向量不写；
+- 每个 PM OBD 在评估前用干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
+  不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
 - IN_PLAY phase **仅当该 pair 已采到 `first_price`(见证过赛前)**才对完整 PM 向量首次写
   start price 且不做概率和校验；中途接入(采不到 first_price)不写、保持默认 0.6
   (#322 修订的 late-join 护栏,避免盘中赔率误当开赛价污染 dash_gate 阈值);

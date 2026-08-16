@@ -428,7 +428,7 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
 | `TrendGateAction(trend="up", steps=None)` | `src/arbitrage/strategy/actions/trend_gate.py` | 按 **pair 级跨 venue/outcome 一致**的价格趋势筛 `selected_candidate` 的 leg(#329/#336,消费 #trend §3.8.3)。**一致判据**:某 outcome 的**所有 venue 腿 Δprob≥0(up/flat)**且互斥 outcome 的**所有 venue 腿 Δprob≤0(down/flat)**、至少一处严格移动 → 该 outcome 为"干净上升"(complement 即下降)。`steps` 缺失/`None` 时完全保持该逻辑；存在时额外要求该 pair **全部参与一致性检查的 tradable legs**（不只 candidate）满足 `Σ|Δprob| >= steps`，缺失/不可解析的 momentum 按既有 flat=0 口径参与，等于阈值通过；`steps` 必须是有限非负数。**筛选语义 = 符合要求的腿留、不符合的删**:`trend="up"`(**默认,概率变大**)只留上升 outcome 的腿,`trend="down"`(概率变小)只留下降 outcome 的腿。趋势读 `ctx.price_trend`(key=`str(instrument_id)`→Δprob,概率空间 PM/OE/SE 同口径,不二次转);一致判据**扫该 pair 全部 tradable 腿**(含未执行的 OE/SE),缺趋势数据的腿当 flat 参与。**任一 venue 反向 / 无严格移动 / 配置 steps 未达 / `price_trend` 空 / 缺 pair_registry → 无干净趋势 → 没有腿符合 → 全删**(candidate 清空,本轮不下该单);outcome 无法解析的腿也不符合 → 删。只处理 `candi_select` 选出的 candidate,回写两份 legs 视图、元数据不变;撤单 candidate / 空 legs 不处理。`trend`/`steps` 非法值构造即 `ValueError`。one_side_rebate 套利链用它替换 dash_gate。⚠️ 预热期(相关腿还没攒够两帧)或行情全平时会全删 → one_side_rebate 本轮不下单,属有意的严格取舍 |
-| `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追腿(#326):读 `PairPriceStore.first_price` 与当前 PM best ask 概率向量,对每个 outcome 算**绝对概率跌幅** `first - now`;最大跌幅 `>=` `move_threshold` 的 outcome = mover(赔率变大/概率变小),写单条 PM `BUY` leg(`qty=qty_from_share(PM, strategy_defaults["share"], now)`,带 `share_if_wins`)到 `ctx.scratch["legs"]`。`first_price` 空 / 缺完整 PM 盘口 / 概率非法 / 无 outcome 达阈 → False(安全 no-op)。赛前/赛中门由 self_hits `in_game` 负责(§3.10),本 Check 不自判 phase |
+| `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追概率下行腿(#341):读 `PairPriceStore.up_price/down_price` 与当前完整 PM best ask 向量。某 outcome 从历史最高价下跌 `up-now >= move_threshold` 时买它自身；从历史最低价上涨 `now-down >= move_threshold` 时买其互补 outcome。多信号同时命中取变化幅度最大者，等于阈值命中；写单条 PM `BUY` leg(`qty=qty_from_share(PM, share, now)`)。当前向量和极值采样均必须满足 commission 闭区间 `[0.95,1.05]`；缺极值/完整腿、区间不通过或无变化达阈均 False。赛前/赛中门由 self_hits `in_game` 负责(§3.10) |
 | `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None, limit=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。旧交叉门代码保留为注释，供后续恢复。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 改挂 live best bid、SELL 改挂 live best ask。`market=true` 只写订单 metadata，最终市价转换见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
 
 **`head_rebate` 组合成熟度（离线已验证，live-unvalidated，2026-08-13）**：
@@ -500,10 +500,10 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 5. Strategy 不冻结 sports state。新 phase update 由 per-(game,phase) topic 触发下一轮评估；
    查询发生时读取当时的 Store 当前值。
 
-#### 3.8.2 PM 初始/开赛价格采集(#323,已落地)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-16)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
-`first_price/start_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
+`first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
 一个 3-way event 仍是 home/draw/away 三个 binary pair，每个 pair 按自身 `yes/no` outcomes
 独立保存，不聚合成 event 级价格。
 
@@ -534,6 +534,12 @@ Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整
 **仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且所有 start values 仍为默认 `0.6` 时，
 读取当时 Cache 中完整 PM best ask 向量并整组首次写入，不执行概率和校验。phase 时缺完整
 PM 盘口则保留默认值，后续 OBD 不补写。
+
+**up_price/down_price(#341)**：每个 PM OBD 回调在路由评估前，读取该 pair 各 outcome 唯一且
+完整的 PM best ask 概率向量；仅当概率和位于 commission 闭区间 `[0.95,1.05]` 才采样。
+首个有效向量同时初始化两组极值，后续按 outcome 分别更新 `up=max(up,now)` 与
+`down=min(down,now)`。本采集不依赖 Sports Store/`first_price`：`pre_move` 由 `NOT in_game`
+限定下单阶段，极值内存只负责忠实记录有效行情。OE/SE OBD 不更新该字段。
 
 **`first_price` 前置 = late-join 护栏（#322 修订）**：firehose 不推赛前帧、一场首帧即
 IN_PLAY（data §3.4.2），故"phase live 帧"本身无法区分"赛前订上、首帧≈开赛"与"中途接入、
@@ -709,14 +715,14 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 `strategy_id="ARB-EVAL"` + `order_id_tag="001"`，由 NT `Strategy` 生成最终 ID。所有 evaluator
 订单的 `order.strategy_id` 与 `SubmitOrder.strategy_id` 均来自该注册策略，不再手写 literal。
 
-### 3.10 pre_rebate 策略配置形态(#326,设计 · 组件未落地 · live-unvalidated · as-of 2026-08-08)
+### 3.10 pre_rebate 策略配置形态(#326/#341,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-16)
 
 **意图**:赛前"追赔率变大(概率变小)的腿"投机 + 返水补救,开赛兜底强平衡。三行为,用 condition
 (self_hits `in_game`)分赛前/赛中:
 
 | 行为 | 触发 | 命中条件 | 动作 |
 |---|---|---|---|
-| B1 赛前追腿 | PM OBD | 赛前(`NOT in_game`)且某 outcome 现价较 `first_price` **绝对概率跌幅 ≥ move_threshold** | PM `BUY` 该 outcome,量 = `arbitrage.share` |
+| B1 赛前追腿 | PM OBD | 赛前(`NOT in_game`)且任一 outcome 相对 `up_price/down_price` 的变化幅度 `≥ move_threshold` | PM `BUY` 概率下行 outcome,量 = `arbitrage.share` |
 | B2 赛前返水补救 | OBD / phase | 赛前 且已有失衡持仓 且 `mean_rebate_recovery` 补后率 ≥ `min_repaired_rebate` | 补另一腿(recovery)|
 | B3 开赛强制补救 | phase `live` | 赛中(`in_game`)且仍失衡 | `mean_rebate_recovery(force=true)` 无条件补,不看率 |
 
@@ -750,12 +756,9 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
   同轮只命中一支;B3 在前(赛中优先强补)。
 - **树间取舍不变**:comp_plan > arb_plan(§4.2)。赛前若已失衡且率达标 → B2 先于 B1
   (先补救再谈新腿)。
-- **`pre_move` 依赖 `first_price` 已被采集**:first_price 的采集条件与 late-join 污染治理归
-  §3.8.2(与本策略解耦——`pre_move` 只**读**,不负责采);当前 §3.8.2 落地下**实盘 first_price
-  基本不采** → B1 生产命中率取决于 §3.8.2 是否放开赛前采集。这是**已知依赖,不由本策略修复**;
-  first_price 空时 `pre_move` 安全 no-op(不下单)。⚠️ 若要 B1 在实盘真正生效,需另行(在 §3.8.2)
-  引入正面赛前采集信号(如 anchor `market_start_time`),届时会连带影响 one_side_rebate 的
-  dash_gate 阈值,须单独决策。
+- **`pre_move` 依赖有效极值向量(#341)**:`up_price/down_price` 由 §3.8.2 每个 PM OBD 在评估前更新，
+  不再依赖实盘基本无法采到的 `first_price`。取极值与当前比较两侧都要求完整 PM 向量的概率和
+  在 `[0.95,1.05]`；不干净行情不污染极值、也不产生下单信号。
 - **`force` 补救自终止**:B3 每 tick 命中直到缺口补平;补平后 `mean_rebate_recovery` 找不到
   缺口 → 停。
 - **`pnl:false` 防即买即卖(#327)**:pre_rebate 循环开平会累积 banked realizedPNL;若 recovery 补后率

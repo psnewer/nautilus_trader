@@ -1,4 +1,6 @@
-"""PairPriceStore 的初始化、单次写入和释放语义。"""
+"""PairPriceStore 的初始化、参考价/极值写入和释放语义。"""
+
+import json
 
 from src.arbitrage.common.pair_prices import PairPriceStore
 
@@ -22,6 +24,8 @@ def test_initialize_is_idempotent_and_capture_fields_only_once():
     state = store.initialize("p", ["yes", "no"])
     assert state.first_price == {}
     assert state.start_price == {"yes": 0.6, "no": 0.6}
+    assert state.up_price == {}
+    assert state.down_price == {}
 
     assert store.capture_first("p", {"yes": 0.4, "no": 0.6}) is True
     assert store.capture_first("p", {"yes": 0.3, "no": 0.7}) is False
@@ -31,6 +35,31 @@ def test_initialize_is_idempotent_and_capture_fields_only_once():
     state = store.initialize("p", ["home", "away"])
     assert state.first_price == {"yes": 0.4, "no": 0.6}
     assert state.start_price == {"yes": 0.45, "no": 0.55}
+
+
+def test_update_extremes_tracks_each_outcome_high_and_low():
+    store = PairPriceStore(_Cache())
+    store.initialize("p", ["yes", "no"])
+
+    assert store.update_extremes("p", {"yes": 0.4, "no": 0.6}) is True
+    assert store.update_extremes("p", {"yes": 0.55, "no": 0.45}) is True
+    assert store.update_extremes("p", {"yes": 0.35, "no": 0.65}) is True
+
+    state = store.get("p")
+    assert state.up_price == {"yes": 0.55, "no": 0.65}
+    assert state.down_price == {"yes": 0.35, "no": 0.45}
+
+
+def test_old_schema_reads_with_empty_extremes():
+    cache = _Cache()
+    cache.add(
+        "arb:pair_price:p",
+        json.dumps({"first_price": {"yes": 0.4}, "start_price": {"yes": 0.6}}).encode(),
+    )
+
+    state = PairPriceStore(cache).get("p")
+    assert state.up_price == {}
+    assert state.down_price == {}
 
 
 def test_delete_removes_pair_state():
