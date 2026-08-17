@@ -183,7 +183,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价由 `pm_price` 决定**(#330):`test_default_uses_pm_live_price` 默认/不设 → 用 PM 实时 ask(0.55、cost=share×PM 价);`test_pm_price_false_keeps_original_order_prob` `pm_price=False` → 保留原 order prob(0.50、cost=share×原 prob);`test_invalid_pm_price_param_raises` 非法值 ValueError。PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
-- ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖通用 `min_quantity/min_notional`、PM BUY-only `min_buy_quantity/min_buy_notional`、SELL 豁免、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
+- ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
 - ✅ `test_action_dash_gate.py`:`candi_select` 后按对应 `start_price` 的 50% 严格过滤 BUY 腿；覆盖低于删除、等于保留、SELL 保留、`claim/role` outcome 映射、默认 0.6 开赛价、缺概率/outcome/state 不误删，以及 candidate 元数据与两份 legs 视图同步
 - ✅ `test_action_place_bets.py` +2:提交 intent 优先读本树 `selected_candidate["intent"]`；
   无标记时回退 Action 配置值
@@ -587,10 +587,11 @@ candi_select -> place_bets(intent=recovery,market=true)`。
   - 已有 yes 持仓、no 缺口 → 可选择 PM NO BUY 或 decimal SELL@lay,并透传 `claim/lay_price/exec_instrument_id`。
   - repaired rebate 低于阈值仍拒绝;现有 2-way recovery 行为不回归。
 
-## #234:PM 拆单的 BUY-only 最小金额
+## #234/#346:PM 拆单最小量与 BUY-only 最小金额
 
-- live Instrument 约束读取包含 `min_quantity/min_buy_quantity/min_buy_notional/size_increment`；PM SELL 不应用两个 BUY-only 字段。
+- Snapshot 冻结 `min_quantity/min_buy_notional/size_increment`，不泄漏 live Instrument。
 - `test_probability_split_keeps_minimum_buy_notional_at_low_price`:目标 BUY 100 @ 0.02、互斥 LONG 97 时，BUY 子单至少 50 shares，最终拆为 SELL 50 + BUY 50；SELL 子单不应用 1 USD 下限。
+- `test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_minimum`:互斥仓位小于 SELL `min_quantity` 时不拆出非法 SELL，保持原 BUY 计划。
 
 ## #235:共享候选腿与持仓异常 fail-closed
 

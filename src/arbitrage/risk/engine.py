@@ -128,8 +128,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _check_order(self, instrument, order) -> bool:
         if not super()._check_order(instrument, order):  # NT: price/quantity/GTD
             return False
-        if not self._check_min_buy_quantity(instrument, order):
-            return False
         if not self._check_min_buy_notional(instrument, order):
             return False
         if not self._check_probability_gate(instrument, order):
@@ -142,27 +140,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if not self._check_profit_gates(order):
             return False
         return True
-
-    def _check_min_buy_quantity(self, instrument, order) -> bool:
-        """检查 instrument 声明的 BUY-only share 下限。"""
-        side = getattr(order, "side", None)
-        if str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper() != "BUY":
-            return True
-        info = getattr(instrument, "info", None) or {}
-        try:
-            minimum = float(info.get("min_buy_quantity") or 0.0)
-        except (TypeError, ValueError):
-            minimum = 0.0
-        if minimum <= 0:
-            return True
-        quantity = order.leaves_qty.as_double()
-        if quantity + 1e-9 >= minimum:
-            return True
-        self._deny_order(
-            order=order,
-            reason=f"BUY_QUANTITY_LESS_THAN_MIN: min_buy_quantity={minimum:.4f}, quantity={quantity:.4f}",
-        )
-        return False
 
     def _check_min_buy_notional(self, instrument, order) -> bool:
         """检查 instrument 声明的 BUY-only quote notional 下限。"""

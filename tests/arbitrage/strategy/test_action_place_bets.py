@@ -628,7 +628,7 @@ class _BidBook:
 def _pm_inventory_ctx(
     *,
     held_qty: float,
-    min_buy_quantity: float = 5.0,
+    min_quantity: float = 5.0,
     min_buy_notional: float = 1.0,
     opposite_bid: float | None = 0.8,
     positions=None,
@@ -650,16 +650,14 @@ def _pm_inventory_ctx(
         },
         constraints={
             target: {
-                "min_quantity": None,
+                "min_quantity": min_quantity,
                 "min_notional": None,
-                "min_buy_quantity": min_buy_quantity,
                 "min_buy_notional": min_buy_notional,
                 "size_increment": 0.01,
             },
             opposite: {
-                "min_quantity": None,
+                "min_quantity": min_quantity,
                 "min_notional": None,
-                "min_buy_quantity": min_buy_quantity,
                 "min_buy_notional": min_buy_notional,
                 "size_increment": 0.01,
             },
@@ -785,29 +783,15 @@ def test_probability_split_keeps_minimum_buy_notional_at_low_price():
     ]
 
 
-def test_probability_split_allows_inventory_sell_below_buy_share_minimum():
+def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_minimum():
     ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=3))
 
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
     assert [(c["instrument_id"], c["side"], c["qty"]) for c in calls] == [
-        ("SINNER.POLYMARKET", "SELL", 3.0),
-        ("ALCARAZ.POLYMARKET", "BUY", 97.0),
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0),
     ]
-    assert calls[0]["venue_required_balance"] == pytest.approx(19.4)
-
-
-def test_probability_residual_below_buy_share_minimum_fully_converts_to_sell():
-    residual = 4.999343
-    ctx, calls = _pm_target_ctx(_pm_inventory_ctx(held_qty=residual))
-    ctx.scratch["legs"][0]["share_if_wins"] = residual
-
-    _prepare_and_dispatch(PlaceBetsAction(), ctx)
-
-    assert [(c["instrument_id"], c["side"], c["qty"]) for c in calls] == [
-        ("SINNER.POLYMARKET", "SELL", residual),
-    ]
-    assert calls[0]["venue_required_balance"] == 0.0
+    assert calls[0]["venue_required_balance"] == 20.0
 
 
 def test_probability_buy_fully_replaced_by_opposite_sell():

@@ -193,7 +193,7 @@ def test_parse_polymarket_instrument_defaults_fees_without_fee_schedule() -> Non
     assert instrument.taker_fee == Decimal(0)
 
 
-def test_parse_polymarket_instrument_sets_buy_only_minimums() -> None:
+def test_parse_polymarket_instrument_sets_two_sided_share_minimum() -> None:
     """
     Polymarket 的本地下单最小值是 share 数量,应落到 BinaryOption.min_quantity。
     """
@@ -214,8 +214,8 @@ def test_parse_polymarket_instrument_sets_buy_only_minimums() -> None:
         ts_init=0,
     )
 
-    assert instrument.min_quantity is None
-    assert instrument.info["min_buy_quantity"] == 5.0
+    assert instrument.min_quantity.as_double() == 5.0
+    assert "min_buy_quantity" not in instrument.info
 
 
 def test_parse_order_book_snapshots() -> None:

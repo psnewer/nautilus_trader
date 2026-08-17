@@ -360,9 +360,13 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     #     )
     #     return [draft]
 
+    opposite_constraints = instrument_constraints(ctx.cache, opposite_iid)
     target_constraints = instrument_constraints(ctx.cache, draft["instrument_id"])
-    # PM 库存 SELL 是减仓，不应用 BUY-only 的最小 share/金额门控。
-    sell_min = 0.0
+    sell_min = _effective_minimum_quantity(
+        opposite_constraints,
+        price=1.0 - target_price,
+        side="SELL",
+    )
     buy_min = _effective_minimum_quantity(
         target_constraints,
         price=target_price,
@@ -553,10 +557,6 @@ def _effective_minimum_quantity(constraint: dict, *, price: float, side: str) ->
     minimum = _minimum_quantity(constraint)
     if side != "BUY" or price <= 0:
         return minimum
-    try:
-        minimum = max(minimum, float(constraint.get("min_buy_quantity") or 0.0))
-    except (TypeError, ValueError):
-        pass
     try:
         min_buy_notional = max(0.0, float(constraint.get("min_buy_notional") or 0.0))
     except (TypeError, ValueError):

@@ -215,7 +215,7 @@ def parse_polymarket_instrument(
     raw_symbol = Symbol(get_polymarket_token_id(instrument_id))
     description = market_info["question"]
     price_increment = Price.from_str(str(market_info["minimum_tick_size"]))
-    min_buy_quantity = float(market_info.get("minimum_order_size", 5))
+    min_quantity = Quantity.from_str(str(market_info.get("minimum_order_size", 5)))
     # PM 精度双轨(修正 #281,见 execution §4.7 / refactor):**持仓精度 ≠ 下单网格**。
     # - size_increment = token 真实精度 0.000001(精度 6)→ Position/fill/order 的 Quantity 按真值存。
     #   旧 #281 为堵 #280 把 size_increment 定成 0.01,顺带**把仓位量化到 0.01(nearest,向上偏)**——
@@ -235,9 +235,8 @@ def parse_polymarket_instrument(
 
     maker_fee, taker_fee = extract_fee_rates(market_info)
     instrument_info = dict(market_info)
-    # PM 的最小 share 与 1 USD 下限都只适用于 BUY；NT 的 min_quantity/min_notional
-    # 无法表达侧别约束，统一放进 info 交给 Strategy/Risk 做 BUY-only 门控。
-    instrument_info.setdefault("min_buy_quantity", min_buy_quantity)
+    # PM minimum_order_size 对 BUY/SELL 两侧生效，交给 NT 通用 min_quantity 门控；
+    # 1 USD 下限仍只适用于 BUY，放进 info 交给 Strategy/Risk 做侧别检查。
     instrument_info.setdefault("min_buy_notional", 1.0)
     # 下单网格(与持仓精度 size_increment 分轨,见上)：make_submitter 据 side 选择取整方向；
     # OE/SE instrument 不带此键。
@@ -259,7 +258,7 @@ def parse_polymarket_instrument(
         activation_ns=0,  # TBD?
         expiration_ns=expiration_ns,
         max_quantity=None,
-        min_quantity=None,
+        min_quantity=min_quantity,
         maker_fee=maker_fee,
         taker_fee=taker_fee,
         ts_event=ts_init,

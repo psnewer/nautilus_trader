@@ -402,25 +402,6 @@ def test_pm_sell_does_not_apply_buy_notional_minimum():
     assert ctx.engine._check_min_buy_notional(pm, order) is True
 
 
-def test_pm_buy_below_minimum_quantity_is_denied():
-    ctx = _Ctx()
-    pm = pm_instrument("match_X", "home")
-    denials = []
-    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
-    order = _DuckOrder(pm.id, price=0.5, qty=Quantity.from_str("4.99"), side="BUY")
-
-    assert ctx.engine._check_min_buy_quantity(pm, order) is False
-    assert any("min_buy_quantity=5.0000" in reason for reason in denials)
-
-
-def test_pm_sell_does_not_apply_buy_quantity_minimum():
-    ctx = _Ctx()
-    pm = pm_instrument("match_X", "home")
-    order = _DuckOrder(pm.id, price=0.5, qty=Quantity.from_str("0.50"), side="SELL")
-
-    assert ctx.engine._check_min_buy_quantity(pm, order) is True
-
-
 def test_balance_oe_uses_total_not_free():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
@@ -595,7 +576,7 @@ def test_pm_buy_minimum_notional_denies_on_real_submit_path():
     assert exec_engine.command_count == 0
 
 
-def test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path():
+def test_pm_share_minimum_denies_buy_and_sell_on_real_submit_path():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
@@ -646,7 +627,7 @@ def test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path()
         command_id=UUID4(),
         ts_init=ctx.clock.timestamp_ns(),
     ))
-    assert exec_engine.command_count == 1
+    assert exec_engine.command_count == 0
 
 
 def test_recovery_intent_skips_profit_gates_on_real_submit_path():

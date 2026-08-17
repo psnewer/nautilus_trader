@@ -29,14 +29,13 @@ class _Cache:
         return self._instruments.get(str(instrument_id))
 
 
-def _pm_instrument(min_buy_quantity=5.0, min_buy_notional=1.0):
+def _pm_instrument(min_quantity=5.0, min_buy_notional=1.0):
     """PM 门槛 mock:float 字段走 object_value 退回口径,无 make_qty/notional_value。"""
     return SimpleNamespace(
-        min_quantity=None,
+        min_quantity=min_quantity,
         min_notional=None,
         size_increment=None,
         info={
-            "min_buy_quantity": min_buy_quantity,
             "min_buy_notional": min_buy_notional,
         },
     )
@@ -108,9 +107,9 @@ def test_no_candidates_clears_legs():
 
 # ── #277:最小下注门控 ───────────────────────────────────────────────
 
-def test_min_bet_gate_drops_pm_buy_below_min_buy_quantity_before_scoring():
-    """PM BUY 低于 min_buy_quantity 时先淘汰，不参与选择。"""
-    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_buy_quantity=5.0)})
+def test_min_bet_gate_drops_pm_buy_below_min_quantity_before_scoring():
+    """PM BUY 低于通用 min_quantity 时先淘汰，不参与选择。"""
+    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
     ctx = EvalContext(pair_id="p", cache=cache)
     ctx.scratch["candidates"] = [
         {"candidate_id": "tiny_qty_big_share", "legs": [_pm_leg(qty=3.0, share=100.0)]},
@@ -122,8 +121,8 @@ def test_min_bet_gate_drops_pm_buy_below_min_buy_quantity_before_scoring():
     assert ctx.scratch["selected_candidate"]["candidate_id"] == "ok"
 
 
-def test_min_bet_gate_does_not_apply_pm_buy_quantity_minimum_to_sell():
-    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_buy_quantity=5.0)})
+def test_min_bet_gate_applies_pm_min_quantity_to_sell():
+    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
     ctx = EvalContext(pair_id="p", cache=cache)
     sell = _pm_leg(qty=0.5, share=0.5)
     sell["side"] = "SELL"
@@ -131,13 +130,14 @@ def test_min_bet_gate_does_not_apply_pm_buy_quantity_minimum_to_sell():
 
     _run(CandiSelectAction().execute(ctx))
 
-    assert ctx.scratch["selected_candidate"]["candidate_id"] == "reduce"
+    assert ctx.scratch["legs"] == []
+    assert "selected_candidate" not in ctx.scratch
 
 
 def test_min_bet_gate_drops_pm_buy_below_min_buy_notional():
     cache = _Cache({"H.POLYMARKET": _pm_instrument(min_buy_notional=1.0)})
     ctx = EvalContext(pair_id="p", cache=cache)
-    # qty 6 >= min_buy_quantity 5,但 6 * 0.1 = 0.6 USD < 1 USD BUY 金额门
+    # qty 6 >= min_quantity 5,但 6 * 0.1 = 0.6 USD < 1 USD BUY 金额门
     ctx.scratch["candidates"] = [
         {"candidate_id": "below_notional", "legs": [_pm_leg(qty=6.0, share=6.0, price=0.1)]},
     ]
@@ -175,7 +175,7 @@ def test_min_bet_gate_uses_stake_notional_for_decimal_venue():
 
 def test_min_bet_gate_drops_whole_candidate_when_any_leg_fails():
     """双腿 candidate 只要一腿低于限额,整个 candidate 淘汰(半个套利不是套利)。"""
-    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_buy_quantity=5.0)})
+    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
     ctx = EvalContext(pair_id="p", cache=cache)
     ctx.scratch["candidates"] = [
         {
@@ -203,7 +203,7 @@ def test_legs_only_scratch_wrapped_as_single_candidate():
 
 
 def test_legs_only_below_min_cleared():
-    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_buy_quantity=5.0)})
+    cache = _Cache({"H.POLYMARKET": _pm_instrument(min_quantity=5.0)})
     ctx = EvalContext(pair_id="p", cache=cache)
     ctx.scratch["legs"] = [_pm_leg(qty=3.0, share=3.0)]
 

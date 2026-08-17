@@ -43,7 +43,7 @@ def pm_instrument(competition: str, market_type: str, token: str = "tok1") -> Bi
         activation_ns=0,
         expiration_ns=pd.Timestamp("2030-01-01", tz="UTC").value,
         max_quantity=None,
-        min_quantity=None,
+        min_quantity=Quantity.from_int(5),
         maker_fee=Decimal(0),
         taker_fee=Decimal(0),
         ts_event=0,
@@ -51,7 +51,6 @@ def pm_instrument(competition: str, market_type: str, token: str = "tok1") -> Bi
         info={
             "competition": competition,
             "market_type": market_type,
-            "min_buy_quantity": 5.0,
             "min_buy_notional": 1.0,
         },
     )

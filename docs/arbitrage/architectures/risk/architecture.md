@@ -112,10 +112,10 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 - `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT native 余额读 cache `free`。Q17 修订后,ExecutionClient accepted 本地预扣会把 `free` 写成保守可用余额,因此本类不再对 probability venue 额外扣 open orders,避免双重扣减。
 
 **venue 最小下单门控来源**:
-- PM(#344):Provider/解析层保持 `BinaryOption.min_quantity=None`，把当前通常为 5 的 BUY-only share 下限写入 `info["min_buy_quantity"]`；Risk 的 `_check_min_buy_quantity` 只拦 BUY。BUY 的 `quantity × price >= info["min_buy_notional"]`(当前 1 USD)继续由 `_check_min_buy_notional` 拦截。SELL 两项均不应用，因此小于 5 shares 的残仓减仓不会被 NT 通用 quantity 门误拒。
+- PM(#346，修订 #344):Provider/解析层把当前通常为 5 的两侧 share 下限写入 `BinaryOption.min_quantity`，由 NT 父类对 BUY/SELL 统一拦截；不再使用自定义 `min_buy_quantity`。BUY 的 `quantity × price >= info["min_buy_notional"]`(当前 1 USD)继续由 `_check_min_buy_notional` 拦截，SELL 不应用该金额门。
 - OE/SE:最小值是 stake。adapter 外部的 order quantity 是 USD stake,所以 Provider 写入 `BettingInstrument.currency="USD"` 与 `min_notional=Money(min_stake * arbitrage.fx, USD)`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦小于 min_notional 的订单。
-- Risk 组件不维护 venue 最小值常量；PM BUY-only share/金额值都由 instrument info 提供。最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
-- **判定点前移(#277/#344)**:Strategy 层 `CandiSelectAction` 在候选选择前按同判据(`min_quantity` / `min_notional` 经 `notional_value` / BUY `min_buy_quantity` + `min_buy_notional`)淘汰低于限额的 candidate,Risk 侧上述检查**保留为兜底**——place_bets 的 market-order 最差价覆盖与 PM 减仓拆单发生在门控之后,仍会改变 quantity/notional。SELL 不应用 PM BUY-only 两项。详见 strategy architecture §3.8/§4.2。
+- Risk 组件不维护 venue 最小值常量；PM share 下限来自 instrument `min_quantity`，BUY-only 金额值来自 instrument info。最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
+- **判定点前移(#277/#346)**:Strategy 层 `CandiSelectAction` 在候选选择前按同判据(`min_quantity` / `min_notional` 经 `notional_value` / BUY `min_buy_notional`)淘汰低于限额的 candidate；`PlaceBetsAction` 对库存转换后的最终 drafts 再验一次；Risk 侧 NT 通用 share 检查与自定义 BUY 金额检查**保留为兜底**。详见 strategy architecture §3.8/§4.2。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 

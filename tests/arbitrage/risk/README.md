@@ -28,7 +28,7 @@ ExecutionClient (维护账户)
 ```
 
 **唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
-- NT 父类自动处理通用最小限额(OE/SE:`instrument.min_notional=Money(min_stake * fx, USD)`);PM 的 BUY-only share/金额下限由子类读取 instrument info。
+- NT 父类自动处理通用最小限额(PM:`instrument.min_quantity=minimum_order_size`；OE/SE:`instrument.min_notional=Money(min_stake * fx, USD)`);PM 的 BUY-only 1 USD 金额下限由子类读取 instrument info。
 - 子类加 `_check_balance` hook 做余额检查
 
 **删除**:
@@ -46,10 +46,10 @@ ExecutionClient (维护账户)
 
 ### risk-6.2: venue 最小下单额透明门控
 - 输入:
-  - PM:分别提交小于 `info.min_buy_quantity(5 shares)` 的 BUY 与 SELL
+  - PM:分别提交小于 `min_quantity(5 shares)` 的 BUY 与 SELL
   - OE/SE:提交一个 USD stake/notional `< instrument.min_notional(min_stake * fx)` 的订单
-- 期望: PM BUY 被子类拒绝、PM SELL 放行；OE/SE 仍由 NT 父类按 `min_notional` 拒绝。拒绝时 `Strategy.on_order_denied` 触发。
-- 验收: Provider 元数据由 `test_parse_polymarket_instrument_sets_buy_only_minimums` / `test_build_legs_sets_orbitexch_min_stake` 锁定；`test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path` 覆盖真实 SubmitOrder→RiskEngine 路径。
+- 期望: PM BUY/SELL 都由 NT 父类按 `min_quantity` 拒绝；OE/SE 仍由 NT 父类按 `min_notional` 拒绝。拒绝时 `Strategy.on_order_denied` 触发。
+- 验收: Provider 元数据由 `test_parse_polymarket_instrument_sets_two_sided_share_minimum` / `test_build_legs_sets_orbitexch_min_stake` 锁定；`test_pm_share_minimum_denies_buy_and_sell_on_real_submit_path` 覆盖真实 SubmitOrder→RiskEngine 路径。
 
 ### risk-6.3: 应用层余额检查(统一读可用余额,Q17 修订已落地)
 - 前置: ExecutionClient 已写入 cache.account_state
@@ -373,13 +373,13 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   均 fail-closed；不再用 `selection_role/market_type` 兜底成旧 outcome。
 - Risk 余额门控只消费 Venue Registry `order_required_balance`，不维护独立 liability 公式。
 
-## #234/#344:PM BUY-only share 与 1 USD 门控
+## #234/#346:PM 两侧 share 与 BUY-only 1 USD 门控
 
 - `test_pm_buy_below_minimum_notional_is_denied`:BUY 5 @ 0.10 的 0.50 USD 订单被拒。
 - `test_pm_buy_at_minimum_notional_passes`:BUY 5 @ 0.20 恰好 1 USD 放行。
-- `test_pm_sell_does_not_apply_buy_notional_minimum` / `test_pm_sell_does_not_apply_buy_quantity_minimum`:SELL 不应用 BUY 金额或 share 下限。
+- `test_pm_share_minimum_denies_buy_and_sell_on_real_submit_path`:低于 5 shares 的 BUY/SELL 都由 NT 通用 `min_quantity` 拒绝，均不泄漏到 execution。
+- `test_pm_sell_does_not_apply_buy_notional_minimum`:SELL 不应用 BUY-only 1 USD 金额下限。
 - `test_pm_buy_minimum_notional_denies_on_real_submit_path`:真实 `SubmitOrder → RiskEngine` 派发产生 deny，且订单不泄漏到 ExecutionEngine。
-- `test_pm_buy_share_minimum_denies_but_residual_sell_passes_real_submit_path`:同一 PM instrument 上 BUY 4.99 被拒，SELL 4.99 通过父类与自定义 Risk 并进入 ExecutionEngine。
 
 ## #282:pair outcome exposure 纳入已实现盈亏
 

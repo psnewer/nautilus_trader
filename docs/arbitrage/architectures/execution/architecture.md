@@ -84,7 +84,7 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 上游 `PolymarketExecutionClient` **已实现**(直接用):`_submit_order`/`_cancel_order`/`_modify_order`(`py_clob_client_v2` 签名 + CLOB L2)、`generate_order_*`(WS USER channel 回写)、`_update_account_state`、`generate_order_status_reports`/`generate_position_status_reports`。
 
-**最小下单边界(#344)**:ExecutionClient 不重做 Strategy/Risk 的侧别门控。PM `minimum_order_size` 作为 `info.min_buy_quantity` 仅约束 BUY；库存减仓 SELL 即使小于该值也按 Strategy 生成的真实 share 数提交（下单网格仍由 §4.7 的 `order_size_increment` floor 处理）。venue 返回的业务拒绝继续走标准 `OrderRejected`，不在 execution 层补第二套最小值常量。
+**最小下单边界(#346，修订 #344)**:ExecutionClient 不重做 Strategy/Risk 的最小量门控。PM `minimum_order_size` 经 `BinaryOption.min_quantity` 约束 BUY/SELL 两侧；Strategy 按最终转换后的 instrument/side/quantity 前置过滤，NT Risk 兜底。下单网格仍由 §4.7 的 `order_size_increment` 处理。venue 返回的业务拒绝继续走标准 `OrderRejected`，execution 层不维护第二套最小值常量。
 
 **PM CLOB SDK 约束(#97,已落地 / 待 live 复验)**:2026-06-10 NT live probe 中,旧 `py_clob_client` 虽可本地签名,但 POST `/order` 被 PM API 拒绝为 `invalid order version, please use the latest clob-client`;官方文档当前以 `py_clob_client_v2` / `@polymarket/clob-client-v2` 为下单、撤单、查询 L2 client。项目 PM adapter 主 HTTP client 因此统一由 `get_polymarket_http_client()` 构造 `py_clob_client_v2.ClobClient`。关键 v2 差异:
 - `generate_order_status_reports` 调 `get_open_orders(...)`,不再调旧 `get_orders(...)`。

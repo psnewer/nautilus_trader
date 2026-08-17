@@ -26,8 +26,6 @@ class StrategyTestCache:
                 elif role == "away":
                     info["claim"] = "no"
             values = constraints.get(raw_id, constraints.get(instrument_id, {})) or {}
-            if values.get("min_buy_quantity") is not None:
-                info["min_buy_quantity"] = values["min_buy_quantity"]
             if values.get("min_buy_notional") is not None:
                 info["min_buy_notional"] = values["min_buy_notional"]
             self._instruments[instrument_id] = SimpleNamespace(

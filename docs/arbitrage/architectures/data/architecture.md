@@ -194,7 +194,7 @@ SE 同构(`sharpexch/data.py` 的 price frame → deltas 路径)。
 
 ### 3.2 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)
 
-PM instrument 的下单下限字段由共享 parsing 定义：`minimum_order_size → info.min_buy_quantity`，`min_quantity=None`；这是 BUY-only 元数据。`info.order_size_increment=0.01` 是两侧下单网格提示：SELL 向下取整，BUY 正常四舍五入。DataClient 只负责把 instrument 写入 Cache，不解释或改写这些侧别约束。具体契约见 discovery §1/§3，消费方见 strategy/risk。
+PM instrument 的下单下限字段由共享 parsing 定义：`minimum_order_size → BinaryOption.min_quantity`，对 BUY/SELL 两侧生效；BUY-only 的 1 USD 下限单独存于 `info.min_buy_notional`。`info.order_size_increment=0.01` 是两侧下单网格提示：SELL 向下取整，BUY 正常四舍五入。DataClient 只负责把 instrument 写入 Cache，不解释或改写这些侧别约束。具体契约见 discovery §1/§3，消费方见 strategy/risk。
 
 ```python
 class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):

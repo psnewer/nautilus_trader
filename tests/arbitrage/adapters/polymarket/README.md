@@ -22,7 +22,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 | `test_execution_ack.py` | **#256 起** PM ack 只来自 WS(不再回执即 ack):14 tests —— `_mark_accepted_emitted` 去重(首次 True / 重复 False / 有界挤出最老)、HTTP 回执成功只索引 `venue_order_id`(`_post_signed_order`/`_process_batch_response` 均不 `generate_order_accepted`)、失败只 reject、WS `PLACEMENT` 对 SUBMITTED 单 ack / 已 ack 则幂等跳过、**order 消息 `UPDATE`/`CANCELLATION` 到达同样 ack**(`CANCELLATION` 先补 ack 再走既有撤单终态)、WS trade 消息 MATCHED/MINED/CONFIRMED 任一先到达即 ack(taker 单无 PLACEMENT,靠这条证明已被接收)、PLACEMENT 与 trade 消息共用去重表不重复 ack、CONFIRMED 补 ack 之余仍正常生成 fill。见 execution architecture §3.1 #256(#253 已失效)。|
-| `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译;本项目要求 `minimum_order_size` 映射到 BUY-only `info.min_buy_quantity`，通用 `min_quantity` 保持 None |
+| `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译；`minimum_order_size` 映射到两侧通用 `min_quantity`，BUY-only 1 USD 映射到 `info.min_buy_notional` |
 | `tests/arbitrage/config/test_dispatcher.py` / `test_loader.py` | PM adapter 接线前置:项目 `venues.polymarket.ws_url` 只接受上游 base URL(`/ws` 或 `/ws/`),dispatcher 传给上游 `PolymarketWebSocketClient` 前归一化为 base URL(`/ws/`);`proxy_url` 从 JSON 或 env 注入并透传给 PM Data/Exec client |
 
 早期 `test_upstream_integration.py` skipped 空壳已删除。PM discovery/info/min-size/WS retry 的离线主路径由上表测试覆盖;PM 真下单、撤单、reconcile 仍按下方 pm-adapter-5.* 用例经 live/preflight 验,不保留永久 skipped pytest。
@@ -45,12 +45,12 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`;`start_ts` 不写入 matching info。
 - 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入；`test_gamma_keyset.py` 覆盖分页协议；真实 Gamma keyset 完整性仍由 live smoke 验。
 
-### pm-adapter-1.3: PM BUY-only 最小下单 share 映射
+### pm-adapter-1.3: PM 两侧最小下单 share 映射
 
 **前置**: PM Gamma/CLOB market payload 含 `minimum_order_size`(来自 `orderMinSize`)。
 **输入**: `parse_polymarket_instrument(market_info, token_id, outcome, ...)`
-**期望**: 产出的 `BinaryOption.min_quantity is None`，`info["min_buy_quantity"]` 等于 `minimum_order_size`(当前 venue 默认 5 shares)，避免 SELL 被 NT 通用 quantity 门控；Strategy/Risk 只对 BUY 消费该字段。
-**验收**: `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_buy_only_minimums`
+**期望**: 产出的 `BinaryOption.min_quantity` 等于 `minimum_order_size`(当前 venue 默认 5 shares)，且不再生成 `info["min_buy_quantity"]`；BUY-only 的 `info["min_buy_notional"]` 保持 1 USD。
+**验收**: `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_two_sided_share_minimum`
 
 ## #233:2-way canonical claim
 
@@ -507,9 +507,9 @@ size，避免破坏 share/quote 口径。
 
 - `test_arb_provider.py`:`_role_and_claim_for_token`(原 `_role_for_token`)3-way binary 路径 YES/NO 都产腿,role 同为所属 market 的 role,claim="yes"/"no" 区分;2-way / 单市场路径 claim 恒空。`test_load_moneyline_market_3way_binary_exposes_yes_and_no` 覆盖一个 binary market 产 2 条 instrument(info 带 claim);2-way 用例断言 `"claim" not in info`。
 
-## #234/#344:PM BUY-only 最小 share 与金额
+## #234/#346:PM 两侧最小 share 与 BUY-only 金额
 
-- `test_parsing_min_size.py` 锁定市场 `minimum_order_size → info["min_buy_quantity"]`、`info["min_buy_notional"]=1.0`，并保持 `BinaryOption.min_quantity/min_notional` 均为 None，防止 SELL 被错误套用 BUY-only share/金额下限。
+- `test_parsing_min_size.py` 锁定市场 `minimum_order_size → BinaryOption.min_quantity`、`info["min_buy_notional"]=1.0`，并确认不再生成 `info["min_buy_quantity"]`：share 下限约束 BUY/SELL，1 USD 金额下限只约束 BUY。
 - parsing 继续写 `info["order_size_increment"]=0.01`；Strategy submitter 的 SELL 路径向下取整，BUY 路径正常四舍五入，两侧均保留两位。验收见 strategy `test_submitter.py`。
 
 ## #250/#322:PMSPORTS CustomData 状态管线(已落地,`test_sports.py`)
