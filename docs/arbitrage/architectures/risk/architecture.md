@@ -199,7 +199,7 @@ def install_arbitrage_engines():       # 构造 TradingNode 之前调用,幂等
     _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 ```
 
-领域参数在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, pair_registry=)` 使用顶层 `arbitrage.share`;`risk_engine.configure_arb(params, venue_liveness=..., arbitrage_params=...)` 同时接收真正风控参数(`ArbRiskParams`)和普通套利运行参数(`ArbitrageParams`)。Risk 的 profit gates 使用 `ArbitrageParams.share * match_tp/match_sl` 得到绝对金额阈值,但 `share/max_leg_share/fx` 不属于 Risk 配置所有权;`fx` 只在 OE/SE adapter 的入站/出站边界换汇。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
+领域参数在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, pair_registry=)` 使用顶层 `arbitrage.share`;`risk_engine.configure_arb(params, venue_liveness=..., arbitrage_params=...)` 同时接收真正风控参数(`ArbRiskParams`)和普通套利运行参数(`ArbitrageParams`)。Risk 的 profit gates 仅消费 `ArbitrageParams.share * match_tp/match_sl`；`max_leg_share` 归 Strategy，`fx` 只在 OE/SE adapter 换汇边界消费，`evaluate_on_depth_change` 只归 StrategyEvaluator 的 OBD 调度入口消费。Risk 订阅热改命令时仍保持完整共享 dataclass 副本，不对后三项执行风控。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 ### 3.3 消息接线(订阅 / 发布)
 

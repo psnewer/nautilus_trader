@@ -417,6 +417,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.trend.3: 边界
 - 缺 book / best_ask ≤0 / 缺 instrument_id → 跳过,不覆盖 last、不写 trend。
 - **仅深度帧不冲趋势**(#trend 补,2026-08-10):`new_best == prev`(价未变、只深度变)→ 直接返回,趋势保留上次真实移动(非 0);下次真实移动仍从上次真实价算 Δ(`test_unchanged_price_keeps_prior_trend_not_flat`)。首帧后紧跟同价帧不造出 0 趋势(`test_unchanged_price_on_first_delta_seeds_no_trend`)。
+- `_update_price_trend` 同时返回本帧真实 Δ；首帧/纯深度/无效行情返回 `None`。
+- `test_depth_only_obd_does_not_trigger_evaluation_by_default` / `...when_enabled`:
+  `arbitrage.evaluate_on_depth_change=false` 时 `None` 帧不派发评估；`true` 时恢复每个 OBD 都评估。
+- `test_depth_switch_hot_update_rejects_non_boolean_value`:直接注入非 boolean 热改命令时 fail-closed，原开关不变。
 - (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
 
 ### strategy-4.trend.4: trend_gate Action(#329/#336/#353,跨 venue/outcome 一致 + 可选累计 momentum)
@@ -711,6 +715,17 @@ candi_select -> place_bets(intent=recovery,market=true)`。
   命中时，spread cancel 完整经过补偿树生成 cancel plan；统一分发选择补偿，只执行 grouped cancel。
 - `test_mean_rebate_e2e.py::test_spread_cancel_and_mean_recovery_build_as_or_expression`:
   JSON loader 可将 `spread_cancel_recovery OR mean_rebate_recovery` 装配为补偿 CheckExpr。
+
+## strategy-4.35:one_side_rebate 价格变化撤单补偿
+
+- `test_check_price_change_recovery.py`:OBD 唤醒(`event_name=OrderBookDeltas`)且该 pair 存在
+  open order 时写 `price_change_recovery` 整组撤单请求；不再读取 momentum。
+- MatchedPair/sports 等非 OBD 唤醒不命中；OBD 唤醒但无 open order 也不命中。
+- 默认深度开关关闭时，纯深度帧在 Evaluator 入口已被过滤，不会进入 Check；
+  显式开启时纯深度 OBD 会评估，因而也会触发该撤单 check。
+- `arb_config.json` 的 `one_side_rebate.compensation_tree` 使用
+  `price_change_recovery OR one_side_recovery`；撤单仍经补偿 Action 链生成 `cancel_pair` plan，
+  再由统一 dispatcher 执行，不在 Check 内直接撤单。
 ### strategy-action-place-bets-log: 实际策略汇总日志
 
 - **前置**:`PlaceBetsAction` 分别消费 mean_rebate legs-only 候选和带

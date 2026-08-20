@@ -71,7 +71,8 @@
   "arbitrage": {
     "share": 30,
     "max_leg_share": 40,
-    "fx": 1.33
+    "fx": 1.33,
+    "evaluate_on_depth_change": false
   },
   "risk": {
     "match_tp": 0.05,

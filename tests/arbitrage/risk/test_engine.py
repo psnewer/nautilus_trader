@@ -793,12 +793,17 @@ def test_arbitrage_params_command_hot_updates_only_given_fields():
     ctx = _Ctx(arbitrage_params=ArbitrageParams(share=100.0, max_leg_share=90.0, fx=1.0))
     ctx.msgbus.publish(
         topic=TOPIC_ARBITRAGE_PARAMS,
-        msg=SetArbitrageParamsCommand(share=50.0, max_leg_share=80.0),
+        msg=SetArbitrageParamsCommand(
+            share=50.0,
+            max_leg_share=80.0,
+            evaluate_on_depth_change=True,
+        ),
     )
     p = ctx.engine._arbitrage_params
     assert p.share == 50.0
     assert p.max_leg_share == 80.0
     assert p.fx == 1.0
+    assert p.evaluate_on_depth_change is True
 
 
 # 注:HALTED 经 NT 原生 egress(_execution_gateway→_deny_command→_deny_order)拦 submit,

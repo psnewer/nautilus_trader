@@ -232,12 +232,14 @@ class StrategyEvaluator(Strategy):
     def on_order_book_deltas(self, deltas) -> None:
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         # 所有 tradable venue 的 OBD 都可触发;NT 已在本回调前更新对应 book cache。
-        self._update_price_trend(deltas)
+        price_delta = self._update_price_trend(deltas)
         self._capture_first_price(deltas)
         self._update_extreme_prices(deltas)
-        self._route_eval(deltas)
+        if price_delta is None and not self._arbitrage_params.evaluate_on_depth_change:
+            return
+        self._route_eval(deltas, event_name="OrderBookDeltas")
 
-    def _update_price_trend(self, deltas) -> None:
+    def _update_price_trend(self, deltas) -> float | None:
         """#trend:每帧更新该 instrument 的 Δprob(与评估解耦,回调不受 pair 闸影响)。
 
         `best_ask(book)` 读到的已是隐含概率(#256 写侧换算,OE/SE 已与 PM 同向,不再转)。
@@ -248,24 +250,34 @@ class StrategyEvaluator(Strategy):
         """
         iid = getattr(deltas, "instrument_id", None)
         if iid is None:
-            return
+            return None
         key = str(iid)
         new_best = best_ask(self.cache.order_book(iid))
         if new_best is None or new_best <= 0:
-            return
+            return None
         prev = self._price_last.get(key)
         if prev is not None:
             if new_best == prev:
-                return  # 价未变(纯深度帧)→ 不覆盖趋势,保留上次真实移动
-            self._price_trend[key] = new_best - prev
+                return None  # 价未变(纯深度帧)→ 不覆盖趋势,保留上次真实移动
+            delta = new_best - prev
+            self._price_trend[key] = delta
+        else:
+            delta = None
         self._price_last[key] = new_best
+        return delta
 
-    def _route_eval(self, data) -> None:
+    def _route_eval(self, data, *, event_name: str | None = None) -> None:
         target = self._extract_evaluation_target(data)
         if target is None:
             return
         pair_id, sport, competition = target
-        self._dispatch_eval(pair_id, sport, competition, event_name=type(data).__name__)
+        source = event_name or type(data).__name__
+        self._dispatch_eval(
+            pair_id,
+            sport,
+            competition,
+            event_name=source,
+        )
 
     def _route_eval_sports(self, update: SportsGameUpdate) -> None:
         """#250:sports 事件只负责唤醒+定位 —— `game_id` 反查全部已注册 pair,
@@ -344,7 +356,14 @@ class StrategyEvaluator(Strategy):
                 return info.get("sport"), info.get("competition")
         return None, None
 
-    def _dispatch_eval(self, pair_id: str, sport, competition, *, event_name: str) -> bool:
+    def _dispatch_eval(
+        self,
+        pair_id: str,
+        sport,
+        competition,
+        *,
+        event_name: str,
+    ) -> bool:
         # scope-priority 查策略(挂载存在锁定,Q21-a)
         strategy = self._strategy_registry.get_for(pair_id, competition, sport)
         if strategy is None:
@@ -367,7 +386,11 @@ class StrategyEvaluator(Strategy):
             return self._eval_tasks_by_pair.get(pair_id, 0) > 0
         # acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
         # #261:闸只管"同 pair 不并发评估";全局 ≤1 执行由 barrier 判定,strategy 不参与。
-        coro = self._evaluate_and_fire(strategy, pair_id)
+        coro = self._evaluate_and_fire(
+            strategy,
+            pair_id,
+            event_name=event_name,
+        )
         try:
             task = self._create_task(coro)
         except Exception:
@@ -540,7 +563,13 @@ class StrategyEvaluator(Strategy):
                 self._log.warning(f"OBD subscribe {iid_str} failed: {e!r}")
 
     # ── 评估主流程 ────────────────────────────────────────────────────
-    async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
+    async def _evaluate_and_fire(
+        self,
+        strategy,
+        pair_id: str,
+        *,
+        event_name: str | None = None,
+    ) -> None:
         """本方法**不碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 无条件释放。"""
         # §7.5(#316):本 pair 执行在飞 → 直接让路(策略前置 pre-check 放弃本 pair 机会;
         # 跨 pair 不再互相饿死,recovery 树不被无关 pair 的执行活动挡住)。
@@ -565,6 +594,7 @@ class StrategyEvaluator(Strategy):
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
             "price_trend": self._price_trend,   # #trend:key=str(instrument_id) → Δprob(概率空间)
+            "event_name": event_name,
             "strategy_id": str(strategy.metadata.get("id") or strategy.scope_key),
             "runtime_store": self._runtime_store,
         }
@@ -675,12 +705,22 @@ class StrategyEvaluator(Strategy):
     def _on_set_arbitrage_params_cmd(self, cmd) -> None:
         if not isinstance(cmd, SetArbitrageParamsCommand):
             return
+        if (
+            cmd.evaluate_on_depth_change is not None
+            and not isinstance(cmd.evaluate_on_depth_change, bool)
+        ):
+            self._log.warning(
+                "invalid arbitrage params hot-update: "
+                f"evaluate_on_depth_change={cmd.evaluate_on_depth_change!r}",
+            )
+            return
         overrides = {
             k: v
             for k, v in (
                 ("share", cmd.share),
                 ("max_leg_share", cmd.max_leg_share),
                 ("fx", cmd.fx),
+                ("evaluate_on_depth_change", cmd.evaluate_on_depth_change),
             )
             if v is not None
         }

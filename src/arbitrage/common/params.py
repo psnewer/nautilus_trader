@@ -15,3 +15,4 @@ class ArbitrageParams:
     share: float = 22.5
     max_leg_share: float | None = None
     fx: float = 1.33
+    evaluate_on_depth_change: bool = False

@@ -50,6 +50,9 @@ class EvalContext:
     # key = str(instrument_id)(= venue + 该腿/outcome),value = 最近一帧 Δprob(概率空间,正=概率变大)。
     # Check 按 (pair, outcome, venue) 反查 instrument_id 读取;None = 未接入趋势。
     price_trend: dict | None = None
+    # 本轮评估的触发事件名：OrderBookDeltas / MatchedPair / SportsGameUpdate 等。
+    # price_change_recovery 只认 OrderBookDeltas。
+    event_name: str | None = None
     # 当前配置策略的稳定标识 + Strategy 组件拥有的跨轮变量 Store。
     # head/reverse self_hits 命中时按 (strategy_id, pair_id) 更新 standard。
     strategy_id: str | None = None

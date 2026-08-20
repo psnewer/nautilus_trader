@@ -16,6 +16,7 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
@@ -107,6 +108,14 @@ class _CaptureRuntimeAction(Action):
     async def execute(self, ctx):
         self.strategy_id = ctx.strategy_id
         self.runtime_store = ctx.runtime_store
+
+
+class _CaptureEventNameAction(Action):
+    def __init__(self):
+        self.value = None
+
+    async def execute(self, ctx):
+        self.value = ctx.event_name
 
 
 class _CaptureScratchLegsAction(Action):
@@ -337,6 +346,7 @@ def test_obd_from_decimal_venue_triggers_eval():
     """OE/SE(decimal 赔率盘)的 OBD 触发机会评估。"""
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
+    actor._update_price_trend = MagicMock(return_value=0.01)
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
 
@@ -350,6 +360,7 @@ def test_obd_from_probability_venue_triggers_eval():
     """PM(probability 概率盘)的 OBD 同样触发机会评估。"""
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
+    actor._update_price_trend = MagicMock(return_value=-0.01)
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
 
@@ -357,6 +368,57 @@ def test_obd_from_probability_venue_triggers_eval():
     _run(_drain(loop))
 
     assert arb_action.calls == 1
+
+
+def test_obd_injects_event_name_into_eval_context():
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    pair_reg.register("match_X", ["H.POLYMARKET"])
+    action = _CaptureEventNameAction()
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    actor._update_price_trend = MagicMock(return_value=-0.03)
+
+    actor.on_order_book_deltas(_obd("H.POLYMARKET"))
+    _run(_drain(loop))
+
+    assert action.value == "OrderBookDeltas"
+
+
+def test_depth_only_obd_does_not_trigger_evaluation_by_default():
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    pair_reg.register("match_X", ["H.POLYMARKET"])
+    action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    actor._update_price_trend = MagicMock(return_value=None)
+
+    actor.on_order_book_deltas(_obd("H.POLYMARKET"))
+    _run(_drain(loop))
+
+    assert action.calls == 0
+
+
+def test_depth_only_obd_triggers_evaluation_when_enabled():
+    actor, _, pair_reg, strat_reg, loop, _ = _harness(
+        arbitrage_params=ArbitrageParams(evaluate_on_depth_change=True),
+    )
+    pair_reg.register("match_X", ["H.POLYMARKET"])
+    action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    actor._update_price_trend = MagicMock(return_value=None)
+
+    actor.on_order_book_deltas(_obd("H.POLYMARKET"))
+    _run(_drain(loop))
+
+    assert action.calls == 1
+
+
+def test_depth_switch_hot_update_rejects_non_boolean_value():
+    actor, *_ = _harness()
+
+    actor._on_set_arbitrage_params_cmd(
+        SetArbitrageParamsCommand(evaluate_on_depth_change="false"),
+    )
+
+    assert actor._arbitrage_params.evaluate_on_depth_change is False
 
 
 # ── eval.2: 无挂载 → no-op,不 fire ───────────────────────────────

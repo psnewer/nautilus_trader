@@ -92,6 +92,7 @@ from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
 from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
+from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
 from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
@@ -119,6 +120,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("one_side_rebate", OneSideRebateCheck)
     register_check("one_side_recovery", OneSideRecoveryCheck)
     register_check("neg_rebate", NegRebateCheck)
+    register_check("price_change_recovery", PriceChangeRecoveryCheck)
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
     register_check("pre_move", PreMoveCheck)

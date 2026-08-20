@@ -110,7 +110,7 @@ Store 不保存独立的 captured 标志：`first_price` 是否为空、`start_p
 `src/arbitrage/common/control.py` = Web 控制台 → 组件的运行时控制命令(topic 常量 + frozen dataclass):
 `SetTradingStateCommand` / `SetRiskParamsCommand` / `SetArbitrageParamsCommand` / `SetRefreshIntervalCommand`。**契约真理源在 web §8.3**(WebGatewayActor 单一生产者 publish,risk/strategy/matching 订阅 apply);本目录只承载共享类型定义。
 
-`SetRiskParamsCommand` 使用 `None` 表示不覆盖该字段;当前热字段包括 `match_tp` / `match_sl` / `min_probability` / `max_probability`。`SetArbitrageParamsCommand` 承载普通套利运行默认值 `share` / `max_leg_share` / `fx`;这些字段不归 Risk 配置所有。
+`SetRiskParamsCommand` 使用 `None` 表示不覆盖该字段;当前热字段包括 `match_tp` / `match_sl` / `min_probability` / `max_probability`。`SetArbitrageParamsCommand` 承载普通套利运行默认值 `share` / `max_leg_share` / `fx` / `evaluate_on_depth_change`;最后一项由 StrategyEvaluator 决定纯深度 OBD 是否唤醒评估。这些字段不归 Risk 配置所有。
 
 ## 5. Venue 配置 dataclass(`venue_configs.py`)
 

@@ -25,7 +25,8 @@
 - 验收: web 端 `test_set_trading_state_publishes_command` / `test_post_trading_state_ok` / `test_post_trading_state_invalid_400` / `test_get_trading_state` / `test_trading_state_reads_risk_engine` / `test_on_risk_event_broadcasts_trading_state`;risk 端 end-to-end `tests/arbitrage/risk/test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored`
 
 ### web-7.9: 配置热改(PUT /config/arbitrage 与 /config/risk,C 混合热段)
-- 期望: `PUT /config/arbitrage {share,max_leg_share,fx}` → 写回文件 + publish `command.arb.arbitrage_params` + `applied:live`;RiskEngine / adapter 边界继续读取 live `ArbitrageParams.fx`,StrategyEvaluator 后续评估只读取 `share/max_leg_share` 作为默认规模参数
+- 期望: `PUT /config/arbitrage {share,max_leg_share,fx,evaluate_on_depth_change}` → 写回文件 + publish `command.arb.arbitrage_params` + `applied:live`;RiskEngine / adapter 边界继续读取各自需要的 `share/fx`,StrategyEvaluator 用 `share/max_leg_share` 作默认规模，用 boolean 深度开关热改 OBD 评估过滤
+- 非 boolean `evaluate_on_depth_change` 在写文件/publish 前拒绝，原配置不变；验收 `test_update_arbitrage_rejects_non_boolean_depth_switch`。
 - 期望: `PUT /config/risk {match_tp,match_sl,min_probability,max_probability,...}` → 写回文件 + publish `command.arb.risk_params` + `applied:live`;risk 引擎只覆盖给定字段,概率上下界由 risk 组件侧校验
 - 验收: `test_update_arbitrage_config_writes_file_and_publishes_command` / `test_update_risk_config_writes_file_and_publishes_command` / `test_put_config_section`;risk 端 `test_arbitrage_params_command_hot_updates_only_given_fields` / `test_risk_params_command_hot_updates_only_given_fields` / `test_probability_bounds_hot_update_rejects_invalid_interval`;strategy 端 `test_eval_context_strategy_defaults_read_arbitrage_params`
 

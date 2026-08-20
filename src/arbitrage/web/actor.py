@@ -216,7 +216,12 @@ class WebGatewayActor(Actor):
 
     def live_arbitrage_params(self) -> dict:
         params = self._arbitrage_params
-        return {"share": params.share, "max_leg_share": params.max_leg_share, "fx": params.fx}
+        return {
+            "share": params.share,
+            "max_leg_share": params.max_leg_share,
+            "fx": params.fx,
+            "evaluate_on_depth_change": params.evaluate_on_depth_change,
+        }
 
     def config_snapshot(self) -> dict:
         """当前生效配置:落盘文件内容 + 活值(trading_state + live risk/arbitrage params)。"""
@@ -235,11 +240,14 @@ class WebGatewayActor(Actor):
     def update_config_section(self, section: str, fields: dict) -> dict:
         """写回 `arb_config.json` 的某段 + 热段额外 publish 命令。返回 {applied: live|on_restart}。
 
-        热段:arbitrage(share/max_leg_share/fx)、risk(tp/sl/probability bounds)、
+        热段:arbitrage(share/max_leg_share/fx/evaluate_on_depth_change)、risk(tp/sl/probability bounds)、
         matching/discovery(refresh_interval)。其余只落盘、需重启。
         """
         if self._config_path is None:
             raise RuntimeError("config_path 未注入,无法写配置")
+        depth_change = fields.get("evaluate_on_depth_change") if section == "arbitrage" else None
+        if depth_change is not None and not isinstance(depth_change, bool):
+            raise ValueError("evaluate_on_depth_change 必须是 boolean")
         path = Path(self._config_path)
         cfg = json.loads(path.read_text()) if path.exists() else {}
         cfg.setdefault(section, {})
@@ -265,9 +273,15 @@ class WebGatewayActor(Actor):
                 share=fields.get("share"),
                 max_leg_share=fields.get("max_leg_share"),
                 fx=fields.get("fx"),
+                evaluate_on_depth_change=depth_change,
             )
             self._publish(TOPIC_ARBITRAGE_PARAMS, cmd)
-            overrides = {k: v for k, v in fields.items() if k in {"share", "max_leg_share", "fx"} and v is not None}
+            overrides = {
+                k: v
+                for k, v in fields.items()
+                if k in {"share", "max_leg_share", "fx", "evaluate_on_depth_change"}
+                and v is not None
+            }
             if overrides:
                 self._arbitrage_params = replace(self._arbitrage_params, **overrides)
             applied = "live"

@@ -110,6 +110,7 @@ ExecutionClient (维护账户)
 Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`ArbitrageLiveRiskEngine._check_profit_gates` 每次 submit 从 `ArbitragePortfolio.outcome_exposures(pair_id)` 读取所有 outcome 的绝对金额 `net_profit/liability`,用 `ArbitrageParams.share` 计算阈值:止盈阈值 `share*match_tp`,止损阈值 `share*match_sl`。逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。概率门控位于 NT 父类检查之后、venue liveness/余额/profit gates 之前;概率转换统一经 Venue Registry helper。
 
 `ArbitrageParams.max_leg_share` 只作为 Web Arbitrage → StrategyEvaluator 的默认规模参数,供 strategy `share_limit` action 未显式配置时读取;RiskEngine 不执行 share-limit 缩放/门控。
+`ArbitrageParams.evaluate_on_depth_change` 同样不是 Risk 门控；Risk 热改时仅保持完整参数副本，实际消费者是 StrategyEvaluator。
 
 ### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行(✅ 已 e2e 验证)
 - 前置: `ArbitrageLiveRiskEngine` 已装入管道

@@ -78,7 +78,12 @@ def test_full_json_parses(cfg_path):
         "matching": {
             "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
         },
-        "arbitrage": {"share": 50.0, "fx": 1.5, "max_leg_share": 75.0},
+        "arbitrage": {
+            "share": 50.0,
+            "fx": 1.5,
+            "max_leg_share": 75.0,
+            "evaluate_on_depth_change": True,
+        },
         "venues": {"sharpexch": {"enabled": True}},
         "risk": {"match_tp": 0.08, "min_probability": 0.04},
         "strategy": {
@@ -100,6 +105,7 @@ def test_full_json_parses(cfg_path):
     assert cfg.arbitrage.share == 50.0
     assert cfg.arbitrage.fx == 1.5
     assert cfg.arbitrage.max_leg_share == 75.0
+    assert cfg.arbitrage.evaluate_on_depth_change is True
     assert cfg.risk.min_probability == 0.04
     assert cfg.strategy.bindings[0].scope == "competition:ATP"
     assert cfg.strategy.strategies["tennis_prematch"].arbitrage_tree is not None

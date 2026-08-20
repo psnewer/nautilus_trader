@@ -22,6 +22,7 @@ from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
+from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
 from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.queries.position_mode import HeadQuery
 from src.arbitrage.strategy.queries.position_mode import ReverseQuery
@@ -58,6 +59,7 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
         }),
         OneSideRecoveryCheck,
     )
+    assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
     with pytest.raises(StrategyConfigError, match="venue_select"):
         build_check({
             "type": "one_side_recovery",

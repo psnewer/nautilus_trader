@@ -63,7 +63,7 @@ flowchart TB
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)
 - **树间取舍(#301)**在 Evaluator 统一分发阶段执行：两树各自完成门控、选择和计划构造，
   有补偿 plan 就选择补偿，否则选择套利。补偿树内部仍由 CheckExpr OR 的配置顺序决定
-  `spread_cancel_recovery` 与 `mean_rebate_recovery` 的优先级
+  `price_change_recovery` 与 `one_side_recovery` 的优先级
 - order/position digests 不是对象快照；它们只用于 Execution release 前检测评估窗口内订单或
   仓位字段是否变化
 
@@ -409,7 +409,7 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 请求与终态确认仍由各自既有 cancel session 负责。横切协议见
 `_cross-cutting/synchronization.md §8.4bis`。
 
-**运行时默认规模参数(2026-06-29;fx 边界校准 2026-06-30;SE 第一阶段接线 2026-06-30;Venue Registry 收口 2026-07-02)**:`EvalContext.strategy_defaults` 每轮由 `StrategyEvaluator` 从 live `ArbitrageParams` 读取,当前只包含 Strategy 会消费的 `share` / `max_leg_share`。这些值来自顶层 `arbitrage` 配置段,Web Arbitrage 标签页热改时通过 `command.arb.arbitrage_params` 同步到 StrategyEvaluator;strategy JSON 中各 Check/Action 的 `params` 若显式给同名字段,优先级高于 Web 默认。边界原则:Condition/Checktion 发现机会时应产出带 `share_if_wins` 或 `qty` 的完整计划腿;Action 只做缩放、选择、提交,不负责决定原始 share。Strategy 内部外部 venue `qty` 一律按 USD stake 口径,`fx` 不进入 `EvalContext.strategy_defaults`,只由对应 adapter 在 CURRENT_BETS 入站和 placeBets 出站使用。Strategy 概率/qty/share-limit 分支按 Venue Registry `odds_model` 派生,真理源见 `_cross-cutting/venues.md §4/§5.4`。
+**运行时默认参数(2026-06-29;2026-08-20 #355)**:`EvalContext.strategy_defaults` 每轮由 live `ArbitrageParams` 读取,但只包含 Check/Action 消费的 `share` / `max_leg_share`。`evaluate_on_depth_change` 由 Evaluator 在 OBD 调度入口直接消费，不进入 `strategy_defaults`；`fx` 只由 adapter 换汇边界消费。这些值来自顶层 `arbitrage` 配置段，Web 热改时经 `command.arb.arbitrage_params` 同步。strategy JSON 中 Check/Action 显式规模 params 优先于 Web 默认。边界原则：Condition/Checktion 产出带 `share_if_wins` 或 `qty` 的完整计划腿；Action 只做缩放、选择、提交。Strategy 内外 venue `qty` 统一为 USD stake，概率/qty/share-limit 分支按 Venue Registry `odds_model` 派生，真理源见 `_cross-cutting/venues.md §4/§5.4`。
 
 **用户域子类(slice 9 #49 落地)**:
 
@@ -423,6 +423,7 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `NegRebateCheck(max_rate=0.0)` | `src/arbitrage/strategy/checks/neg_rebate.py` | one_side_rebate 之后的候选方向门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母计算当前 rebate；按每个 candidate 的 `target_role` 过滤，只保留该 outcome 满足 `net_profit / max_share <= max_rate` 的 candidate。默认阈值为 0；无仓位时各 outcome rebate 视为 0，因此默认可通过。缺 candidates、Portfolio、完整 yes/no outcome 或经济投影异常时 fail-closed。只判断当前仓位，不预测加入 candidate 后的结果 |
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False, force=False, pnl=True)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1。**`force`(#326)**:缺省 `False` 保持 #262 双向率门(当前率 < 阈值才补、补后率 ≥阈值才算有用);`True` 时**旁路这两道率门**,只要存在缺口 outcome 就无条件补到 `target_share`(供 pre_rebate 开赛兜底强平衡,见 §3.10)。仅设很低的 `min_repaired_rebate` **不能**达到强补效果——#262 前置门 `current >= 阈值` 反而会拦住。**`pnl`(#327)**:缺省 `True` 保持 #321(补后率分子含 realizedPNL);`False` 时经 `outcome_exposures(..., include_realized_pnl=False)` 取基线,**当前率/补后率均不含 realized**,只按当轮开仓投影判率(供 pre_rebate 循环开平防即买即卖,见 §3.10;不影响 `target_share`/denom)。 |
+| `PriceChangeRecoveryCheck()` | `src/arbitrage/strategy/checks/price_change_recovery.py` | 本轮由 OBD 唤醒且该 pair 当前至少有一张 open order 时，写 `cancel_pair_orders` 并生成整组撤单 plan。Check 只读 `EvalContext.event_name == "OrderBookDeltas"`，不再读取/比较 momentum；价格帧过滤由 Evaluator 入口的 `arbitrage.evaluate_on_depth_change` 统一负责。默认 `false` 时能进入 Check 的 OBD 已是真实顶价变化；显式 `true` 时纯深度 OBD 也会进入并触发撤单。MatchedPair/sports 等其它 `event_name` 不命中。无参数 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，逐单直接读取其自身 instrument 的 live OrderBook：BUY 取 best bid，SELL 取 best ask；订单价与盘口价均换算到该 instrument 的同一概率口径后计算严格 `< spread` 的概率差。它不按 outcome exposure 改写 side/instrument，因此能覆盖 `place_bets` 根据 PM 互斥库存动态生成的 SELL。命中时写标准 `legs + cancel_pair_orders`，随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `ShareLimitModification(max_leg_share=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate |
 | `VenueReplaceAction(pm_price=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价由 `pm_price` 决定**(#330):不存在或 `True`(默认)→ 用 **PM 报价腿概率**(= PM best_ask 隐含概率,PM 实时价);存在且 `False` → 沿用**原 order 隐含概率** `prob`(两 venue 共享 outcome 概率,不看 PM 实时价、也不用原 decimal 赔率)。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。`pm_price=True` 缺 PM 报价 → 告警回退 0;`pm_price=False` 裸腿无 `prob` → 回退 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
@@ -567,13 +568,23 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
 
 **为什么写在 OBD 回调、不在评估里**:评估经 `PairInFlightGate` 收窄,**不保证每帧都跑**;而
 `on_order_book_deltas` 回调体每帧都执行(闸只挡 `_dispatch_eval` 的评估 task,不挡回调)。故趋势
-更新放 `_update_price_trend`(回调内、`_route_eval` 前),与 `_capture_first_price` 并列,per-frame。
+更新、first/extreme price 采集仍在每帧执行；仅 `_route_eval` 是可配置过滤的出口。
 
 **存储(key = `str(instrument_id)` = venue + 该腿/outcome,唯一 → 天然分 venue/leg)**:
 - `_price_last`:仅内部滚动"上一帧 best_ask";**Check 不读**。
 - `_price_trend`:每帧**覆盖 `_price_last` 之前**算好的 `new - prev`;经 `EvalContext.price_trend`
   暴露给 Check。**为何不让 Check 读 last 再与当前 book 比**:评估晚于回调,那时 `_price_last`
   已被覆盖成当前值 → 趋势恒为 0。必须回调时就把结果(Δ)存下。
+
+**OBD 评估过滤(#355)**:`_update_price_trend` 返回本帧真实 `Δprob`；首帧、纯深度帧、缺/无效顶价返回
+`None`。Evaluator 在完成上述每帧内存更新后读 `ArbitrageParams.evaluate_on_depth_change`:
+
+- 缺省/`false`:仅返回真实非零 Δ 的 OBD 进入 `_route_eval`；首帧/纯深度/无效帧不触发策略。
+- `true`:所有 OBD 都进入评估，完全恢复 #355 前行为。
+
+进入的评估把既有调度字段 `event_name` 注入 `EvalContext`：OBD 为 `OrderBookDeltas`，
+MatchedPair/sports 分别为 `MatchedPair` / `SportsGameUpdate`。它是触发源标识，不是 momentum 快照。
+与所有评估一样，同 pair 已 in-flight 时事件依旧按既有闸语义放弃，不新增 pending latch。
 
 **概率空间可比(关键)**:`best_ask(book)` 对 PM/OE/SE **都已是隐含概率**(#256 写侧
 `oe_runner_to_book_deltas` 已 `probability_from_price` 换算、反向单调已配平),故 Δprob 跨 venue
@@ -683,8 +694,8 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
   "compensation_tree": {
     "checktion": {
       "OR": [
-        {"type": "spread_cancel_recovery", "params": {"spread": 0.01}},
-        {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}}
+        {"type": "price_change_recovery"},
+        {"type": "one_side_recovery", "params": {"min_rate": 0.04, "force": true}}
       ]
     },
     "actions": [
@@ -827,7 +838,7 @@ if plan := comp_plan or arb_plan:
 ```
 
 **补偿优先语义**:两棵树先独立完成本树门控、选择和计划转换；有补偿 plan 就不选择套利
-plan，补偿链没有生成 plan 才回退套利 plan。`spread_cancel_recovery` 也必须完整经过补偿树，
+plan，补偿链没有生成 plan 才回退套利 plan。`price_change_recovery` 也必须完整经过补偿树，
 生成 `cancel_pair` plan 后参与同一统一分发，不存在撤单旁路。
 
 **为什么 evaluate 必须分离求值与执行**:两棵树必须先完成独立求值和计划构造，Evaluator

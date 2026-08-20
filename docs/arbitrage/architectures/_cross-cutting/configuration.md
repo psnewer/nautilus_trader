@@ -172,6 +172,7 @@ class ArbitrageSectionConfig(ConfigStruct):
     share:             float = 22.5
     max_leg_share:     float | None = None  # Web 默认单腿上限;Strategy share_limit 可读取/覆盖
     fx:                float = 1.33
+    evaluate_on_depth_change: bool = False  # false=仅真实顶价变化的 OBD 唤醒 Strategy
 
 
 class RiskSectionConfig(ConfigStruct):
@@ -233,7 +234,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true},
     "sharpexch":  {"enabled": false, "base_url": "https://portal.sharpxch.com", "login_url": "https://sharpxch.com/player/", "user_data_dir": null}
   },
-  "arbitrage": {"share": 22.5, "max_leg_share": 100, "fx": 1.33},
+  "arbitrage": {"share": 22.5, "max_leg_share": 100, "fx": 1.33, "evaluate_on_depth_change": false},
   "risk": {"match_tp": 0.05, "match_sl": -0.05},
   "execution": {"tracking_timeout_sec": 30, "...": "..."},
   "strategy": {

@@ -32,12 +32,12 @@ def _fs(books):
 
 def _feed(fs, iid, ask):
     fs.cache = _Cache({iid: _book(ask)})
-    StrategyEvaluator._update_price_trend(fs, SimpleNamespace(instrument_id=iid))
+    return StrategyEvaluator._update_price_trend(fs, SimpleNamespace(instrument_id=iid))
 
 
 def test_first_frame_has_no_trend_only_seeds_last():
     fs = _fs({})
-    _feed(fs, "Y.POLYMARKET", 0.40)
+    assert _feed(fs, "Y.POLYMARKET", 0.40) is None
     assert "Y.POLYMARKET" not in fs._price_trend      # 首帧无 prev → 不算趋势
     assert fs._price_last["Y.POLYMARKET"] == pytest.approx(0.40)
 
@@ -45,9 +45,9 @@ def test_first_frame_has_no_trend_only_seeds_last():
 def test_trend_is_delta_prob_and_carries_prev_across_frames():
     fs = _fs({})
     _feed(fs, "Y.POLYMARKET", 0.40)
-    _feed(fs, "Y.POLYMARKET", 0.50)
+    assert _feed(fs, "Y.POLYMARKET", 0.50) == pytest.approx(0.10)
     assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.10)   # 概率变大 → 正
-    _feed(fs, "Y.POLYMARKET", 0.45)
+    assert _feed(fs, "Y.POLYMARKET", 0.45) == pytest.approx(-0.05)
     assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(-0.05)  # 概率变小 → 负
     assert fs._price_last["Y.POLYMARKET"] == pytest.approx(0.45)    # last 已滚动到当前
 
@@ -73,7 +73,7 @@ def test_unchanged_price_keeps_prior_trend_not_flat():
     _feed(fs, "Y.POLYMARKET", 0.40)
     _feed(fs, "Y.POLYMARKET", 0.50)
     assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.10)
-    _feed(fs, "Y.POLYMARKET", 0.50)   # 价未变(只深度变)→ 趋势不动
+    assert _feed(fs, "Y.POLYMARKET", 0.50) is None  # 纯深度帧不是当前价格变化
     assert fs._price_trend["Y.POLYMARKET"] == pytest.approx(0.10)   # 仍是上次的 +0.10,非 0
     assert fs._price_last["Y.POLYMARKET"] == pytest.approx(0.50)
     _feed(fs, "Y.POLYMARKET", 0.53)   # 再真实移动 → 从上次真实价 0.50 算

@@ -313,11 +313,17 @@ def test_arb_risk_params_maps_fields():
 
 
 def test_arbitrage_params_maps_fields():
-    cfg = _cfg(arbitrage={"share": 50.0, "max_leg_share": 75.0, "fx": 1.5})
+    cfg = _cfg(arbitrage={
+        "share": 50.0,
+        "max_leg_share": 75.0,
+        "fx": 1.5,
+        "evaluate_on_depth_change": True,
+    })
     params = to_arbitrage_params(cfg)
     assert params.share == 50.0
     assert params.max_leg_share == 75.0
     assert params.fx == 1.5
+    assert params.evaluate_on_depth_change is True
 
 
 def test_arb_context_init_kwargs_maps_execution_section():

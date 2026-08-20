@@ -303,14 +303,29 @@ def test_update_arbitrage_config_writes_file_and_publishes_command(tmp_path):
     path.write_text(_json.dumps({"arbitrage": {"share": 22.5}}))
     result = actor.update_config_section(
         "arbitrage",
-        {"share": 50.0, "max_leg_share": 100.0, "fx": 1.33},
+        {
+            "share": 50.0,
+            "max_leg_share": 100.0,
+            "fx": 1.33,
+            "evaluate_on_depth_change": True,
+        },
     )
     assert result["applied"] == "live"
     assert _json.loads(path.read_text())["arbitrage"]["share"] == 50.0
     topic, cmd = actor.published[-1]
     assert topic == TOPIC_ARBITRAGE_PARAMS
-    assert cmd == SetArbitrageParamsCommand(share=50.0, max_leg_share=100.0, fx=1.33)
-    assert actor.live_arbitrage_params() == {"share": 50.0, "max_leg_share": 100.0, "fx": 1.33}
+    assert cmd == SetArbitrageParamsCommand(
+        share=50.0,
+        max_leg_share=100.0,
+        fx=1.33,
+        evaluate_on_depth_change=True,
+    )
+    assert actor.live_arbitrage_params() == {
+        "share": 50.0,
+        "max_leg_share": 100.0,
+        "fx": 1.33,
+        "evaluate_on_depth_change": True,
+    }
 
 
 def test_update_restart_section_writes_file_no_command(tmp_path):
@@ -319,6 +334,19 @@ def test_update_restart_section_writes_file_no_command(tmp_path):
     result = actor.update_config_section("venues", {"polymarket": {"funder": "0xabc"}})
     assert result["applied"] == "on_restart"
     assert actor.published == []   # 重启段不发命令
+
+
+def test_update_arbitrage_rejects_non_boolean_depth_switch(tmp_path):
+    actor = _control_actor(tmp_path)
+    path = tmp_path / "arb_config.json"
+    path.write_text(_json.dumps({"arbitrage": {"share": 22.5}}))
+
+    with pytest.raises(ValueError, match="evaluate_on_depth_change"):
+        actor.update_config_section(
+            "arbitrage",
+            {"evaluate_on_depth_change": "false"},
+        )
+    assert _json.loads(path.read_text()) == {"arbitrage": {"share": 22.5}}
 
 
 def test_update_matching_refresh_interval_publishes(tmp_path):

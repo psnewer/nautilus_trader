@@ -240,6 +240,7 @@ def to_arbitrage_params(cfg: ArbConfig) -> ArbitrageParams:
         share=a.share,
         max_leg_share=a.max_leg_share,
         fx=a.fx,
+        evaluate_on_depth_change=a.evaluate_on_depth_change,
     )
 
 

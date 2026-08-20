@@ -102,12 +102,22 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _on_set_arbitrage_params_cmd(self, cmd) -> None:
         if not isinstance(cmd, SetArbitrageParamsCommand):
             return
+        if (
+            cmd.evaluate_on_depth_change is not None
+            and not isinstance(cmd.evaluate_on_depth_change, bool)
+        ):
+            self._log.warning(
+                "invalid arbitrage params hot-update: "
+                f"evaluate_on_depth_change={cmd.evaluate_on_depth_change!r}",
+            )
+            return
         overrides = {
             k: v
             for k, v in (
                 ("share", cmd.share),
                 ("max_leg_share", cmd.max_leg_share),
                 ("fx", cmd.fx),
+                ("evaluate_on_depth_change", cmd.evaluate_on_depth_change),
             )
             if v is not None
         }

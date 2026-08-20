@@ -42,6 +42,7 @@ class SetArbitrageParamsCommand:
     share: float | None = None
     max_leg_share: float | None = None
     fx: float | None = None
+    evaluate_on_depth_change: bool | None = None
 
 
 @dataclass(frozen=True)

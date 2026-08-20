@@ -48,7 +48,7 @@ class WebGatewayConfig(ActorConfig, frozen=True, kw_only=True):
 class WebGatewayDeps:                   # 非 msgspec 对象经 deps 注入
     loop: asyncio.AbstractEventLoop
     risk_engine: object | None = None   # 读 trading_state / live risk params(写走命令)
-    arbitrage_params: ArbitrageParams | None = None  # 读/热改 share/max_leg_share/fx
+    arbitrage_params: ArbitrageParams | None = None  # 读/热改 share/max_leg_share/fx/evaluate_on_depth_change
     config_path: str | None = None      # arb_config.json,PUT 写回
 
 class WebGatewayActor(Actor):
@@ -114,12 +114,16 @@ class WebGatewayActor(Actor):
 
 | 段 | 字段 | 生效方式 |
 |---|---|---|
-| arbitrage | `share` / `max_leg_share` / `fx` | **热改** → `command.arb.arbitrage_params` |
+| arbitrage | `share` / `max_leg_share` / `fx` / `evaluate_on_depth_change` | **热改** → `command.arb.arbitrage_params` |
 | risk | `match_tp` / `match_sl` / `min_probability` / `max_probability` | **热改** → `command.arb.risk_params` |
 | matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
 | venues | 凭证 / URL | **重启**(连接态,结构性) |
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
 | web / execution | host/port / 超时 | **重启** |
+
+`evaluate_on_depth_change` 必须是 JSON boolean；WebGatewayActor 在写回文件和 publish 命令**之前**
+校验，非 boolean 返错且不污染落盘配置。Strategy/Risk consumer 对直接注入的非 boolean 命令亦
+fail-closed 拒绝整次 arbitrage params 更新。
 
 Execution 配置页不提供全局市价开关。需要市价执行的树在 strategy JSON 中配置
 `place_bets.params.market=true`；最终转换规则见 execution §3.6，WebGateway 不参与改价。
@@ -137,7 +141,7 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 |---|---|---|---|
 | `command.arb.trading_state` | `{"state": "ACTIVE"\|"HALTED"}` | `ArbitrageLiveRiskEngine`(`configure_arb` 内 subscribe)| `self.set_trading_state(...)` |
 | `command.arb.risk_params` | risk 字段 dict(`match_tp`/`match_sl`/概率上下界;None=不动) | `ArbitrageLiveRiskEngine` | 校验并覆盖给定 `self._arb_params` 字段 |
-| `command.arb.arbitrage_params` | arbitrage 字段 dict(`share`/`max_leg_share`/`fx`;None=不动) | `ArbitrageLiveRiskEngine` / `StrategyEvaluator` | Risk 覆盖 `_arb_arbitrage_params` 供 profit/balance 使用;StrategyEvaluator 覆盖 `_arbitrage_params` 供 `EvalContext.strategy_defaults` 使用 |
+| `command.arb.arbitrage_params` | arbitrage 字段 dict(`share`/`max_leg_share`/`fx`/`evaluate_on_depth_change`;None=不动) | `ArbitrageLiveRiskEngine` / `StrategyEvaluator` | Risk 保持共享 `ArbitrageParams` 副本，但不消费深度开关；StrategyEvaluator 用规模字段构造 `strategy_defaults`，用 `evaluate_on_depth_change` 过滤 OBD 调度 |
 | `command.arb.refresh_interval` | `{"secs": float}` | `MarketMatchingActor`(`on_start` 内 subscribe)| 更新 `self._refresh_interval_secs` |
 
 命令消息类型 + topic 常量住 `src/arbitrage/common/control.py`(轻 frozen dataclass)。
