@@ -602,11 +602,39 @@ def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():
     order = SimpleNamespace(
         client_order_id=ClientOrderId("O-INFLIGHT"),
         time_in_force="GTC",
+        is_post_only=False,
     )
 
     _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))
 
     assert captured == [(ClientOrderId("O-INFLIGHT"), "")]
+
+
+def test_polymarket_post_only_is_forwarded_to_clob_submit():
+    posted = []
+    client = SimpleNamespace(
+        _retry_manager_pool=_RetryPool(),
+        _http_client=SimpleNamespace(
+            post_order=lambda signed, order_type, post_only: posted.append(
+                (signed, order_type, post_only),
+            ) or {"success": False, "errorMsg": "test"},
+        ),
+        _clock=_Clock(),
+        generate_order_rejected=lambda **_kwargs: None,
+    )
+    client._post_signed_order = PolymarketExecutionClient._post_signed_order.__get__(client)
+    signed_order = SimpleNamespace()
+    order = SimpleNamespace(
+        strategy_id=StrategyId("S-1"),
+        instrument_id=InstrumentId.from_str("0xcond-token.POLYMARKET"),
+        client_order_id=ClientOrderId("O-POST-ONLY"),
+        time_in_force="GTC",
+        is_post_only=True,
+    )
+
+    _run(client._post_signed_order(order, signed_order, order_type_override="GTC"))
+
+    assert posted == [(signed_order, "GTC", True)]
 
 
 def test_polymarket_http_submit_rejection_is_not_ambiguous():
@@ -631,6 +659,7 @@ def test_polymarket_http_submit_rejection_is_not_ambiguous():
         instrument_id=InstrumentId.from_str("0xcond-token.POLYMARKET"),
         client_order_id=ClientOrderId("O-REJECTED"),
         time_in_force="GTC",
+        is_post_only=False,
     )
 
     _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))
@@ -657,6 +686,7 @@ def test_polymarket_transport_submit_failure_remains_ambiguous():
     order = SimpleNamespace(
         client_order_id=ClientOrderId("O-INFLIGHT"),
         time_in_force="GTC",
+        is_post_only=False,
     )
 
     _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))

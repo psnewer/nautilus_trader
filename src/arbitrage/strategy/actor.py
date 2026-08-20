@@ -121,6 +121,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
             quantity=Quantity(qty_value, precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
             time_in_force=TimeInForce.GTC,
+            post_only=bool(spec.get("post_only", False)),
             tags=tags,
             client_order_id=ClientOrderId(f"ARB-{UUID4().value[:8]}"),
         )

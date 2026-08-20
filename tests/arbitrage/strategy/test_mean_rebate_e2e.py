@@ -329,3 +329,29 @@ def test_place_bets_limit_param_loads_from_strategy_json():
     action = strategy.arbitrage_tree.actions[0]
     assert isinstance(action, PlaceBetsAction)
     assert action._limit is True
+
+
+def test_place_bets_post_only_param_loads_from_strategy_json():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_post_only": {
+                    "arbitrage_tree": {
+                        "checktion": {
+                            "type": "mean_rebate",
+                            "params": {"min_rate": 0.01},
+                        },
+                        "actions": [{"type": "place_bets", "params": {"post_only": True}}],
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_post_only"}],
+        },
+    }, type=ArbConfig)
+
+    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
+
+    assert strategy is not None
+    action = strategy.arbitrage_tree.actions[0]
+    assert isinstance(action, PlaceBetsAction)
+    assert action._post_only is True

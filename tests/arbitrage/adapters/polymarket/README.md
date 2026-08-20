@@ -191,6 +191,15 @@ size，避免破坏 share/quote 口径。
 **验收**:`test_polymarket_external_taker_fill_bootstraps_order_before_fill` 锁定 report 顺序、方向、
 数量与成交价。
 
+### pm-adapter-5.1h: 单笔 post-only 透传 CLOB
+
+**前置**：Strategy 已构造 `LimitOrder(is_post_only=True, time_in_force=GTC)`。
+**输入/步骤**：调用 PM 单笔 `_post_signed_order`，检查传给官方 v2
+`ClobClient.post_order(signed_order, order_type, post_only)` 的第三个参数。
+**期望**：`order.is_post_only=True` 原样传为 `True`，由 CLOB 拒绝任何会立即成交的订单；
+普通订单传 `False`，保持原 GTC 限价行为。当前 Strategy 逐张提交，不走批量 `post_orders`。
+**验收**：✅ `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_post_only_is_forwarded_to_clob_submit`。
+
 ### pm-adapter-5.2: 撤单接口
 
 **前置**: 已下一笔挂单

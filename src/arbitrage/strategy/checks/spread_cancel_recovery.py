@@ -1,20 +1,21 @@
-"""挂单价格接近当前 ask 时触发 pair 级撤单补偿。"""
+"""挂单价格接近同 instrument 当前同侧挂单价时触发 pair 级撤单补偿。"""
 
 from __future__ import annotations
 
 import math
 
+from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import leg_economics
-from src.arbitrage.common.venues import order_exposure_probability
+from src.arbitrage.common.venues import price_from_probability
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
-from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
+from src.arbitrage.strategy.checks.quote_legs import venue_of
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.leg_plan import resolve_side_and_price
 
 
 class SpreadCancelRecoveryCheck(Check):
-    """任一挂单与对应当前可执行 ask 的价差小于阈值时请求撤销整个 pair。"""
+    """任一 BUY/SELL 挂单接近同 instrument 的 best bid/ask 时撤销整个 pair。"""
 
     def __init__(self, spread: float) -> None:
         self._spread = float(spread)
@@ -27,27 +28,27 @@ class SpreadCancelRecoveryCheck(Check):
         if ctx.cache is None or ctx.pair_registry is None:
             return False
 
-        current_asks = _current_asks_by_execution_leg(ctx)
-        if not current_asks:
-            return False
-
         matches = []
         legs = []
         for instrument_id in pair_instrument_ids(ctx):
+            instrument = ctx.cache.instrument(instrument_id)
+            info = getattr(instrument, "info", None) or {}
+            venue = venue_of(instrument_id)
+            quote_claim = str(info.get("quote_claim") or "yes").lower()
+            book = ctx.cache.order_book(instrument_id)
             for order in ctx.cache.orders_open(instrument_id=instrument_id) or ():
                 side = _side_name(getattr(order, "side", None))
                 order_price = _order_price(order)
-                current_leg = current_asks.get((str(instrument_id), side))
-                if order_price is None or current_leg is None:
+                book_side = "bid" if side == "BUY" else "ask" if side == "SELL" else None
+                current_probability = _book_probability(book, book_side)
+                if order_price is None or current_probability is None or not venue:
                     continue
-                ask_price = float(current_leg["ask_price"])
-                venue = str(current_leg["leg"]["venue"])
                 try:
-                    order_probability = order_exposure_probability(venue, order_price, side)
-                    ask_probability = order_exposure_probability(venue, ask_price, side)
+                    current_price = price_from_probability(venue, current_probability, quote_claim)
+                    order_probability = probability_from_price(venue, order_price, quote_claim)
                 except (KeyError, ZeroDivisionError):
                     continue
-                difference = abs(order_probability - ask_probability)
+                difference = abs(order_probability - current_probability)
                 if difference >= self._spread:
                     continue
                 quantity = _number(getattr(order, "quantity", None))
@@ -58,18 +59,29 @@ class SpreadCancelRecoveryCheck(Check):
                     "instrument_id": str(instrument_id),
                     "side": side,
                     "order_price": order_price,
-                    "ask_price": ask_price,
+                    "book_side": book_side,
+                    "current_price": current_price,
                     "order_probability": order_probability,
-                    "ask_probability": ask_probability,
+                    "current_probability": current_probability,
                     "difference": difference,
                 })
-                leg = dict(current_leg["leg"])
+                outcome = str(info.get("claim") or info.get("selection_role") or "").lower()
+                leg = {
+                    "instrument_id": str(instrument_id),
+                    "venue": venue,
+                    "side": side,
+                    "price": current_price,
+                    "prob": current_probability,
+                    "role": outcome,
+                }
+                if info.get("claim"):
+                    leg["claim"] = str(info["claim"]).lower()
                 leg["qty"] = quantity
                 leg["share_if_wins"] = leg_economics(
-                    leg["venue"],
-                    ask_price,
+                    venue,
+                    current_price,
                     quantity,
-                    is_lay=side == "SELL",
+                    is_lay=side == "SELL" and is_decimal_odds_venue(venue),
                 ).share_if_wins
                 legs.append(leg)
 
@@ -85,22 +97,23 @@ class SpreadCancelRecoveryCheck(Check):
         return True
 
 
-def _current_asks_by_execution_leg(ctx: EvalContext) -> dict[tuple[str, str], dict]:
-    """把语义报价腿投影为实际提交 instrument/side，供挂单做同口径比较。"""
-    result = {}
-    for legs in quote_legs_by_outcome(ctx).values():
-        for leg in legs:
-            venue = str(leg.get("venue") or "")
-            side, price = resolve_side_and_price(leg, venue, {})
-            if price is None or price <= 0:
-                continue
-            instrument_id = str(leg.get("exec_instrument_id") or leg.get("instrument_id") or "")
-            if instrument_id:
-                result[(instrument_id, side)] = {
-                    "ask_price": float(price),
-                    "leg": leg,
-                }
-    return result
+def _book_probability(book, book_side: str | None) -> float | None:
+    if book is None or book_side is None:
+        return None
+    fn = getattr(book, f"best_{book_side}_price", None)
+    if callable(fn):
+        try:
+            value = fn()
+        except Exception:
+            return None
+    elif isinstance(book, dict):
+        value = book.get(book_side) or book.get(f"best_{book_side}")
+    else:
+        return None
+    probability = _number(value)
+    if probability is None or not math.isfinite(probability) or not 0 < probability < 1:
+        return None
+    return probability
 
 
 def _side_name(value) -> str:

@@ -175,7 +175,8 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；缺 live state、缺 claim、缺 order book、非正价格、非正 share 均 fail-fast
+- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；`one_side` 缺失/`True` 保持定向剩余预算分配，`False` 时两 outcome 均以 `arbitrage.share` 为 `share_if_wins`（decimal qty 仍按赔率反算）；缺 live state、缺 claim、缺 order book、非正价格、非正 share 及非法 `one_side` 均 fail-fast
+- ✅ `test_check_one_side_recovery.py`:先以 `min_rate` 命中 one-side 盘口，再以当前最大实际 share 为目标生成 mean recovery 缺口腿；覆盖未达单冲阈值不补、`min_repaired_rebate` 与 `force` 双向率门、默认跨 venue 最优价选择，以及内部 one-side candidates 不泄漏到 action scratch
 - ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
@@ -317,6 +318,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
+- ✅ one-side recovery config smoke:launcher 注册 `one_side_recovery`，三个参数 `min_rate/min_repaired_rebate/force` 可经 registry 构建；传入已删除的 `venue_select` 或旧名 `min_rebate` 会 fail-fast 为配置错误
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
 
@@ -330,24 +332,41 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_mean_rebate_e2e.py::test_place_bets_market_param_loads_from_strategy_json`，
   `tests/arbitrage/common/test_opportunity.py::test_opportunity_meta_round_trips_market`。
 
-### strategy-4.33: PlaceBetsAction 按盘口同侧挂限价
+### strategy-4.33: PlaceBetsAction 按当前价与盘口同侧价择优挂限价
 - 前置:`PlaceBetsAction(limit=true)` 消费已选 legs，Cache OrderBook 使用统一概率空间。
 - 输入/ 期望:
-  - 普通 BUY 用其最终执行 instrument 的 best bid，SELL 用 best ask。
+  - 普通 BUY 取 `min(当前价, best bid)`，SELL 取 `max(当前价, best ask)`；覆盖当前价与盘口价
+    各自更保守的四个方向边界。
   - decimal venue 按 instrument `quote_claim` 把盘口概率反算为原生 odds；未显式给 qty
     时，以该最终限价计算 share 对应数量。
   - PM 互斥库存先用互补参考价与 best bid 判断是否拆单；拆出的 SELL 子单再用
     自身 instrument best ask，BUY 余量单用 target instrument best bid，因此不承诺即时成交。
-  - `limit` 缺失/`false` 保持原计划价；`true` 优先于 `price_overrides` / `spread`。
+  - PM 互补 BUY 转为库存 SELL 后，SELL 的 `role/leg_key/expected_legs` 使用实际被卖 instrument
+    的 `claim/selection_role`；BUY 余量仍保留原候选 role，避免日志把“卖 NO”误标为“卖 YES”。
+  - `limit` 缺失/`false` 保持原计划价；`true` 不应用 `spread`，`price_overrides` 作为当前价参与择优。
   - 缺所需一侧盘口、缺 instrument 或价格非法时，整次 opportunity fail-closed；非 boolean
     配置 fail-fast。
 - 验收:✅ `test_action_place_bets.py::test_limit_absent_or_false_keeps_existing_price` /
-  `test_limit_true_uses_best_bid_for_buy_and_best_ask_for_sell` /
+  `test_limit_true_chooses_more_conservative_current_or_book_price` /
   `test_limit_true_converts_probability_book_price_for_decimal_venue` /
   `test_limit_true_reprices_inventory_split_orders_from_each_book_side` /
+  `test_probability_buy_splits_into_opposite_sell_and_remainder_buy` /
+  `test_probability_inventory_sell_uses_actual_opposite_claim_in_metadata` /
+  `test_probability_inventory_sell_splits_by_native_position_id` /
   `test_limit_true_aborts_when_required_book_side_is_missing` /
   `test_action_rejects_non_boolean_limit`；✅
   `test_mean_rebate_e2e.py::test_place_bets_limit_param_loads_from_strategy_json`。
+
+### strategy-4.34: PlaceBetsAction 可选 post-only
+
+- 前置：配置 `PlaceBetsAction(post_only=true)`，或省略/显式设为 `false`。
+- 期望：`true` 时每条 submit spec 携带 `post_only=true`，submitter 构造 NT
+  `LimitOrder.is_post_only=True`；缺失或 `false` 均为普通 GTC 限价单。该参数不改计划价与数量，
+  不替代 `limit` 盘口定价；非 boolean 配置 fail-fast。
+- 验收：✅ `test_action_place_bets.py::test_action_writes_optional_post_only_to_every_submit_spec` /
+  `test_action_rejects_non_boolean_post_only`；✅
+  `test_submitter.py::test_submit_sets_nt_post_only_from_spec`；✅
+  `test_mean_rebate_e2e.py::test_place_bets_post_only_param_loads_from_strategy_json`。
 
 ## pre_rebate 策略(#326/#341,已落地 · 离线已验证 · live-unvalidated)
 
@@ -400,11 +419,14 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **仅深度帧不冲趋势**(#trend 补,2026-08-10):`new_best == prev`(价未变、只深度变)→ 直接返回,趋势保留上次真实移动(非 0);下次真实移动仍从上次真实价算 Δ(`test_unchanged_price_keeps_prior_trend_not_flat`)。首帧后紧跟同价帧不造出 0 趋势(`test_unchanged_price_on_first_delta_seeds_no_trend`)。
 - (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
 
-### strategy-4.trend.4: trend_gate Action(#329/#336,跨 venue/outcome 一致 + 可选累计 momentum)
+### strategy-4.trend.4: trend_gate Action(#329/#336/#353,跨 venue/outcome 一致 + 可选累计 momentum)
 `test_action_trend_gate.py`。**筛选 = 符合的留、不符合的删;不符合一致性 = 无腿符合 = 全删**。
 判据:某 outcome 各 venue 都 up/flat、互斥 outcome 各 venue 都 down/flat、至少一处严格移动 → 该 outcome 干净上升。
 - 默认 `up`:各 venue yes 涨/平、no 跌/平 → 只留 yes 腿;元数据不变。
 - `trend="down"`:留下降 outcome(no)的腿。
+- 新参数 `up` 缺失或为 `true` 时保留默认上升筛选；`false` 时沿用同一干净趋势判据、保留
+  互斥下降 outcome。缺失时旧 `trend` 配置继续生效；显式 `up` 覆盖 `trend`。
+- `up` 非 boolean → 构造即 `ValueError`。
 - **跨 venue 不一致**(OE 的 yes 跌 vs PM 的 yes 涨)→ 无干净趋势 → **全删**。
 - **缺 venue 数据当 flat**:OE 无数据、PM yes 涨 no 跌 → 仍判 yes 上升、留 yes 删 no。
 - **全平**(含缺数据)→ 无严格移动 → **全删**。
@@ -673,10 +695,10 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 
 ## strategy-4.30:one_side_rebate 近价挂单撤单补偿
 
-- `test_check_spread_cancel_recovery.py`:无挂单或概率差未达阈值不命中；PM BUY 挂单与当前
-  ask 的 outcome exposure probability 差满足严格 `< spread` 时写标准 legs + 显式 pair
-  撤单意图；decimal 合成 NO 的真实 `SELL@lay` 按执行 instrument/side 转成补集概率后
-  比较（即使原始赔率差大于 spread 也可因概率差命中）；非法 spread fail-fast。
+- `test_check_spread_cancel_recovery.py`:无挂单或概率差未达阈值不命中；逐张 open order 直接读取
+  同一实际 instrument 的 live OrderBook，BUY 与 best bid、SELL 与 best ask 比较，严格概率差
+  `< spread` 时写标准 legs + 显式 pair 撤单意图；覆盖 PM 普通 BUY、PM 互斥库存转换产生的
+  SELL，以及 decimal SELL 原生赔率差换算为概率差；非法 spread fail-fast。
 - `test_action_place_bets.py::test_action_cancel_request_cancels_pair_without_submitting`:
   `PlaceBetsAction` 先生成 cancel plan，统一 dispatcher 才调用 pair canceler，且不调用 submitter。
 - `test_action_place_bets.py::test_action_cancels_when_selected_recovery_candidate_carries_request`:

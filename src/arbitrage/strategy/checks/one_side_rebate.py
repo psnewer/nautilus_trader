@@ -25,9 +25,17 @@ from src.arbitrage.strategy.condition import EvalContext
 class OneSideRebateCheck(Check):
     """枚举所有定向返水 candidate。"""
 
-    def __init__(self, min_rate: float = 0.01, share: float | None = None) -> None:
+    def __init__(
+        self,
+        min_rate: float = 0.01,
+        share: float | None = None,
+        one_side: bool = True,
+    ) -> None:
+        if not isinstance(one_side, bool):
+            raise ValueError("one_side must be a boolean")
         self._min_rate = float(min_rate)
         self._share = float(share) if share is not None else None
+        self._one_side = one_side
 
     def passes(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:
@@ -82,15 +90,17 @@ class OneSideRebateCheck(Check):
         total_prob: float,
         rate: float,
     ) -> dict | None:
-        non_target_prob = sum(leg["prob"] for leg in combo if leg["role"] != target_role)
-        target_cost = share * (1.0 - non_target_prob)
-        if target_cost <= 0:
-            return None
+        target_cost = None
+        if self._one_side:
+            non_target_prob = sum(leg["prob"] for leg in combo if leg["role"] != target_role)
+            target_cost = share * (1.0 - non_target_prob)
+            if target_cost <= 0:
+                return None
 
         candidate_legs = []
         for leg in combo:
             role = leg["role"]
-            if role == target_role:
+            if self._one_side and role == target_role:
                 cost = target_cost
                 share_if_wins = cost / leg["prob"]
             else:

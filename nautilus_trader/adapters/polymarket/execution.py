@@ -1851,6 +1851,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 self._http_client.post_order,
                 signed_order,
                 poly_order_type,
+                order.is_post_only,
             )
 
             if not response:

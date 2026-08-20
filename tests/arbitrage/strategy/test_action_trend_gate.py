@@ -66,6 +66,32 @@ def test_down_keeps_falling_outcome():
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["N.POLYMARKET"]  # 留下降的 no
 
 
+@pytest.mark.parametrize("up", [None, True])
+def test_up_absent_or_true_keeps_existing_rising_outcome(up):
+    trend = {"Y.POLYMARKET": 0.02, "Y.ORBITEXCH": 0.01, "N.POLYMARKET": -0.03}
+    ctx = _ctx(trend)
+    _install(ctx, _pm_legs())
+
+    _run(TrendGateAction(up=up).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_up_false_keeps_falling_outcome():
+    trend = {"Y.POLYMARKET": 0.02, "Y.ORBITEXCH": 0.01, "N.POLYMARKET": -0.03}
+    ctx = _ctx(trend)
+    _install(ctx, _pm_legs())
+
+    _run(TrendGateAction(up=False).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["N.POLYMARKET"]
+
+
+def test_explicit_up_overrides_legacy_trend_direction():
+    assert TrendGateAction(trend="down", up=True)._keep_rising is True
+    assert TrendGateAction(trend="up", up=False)._keep_rising is False
+
+
 def test_inconsistent_across_venues_drops_all():
     # OE 的 yes 跌,PM 的 yes 涨 → yes 不一致 → 无干净趋势 → 没有腿符合 → 全删
     trend = {"Y.POLYMARKET": 0.02, "Y.ORBITEXCH": -0.02, "N.POLYMARKET": -0.03, "N.ORBITEXCH": 0.0}
@@ -170,6 +196,11 @@ def test_skips_cancel_pair_candidate():
 def test_invalid_trend_param_raises():
     with pytest.raises(ValueError):
         TrendGateAction(trend="sideways")
+
+
+def test_invalid_up_param_raises():
+    with pytest.raises(ValueError, match="up must be a boolean"):
+        TrendGateAction(up="false")
 
 
 @pytest.mark.parametrize("steps", [-0.01, float("nan"), float("inf")])

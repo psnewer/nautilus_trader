@@ -75,6 +75,74 @@ def test_candidate_quantities_put_rebate_on_one_side():
     assert by_role["no"]["qty"] == 100.0
     assert by_role["no"]["cost"] == 50.0
 
+    explicit_true_ctx = _ctx(books=books, infos=infos)
+    assert OneSideRebateCheck(
+        min_rate=0.10,
+        share=100.0,
+        one_side=True,
+    ).passes(explicit_true_ctx) is True
+    assert explicit_true_ctx.scratch["candidates"] == ctx.scratch["candidates"]
+
+
+def test_one_side_false_buys_configured_share_on_both_outcomes():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(
+        min_rate=0.10,
+        share=100.0,
+        one_side=False,
+    ).passes(ctx) is True
+
+    candidate = ctx.scratch["candidates"][0]
+    by_role = {leg["role"]: leg for leg in candidate["legs"]}
+    assert by_role["yes"]["share_if_wins"] == 100.0
+    assert by_role["yes"]["qty"] == 100.0
+    assert by_role["yes"]["cost"] == 45.0
+    assert by_role["no"]["share_if_wins"] == 100.0
+    assert by_role["no"]["qty"] == 100.0
+    assert by_role["no"]["cost"] == 50.0
+
+
+def test_one_side_false_keeps_decimal_qty_conversion():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.SHARPEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(
+        min_rate=0.10,
+        share=100.0,
+        one_side=False,
+    ).passes(ctx) is True
+
+    candidate = ctx.scratch["candidates"][0]
+    no_leg = next(leg for leg in candidate["legs"] if leg["role"] == "no")
+    assert no_leg["share_if_wins"] == 100.0
+    assert no_leg["qty"] == 50.0
+    assert no_leg["cost"] == 50.0
+
+
+def test_one_side_must_be_boolean():
+    try:
+        OneSideRebateCheck(one_side="false")
+    except ValueError as exc:
+        assert str(exc) == "one_side must be a boolean"
+    else:
+        raise AssertionError("expected invalid one_side to fail")
+
 
 def test_sharpexch_candidate_uses_decimal_odds_qty():
     books = {

@@ -7,15 +7,17 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
   - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
   - probability BUY 仅在互斥 LONG 的 SELL 参考价不高于当前 best bid 时，
-    拆成 SELL 减仓 + BUY 剩余量；limit=true 可再把最终 SELL 改挂 best ask
+    拆成 SELL 减仓 + BUY 剩余量；limit=true 可再让最终 SELL 与 best ask 取较高价
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
     优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
   - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
     cancel session 收到正常撤单响应即结束，不消费该参数。
   - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
-  - limit=true 时最终 BUY 使用 live best bid、SELL 使用 live best ask；盘口概率按 quote_claim
-    还原为 venue 原生价格。limit 定价优先于 price_overrides / spread。
+  - post_only=true 写入 submit spec，由 submitter 构造 NT post-only GTC LimitOrder；缺失或 false
+    保持普通限价单。
+  - limit=true 时最终 BUY 取当前价与 live best bid 的较低者，SELL 取当前价与 live best ask
+    的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。该模式不应用 spread。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -55,6 +57,7 @@ class PlaceBetsAction(Action):
         enable_timeout: bool | None = None,
         market: bool | None = None,
         limit: bool | None = None,
+        post_only: bool | None = None,
     ) -> None:
         if enable_timeout is not None and not isinstance(enable_timeout, bool):
             raise ValueError("enable_timeout must be a boolean")
@@ -62,6 +65,8 @@ class PlaceBetsAction(Action):
             raise ValueError("market must be a boolean")
         if limit is not None and not isinstance(limit, bool):
             raise ValueError("limit must be a boolean")
+        if post_only is not None and not isinstance(post_only, bool):
+            raise ValueError("post_only must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
@@ -69,6 +74,7 @@ class PlaceBetsAction(Action):
         self._enable_timeout = enable_timeout
         self._market = market
         self._limit = bool(limit)
+        self._post_only = post_only
 
     async def execute(self, ctx: EvalContext) -> None:
         ctx.scratch.pop("execution_plan", None)
@@ -103,7 +109,8 @@ class PlaceBetsAction(Action):
             side, price = _resolve_side_and_price(leg, venue, self._price_overrides)
             instrument_id = leg.get("exec_instrument_id") or leg["instrument_id"]
             if self._limit:
-                price = _book_limit_price(ctx.cache, instrument_id, venue, side)
+                book_price = _book_limit_price(ctx.cache, instrument_id, venue, side)
+                price = _conservative_limit_price(price, book_price, side)
             if price is None:
                 _LOG.warning(
                     f"PlaceBets: pair={ctx.pair_id} leg={leg.get('instrument_id')} "
@@ -164,6 +171,8 @@ class PlaceBetsAction(Action):
                 spec["enable_timeout"] = self._enable_timeout
             if self._market is not None:
                 spec["market"] = self._market
+            if self._post_only is not None:
+                spec["post_only"] = self._post_only
             prepared.append(
                 PreparedOrder(
                     spec=spec,
@@ -222,12 +231,13 @@ def _apply_spread_to_drafts(drafts: list[dict], spread: float, ctx: EvalContext)
 
 def _apply_book_limit_to_drafts(drafts: list[dict], ctx: EvalContext) -> bool:
     for draft in drafts:
-        price = _book_limit_price(
+        book_price = _book_limit_price(
             ctx.cache,
             draft["instrument_id"],
             draft["venue"],
             draft["side"],
         )
+        price = _conservative_limit_price(draft["price"], book_price, draft["side"])
         if price is None:
             _LOG.warning(
                 f"PlaceBets: pair={ctx.pair_id} leg={draft['instrument_id']} "
@@ -236,6 +246,23 @@ def _apply_book_limit_to_drafts(drafts: list[dict], ctx: EvalContext) -> bool:
             return False
         draft["price"] = price
     return True
+
+
+def _conservative_limit_price(
+    current_price: float | None,
+    book_price: float | None,
+    side: str,
+) -> float | None:
+    if current_price is None or book_price is None:
+        return None
+    try:
+        current = float(current_price)
+        book = float(book_price)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(current) or not math.isfinite(book) or current <= 0 or book <= 0:
+        return None
+    return min(current, book) if str(side).upper() == "BUY" else max(current, book)
 
 
 def _book_limit_price(cache, instrument_id, venue: str, side: str) -> float | None:
@@ -318,7 +345,7 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     """把 probability BUY 优先转换成“卖互斥仓位 + 买剩余量”。
 
     当前不要求应用 spread 后的 SELL 参考价与 best bid 交叉，因此转换出的 SELL 可能只是挂单；
-    limit=true 时最终 SELL 会在拆单后改挂 best ask。暂不按盘口深度限制数量。
+    limit=true 时最终 SELL 会在拆单后与 best ask 取较高价。暂不按盘口深度限制数量。
     在 Action 执行时读取 live Cache；之后挂单变化由 Execution barrier 基线比较收口。
     """
     if ctx.cache is None or ctx.pair_registry is None or draft["side"] != "BUY":
@@ -337,6 +364,11 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
     opposite_iid = _opposite_real_instrument(ctx, leg, draft)
     if opposite_iid is None:
         return [draft]
+    opposite_instrument = ctx.cache.instrument(_as_instrument_id(opposite_iid))
+    opposite_info = getattr(opposite_instrument, "info", None) or {}
+    opposite_role = str(
+        opposite_info.get("claim") or opposite_info.get("selection_role") or ""
+    ).lower()
     long_positions = _long_positions(ctx.cache, opposite_iid)
     available = sum(quantity for _, quantity in long_positions)
     if available <= 0:
@@ -393,6 +425,7 @@ def _expand_probability_inventory(draft: dict, leg: dict, ctx, spread: float = 0
         sell.update({
             "instrument_id": str(opposite_iid),
             "side": "SELL",
+            "role": opposite_role,
             "qty": quantity,
             "price": 1.0 - target_price,
             "position_id": position_id,

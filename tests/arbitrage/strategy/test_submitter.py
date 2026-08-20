@@ -76,7 +76,23 @@ def test_submit_builds_limit_order_and_delegates_to_strategy():
     assert order.side == OrderSide.BUY
     assert float(order.quantity) == 5.625
     assert float(order.price) == 4.0
+    assert order.is_post_only is False
     assert order.tags == ["arb:intent=arbitrage"]
+
+
+def test_submit_sets_nt_post_only_from_spec():
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _fake_instrument()
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 5.0,
+        "price": 0.5,
+        "post_only": True,
+    }))
+
+    assert submitted[0].is_post_only is True
 
 
 def test_submit_with_sell_side():

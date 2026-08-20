@@ -242,7 +242,15 @@ grouped-command 状态机，metadata 解析复用 `src/arbitrage/common/opportun
 
 **timeout**:使用 NT 原生 clock `set_time_alert_ns` / `cancel_timer`;只覆盖 Risk decision 收齐窗口,不替代 §4.2 per-session venue timeout。
 
-### 3.6 市价提交边界
+### 3.6 市价 / post-only 提交边界
+
+`PlaceBetsAction(post_only=true)` 生成的订单在 Strategy submitter 边界直接构造为 NT
+`LimitOrder(post_only=True, time_in_force=GTC)`；缺失或 `false` 均维持普通 GTC 限价单。
+该标记不改变计划 price/qty，也不负责选 best bid/ask（盘口定价仍由 `place_bets.limit` 独立
+控制）。Polymarket 单笔限价提交必须把 `order.is_post_only` 原样传给官方
+`ClobClient.post_order(..., post_only=...)`，由 CLOB 拒绝任何会立即成交的订单，禁止在 adapter
+内仅记录 NT 标记而漏传 REST payload。Strategy 当前逐张调用 `submit_order`，不经过
+`SubmitOrderList/post_orders` 批量接口。
 
 市价意图是订单级 `OpportunityMeta.market`，由 `PlaceBetsAction(market=true)` 写入
 `Order.tags`。不存在全局市价开关；普通订单、缺失该 metadata 的旧订单及 `market=false`

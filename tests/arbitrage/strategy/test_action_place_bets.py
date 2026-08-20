@@ -303,6 +303,47 @@ def test_action_rejects_non_boolean_market():
         PlaceBetsAction(market="true")
 
 
+@pytest.mark.parametrize("post_only", [None, False, True])
+def test_action_writes_optional_post_only_to_every_submit_spec(post_only):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "A.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "home",
+            "price": 0.4,
+            "share_if_wins": 22.5,
+        },
+        {
+            "instrument_id": "A.ORBITEXCH",
+            "venue": "ORBITEXCH",
+            "side": "BUY",
+            "role": "away",
+            "price": 2.5,
+            "share_if_wins": 22.5,
+        },
+    ]
+
+    _prepare_and_dispatch(PlaceBetsAction(post_only=post_only), ctx)
+
+    assert len(calls) == 2
+    if post_only is None:
+        assert all("post_only" not in spec for spec in calls)
+    else:
+        assert all(spec["post_only"] is post_only for spec in calls)
+
+
+def test_action_rejects_non_boolean_post_only():
+    with pytest.raises(ValueError, match="post_only must be a boolean"):
+        PlaceBetsAction(post_only="true")
+
+
 def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
     calls = []
 
@@ -694,7 +735,7 @@ def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
     ]
     assert calls[0]["expected_legs"] == calls[1]["expected_legs"]
     assert set(calls[0]["expected_legs"]) == {
-        "polymarket:away:0:reduce",
+        "polymarket:yes:0:reduce",
         "polymarket:away:0:buy",
     }
     assert calls[0]["venue_required_balance"] == 8.0
@@ -806,6 +847,28 @@ def test_probability_buy_fully_replaced_by_opposite_sell():
     assert calls[0]["position_id"] == "SINNER.POLYMARKET-EXTERNAL"
 
 
+def test_probability_inventory_sell_uses_actual_opposite_claim_in_metadata():
+    ctx = _pm_inventory_ctx(held_qty=100)
+    ctx.cache.instrument("ALCARAZ.POLYMARKET").info.update({
+        "claim": "yes",
+        "selection_role": "yes",
+    })
+    ctx.cache.instrument("SINNER.POLYMARKET").info.update({
+        "claim": "no",
+        "selection_role": "no",
+    })
+    ctx, calls = _pm_target_ctx(ctx)
+    ctx.scratch["legs"][0]["role"] = "yes"
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert [(call["instrument_id"], call["side"]) for call in calls] == [
+        ("SINNER.POLYMARKET", "SELL"),
+    ]
+    assert calls[0]["leg_key"] == "polymarket:no:0:reduce"
+    assert calls[0]["expected_legs"] == ("polymarket:no:0:reduce",)
+
+
 def test_probability_inventory_sell_splits_by_native_position_id():
     opposite = "SINNER.POLYMARKET"
     positions = [
@@ -831,8 +894,8 @@ def test_probability_inventory_sell_splits_by_native_position_id():
         ("SELL", 40.0, "SINNER.POLYMARKET-EXTERNAL"),
     ]
     assert calls[0]["expected_legs"] == (
-        "polymarket:away:0:reduce:0",
-        "polymarket:away:0:reduce:1",
+        "polymarket:yes:0:reduce:0",
+        "polymarket:yes:0:reduce:1",
     )
 
 
@@ -982,44 +1045,44 @@ def test_limit_absent_or_false_keeps_existing_price(limit):
     assert calls[0]["price"] == 0.4
 
 
-def test_limit_true_uses_best_bid_for_buy_and_best_ask_for_sell():
+@pytest.mark.parametrize(
+    ("side", "current_price", "book", "expected"),
+    [
+        ("BUY", 0.40, {"bid": 0.38, "ask": 0.42}, 0.38),
+        ("BUY", 0.35, {"bid": 0.38, "ask": 0.42}, 0.35),
+        ("SELL", 0.60, {"bid": 0.58, "ask": 0.62}, 0.62),
+        ("SELL", 0.65, {"bid": 0.58, "ask": 0.62}, 0.65),
+    ],
+)
+def test_limit_true_chooses_more_conservative_current_or_book_price(
+    side,
+    current_price,
+    book,
+    expected,
+):
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
         calls.append(spec)
 
     ctx = live_context(
-        instrument_ids=["H.POLYMARKET", "A.POLYMARKET"],
-        books={
-            "H.POLYMARKET": {"bid": 0.38, "ask": 0.42},
-            "A.POLYMARKET": {"bid": 0.58, "ask": 0.62},
-        },
-        infos={
-            "H.POLYMARKET": {"selection_role": "home"},
-            "A.POLYMARKET": {"selection_role": "away"},
-        },
+        instrument_ids=["H.POLYMARKET"],
+        books={"H.POLYMARKET": book},
+        infos={"H.POLYMARKET": {"selection_role": "home"}},
         submitter=fake_submitter,
     )
-    ctx.scratch["legs"] = [
-        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
-         "role": "home", "price": 0.4, "qty": 5.0},
-        {"instrument_id": "A.POLYMARKET", "venue": "POLYMARKET", "side": "SELL",
-         "role": "away", "price": 0.6, "qty": 5.0},
-    ]
+    ctx.scratch["legs"] = [{
+        "instrument_id": "H.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": side,
+        "role": "home",
+        "price": current_price,
+        "qty": 5.0,
+    }]
 
-    _prepare_and_dispatch(
-        PlaceBetsAction(
-            limit=True,
-            price_overrides={"POLYMARKET": 0.9},
-            spread=0.03,
-        ),
-        ctx,
-    )
+    _prepare_and_dispatch(PlaceBetsAction(limit=True, spread=0.03), ctx)
 
-    assert [(spec["side"], spec["price"]) for spec in calls] == [
-        ("BUY", 0.38),
-        ("SELL", 0.62),
-    ]
+    assert [(spec["side"], spec["price"]) for spec in calls] == [(side, expected)]
 
 
 def test_limit_true_converts_probability_book_price_for_decimal_venue():
@@ -1050,7 +1113,7 @@ def test_limit_true_converts_probability_book_price_for_decimal_venue():
     _prepare_and_dispatch(PlaceBetsAction(limit=True), ctx)
 
     assert [(spec["side"], spec["price"], spec["qty"]) for spec in calls] == [
-        ("BUY", 2.0, 10.0),
+        ("BUY", 1.9, pytest.approx(20.0 / 1.9)),
         ("SELL", 2.5, 4.0),
     ]
 

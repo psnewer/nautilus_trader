@@ -43,12 +43,22 @@ class TrendGateAction(Action):
     - 只处理 `candi_select` 选出的 `selected_candidate`,回写 `selected_candidate["legs"]` 与
       `scratch["legs"]`、元数据不变;撤单 candidate / 空 legs 不处理。
     - `trend` 非法值构造即 `ValueError`(fail-fast)。
+    - `up` 缺失时沿用 `trend`；显式 `True/False` 分别保留上升/下降 outcome，并覆盖 `trend`。
     - `steps` 若配置,必须是有限非负数;等于累计 momentum 阈值时通过。
     """
 
-    def __init__(self, trend: str = "up", steps: float | None = None) -> None:
+    def __init__(
+        self,
+        trend: str = "up",
+        steps: float | None = None,
+        up: bool | None = None,
+    ) -> None:
+        if up is not None and not isinstance(up, bool):
+            raise ValueError(f"trend_gate: up must be a boolean, got {up!r}")
         direction = str(trend).strip().lower()
-        if direction in _DOWN:
+        if up is not None:
+            self._keep_rising = up
+        elif direction in _DOWN:
             self._keep_rising = False
         elif direction in _UP:
             self._keep_rising = True

@@ -18,8 +18,10 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
+from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.queries.position_mode import HeadQuery
 from src.arbitrage.strategy.queries.position_mode import ReverseQuery
@@ -45,6 +47,27 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
         build_check({"type": "reverse", "params": {"rt": 1.0, "retrieve": 0.1}}),
         ReverseCheck,
     )
+    assert isinstance(
+        build_check({
+            "type": "one_side_recovery",
+            "params": {
+                "min_rate": 0.1,
+                "min_repaired_rebate": -0.05,
+                "force": True,
+            },
+        }),
+        OneSideRecoveryCheck,
+    )
+    with pytest.raises(StrategyConfigError, match="venue_select"):
+        build_check({
+            "type": "one_side_recovery",
+            "params": {"venue_select": True},
+        })
+    with pytest.raises(StrategyConfigError, match="min_rebate"):
+        build_check({
+            "type": "one_side_recovery",
+            "params": {"min_rebate": 0.1},
+        })
 
 
 # ─── build_trading_node_config(纯映射)─────────────────────────
