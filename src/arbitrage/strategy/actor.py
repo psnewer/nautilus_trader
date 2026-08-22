@@ -49,6 +49,7 @@ from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.checks.quote_legs import best_ask
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
@@ -139,6 +140,27 @@ def make_submitter(*, cache, order_factory, submit_order, log):
     return submit
 
 
+def _best_bid(book) -> float | None:
+    if book is None:
+        return None
+    fn = getattr(book, "best_bid_price", None)
+    if callable(fn):
+        try:
+            value = fn()
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    if isinstance(book, dict):
+        value = book.get("bid")
+        if value is None:
+            value = book.get("best_bid")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 class StrategyEvaluatorConfig(StrategyConfig, frozen=True, kw_only=True):
     """单一运行时 evaluator strategy 的配置。"""
 
@@ -181,12 +203,8 @@ class StrategyEvaluator(Strategy):
         self._price_pairs_by_game: dict[int, set[str]] = {}
         self._price_game_by_pair: dict[str, int] = {}
         self._price_cleanup_pending: set[str] = set()
-        # 价格趋势(#trend):key = str(instrument_id)(= venue + 该腿/outcome,唯一)。
-        # `_price_last` 仅内部滚动上一帧 best_ask(隐含概率,#256 写侧已换算,PM/OE/SE 同口径);
-        # `_price_trend` 是每帧覆盖前算好的 Δprob,供 Check 经 EvalContext.price_trend 读(正=概率变大)。
-        # 在 on_order_book_deltas 每帧更新(不受评估闸影响);ended 释放时随 OBD 退订清理。
-        self._price_last: dict[str, float] = {}
-        self._price_trend: dict[str, float] = {}
+        # 仅用于区分真实顶价变化与纯深度帧，不向策略暴露趋势结果。
+        self._last_best_ask: dict[str, float] = {}
         self._eval_tasks_by_pair: dict[str, int] = {}
         self._runtime_store = StrategyRuntimeStore()
 
@@ -232,39 +250,26 @@ class StrategyEvaluator(Strategy):
     def on_order_book_deltas(self, deltas) -> None:
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         # 所有 tradable venue 的 OBD 都可触发;NT 已在本回调前更新对应 book cache。
-        price_delta = self._update_price_trend(deltas)
+        price_changed = self._top_ask_changed(deltas)
         self._capture_first_price(deltas)
         self._update_extreme_prices(deltas)
-        if price_delta is None and not self._arbitrage_params.evaluate_on_depth_change:
+        self._update_trend_price(deltas)
+        if not price_changed and not self._arbitrage_params.evaluate_on_depth_change:
             return
         self._route_eval(deltas, event_name="OrderBookDeltas")
 
-    def _update_price_trend(self, deltas) -> float | None:
-        """#trend:每帧更新该 instrument 的 Δprob(与评估解耦,回调不受 pair 闸影响)。
-
-        `best_ask(book)` 读到的已是隐含概率(#256 写侧换算,OE/SE 已与 PM 同向,不再转)。
-        覆盖 `_price_last` 前先把 `new - prev` 存进 `_price_trend`,否则评估读到的 last 会等于当前值。
-
-        **仅深度变化的帧不改趋势**:top-ask 价与上一帧完全相同(只是挂单量变)时直接返回,
-        保留上一次真实价格移动的 Δprob——否则评估会被纯深度帧把趋势冲成 flat。
-        """
+    def _top_ask_changed(self, deltas) -> bool:
+        """记录单腿最新 best ask，仅返回本帧是否发生真实顶价变化。"""
         iid = getattr(deltas, "instrument_id", None)
         if iid is None:
-            return None
+            return False
         key = str(iid)
         new_best = best_ask(self.cache.order_book(iid))
-        if new_best is None or new_best <= 0:
-            return None
-        prev = self._price_last.get(key)
-        if prev is not None:
-            if new_best == prev:
-                return None  # 价未变(纯深度帧)→ 不覆盖趋势,保留上次真实移动
-            delta = new_best - prev
-            self._price_trend[key] = delta
-        else:
-            delta = None
-        self._price_last[key] = new_best
-        return delta
+        if new_best is None or not math.isfinite(new_best) or new_best <= 0:
+            return False
+        prev = self._last_best_ask.get(key)
+        self._last_best_ask[key] = new_best
+        return prev is not None and new_best != prev
 
     def _route_eval(self, data, *, event_name: str | None = None) -> None:
         target = self._extract_evaluation_target(data)
@@ -338,8 +343,7 @@ class StrategyEvaluator(Strategy):
             if iid_str not in self._obd_subscribed:
                 continue
             self._obd_subscribed.discard(iid_str)
-            self._price_last.pop(iid_str, None)      # #trend:随 OBD 退订清理趋势条目,防无界增长
-            self._price_trend.pop(iid_str, None)
+            self._last_best_ask.pop(iid_str, None)
             try:
                 self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid_str))
             except Exception as e:  # noqa: BLE001 — 单腿退订失败不挡其它
@@ -376,7 +380,8 @@ class StrategyEvaluator(Strategy):
         if self._log_evaluations:
             self._log.info(
                 f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
-                f"competition={competition}, event={event_name}",
+                f"competition={competition}, event={event_name}, "
+                f"order_books={self._pair_order_book_values(pair_id)}",
             )
         # §6.10 §7:per-pair 串行 —— 同步 acquire(`create_task` 前,首个 await 前)。
         # 同 pair 已在飞(评估中/执行中)→ 直接放弃,不派发评估。单 loop 串行保证同突发后到的评估立刻看到。
@@ -403,6 +408,23 @@ class StrategyEvaluator(Strategy):
         self._eval_tasks_by_pair[pair_id] = self._eval_tasks_by_pair.get(pair_id, 0) + 1
         task.add_done_callback(partial(self._on_eval_done, pair_id))
         return True
+
+    def _pair_order_book_values(self, pair_id: str) -> list[dict]:
+        """返回本次评估时该 pair 全部可交易腿的 live top-of-book。"""
+        values = []
+        for iid_str in sorted(self._pair_registry.instrument_ids_for_pair(pair_id)):
+            instrument_id = InstrumentId.from_str(iid_str)
+            instrument = self.cache.instrument(instrument_id)
+            info = getattr(instrument, "info", None) or {}
+            outcome = str(info.get("claim") or info.get("selection_role") or "").strip().lower()
+            book = self.cache.order_book(instrument_id)
+            values.append({
+                "venue": venue_id_from_instrument_id(instrument_id),
+                "outcome": outcome or None,
+                "best_bid": _best_bid(book),
+                "best_ask": best_ask(book),
+            })
+        return values
 
     def _on_eval_done(self, pair_id: str, task) -> None:
         """评估 task 的**唯一**闸出口(#261:无条件释放)。
@@ -482,6 +504,23 @@ class StrategyEvaluator(Strategy):
         if prices is None or not 0.95 <= sum(prices.values()) <= 1.05:
             return
         store.update_extremes(pair_id, prices)
+
+    def _update_trend_price(self, deltas) -> None:
+        """在无套利 commission 区间内，用跨 venue 最优概率整组刷新趋势基准。"""
+        instrument_id = getattr(deltas, "instrument_id", None)
+        pair_id = self._pair_registry.get(instrument_id) if instrument_id is not None else None
+        if pair_id is None:
+            return
+        store = self._get_pair_price_store()
+        state = store.get(pair_id) if store is not None else None
+        if state is None:
+            return
+        prices = best_probabilities_by_outcome(self.cache, self._pair_registry, pair_id)
+        if prices is None or set(prices) != set(state.start_price):
+            return
+        total = sum(prices.values())
+        if 1.0 < total < 1.05:
+            store.update_trend(pair_id, prices)
 
     def _capture_start_prices(self, update: SportsGameUpdate) -> None:
         if not update.live or update.ended:
@@ -593,7 +632,6 @@ class StrategyEvaluator(Strategy):
             "pair_order_canceler": self._make_pair_order_canceler(),
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
-            "price_trend": self._price_trend,   # #trend:key=str(instrument_id) → Δprob(概率空间)
             "event_name": event_name,
             "strategy_id": str(strategy.metadata.get("id") or strategy.scope_key),
             "runtime_store": self._runtime_store,
@@ -656,7 +694,7 @@ class StrategyEvaluator(Strategy):
         return self._sports_store
 
     def _get_pair_price_store(self):
-        """lazy 建 PairPriceStore，保存 PM 初始/开赛/极值价格向量。"""
+        """lazy 建 PairPriceStore，保存 pair 参考价与趋势基准。"""
         if self._pair_price_store is None:
             try:
                 self._pair_price_store = PairPriceStore(self.cache)

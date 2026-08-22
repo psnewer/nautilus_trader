@@ -12,6 +12,7 @@ from src.arbitrage.strategy.condition import EvalContext
 class StrategyTestCache:
     def __init__(self, *, books=None, infos=None, positions=None, orders=None, constraints=None):
         self._books = {str(key): value for key, value in (books or {}).items()}
+        self._values = {}
         self._positions = list(positions or ())
         self._orders = list(orders or ())
         constraints = constraints or {}
@@ -41,6 +42,15 @@ class StrategyTestCache:
 
     def instrument(self, instrument_id):
         return self._instruments.get(str(instrument_id))
+
+    def get(self, key):
+        return self._values.get(key)
+
+    def add(self, key, value):
+        self._values[key] = value
+
+    def delete(self, key):
+        self._values.pop(key, None)
 
     def positions_open(self, *, instrument_id=None):
         if instrument_id is None:

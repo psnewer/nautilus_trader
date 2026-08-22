@@ -16,6 +16,7 @@ class PairPriceState:
     start_price: dict[str, float]
     up_price: dict[str, float]
     down_price: dict[str, float]
+    trend_price: dict[str, float]
 
 
 class PairPriceStore:
@@ -38,6 +39,7 @@ class PairPriceStore:
             start_price={str(k): float(v) for k, v in values["start_price"].items()},
             up_price={str(k): float(v) for k, v in values.get("up_price", {}).items()},
             down_price={str(k): float(v) for k, v in values.get("down_price", {}).items()},
+            trend_price={str(k): float(v) for k, v in values.get("trend_price", {}).items()},
         )
 
     def initialize(self, pair_id: str, outcomes) -> PairPriceState:
@@ -54,6 +56,7 @@ class PairPriceStore:
             start_price=dict.fromkeys(normalized, DEFAULT_START_PRICE),
             up_price={},
             down_price={},
+            trend_price={},
         )
         self._put(pair_id, state)
         return state
@@ -67,6 +70,7 @@ class PairPriceStore:
             start_price=state.start_price,
             up_price=state.up_price,
             down_price=state.down_price,
+            trend_price=state.trend_price,
         ))
         return True
 
@@ -81,6 +85,7 @@ class PairPriceStore:
             start_price=dict(prices),
             up_price=state.up_price,
             down_price=state.down_price,
+            trend_price=state.trend_price,
         ))
         return True
 
@@ -102,6 +107,21 @@ class PairPriceStore:
             start_price=state.start_price,
             up_price=up_price,
             down_price=down_price,
+            trend_price=state.trend_price,
+        ))
+        return True
+
+    def update_trend(self, pair_id: str, prices: dict[str, float]) -> bool:
+        """用一个完整同刻的最优概率向量替换趋势基准。"""
+        state = self.get(pair_id)
+        if state is None or set(prices) != set(state.start_price):
+            return False
+        self._put(pair_id, PairPriceState(
+            first_price=state.first_price,
+            start_price=state.start_price,
+            up_price=state.up_price,
+            down_price=state.down_price,
+            trend_price={outcome: float(prices[outcome]) for outcome in state.start_price},
         ))
         return True
 
@@ -114,5 +134,6 @@ class PairPriceStore:
             "start_price": state.start_price,
             "up_price": state.up_price,
             "down_price": state.down_price,
+            "trend_price": state.trend_price,
         }).encode("utf-8")
         self._cache.add(self._key(pair_id), raw)

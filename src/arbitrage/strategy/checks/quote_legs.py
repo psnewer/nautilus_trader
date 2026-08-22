@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.venues import price_from_probability
+from src.arbitrage.common.venues import venue_preference_rank
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
@@ -14,15 +17,39 @@ def quote_legs_by_outcome(ctx) -> dict[str, list[dict]]:
     """按二元 outcome 收集带执行重定向信息的 live 报价腿。"""
     if ctx.cache is None or ctx.pair_registry is None:
         return {}
+    return _quote_legs_by_outcome(ctx.cache, ctx.pair_registry, ctx.pair_id)
+
+
+def best_probabilities_by_outcome(cache, pair_registry, pair_id: str) -> dict[str, float] | None:
+    """返回各 outcome 跨 venue 最低 best-ask 隐含概率；缺完整二元向量时返回 None。"""
+    legs_by_outcome = _quote_legs_by_outcome(cache, pair_registry, pair_id)
+    if set(legs_by_outcome) != set(VALID_OUTCOMES):
+        return None
+    result = {}
+    for outcome in VALID_OUTCOMES:
+        legs = legs_by_outcome[outcome]
+        if not legs:
+            return None
+        best = min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
+        result[outcome] = float(best["prob"])
+    return result
+
+
+def _quote_legs_by_outcome(cache, pair_registry, pair_id: str) -> dict[str, list[dict]]:
     result: dict[str, list[dict]] = {}
-    for instrument_id in pair_instrument_ids(ctx):
-        instrument = ctx.cache.instrument(instrument_id)
+    for value in pair_registry.instrument_ids_for_pair(pair_id):
+        instrument_id = (
+            value
+            if isinstance(value, InstrumentId)
+            else InstrumentId.from_str(str(value))
+        )
+        instrument = cache.instrument(instrument_id)
         info = getattr(instrument, "info", None) or {}
         claim = str(info.get("claim") or "").lower()
         outcome = claim or str(info.get("selection_role") or "").lower()
         if outcome not in VALID_OUTCOMES:
             continue
-        book = ctx.cache.order_book(instrument_id)
+        book = cache.order_book(instrument_id)
         if book is None:
             continue
         venue = venue_of(instrument_id)
@@ -30,7 +57,7 @@ def quote_legs_by_outcome(ctx) -> dict[str, list[dict]]:
         # decimal venue 见 `orbitexch/data.py::oe_runner_to_book_deltas`),读侧不再需要
         # `probability_from_price` 二次转换,直接就是 probability。
         probability = best_ask(book)
-        if probability is None or probability <= 0:
+        if probability is None or not math.isfinite(probability) or probability <= 0:
             continue
         quote_claim = str(info.get("quote_claim") or "yes").lower()
         price = to_price(venue, probability, quote_claim)

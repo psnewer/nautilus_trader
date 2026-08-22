@@ -321,7 +321,10 @@ await 不阻塞别的 pair、不阻塞 loop(actions 内部本就顺序 await)。
 `StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加 INFO 级低噪声运行锚点日志,不改变决策语义:
 `Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /
 `Strategy action fired|skipped`。该开关用于 NT-node smoke 中确认 `OrderBookDeltas` 是否真的触发了
-strategy evaluate,默认 `False` 保持生产路径安静。
+strategy evaluate,默认 `False` 保持生产路径安静。`Strategy evaluate scheduled` 额外携带调度时刻该 pair
+全部 tradable legs 的 `order_books` 数组；每腿记录 `venue/outcome/best_bid/best_ask`，按底层
+instrument id 排序，缺 book 或单侧顶价时写 `None`。这里只记录策略实际读取的 top-of-book，不展开
+整本深度，避免高频评估日志无界膨胀。
 
 ### 3.6 消息接线
 
@@ -429,13 +432,13 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `VenueReplaceAction(pm_price=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价由 `pm_price` 决定**(#330):不存在或 `True`(默认)→ 用 **PM 报价腿概率**(= PM best_ask 隐含概率,PM 实时价);存在且 `False` → 沿用**原 order 隐含概率** `prob`(两 venue 共享 outcome 概率,不看 PM 实时价、也不用原 decimal 赔率)。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。`pm_price=True` 缺 PM 报价 → 告警回退 0;`pm_price=False` 裸腿无 `prob` → 回退 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
-| `TrendGateAction(trend="up", steps=None, up=None)` | `src/arbitrage/strategy/actions/trend_gate.py` | 按 **pair 级跨 venue/outcome 一致**的价格趋势筛 `selected_candidate` 的 leg(#329/#336/#353,消费 #trend §3.8.3)。**一致判据**:某 outcome 的**所有 venue 腿 Δprob≥0(up/flat)**且互斥 outcome 的**所有 venue 腿 Δprob≤0(down/flat)**、至少一处严格移动 → 该 outcome 为"干净上升"(complement 即下降)。`steps` 缺失/`None` 时完全保持该逻辑；存在时额外要求该 pair **全部参与一致性检查的 tradable legs**（不只 candidate）满足 `Σ|Δprob| >= steps`，缺失/不可解析的 momentum 按既有 flat=0 口径参与，等于阈值通过；`steps` 必须是有限非负数。**筛选方向**：新参数 `up` 缺失时保持旧 `trend` 行为；显式 `true` 只留上升 outcome，显式 `false` 只留其互斥下降 outcome，并覆盖旧 `trend`。`up` 必须是 boolean。**筛选语义 = 符合要求的腿留、不符合的删**。趋势读 `ctx.price_trend`(key=`str(instrument_id)`→Δprob,概率空间 PM/OE/SE 同口径,不二次转);一致判据**扫该 pair 全部 tradable 腿**(含未执行的 OE/SE),缺趋势数据的腿当 flat 参与。**任一 venue 反向 / 无严格移动 / 配置 steps 未达 / `price_trend` 空 / 缺 pair_registry → 无干净趋势 → 没有腿符合 → 全删**(candidate 清空,本轮不下该单);outcome 无法解析的腿也不符合 → 删。只处理 `candi_select` 选出的 candidate,回写两份 legs 视图、元数据不变;撤单 candidate / 空 legs 不处理。`trend`/`up`/`steps` 非法值构造即 `ValueError`。one_side_rebate 套利链用它替换 dash_gate。⚠️ 预热期(相关腿还没攒够两帧)或行情全平时会全删 → one_side_rebate 本轮不下单,属有意的严格取舍 |
+| `TrendGateAction(up=True)` | `src/arbitrage/strategy/actions/trend_gate.py` | 读取 live `PairPriceStore.trend_price` 与当前各 outcome 跨 venue 最低 best-ask 隐含概率，逐 outcome 直接比较：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat。`up` 缺失/`True` 留 up，`False` 留 down；不再计算相邻帧 momentum，不要求各 venue 同向或互补 outcome 反向，也无 `steps/trend` 参数。基准、当前完整向量或 outcome 缺失时 fail-closed 全删。只处理 `selected_candidate`，回写两份 legs 视图；撤单 candidate / 空 legs不处理。详见 §3.8.3 |
 | `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追概率下行腿(#341):读 `PairPriceStore.up_price/down_price` 与当前完整 PM best ask 向量。某 outcome 从历史最高价下跌 `up-now >= move_threshold` 时买它自身；从历史最低价上涨 `now-down >= move_threshold` 时买其互补 outcome。多信号同时命中取变化幅度最大者，等于阈值命中；写单条 PM `BUY` leg(`qty=qty_from_share(PM, share, now)`)。当前向量和极值采样均必须满足 commission 闭区间 `[0.95,1.05]`；缺极值/完整腿、区间不通过或无变化达阈均 False。赛前/赛中门由 self_hits `in_game` 负责(§3.10) |
 | `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None, limit=None, post_only=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。旧交叉门代码保留为注释，供后续恢复。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 取 `min(当前价, live best bid)`，SELL 取 `max(当前价, live best ask)`。`post_only=true` 写入 submit spec，由 submitter 构造 NT post-only GTC `LimitOrder`；缺失或 `false` 构造普通限价单。PM 最终透传见 execution §3.6。`market=true` 只写订单 metadata，最终市价转换同见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
 
 **`head_rebate` 组合成熟度（离线已验证，live-unvalidated，2026-08-13）**：
 `head/reverse` + 动态 `standard` + `ReverseCheck` 已经完整 JSON 双树装配，并与
-`venue_replace(pm_price=true)` / `trend_gate(steps)` / `place_bets(limit=true|market=true)` 联合
+`venue_replace(pm_price=true)` / `trend_gate` / `place_bets(limit=true|market=true)` 联合
 执行到 `ExecutionPlan`。跨转态场景覆盖无仓、单仓、双仓、高水位抬升、等号回撤、
 对冲后 standard 重置及再进单仓；验收数值见 strategy README
 `strategy-4.head-rebate.scenario.*`。
@@ -467,7 +470,7 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 需要把执行 venue 强制定向到 PM 时，套利链显式插入
 `venue_replace -> share_limit -> candi_select -> trend_gate -> place_bets`。`candi_select` 之后的
 腿过滤是**可选、可替换**的一格:`dash_gate`(开赛价断层过滤,读 `PairPriceStore.start_price`)
-与 `trend_gate`(最近一帧趋势过滤,读 `ctx.price_trend`,§3.8.3)二选一。**#329(2026-08-09)起
+与 `trend_gate`(动态基准趋势过滤,读 live `PairPriceStore.trend_price`,§3.8.3)二选一。**#329(2026-08-09)起
 `one_side_rebate` 套利树用 `trend_gate` 替换了 `dash_gate`**(默认留概率变大的腿);两者都不进补偿树。
 `venue_replace` 顺序不可后移到 `share_limit`
 之后：替换会改变 venue，额度必须读取最终 PM 持仓。`venue_replace` 只转换执行腿，不重新执行
@@ -560,54 +563,33 @@ IN_PLAY（data §3.4.2），故"phase live 帧"本身无法区分"赛前订上�
 done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在途 task 的 pair 立即删除，
 保证不会在异步评估开始前先清 Cache。
 
-#### 3.8.3 PM/OE/SE 价格趋势(#trend,plumbing 已落地 · 消费件未定 · live-unvalidated · as-of 2026-08-09)
+#### 3.8.3 Pair 动态趋势基准(#356,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-21)
 
-`StrategyEvaluator` 维护每条已订阅 instrument 的**相邻两帧 best_ask 变化(Δprob)**,供 Check
-按需读"涨/跌"。这是框架内首个 evaluator 自持的**跨帧 transient 状态**(§4.3:跨轮状态由自然
-归属组件维护)。
+`StrategyEvaluator` 在每个 tradable venue 的 OBD 回调中，从 live Cache 读取该 pair 全部报价，按
+canonical outcome 分组。每个 outcome 使用与 `mean_rebate` 相同的最优价口径：取所有 venue 中最低
+best-ask 隐含概率，相同概率按 `venue_preference_rank` 稳定排序。PM/OE/SE OrderBook 的 ask 已统一为
+隐含概率，读取侧不得二次换算。
 
-**为什么写在 OBD 回调、不在评估里**:评估经 `PairInFlightGate` 收窄,**不保证每帧都跑**;而
-`on_order_book_deltas` 回调体每帧都执行(闸只挡 `_dispatch_eval` 的评估 task,不挡回调)。故趋势
-更新、first/extreme price 采集仍在每帧执行；仅 `_route_eval` 是可配置过滤的出口。
+只有完整 yes/no 最优概率向量满足严格区间
+`1 < Σ current_best[outcome] < 1.05` 时，Evaluator 才调用 `PairPriceStore.update_trend` 整组替换
+`trend_price`；等于任一边界、缺 outcome、缺/非法报价或区间外均保持旧基准。基准更新发生在策略派发前：
+正常无套利帧刷新后同轮比较为 flat；当最优概率和降到 `<= 1` 时基准冻结，策略用当前套利态报价与最后一个
+无套利基准比较。首个完整有效向量即可初始化，不要求触发 instrument 已存在上一帧。
 
-**存储(key = `str(instrument_id)` = venue + 该腿/outcome,唯一 → 天然分 venue/leg)**:
-- `_price_last`:仅内部滚动"上一帧 best_ask";**Check 不读**。
-- `_price_trend`:每帧**覆盖 `_price_last` 之前**算好的 `new - prev`;经 `EvalContext.price_trend`
-  暴露给 Check。**为何不让 Check 读 last 再与当前 book 比**:评估晚于回调,那时 `_price_last`
-  已被覆盖成当前值 → 趋势恒为 0。必须回调时就把结果(Δ)存下。
+`trend_price` **不进入 EvalContext，也不随评估快照携带**。`TrendGateAction` 执行时按 `pair_id` 直接从
+live `PairPriceStore` 读取基准，并用共享 best-probability helper 从 live Cache 重算当前向量。逐 outcome
+判定：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat；不再使用相邻帧 momentum、
+跨 venue 方向一致、互补 outcome 反向推断或累计 `steps`。缺基准或不完整数据时 fail-closed。
 
-**OBD 评估过滤(#355)**:`_update_price_trend` 返回本帧真实 `Δprob`；首帧、纯深度帧、缺/无效顶价返回
-`None`。Evaluator 在完成上述每帧内存更新后读 `ArbitrageParams.evaluate_on_depth_change`:
+**OBD 评估过滤(#355 保留)**：删除 momentum 后仍需区分真实顶价变化和纯深度帧，因此 Evaluator 只保留
+内部 `_last_best_ask`，`_top_ask_changed` 精确比较触发 instrument 的前后 best ask；它不计算趋势、也不向
+策略暴露。`evaluate_on_depth_change=false` 时仅真实变价帧派发，首帧/同价深度帧/无效行情不派发；
+`true` 时所有 OBD 均可派发。`event_name` 契约及 pair in-flight 丢弃语义不变。ended 退订时清理
+`_last_best_ask`，PairPriceStore 仍按 §3.8.2 的 pending-cleanup 时序整组删除。
 
-- 缺省/`false`:仅返回真实非零 Δ 的 OBD 进入 `_route_eval`；首帧/纯深度/无效帧不触发策略。
-- `true`:所有 OBD 都进入评估，完全恢复 #355 前行为。
-
-进入的评估把既有调度字段 `event_name` 注入 `EvalContext`：OBD 为 `OrderBookDeltas`，
-MatchedPair/sports 分别为 `MatchedPair` / `SportsGameUpdate`。它是触发源标识，不是 momentum 快照。
-与所有评估一样，同 pair 已 in-flight 时事件依旧按既有闸语义放弃，不新增 pending latch。
-
-**概率空间可比(关键)**:`best_ask(book)` 对 PM/OE/SE **都已是隐含概率**(#256 写侧
-`oe_runner_to_book_deltas` 已 `probability_from_price` 换算、反向单调已配平),故 Δprob 跨 venue
-同向同口径,**不得再转一次**(会把 OE/SE 弄反)。原始 decimal 赔率那层才与 PM 反向,但策略不读原始赔率。
-
-**读法**:消费 Action 按 (pair, outcome, venue) 经 `pair_registry.instrument_ids_for_pair` +
-`instrument.info.claim` / `venue_of` 反查 `instrument_id`,再取 `ctx.price_trend[str(iid)]`;
-"只看 PM"筛 venue,"每条腿各自"就遍历。`None`=未接入;某腿首帧无 prev → 无条目。
-
-**仅深度帧不冲趋势(#trend,2026-08-10)**:`new_best == prev`(top-ask 价与上一帧完全相同,只挂单量变)
-时 `_update_price_trend` **直接返回**,既不覆盖 `_price_trend` 也不动 `_price_last`,保留上一次真实价格
-移动的 Δprob。否则纯深度帧会把趋势冲成 flat(0),评估恰好落在这类帧时会误判"无趋势"→ 被 `trend_gate`
-全删。下一次真实移动仍从上次真实价算 Δ。判等用精确 `==`(概率由 `probability_from_price` 纯函数换算,
-同赔率必得同 float)。
-
-**边界**:首帧无趋势(只 seed `_price_last`);存储层**无阈值**并保留原始 Δprob，最小累计变动由
-消费方 `TrendGateAction.steps` 可选控制，不在趋势存储层锁死；ended 释放时
-`_release_game_subscriptions` 随 OBD 退订 pop 该 game 各腿条目
-(防无界增长);缺 book / best_ask ≤0 / 缺 instrument_id → 跳过。
-
-**成熟度**:plumbing 与消费 Action 均已落地并离线验证（2026-08-12）：`_update_price_trend` +
-`EvalContext.price_trend` + 释放清理 + `TrendGateAction(trend, steps)`；覆盖见
-`test_price_trend.py` / `test_action_trend_gate.py`。决策史见 refactor #328/#329/#336。
+**成熟度**：Strategy 全量 382 个用例离线通过（2026-08-21）；覆盖见 `test_pair_prices.py`、
+`test_price_trend.py`、`test_action_trend_gate.py`、`test_evaluator.py` 与 head_rebate 场景。决策史见
+refactor #356。
 
 ### 3.9 树内执行计划 + Evaluator 统一分发
 

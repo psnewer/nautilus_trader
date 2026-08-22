@@ -46,10 +46,6 @@ class EvalContext:
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
     # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。
     strategy_defaults: dict = field(default_factory=dict)
-    # #trend:StrategyEvaluator 每帧在 on_order_book_deltas 更新的价格趋势视图,
-    # key = str(instrument_id)(= venue + 该腿/outcome),value = 最近一帧 Δprob(概率空间,正=概率变大)。
-    # Check 按 (pair, outcome, venue) 反查 instrument_id 读取;None = 未接入趋势。
-    price_trend: dict | None = None
     # 本轮评估的触发事件名：OrderBookDeltas / MatchedPair / SportsGameUpdate 等。
     # price_change_recovery 只认 OrderBookDeltas。
     event_name: str | None = None

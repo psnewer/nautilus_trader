@@ -12,6 +12,7 @@ import pytest
 
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import PositionId
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
@@ -42,7 +43,7 @@ _HEAD_REBATE_SPEC = {
             {"type": "venue_replace", "params": {"pm_price": True}},
             {"type": "share_limit"},
             {"type": "candi_select"},
-            {"type": "trend_gate", "params": {"steps": 0.03}},
+            {"type": "trend_gate"},
             {"type": "place_bets", "params": {"limit": True}},
         ],
     },
@@ -162,7 +163,7 @@ def _context(*, store, shares, unrealized=None, positions=None):
         "Y.ORBITEXCH": {"claim": "yes", "selection_role": "yes"},
         "N.ORBITEXCH": {"claim": "no", "selection_role": "no"},
     }
-    return live_context(
+    ctx = live_context(
         pair_id=_PAIR_ID,
         books=books,
         infos=infos,
@@ -170,15 +171,13 @@ def _context(*, store, shares, unrealized=None, positions=None):
         instrument_ids=list(books),
         portfolio=_Portfolio(shares=shares, unrealized=unrealized or {}),
         strategy_defaults={"share": _SHARE, "max_leg_share": 20.0},
-        price_trend={
-            "Y.POLYMARKET": 0.01,
-            "Y.ORBITEXCH": 0.01,
-            "N.POLYMARKET": -0.01,
-            "N.ORBITEXCH": -0.01,
-        },
         strategy_id=_STRATEGY_ID,
         runtime_store=store,
     )
+    price_store = PairPriceStore(ctx.cache)
+    price_store.initialize(_PAIR_ID, ["yes", "no"])
+    price_store.update_trend(_PAIR_ID, {"yes": 0.39, "no": 0.62})
+    return ctx
 
 
 def _evaluate_round(*, store, shares, unrealized=None, positions=None) -> _RoundResult:

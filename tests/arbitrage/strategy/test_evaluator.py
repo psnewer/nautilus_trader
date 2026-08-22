@@ -346,7 +346,8 @@ def test_obd_from_decimal_venue_triggers_eval():
     """OE/SE(decimal 赔率盘)的 OBD 触发机会评估。"""
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
-    actor._update_price_trend = MagicMock(return_value=0.01)
+    actor._top_ask_changed = MagicMock(return_value=True)
+    actor._update_trend_price = MagicMock()
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
 
@@ -360,7 +361,8 @@ def test_obd_from_probability_venue_triggers_eval():
     """PM(probability 概率盘)的 OBD 同样触发机会评估。"""
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["A.ORBITEXCH", "H.POLYMARKET"])
-    actor._update_price_trend = MagicMock(return_value=-0.01)
+    actor._top_ask_changed = MagicMock(return_value=True)
+    actor._update_trend_price = MagicMock()
     arb_action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
 
@@ -375,7 +377,8 @@ def test_obd_injects_event_name_into_eval_context():
     pair_reg.register("match_X", ["H.POLYMARKET"])
     action = _CaptureEventNameAction()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    actor._update_price_trend = MagicMock(return_value=-0.03)
+    actor._top_ask_changed = MagicMock(return_value=True)
+    actor._update_trend_price = MagicMock()
 
     actor.on_order_book_deltas(_obd("H.POLYMARKET"))
     _run(_drain(loop))
@@ -388,12 +391,14 @@ def test_depth_only_obd_does_not_trigger_evaluation_by_default():
     pair_reg.register("match_X", ["H.POLYMARKET"])
     action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    actor._update_price_trend = MagicMock(return_value=None)
+    actor._top_ask_changed = MagicMock(return_value=False)
+    actor._update_trend_price = MagicMock()
 
     actor.on_order_book_deltas(_obd("H.POLYMARKET"))
     _run(_drain(loop))
 
     assert action.calls == 0
+    actor._update_trend_price.assert_called_once()
 
 
 def test_depth_only_obd_triggers_evaluation_when_enabled():
@@ -403,7 +408,8 @@ def test_depth_only_obd_triggers_evaluation_when_enabled():
     pair_reg.register("match_X", ["H.POLYMARKET"])
     action = _RecordingAction("arb")
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
-    actor._update_price_trend = MagicMock(return_value=None)
+    actor._top_ask_changed = MagicMock(return_value=False)
+    actor._update_trend_price = MagicMock()
 
     actor.on_order_book_deltas(_obd("H.POLYMARKET"))
     _run(_drain(loop))
@@ -473,6 +479,64 @@ def test_log_evaluations_enabled_covers_skip_paths():
 
     assert arb_action.calls == 0
     assert loop.tasks == []
+
+
+def test_scheduled_log_includes_pair_top_of_book_values():
+    books = {
+        "Y.POLYMARKET": {"bid": 0.40, "ask": 0.42},
+        "N.POLYMARKET": {"bid": 0.55, "ask": 0.57},
+    }
+    infos = {
+        "Y.POLYMARKET": {"claim": "yes"},
+        "N.POLYMARKET": {"claim": "no"},
+    }
+    fake = SimpleNamespace(
+        cache=SimpleNamespace(
+            instrument=lambda iid: SimpleNamespace(info=infos[str(iid)]),
+            order_book=lambda iid: books[str(iid)],
+        ),
+        _pair_registry=SimpleNamespace(
+            instrument_ids_for_pair=lambda pair_id: set(books),
+        ),
+        _strategy_registry=SimpleNamespace(
+            get_for=lambda pair_id, competition, sport: object(),
+        ),
+        _log_evaluations=True,
+        _log=MagicMock(),
+        _pair_inflight=SimpleNamespace(try_enter=lambda pair_id: False),
+        _eval_tasks_by_pair={},
+    )
+    fake._pair_order_book_values = lambda pair_id: StrategyEvaluator._pair_order_book_values(
+        fake,
+        pair_id,
+    )
+
+    StrategyEvaluator._dispatch_eval(
+        fake,
+        "match_X",
+        "Tennis",
+        "ATP",
+        event_name="OrderBookDeltas",
+    )
+
+    expected = [
+        {
+            "venue": "POLYMARKET",
+            "outcome": "no",
+            "best_bid": 0.55,
+            "best_ask": 0.57,
+        },
+        {
+            "venue": "POLYMARKET",
+            "outcome": "yes",
+            "best_bid": 0.40,
+            "best_ask": 0.42,
+        },
+    ]
+    assert fake._pair_order_book_values("match_X") == expected
+    scheduled = fake._log.info.call_args_list[0].args[0]
+    assert "event=OrderBookDeltas" in scheduled
+    assert f"order_books={expected}" in scheduled
 
 
 # ── eval.4:两树 Action 链独立规划 ──────────────────────────────────

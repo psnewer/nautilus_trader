@@ -233,6 +233,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - ✅ `test_evaluator.py` +2:启用 `log_evaluations` 后评估/选择语义不变;无策略 /
   execution_active skip 路径保持 no-op。
+- ✅ `test_scheduled_log_includes_pair_top_of_book_values`:scheduled 日志按 instrument id 稳定排序，携带
+  该 pair 全部 tradable legs 的 `venue/outcome/best_bid/best_ask`；断言 OBD 触发源与盘口值位于
+  同一条日志。这里只记录 top-of-book，不打印整本深度。
 - ✅ `test_evaluator.py::test_running_loop_task_dispatch_uses_current_loop`:已注册 NT executor 且回调处于同一
   running loop 内时,`StrategyEvaluator` 必须把 evaluate/action task 派发到 `register_executor` 注入的 loop;
   注入 fake loop 只作为未注册 executor 的单测 fallback。验收:触发 `MatchedPair` 后 fake loop 无挂起 task,
@@ -402,43 +405,32 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 赛前 B1(arb)与 B2(comp)同轮命中 → comp_plan 优先(先补救)。
 - 低于最小下注额的腿 → 由 Risk 兜底拒(无 candi_select 早筛)。
 
-## 价格趋势 #trend(#328,plumbing 已落地 · 消费件未定)
+## Pair 动态趋势基准 #356
 
-设计见 strategy §3.8.3。`test_price_trend.py` 覆盖 `StrategyEvaluator._update_price_trend`:
+设计见 strategy §3.8.3。实现覆盖：`test_pair_prices.py`、`test_price_trend.py`、
+`test_action_trend_gate.py`、`test_evaluator.py`。
 
-### strategy-4.trend.1: 每帧 Δprob + 跨帧携带
-- 首帧只 seed `_price_last`,无趋势条目(无 prev)。
-- 第二帧起 `_price_trend[iid] = new - prev`;概率变大→正、变小→负;`_price_last` 滚动到当前。
-- 判别性:若"读 last 再比当前"会恒为 0,本用例证明趋势在覆盖前已算好存下。
+### strategy-4.trend.1: trend_price 初始化、兼容与整组替换
+- MatchedPair 初始化 `trend_price={}`；旧 Cache schema 缺字段按空字典读取。
+- `update_trend` 只接受 outcome 集合完整的同刻向量，成功时整组替换；缺腿不产生混合时点基准。
 
-### strategy-4.trend.2: 分 venue / 分 leg
-- key = `str(instrument_id)`(含 venue+outcome);PM yes / PM no / OE 各腿趋势互相独立。
+### strategy-4.trend.2: 跨 venue 最优概率与严格采样区间
+- 每个 outcome 从全部 tradable venue 取最低 best-ask 隐含概率；测试中 PM/OE 报价不同，断言存入真实跨 venue 最优值。
+- 只有 `1 < Σbest_prob < 1.05` 才更新；和等于 1、等于 1.05 或高于 1.05 均保留旧值。
+- 缺任一 outcome 或缺有效报价不更新。首个完整有效向量可直接初始化，不依赖上一帧。
 
-### strategy-4.trend.3: 边界
-- 缺 book / best_ask ≤0 / 缺 instrument_id → 跳过,不覆盖 last、不写 trend。
-- **仅深度帧不冲趋势**(#trend 补,2026-08-10):`new_best == prev`(价未变、只深度变)→ 直接返回,趋势保留上次真实移动(非 0);下次真实移动仍从上次真实价算 Δ(`test_unchanged_price_keeps_prior_trend_not_flat`)。首帧后紧跟同价帧不造出 0 趋势(`test_unchanged_price_on_first_delta_seeds_no_trend`)。
-- `_update_price_trend` 同时返回本帧真实 Δ；首帧/纯深度/无效行情返回 `None`。
-- `test_depth_only_obd_does_not_trigger_evaluation_by_default` / `...when_enabled`:
-  `arbitrage.evaluate_on_depth_change=false` 时 `None` 帧不派发评估；`true` 时恢复每个 OBD 都评估。
-- `test_depth_switch_hot_update_rejects_non_boolean_value`:直接注入非 boolean 热改命令时 fail-closed，原开关不变。
-- (概率空间可比:best_ask 已是隐含概率 #256,OE/SE 与 PM 同向,不二次转换——由 §3.8.3 契约保证,消费件落地时补断言。)
+### strategy-4.trend.3: 顶价变化与深度评估过滤
+- `_top_ask_changed` 只保存每 instrument 的 `_last_best_ask`：首帧/同价深度帧返回 False，真实变价返回 True。
+- 不计算或保存 momentum，也不向 EvalContext 暴露趋势状态。
+- `evaluate_on_depth_change=false` 时首帧/纯深度帧不派发；`true` 时所有 OBD 均可派发。
+- 热改开关收到非 boolean 时 fail-closed，原值不变。
 
-### strategy-4.trend.4: trend_gate Action(#329/#336/#353,跨 venue/outcome 一致 + 可选累计 momentum)
-`test_action_trend_gate.py`。**筛选 = 符合的留、不符合的删;不符合一致性 = 无腿符合 = 全删**。
-判据:某 outcome 各 venue 都 up/flat、互斥 outcome 各 venue 都 down/flat、至少一处严格移动 → 该 outcome 干净上升。
-- 默认 `up`:各 venue yes 涨/平、no 跌/平 → 只留 yes 腿;元数据不变。
-- `trend="down"`:留下降 outcome(no)的腿。
-- 新参数 `up` 缺失或为 `true` 时保留默认上升筛选；`false` 时沿用同一干净趋势判据、保留
-  互斥下降 outcome。缺失时旧 `trend` 配置继续生效；显式 `up` 覆盖 `trend`。
-- `up` 非 boolean → 构造即 `ValueError`。
-- **跨 venue 不一致**(OE 的 yes 跌 vs PM 的 yes 涨)→ 无干净趋势 → **全删**。
-- **缺 venue 数据当 flat**:OE 无数据、PM yes 涨 no 跌 → 仍判 yes 上升、留 yes 删 no。
-- **全平**(含缺数据)→ 无严格移动 → **全删**。
-- `price_trend` None/{}(未预热)→ **全删**;无 `selected_candidate` / 撤单 candidate → no-op / 跳过。
-- `trend` 非法值 → 构造即 `ValueError`。
-- `steps` 缺失/`None` → 现有微小但严格一致的趋势仍通过，兼容旧配置。
-- `steps` 存在 → 对 PairRegistry 下全部 tradable legs 求 `Σ|momentum|`（缺失/不可解析值按 flat=0）；总和等于阈值通过，低于阈值全删。用例让 candidate 外 OE legs 参与求和，锁定不是只算 selected legs。
-- `steps < 0`、NaN 或 infinity → 构造即 `ValueError`。
+### strategy-4.trend.4: trend_gate Action
+- Action 从 live `PairPriceStore` 读取基准，从 live Cache 重算当前跨 venue 最优概率，不使用评估快照。
+- 默认/`up=true` 保留 `current > baseline` 的 outcome；`up=false` 保留 `current < baseline` 的 outcome。
+- 相等为 flat；两个 outcome 独立比较，不要求互补方向，也不要求各 venue 各自同向。
+- 基准为空、当前向量不完整或 outcome 不匹配时 fail-closed 全删；无 selected candidate 与撤单 candidate 保持 no-op。
+- `up` 非 boolean 构造即 `ValueError`；旧 `trend/steps` 参数已删除。
 
 ## 策略内组合场景
 
@@ -500,7 +492,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 `head_rebate` 双树，用同一 `StrategyRuntimeStore` 串联评估轮次；执行命中树的
 整条 Action 链到 `ExecutionPlan`，不启动 TradingNode，不进入 Risk/Execution。配置锁定：
 head 链为 `head -> mean_rebate -> venue_replace(pm_price=true) -> share_limit ->
-candi_select -> trend_gate(steps=0.03) -> place_bets(limit=true)`；reverse 链为
+candi_select -> trend_gate -> place_bets(limit=true)`；reverse 链为
 `reverse -> AND[reverse(rt=1,retrieve=0.1), mean_rebate_recovery(force=true)] ->
 candi_select -> place_bets(intent=recovery,market=true)`。
 
@@ -686,7 +678,7 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
 
 **期望/验收**:
-- MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`；
+- MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`、`trend_price={}`；
 - 只有赛前 PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]` 内才首次写 first price；
   非 PM OBD与不干净向量不写；
 - 每个 PM OBD 在评估前用干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
