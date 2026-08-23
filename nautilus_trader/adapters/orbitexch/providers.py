@@ -73,7 +73,16 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         }
         is_three_way = any(runner.role == "draw" for runner in event.runners)
         for runner in event.runners:
-            info = dict(info_base, selection_role=runner.role)
+            binary_market_id = (
+                f"{event.market_id}:{runner.selection_id}"
+                if is_three_way
+                else str(event.market_id)
+            )
+            info = dict(
+                info_base,
+                selection_role=runner.role,
+                binary_market_id=binary_market_id,
+            )
             if not is_three_way:
                 info["claim"] = "yes" if runner.role == "home" else "no"
                 yield self._betting_instrument(event, runner, info, self._fx)

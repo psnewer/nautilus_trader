@@ -221,3 +221,12 @@ CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口�
   —— 即 0718 实盘"PlaceBets 无 Submit"静默洪流的根因(SE 最小注 12 USD,高赔率腿 stake 不足)。
 - `user_data_dir=/Users/miller/.arb-profiles/sharpexch` 持久 profile 落地:连续 3 轮 discovery
   403(CF 挑战 `context.request`)→ 配置后连续 2 轮一次通过。
+
+## #357/#358：SE source frame 原子应用、按二元 market 发布
+
+**前置**:同一 SE market 的 home/away runner 均在 routing，且已订阅
+`MarketOrderBookDeltas`。**输入**:一条同时包含两个 runner 的 price frame。
+**期望**:DataClient 只发一个 `OrderBookFrameDeltas`；2-way 含一个两腿 logical market，
+3-way 含 home/draw/away 三个二元 market，只变化 home 时只携带 home；market-only 订阅
+不再收到 per-instrument OBD。**验收**:`test_on_price_frame_publishes_one_market_batch_for_all_runners`、
+`test_three_way_price_frame_is_atomic_but_split_into_binary_markets`。

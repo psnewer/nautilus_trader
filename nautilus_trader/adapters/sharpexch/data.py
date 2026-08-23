@@ -7,14 +7,13 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Optional
 
-from src.arbitrage.common.venues import probability_from_price
-
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.message_parser import SharpExchMessageParser
 from nautilus_trader.adapters.sharpexch.websocket_handler import SharpExchWebSocketHandler
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
@@ -22,8 +21,13 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from src.arbitrage.common.venues import probability_from_price
 
 
 SHARPEXCH = "SHARPEXCH"
@@ -88,6 +92,33 @@ class SharpExchDataClient(LiveMarketDataClient):
             self._update_instruments_task = self.create_task(
                 self._update_instruments(self._config.update_instruments_interval_mins),
             )
+
+    async def _subscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
+        source_market_id = str(command.params.get("source_market_id") or "")
+        for value in command.params.get("instrument_ids") or ():
+            instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            instrument = self._cache.instrument(instrument_id)
+            info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
+            if (
+                instrument is None
+                or str(getattr(instrument, "market_id", "") or "") != source_market_id
+                or str(info.get("binary_market_id") or "") != binary_market_id
+            ):
+                raise ValueError(
+                    f"Invalid SharpExch binary market member {instrument_id} "
+                    f"for {binary_market_id} (source={source_market_id})",
+                )
+            await self._subscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
+
+    async def _unsubscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        for value in command.params.get("instrument_ids") or ():
+            instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            await self._unsubscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
 
         self._log.info("SharpExchDataClient connected (competition pages opened on subscribe)")
 
@@ -204,11 +235,10 @@ class SharpExchDataClient(LiveMarketDataClient):
         )
 
     def _on_price_frame(self, message) -> None:
-        out = se_handle_price_frame(
+        out = se_market_price_message_to_book_deltas(
             message,
             self._market_to_instruments,
             self._clock.timestamp_ns(),
-            self._handle_data,
         )
         if out is None:
             return
@@ -219,7 +249,47 @@ class SharpExchDataClient(LiveMarketDataClient):
                 f"runners={out.get('runners')}, "
                 f"subscribed_selections={out.get('subscribed_selections')}",
             )
-        published_count = int(out.get("published_count", 0))
+        deltas_items = list(out.get("deltas") or [])
+        standard_subscriptions = self.subscribed_order_book_deltas()
+        market_id = str(out.get("market_id") or "")
+        market_deltas: dict[str, list[OrderBookDeltas]] = {}
+        published_count = 0
+        for deltas in deltas_items:
+            instrument = self._cache.instrument(deltas.instrument_id)
+            info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
+            binary_market_id = str(info.get("binary_market_id") or "")
+            market_subscribed = bool(binary_market_id) and (
+                market_order_book_data_type(self.venue, binary_market_id)
+                in self.subscribed_custom_data()
+            )
+            if market_subscribed:
+                market_deltas.setdefault(binary_market_id, []).append(deltas)
+            if not market_subscribed or deltas.instrument_id in standard_subscriptions:
+                self._handle_data(deltas)
+                published_count += 1
+        if market_deltas:
+            now_ns = self._clock.timestamp_ns()
+            markets = tuple(
+                MarketOrderBookDeltas(
+                    venue=self.venue,
+                    market_id=binary_market_id,
+                    deltas=tuple(group),
+                    ts_event=now_ns,
+                    ts_init=now_ns,
+                )
+                for binary_market_id, group in sorted(market_deltas.items())
+            )
+            frame = OrderBookFrameDeltas(
+                venue=self.venue,
+                source_market_id=market_id,
+                markets=markets,
+                ts_event=now_ns,
+                ts_init=now_ns,
+            )
+            self._handle_data(
+                CustomData(order_book_frame_data_type(self.venue, market_id), frame),
+            )
+            published_count += len(deltas_items)
         previous_published = self._price_deltas_published
         self._price_deltas_published += published_count
         if published_count and previous_published == 0:

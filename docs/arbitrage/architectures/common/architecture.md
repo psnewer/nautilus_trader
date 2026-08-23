@@ -108,6 +108,16 @@ Store 不保存独立的 captured 标志：`first_price` 是否为空、`start_p
 字段按空字典兼容，等下一个有效向量自然初始化。所有 compare-and-write 均在 Strategy Actor 同一同步
 回调内完成，中间没有 `await`。
 
+### 3.2 MarketBookSubscription(#357)
+
+`src/arbitrage/common/market_books.py` 是 Matching/Strategy 共用的应用层接线：
+它只把调用方给出的 pair 腿归并到
+`(venue, binary_market_id, source_market_id)`，生成稳定的 `DataType` 和订阅参数；
+不得按物理 source market 扫描 Cache 扩入其它 selection。PM 的 condition 同时充当
+source/binary ID；OE/SE 的 `instrument.market_id` 是 source ID，
+`instrument.info["binary_market_id"]` 是策略 ID。该 helper 不更新 OrderBook，完整身份、
+源帧与 DataEngine 应用语义见 `_cross-cutting/order-book-frame.md`。
+
 ## 4. 控制台命令(`control.py`,#119)
 
 `src/arbitrage/common/control.py` = Web 控制台 → 组件的运行时控制命令(topic 常量 + frozen dataclass):

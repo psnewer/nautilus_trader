@@ -157,6 +157,10 @@ from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport Venue
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.instruments.synthetic cimport SyntheticInstrument
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 
@@ -212,6 +216,8 @@ cdef class DataEngine(Component):
         self._subscribed_synthetic_trades: list[InstrumentId] = []
         self._buffered_deltas_map: dict[InstrumentId, list[OrderBookDelta]] = {}
         self._snapshot_info: dict[str, SnapshotInfo] = {}
+        self._market_order_book_members: dict[tuple[str, str], tuple[InstrumentId, ...]] = {}
+        self._market_order_book_sources: dict[tuple[str, str], str] = {}
 
         # Option chain managers (keyed by series_id string)
         self._option_chain_managers: dict[str, object] = {}
@@ -1240,6 +1246,10 @@ cdef class DataEngine(Component):
     cpdef void _handle_subscribe_data(self, DataClient client, SubscribeData command):
         Condition.not_none(client, "client")
 
+        if command.data_type.type is MarketOrderBookDeltas:
+            if not self._setup_market_order_books(command):
+                return
+
         try:
             if command.data_type not in client.subscribed_custom_data():
                 if "start_ns" not in command.params:
@@ -1835,6 +1845,8 @@ cdef class DataEngine(Component):
             if not self._msgbus.has_subscribers(topic):
                 if command.data_type in client.subscribed_custom_data():
                     client.unsubscribe(command)
+                if command.data_type.type is MarketOrderBookDeltas:
+                    self._teardown_market_order_books(command)
         except NotImplementedError:
             self._log.error(
                 f"Cannot unsubscribe: {client.id.value} "
@@ -2798,9 +2810,158 @@ cdef class DataEngine(Component):
         self._feed_greeks_to_option_chain(option_greeks)
 
     cpdef void _handle_custom_data(self, CustomData data, bint historical = False):
+        if isinstance(data.data, OrderBookFrameDeltas):
+            if historical:
+                self._log.error("Historical OrderBookFrameDeltas are not supported")
+                return
+            if not self._apply_order_book_frame_deltas(data):
+                return
+            for market in data.data.markets:
+                self._publish_market_order_book_deltas(market)
+            return
+        if isinstance(data.data, MarketOrderBookDeltas):
+            if historical:
+                self._log.error("Historical MarketOrderBookDeltas are not supported")
+                return
+            if not self._apply_market_order_book_deltas(data):
+                return
         cdef InstrumentId instrument_id = getattr(data.data, "instrument_id", None)
         cdef str topic = self._topic_cache.get_custom_data_topic(data.data_type, instrument_id, historical)
         self._msgbus.publish_c(topic=topic, msg=data.data)
+
+    def _setup_market_order_books(self, SubscribeData command):
+        metadata = command.data_type.metadata or {}
+        venue_value = str(metadata.get("venue") or "")
+        market_id = str(metadata.get("market_id") or "")
+        source_market_id = str(command.params.get("source_market_id") or "")
+        raw_ids = command.params.get("instrument_ids") or ()
+        if not venue_value or not market_id or not source_market_id or not raw_ids:
+            self._log.error(
+                "Cannot subscribe MarketOrderBookDeltas: venue, market_id, source_market_id "
+                "and instrument_ids are required",
+            )
+            return False
+
+        venue = Venue(venue_value)
+        try:
+            instrument_ids = tuple(
+                value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+                for value in raw_ids
+            )
+        except (TypeError, ValueError) as exc:
+            self._log.error(f"Cannot subscribe MarketOrderBookDeltas: invalid instrument_ids: {exc}")
+            return False
+        if len(set(instrument_ids)) != len(instrument_ids):
+            self._log.error("Cannot subscribe MarketOrderBookDeltas: duplicate instrument_ids")
+            return False
+        if any(instrument_id.venue != venue for instrument_id in instrument_ids):
+            self._log.error("Cannot subscribe MarketOrderBookDeltas: instrument venue mismatch")
+            return False
+
+        key = (venue_value, market_id)
+        existing = self._market_order_book_members.get(key)
+        if existing is not None and set(existing) != set(instrument_ids):
+            self._log.error(
+                f"Cannot subscribe MarketOrderBookDeltas: member mismatch for {venue_value}:{market_id}",
+            )
+            return False
+        existing_source = self._market_order_book_sources.get(key)
+        if existing_source is not None and existing_source != source_market_id:
+            self._log.error(
+                f"Cannot subscribe MarketOrderBookDeltas: source mismatch for {venue_value}:{market_id}",
+            )
+            return False
+        self._market_order_book_members[key] = instrument_ids
+        self._market_order_book_sources[key] = source_market_id
+
+        if bool(command.params.get("managed", True)):
+            book_type = command.params.get("book_type", BookType.L2_MBP)
+            for instrument_id in instrument_ids:
+                if self._cache.order_book(instrument_id) is None:
+                    self._create_new_book(instrument_id, book_type)
+        return True
+
+    def _teardown_market_order_books(self, UnsubscribeData command):
+        metadata = command.data_type.metadata or {}
+        key = (str(metadata.get("venue") or ""), str(metadata.get("market_id") or ""))
+        instrument_ids = self._market_order_book_members.pop(key, ())
+        self._market_order_book_sources.pop(key, None)
+        for instrument_id in instrument_ids:
+            used_by_market = any(
+                instrument_id in members
+                for members in self._market_order_book_members.values()
+            )
+            standard_topic = self._topic_cache.get_deltas_topic(instrument_id)
+            if not used_by_market and not self._msgbus.has_subscribers(standard_topic):
+                self._cache.remove_order_book(instrument_id)
+
+    def _apply_market_order_book_deltas(self, CustomData wrapped):
+        batch = wrapped.data
+        expected_type = market_order_book_data_type(batch.venue, batch.market_id)
+        if wrapped.data_type != expected_type:
+            self._log.error(
+                f"Dropping MarketOrderBookDeltas: data type does not match {batch.venue}:{batch.market_id}",
+            )
+            return False
+
+        if not self._validate_market_order_book_deltas(batch):
+            return False
+
+        for deltas in batch.deltas:
+            self._update_order_book(deltas)
+        return True
+
+    def _validate_market_order_book_deltas(self, batch, source_market_id=None):
+        key = (batch.venue.value, batch.market_id)
+        members = self._market_order_book_members.get(key)
+        if members is None:
+            self._log.error(
+                f"Dropping MarketOrderBookDeltas: no subscription for {batch.venue}:{batch.market_id}",
+            )
+            return False
+        if source_market_id is not None and self._market_order_book_sources.get(key) != source_market_id:
+            self._log.error(
+                f"Dropping OrderBookFrameDeltas: source mismatch for "
+                f"{batch.venue}:{batch.market_id}",
+            )
+            return False
+        member_set = set(members)
+        if any(deltas.instrument_id not in member_set for deltas in batch.deltas):
+            self._log.error(
+                f"Dropping MarketOrderBookDeltas: batch contains an unregistered instrument for "
+                f"{batch.venue}:{batch.market_id}",
+            )
+            return False
+        if any(self._cache.order_book(deltas.instrument_id) is None for deltas in batch.deltas):
+            self._log.error(
+                f"Dropping MarketOrderBookDeltas: managed book missing for {batch.venue}:{batch.market_id}",
+            )
+            return False
+        return True
+
+    def _apply_order_book_frame_deltas(self, CustomData wrapped):
+        frame = wrapped.data
+        expected_type = order_book_frame_data_type(frame.venue, frame.source_market_id)
+        if wrapped.data_type != expected_type:
+            self._log.error(
+                f"Dropping OrderBookFrameDeltas: data type does not match "
+                f"{frame.venue}:{frame.source_market_id}",
+            )
+            return False
+        if any(
+            not self._validate_market_order_book_deltas(market, frame.source_market_id)
+            for market in frame.markets
+        ):
+            return False
+        for market in frame.markets:
+            for deltas in market.deltas:
+                self._update_order_book(deltas)
+        return True
+
+    def _publish_market_order_book_deltas(self, batch):
+        data_type = market_order_book_data_type(batch.venue, batch.market_id)
+        topic = self._topic_cache.get_custom_data_topic(data_type, None, False)
+        self._msgbus.publish_c(topic=topic, msg=batch)
 
 # -- OPTION CHAIN FEED METHODS -------------------------------------------------------------------
 

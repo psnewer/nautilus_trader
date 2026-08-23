@@ -56,7 +56,10 @@ flowchart TB
 ```
 
 要点:
-- **OBD 触发(2026-07-30,已落地)**:`on_order_book_deltas` 不按 venue 类型过滤；PM(probability)与 OE/SE(decimal)的已订阅 OBD 都可触发机会评估。NT 在回调前已更新对应 order book cache，Evaluator 继续复用 `instrument_id → PairRegistry → pair_id` 路由及 per-pair 串行门控。修订理由见 refactor.md #297；测试 `test_evaluator.py::test_obd_from_{decimal,probability}_venue_triggers_eval`。
+- **OBD 触发(#357/#358,已落地)**:Evaluator 按 `(venue, binary_market_id)` 订阅
+  `MarketOrderBookDeltas`；PM/OE/SE 都可触发。DataEngine 先写完同一 source 帧内所有
+  二元市场的 inner OBD，再逐二元市场发布；Evaluator 只被当前 pair 的逻辑市场唤醒。
+  旧 per-instrument callback 仅保留兼容，当前新订阅不经该路径。
 - evaluate **不执行 Action**:返回 `EvalResult { hit, pending_actions }`,fire 由 evaluator 顶层做；
   `head/reverse` 命中时只更新进程内 StrategyRuntimeStore，不产生订单等外部执行副作用；
   Check 只可写本树独占的 per-eval `ctx.scratch`
@@ -426,7 +429,7 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `NegRebateCheck(max_rate=0.0)` | `src/arbitrage/strategy/checks/neg_rebate.py` | one_side_rebate 之后的候选方向门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母计算当前 rebate；按每个 candidate 的 `target_role` 过滤，只保留该 outcome 满足 `net_profit / max_share <= max_rate` 的 candidate。默认阈值为 0；无仓位时各 outcome rebate 视为 0，因此默认可通过。缺 candidates、Portfolio、完整 yes/no outcome 或经济投影异常时 fail-closed。只判断当前仓位，不预测加入 candidate 后的结果 |
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False, force=False, pnl=True)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1。**`force`(#326)**:缺省 `False` 保持 #262 双向率门(当前率 < 阈值才补、补后率 ≥阈值才算有用);`True` 时**旁路这两道率门**,只要存在缺口 outcome 就无条件补到 `target_share`(供 pre_rebate 开赛兜底强平衡,见 §3.10)。仅设很低的 `min_repaired_rebate` **不能**达到强补效果——#262 前置门 `current >= 阈值` 反而会拦住。**`pnl`(#327)**:缺省 `True` 保持 #321(补后率分子含 realizedPNL);`False` 时经 `outcome_exposures(..., include_realized_pnl=False)` 取基线,**当前率/补后率均不含 realized**,只按当轮开仓投影判率(供 pre_rebate 循环开平防即买即卖,见 §3.10;不影响 `target_share`/denom)。 |
-| `PriceChangeRecoveryCheck()` | `src/arbitrage/strategy/checks/price_change_recovery.py` | 本轮由 OBD 唤醒且该 pair 当前至少有一张 open order 时，写 `cancel_pair_orders` 并生成整组撤单 plan。Check 只读 `EvalContext.event_name == "OrderBookDeltas"`，不再读取/比较 momentum；价格帧过滤由 Evaluator 入口的 `arbitrage.evaluate_on_depth_change` 统一负责。默认 `false` 时能进入 Check 的 OBD 已是真实顶价变化；显式 `true` 时纯深度 OBD 也会进入并触发撤单。MatchedPair/sports 等其它 `event_name` 不命中。无参数 |
+| `PriceChangeRecoveryCheck()` | `src/arbitrage/strategy/checks/price_change_recovery.py` | 本轮由 OBD 唤醒且该 pair 当前至少有一张 open order 时，写 `cancel_pair_orders` 并生成整组撤单 plan。Check 接受现行 `MarketOrderBookDeltas` 与兼容 `OrderBookDeltas` 两种 `event_name`，不读取/比较 momentum；价格帧过滤由 Evaluator 入口的 `arbitrage.evaluate_on_depth_change` 统一负责。默认 `false` 时能进入 Check 的 OBD 已是真实顶价变化；显式 `true` 时纯深度 OBD 也会进入并触发撤单。MatchedPair/sports 等其它 `event_name` 不命中。无参数 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，逐单直接读取其自身 instrument 的 live OrderBook：BUY 取 best bid，SELL 取 best ask；订单价与盘口价均换算到该 instrument 的同一概率口径后计算严格 `< spread` 的概率差。它不按 outcome exposure 改写 side/instrument，因此能覆盖 `place_bets` 根据 PM 互斥库存动态生成的 SELL。命中时写标准 `legs + cancel_pair_orders`，随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `ShareLimitModification(max_leg_share=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate |
 | `VenueReplaceAction(pm_price=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价由 `pm_price` 决定**(#330):不存在或 `True`(默认)→ 用 **PM 报价腿概率**(= PM best_ask 隐含概率,PM 实时价);存在且 `False` → 沿用**原 order 隐含概率** `prob`(两 venue 共享 outcome 概率,不看 PM 实时价、也不用原 decimal 赔率)。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。`pm_price=True` 缺 PM 报价 → 告警回退 0;`pm_price=False` 裸腿无 `prob` → 回退 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
@@ -565,7 +568,7 @@ done-callback 才 `delete(pair_id)` 并清 game 索引。无策略且没有在�
 
 #### 3.8.3 Pair 动态趋势基准(#356,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-21)
 
-`StrategyEvaluator` 在每个 tradable venue 的 OBD 回调中，从 live Cache 读取该 pair 全部报价，按
+`StrategyEvaluator` 在每个 tradable venue 的 market OBD 回调中，从 live Cache 读取该 pair 全部报价，按
 canonical outcome 分组。每个 outcome 使用与 `mean_rebate` 相同的最优价口径：取所有 venue 中最低
 best-ask 隐含概率，相同概率按 `venue_preference_rank` 稳定排序。PM/OE/SE OrderBook 的 ask 已统一为
 隐含概率，读取侧不得二次换算。
@@ -581,11 +584,19 @@ live `PairPriceStore` 读取基准，并用共享 best-probability helper 从 li
 判定：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat；不再使用相邻帧 momentum、
 跨 venue 方向一致、互补 outcome 反向推断或累计 `steps`。缺基准或不完整数据时 fail-closed。
 
-**OBD 评估过滤(#355 保留)**：删除 momentum 后仍需区分真实顶价变化和纯深度帧，因此 Evaluator 只保留
-内部 `_last_best_ask`，`_top_ask_changed` 精确比较触发 instrument 的前后 best ask；它不计算趋势、也不向
-策略暴露。`evaluate_on_depth_change=false` 时仅真实变价帧派发，首帧/同价深度帧/无效行情不派发；
-`true` 时所有 OBD 均可派发。`event_name` 契约及 pair in-flight 丢弃语义不变。ended 退订时清理
-`_last_best_ask`，PairPriceStore 仍按 §3.8.2 的 pending-cleanup 时序整组删除。
+**OBD 评估过滤(#355/#357)**：删除 momentum 后仍需区分真实顶价变化和纯深度帧，因此 Evaluator 只保留
+内部 `_last_best_ask`，在 market 批次中比较所有变化 instrument 的前后 best ask；
+它不计算趋势、也不向策略暴露。`evaluate_on_depth_change=false` 时仅至少
+一腿真实变价的 market 帧派发，首帧/同价深度帧/无效行情不派发；`true`
+时所有 market OBD 均可派发。ended 退订时清理 `_last_best_ask`，PairPriceStore
+仍按 §3.8.2 的 pending-cleanup 时序整组删除。
+
+Pair 价格内存更新使用同一 market topic 上 `priority=5` 的同步 MessageBus
+handler，Strategy 普通 `on_data` 订阅保持 `priority=0`。该顺序只负责
+`PairPriceStore(first/extreme/trend) → 策略评估`；订单簿整批先写完的保证由
+DataEngine 批次契约提供(data §2.1)，不依赖 MessageBus priority 解决跨 instrument
+中间态。`price_change_recovery` 接受 `event_name=MarketOrderBookDeltas`；旧
+`OrderBookDeltas` 值仅为兼容通路保留。
 
 **成熟度**：Strategy 全量 382 个用例离线通过（2026-08-21）；覆盖见 `test_pair_prices.py`、
 `test_price_trend.py`、`test_action_trend_gate.py`、`test_evaluator.py` 与 head_rebate 场景。决策史见

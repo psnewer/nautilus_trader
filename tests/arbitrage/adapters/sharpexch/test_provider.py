@@ -44,6 +44,7 @@ def test_build_legs_fills_matching_info_keys_and_venue():
     assert all("exec_instrument_id" not in leg.info for leg in legs)
     assert str(legs[0].id).endswith(".SHARPEXCH")
     assert legs[0].market_id == "1.259502313"
+    assert {leg.info["binary_market_id"] for leg in legs} == {"1.259502313"}
     assert "111" in str(legs[0].id)
     required = {"sport", "competition", "home_team", "away_team", "selection_role"}
     assert required <= set(legs[0].info.keys())
@@ -82,6 +83,9 @@ def test_build_legs_three_way_exposes_yes_and_no_legs():
     assert no_home.id.symbol.is_composite() is False
     assert no_home.info["quote_claim"] == "no"
     assert no_home.info["exec_instrument_id"] == str(yes_home.id)
+    assert yes_home.info["binary_market_id"] == "1.259502399:111"
+    assert no_home.info["binary_market_id"] == yes_home.info["binary_market_id"]
+    assert len({leg.info["binary_market_id"] for leg in legs}) == 3
 
 
 def test_build_legs_sets_usd_min_stake():

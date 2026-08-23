@@ -11,7 +11,7 @@ class PriceChangeRecoveryCheck(Check):
     """OBD 唤醒本轮评估且 pair 存在挂单时, 撤销整个 pair 的挂单。"""
 
     def passes(self, ctx: EvalContext) -> bool:
-        if ctx.event_name != "OrderBookDeltas" or ctx.cache is None or ctx.pair_registry is None:
+        if ctx.event_name not in {"OrderBookDeltas", "MarketOrderBookDeltas"} or ctx.cache is None or ctx.pair_registry is None:
             return False
 
         instrument_ids = tuple(pair_instrument_ids(ctx))

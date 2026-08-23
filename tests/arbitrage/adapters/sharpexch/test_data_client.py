@@ -6,15 +6,21 @@ from types import SimpleNamespace
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.data import SharpExchDataClient
 from nautilus_trader.adapters.sharpexch.data import se_update_market_routing
+from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
+from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketEvent
+from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-
 from tests.arbitrage.adapters.sharpexch.test_provider import _event
-from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
 
 
 def _client(*, update_interval=60, browser_manager=None):
@@ -350,6 +356,89 @@ def test_on_price_frame_publishes_deltas():
     assert "in_play" not in inst.info      # #250:info["in_play"] 写回已废除
     assert client._price_frames_seen == 1
     assert client._price_deltas_published == 1
+
+
+def test_on_price_frame_publishes_one_market_batch_for_all_runners():
+    client = _client()
+    home = _instrument("home")
+    away = _instrument("away")
+    for instrument in (home, away):
+        client._cache.add_instrument(instrument)
+    client._market_to_instruments = {
+        home.market_id: {
+            str(home.selection_id): [(home.id, "yes")],
+            str(away.selection_id): [(away.id, "yes")],
+        },
+    }
+    data_type = market_order_book_data_type(Venue("SHARPEXCH"), home.market_id)
+    client._add_subscription(data_type)
+    captured = []
+    client._handle_data = captured.append
+
+    client._on_price_frame({
+        "id": home.market_id,
+        "rc": [
+            {"id": home.selection_id, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}], "bdatl": []},
+            {"id": away.selection_id, "bdatb": [{"index": 0, "odds": 3.0, "amount": 10}], "bdatl": []},
+        ],
+        "marketDefinition": {},
+    })
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], CustomData)
+    assert isinstance(captured[0].data, OrderBookFrameDeltas)
+    assert captured[0].data.markets[0].instrument_ids == (home.id, away.id)
+
+
+def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
+    client = _client()
+    event = SharpExchMarketEvent(
+        sport="Soccer",
+        competition="EPL",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        sport_id="1",
+        competition_id="10932509",
+        market_id="1.259502399",
+        start_ts=1782768600000 * 1_000_000,
+        runners=(
+            SharpExchRunner(selection_id="111", runner_name="Arsenal", role="home"),
+            SharpExchRunner(selection_id="333", runner_name="The Draw", role="draw"),
+            SharpExchRunner(selection_id="222", runner_name="Chelsea", role="away"),
+        ),
+    )
+    legs = list(SharpExchInstrumentProvider(SimpleNamespace())._build_legs(event))
+    for instrument in legs:
+        client._cache.add_instrument(instrument)
+        assert se_update_market_routing(client._market_to_instruments, instrument.id, instrument)
+        client._add_subscription(
+            market_order_book_data_type(Venue("SHARPEXCH"), instrument.info["binary_market_id"]),
+        )
+    captured = []
+    client._handle_data = captured.append
+
+    def frame(selection_ids):
+        return {
+            "id": event.market_id,
+            "rc": [
+                {"id": selection_id, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}], "bdatl": []}
+                for selection_id in selection_ids
+            ],
+            "marketDefinition": {},
+        }
+
+    client._on_price_frame(frame(("111", "333", "222")))
+
+    assert len(captured) == 1
+    source_frame = captured[0].data
+    assert isinstance(source_frame, OrderBookFrameDeltas)
+    assert len(source_frame.markets) == 3
+    assert all(len(market.instrument_ids) == 2 for market in source_frame.markets)
+
+    captured.clear()
+    client._on_price_frame(frame(("111",)))
+    assert len(captured) == 1
+    assert [market.market_id for market in captured[0].data.markets] == ["1.259502399:111"]
 
 
 def test_on_price_frame_drops_unrouted_market():

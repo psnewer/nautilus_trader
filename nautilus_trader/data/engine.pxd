@@ -112,6 +112,8 @@ cdef class DataEngine(Component):
     cdef readonly list[InstrumentId] _subscribed_synthetic_trades
     cdef readonly dict[InstrumentId, list[OrderBookDelta]] _buffered_deltas_map
     cdef readonly dict[str, SnapshotInfo] _snapshot_info
+    cdef readonly dict _market_order_book_members
+    cdef readonly dict _market_order_book_sources
 
     cdef readonly dict _option_chain_managers
     cdef readonly dict _option_chain_instrument_index

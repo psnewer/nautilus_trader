@@ -41,7 +41,7 @@ flowchart LR
   MA -->|anchor + tradable venues 当前态| C[(Cache.instruments)]
   C -->|按 info matching key 读| MA
   MA -->|reconstruct events + anchor×tradable match| MATCH["NormalizedEvent[anchor][] × NormalizedEvent[tradable][]"]
-  MATCH -->|candidate| PV["概率校验:临时订阅 OBD + 读 best ask"]
+  MATCH -->|candidate| PV["概率校验:临时订阅 market OBD + 读 best ask"]
   PV -->|pass| EV["publish data:MatchedPair"]
   PV -->|pass| REG["PairRegistry.register(pair_id, instrument_ids)"]
   PV -->|pending/fail| HOLD["不 publish / 不 register"]
@@ -134,8 +134,8 @@ class MarketMatchingActor(Actor):
     def on_data(self, data):                                   # #60 + 概率校验
         if isinstance(data, SportsGameUpdate) and data.ended:
             self._evict_game(data.game_id)                     # gameId→pair_id → unregister + _ended_games + 清 validation
-        elif isinstance(data, OrderBookDeltas):
-            self._try_validate_pair_by_instrument(data.instrument_id)
+        elif isinstance(data, MarketOrderBookDeltas):
+            self._try_validate_pairs_by_market(data.venue, data.market_id)
     def _on_alert(self, event):
         try: self._maybe_match()
         finally: self._schedule_next()                         # clock 自重排(读 refresh_interval_secs)
@@ -172,7 +172,7 @@ pair 发布门槛,不进入 RiskEngine。
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `MarketMatchingActor` | `data.OrderBookDeltas*`(概率校验临时订阅),`data.SportsGameUpdate*`(ended eviction) | `data:MatchedPair`(匹配且概率校验通过) |
+| `MarketMatchingActor` | `data.MarketOrderBookDeltas*`(概率校验临时订阅),`data.SportsGameUpdate*`(ended eviction) | `data:MatchedPair`(匹配且概率校验通过) |
 | consumers | strategy 订 `data.MatchedPair*`(NT 带尾 `*` 通配,#58);risk/portfolio/session pull `PairRegistry` | — |
 
 ---
@@ -214,7 +214,10 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 Risk 门控。
 
 状态按 `pair_id` 保存在 `_pair_validations`:
-- `PENDING`:已生成 candidate,MatchingActor 对 candidate 的可交易腿临时订阅 OBD,等待可用于校验的 best ask。
+- `PENDING`:已生成 candidate,MatchingActor 按 venue 二元 market 临时订阅
+  `MarketOrderBookDeltas`,等待可用于校验的 best ask。同一 market 被多个 role pair
+  共享时使用 actor 级引用集，只建立一条订阅。同步建立订阅抛异常时
+  释放本 pair 已加入的全部 market 引用并删除 validation 记录，下轮 candidate 可重试。
 - `PASSED`:该 pair 自身已通过，但保留 Matching 临时 managed OBD 订阅；2-way 立即进入交接，
   3-way 等待同一 validation group 的 home/draw/away 全部 `PASSED` 后整组交接。
 - `FAILED`:已失败,不 register、不 publish,并取消 Matching 自己的临时 OBD 订阅。进程内 sticky;同 `pair_id` 后续 candidate 直接跳过。
@@ -235,6 +238,14 @@ candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pa
 
 ended eviction 会清理对应 `pair_id` 的 validation 状态和临时 OBD 订阅,避免结束赛事的
 failed/pending 记录阻塞未来生命周期。
+
+DataEngine 在发布 binary market OBD 前已将同一 source 帧的全部 instrument 写入 Cache，
+Matching 因此不会因 YES/NO 的 per-instrument 发布读到中间态；三项盘的 home/draw/away
+保持三个独立二元订阅，不形成六腿互斥集合。校验通过的交接顺序仍为
+`register → publish MatchedPair → 释放 Matching market 订阅`；Strategy 在同步
+MatchedPair handler 中先加入同一 market `DataType`，所以 Matching 退订不会使
+DataEngine 引用计数归零，也不会重建/丢失已有 managed book。批次契约见
+`_cross-cutting/order-book-frame.md`。
 
 > **#228 pair 级化(已落地 2026-07-15)**:3-way 拆分(§4.2.2)后门控按拆出的 pair 独立走上述
 > 状态机;"互斥腿 ask 概率和"即 pair `outcomes` 两侧的 ask 概率和(outcome 标签 = `claim or

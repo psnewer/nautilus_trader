@@ -34,6 +34,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.matching.actor import _RuntimeDeps
@@ -63,6 +64,7 @@ def _pm(comp, home, away, role, token, claim=None):
 
 
 def _oe(comp, home, away, role, sel_id, claim=None):
+    binary_market_id = f"1-123:{role}" if claim else "1-123"
     return BettingInstrument(
         venue_name="ORBITEXCH", betting_type="ODDS",
         competition_id=1, competition_name=comp,
@@ -80,11 +82,13 @@ def _oe(comp, home, away, role, sel_id, claim=None):
         info=(
             {"sport": "Soccer", "competition": comp,
              "home_team": home, "away_team": away,
-             "selection_role": role, "claim": claim}
+             "selection_role": role, "claim": claim,
+             "binary_market_id": binary_market_id}
             if claim else
             {"sport": "Soccer", "competition": comp,
              "home_team": home, "away_team": away,
-             "selection_role": role}
+             "selection_role": role,
+             "binary_market_id": binary_market_id}
         ),
     )
 
@@ -106,7 +110,8 @@ def _se(comp, home, away, role, sel_id):
         ts_event=0, ts_init=0,
         info={"sport": "Soccer", "competition": comp,
               "home_team": home, "away_team": away,
-              "selection_role": role},
+              "selection_role": role,
+              "binary_market_id": "se-123"},
     )
 
 
@@ -166,8 +171,12 @@ def _populate_match(cache, comp="EPL", home="Arsenal", away="Chelsea"):
 def _wire_validation_books(actor, cache, books: dict[str, float]):
     subscribed = []
     unsubscribed = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: subscribed.append(str(iid))
-    actor.unsubscribe_order_book_deltas = lambda iid, *a, **k: unsubscribed.append(str(iid))
+    actor.subscribe_data = lambda data_type, *a, **k: subscribed.append(
+        (data_type.metadata["venue"], data_type.metadata["market_id"]),
+    )
+    actor.unsubscribe_data = lambda data_type, *a, **k: unsubscribed.append(
+        (data_type.metadata["venue"], data_type.metadata["market_id"]),
+    )
     for iid, ask in books.items():
         _add_order_book(cache, InstrumentId.from_str(iid), ask)
     return subscribed, unsubscribed
@@ -340,7 +349,7 @@ def test_probability_validation_passes_then_registers_and_publishes():
     pair_id = published[0]["data"].pair_id
     assert actor._pair_validations[pair_id].status == "PASSED"
     assert registry.instrument_ids_for_pair(pair_id) == set(published[0]["data"].tradable_instrument_ids)
-    assert set(subscribed) == {str(pm_home.id), str(pm_away.id), str(oe_home.id), str(oe_away.id)}
+    assert set(subscribed) == {("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123")}
     assert set(unsubscribed) == set(subscribed)
 
 
@@ -373,8 +382,47 @@ def test_probability_validation_waits_when_venue_sum_not_clean():
     assert published == []
     assert len(registry) == 0
     assert list(actor._pair_validations.values())[0].status == "PENDING"
-    assert len(subscribed) == 4
+    assert len(subscribed) == 2
     assert unsubscribed == []
+
+
+def test_probability_validation_subscription_failure_rolls_back_for_retry():
+    actor, _, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    instruments = [
+        _pmsports("ATP", "Rafael Jodar", "Felix Gill"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a"),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
+    ]
+    for instrument in instruments:
+        cache.add_instrument(instrument)
+    subscribed = []
+    unsubscribed = []
+
+    def subscribe(data_type, *args, **kwargs):
+        key = (data_type.metadata["venue"], data_type.metadata["market_id"])
+        subscribed.append(key)
+        if key[0] == "POLYMARKET":
+            raise RuntimeError("temporary subscribe failure")
+
+    actor.subscribe_data = subscribe
+    actor.unsubscribe_data = lambda data_type, *a, **k: unsubscribed.append(
+        (data_type.metadata["venue"], data_type.metadata["market_id"]),
+    )
+
+    actor._maybe_match()
+
+    assert len(registry) == 0
+    assert actor._pair_validations == {}
+    assert actor._validation_pairs_by_market == {}
+    assert actor._validation_market_subscriptions == {}
+    assert subscribed == [("ORBITEXCH", "1-123"), ("POLYMARKET", "0xcond")]
+    assert unsubscribed == [("ORBITEXCH", "1-123")]
 
 
 def test_probability_validation_failed_is_sticky_and_not_published():
@@ -408,7 +456,7 @@ def test_probability_validation_failed_is_sticky_and_not_published():
     assert state.best_sum < 0.95
     assert published == []
     assert len(registry) == 0
-    assert len(subscribed) == 4
+    assert len(subscribed) == 2
     assert set(unsubscribed) == set(subscribed)
 
 
@@ -446,7 +494,7 @@ def test_probability_validation_ended_game_clears_state_and_subscription():
     ))
 
     assert actor._pair_validations == {}
-    assert actor._validation_pairs_by_instrument == {}
+    assert actor._validation_pairs_by_market == {}
     assert set(unsubscribed) == set(subscribed)
 
 
@@ -709,6 +757,33 @@ def test_three_way_validation_publishes_only_after_all_roles_pass():
     assert set(unsubscribed) == set(subscribed)
 
 
+def test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market():
+    cache = TestComponentStubs.cache()
+    two_way = [
+        _oe("ATP", "A", "B", "home", 11),
+        _oe("ATP", "A", "B", "away", 12),
+    ]
+    three_way = [
+        _oe("EPL", "A", "B", role, selection, claim=claim)
+        for role, selection in (("home", 21), ("draw", 22), ("away", 23))
+        for claim in ("yes", "no")
+    ]
+    for instrument in (*two_way, *three_way):
+        cache.add_instrument(instrument)
+
+    two_way_subscriptions = market_book_subscriptions(cache, [leg.id for leg in two_way])
+    assert len(two_way_subscriptions) == 1
+    assert two_way_subscriptions[0].market_id == "1-123"
+    assert set(two_way_subscriptions[0].instrument_ids) == {leg.id for leg in two_way}
+
+    three_way_subscriptions = market_book_subscriptions(cache, [leg.id for leg in three_way])
+    assert {subscription.market_id for subscription in three_way_subscriptions} == {
+        "1-123:home", "1-123:draw", "1-123:away",
+    }
+    assert all(len(subscription.instrument_ids) == 2 for subscription in three_way_subscriptions)
+    assert {subscription.source_market_id for subscription in three_way_subscriptions} == {"1-123"}
+
+
 def test_three_way_tradable_anchor_skips_event_when_role_has_only_one_venue():
     """PM-anchor 路径与 PMSPORTS 聚合路径一致，不发布单 venue role。"""
     actor, clock, cache, registry, _ = _harness()
@@ -890,7 +965,7 @@ def test_reconcile_evicts_pending_keeps_passed_and_failed_marker():
     actor._reconcile_sports_subscriptions(set())   # 模拟下 tick candidate 消失
     assert 888 not in actor._sports_subscribed
     assert all(pid not in actor._pair_validations for pid in pending)   # PENDING 清态
-    assert actor._validation_pairs_by_instrument == {}                  # 校验 books 退订
+    assert actor._validation_pairs_by_market == {}                      # 校验 market books 退订
 
     # PASSED 保留:注册后再 reconcile 空集,订阅不动
     actor._ensure_sports_subscription(999)
@@ -900,7 +975,8 @@ def test_reconcile_evicts_pending_keeps_passed_and_failed_marker():
     assert 999 in actor._sports_subscribed
 
     # FAILED 保留标记,仅释放订阅
-    from src.arbitrage.matching.actor import _PairCandidate, _PairValidationState
+    from src.arbitrage.matching.actor import _PairCandidate
+    from src.arbitrage.matching.actor import _PairValidationState
     cand = _PairCandidate(
         pair_id="p_fail", sport="Tennis", competition="ATP", confidence=1.0,
         anchor_instrument_ids=[], tradable_instrument_ids=[], venue_instrument_ids={},

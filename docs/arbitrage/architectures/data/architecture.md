@@ -9,10 +9,10 @@
 
 | 件 | 基类 | 职责 |
 |---|---|---|
-| PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
+| PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出标准 per-instrument OBD，或把 condition 源帧封装为 `OrderBookFrameDeltas` 交 DataEngine；订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
 | `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 matching 字段;#35) |
 | `PolymarketSportsDataClient` / `PolymarketSportsInstrumentProvider` | 自写 `LiveMarketDataClient` + `InstrumentProvider` | 公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchors + Sports WS firehose 产出 `SportsGameUpdate` |
-| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + **全档** ADDs,#256 深度改造,取代 #85 的 top-of-book-only);BACK→SELL/ask 侧 / LAY→BUY/bid 侧,存入值是 `probability_from_price` 换算后的隐含概率(⚠️ 非原始赔率,详见 §3.1);路由 market_id+selection_id → InstrumentId |
+| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 源帧 → 各 runner 的 `OrderBookDeltas`，再按二元市场分组并合成一个 `OrderBookFrameDeltas`；标准 per-instrument 输出仅作显式兼容通路。BACK→SELL/ask 侧 / LAY→BUY/bid 侧，使用隐含概率编码 |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
 
 **位置**(refactor.md #33):venue-coupled 全在 `nautilus_trader/adapters/{polymarket,orbitexch}/`(P9 唯一例外)。
@@ -32,12 +32,13 @@ flowchart LR
   WSH -->|parse_price_message| DC[OrbitExchDataClient._on_price_frame]
   DC -->|routing market_id+sel_id → InstrumentId| MAP{命中订阅?}
   MAP -->|是| CONV["oe_runner_to_book_deltas\n(CLEAR + 全档 BACK ADD(SELL) + 全档 LAY ADD(BUY),概率编码)"]
-  CONV --> HD["_handle_data(OrderBookDeltas)"]
+  CONV --> BATCH["按 binary_market_id 分组\nOrderBookFrameDeltas"]
+  BATCH --> HD["_handle_data(CustomData)"]
   HD --> DE[NT DataEngine]
-  DE --> C[(Cache.order_book)]
-  DE -->|events.data| ST[Strategy 订阅]
+  DE -->|"先应用整批 inner OBD"| C[(Cache.order_book)]
+  DE -->|"后逐 binary market 发布"| ST[Strategy / Matching]
   PMWS[(PM WS / 上游)] --> PMUP[Upstream PolymarketDataClient]
-  PMUP --> HD2[_handle_data 同标准管道]
+  PMUP --> HD2["同 WS 消息封装 source frame"]
   HD2 --> DE
 ```
 
@@ -48,6 +49,18 @@ flowchart LR
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出后透传给上游 client(#276:loader 不再从 env 注入,未配置=直连;政策与全接线表见 configuration.md「网络代理路由」);NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
 - PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;#276 起无论显式与否均 `trust_env=False`(未配置=直连,不读进程代理;曾因 arb_factories 覆写工厂漏传 `proxy_url` 致 CLOB REST 直连超时,已修并由 factory 测试钉住)。共享 `HTTPTransport(retries=1)` 只重试一次连接建立错误(`ConnectError` / `ConnectTimeout`),Data/Provider 与 Execution CLOB 请求共用;上层业务 retry 仍归 Execution config。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
 - Gamma discovery(PM `ArbPolymarketInstrumentProvider` 与 PMSPORTS `PolymarketSportsInstrumentProvider`)与 CLOB 同路由(#274):两 provider 的普通请求统一走 `common/gamma_markets.fetch_gamma_json`，series events 统一走 `fetch_gamma_events_keyset` 的20条游标分页；底层均为 factory 注入的 NT pyo3 `HttpClient(timeout_secs=30, proxy_url=venues.polymarket.proxy_url)`(PMSPORTS 侧 proxy 经 dispatcher `to_sports_data_client_config` 传入;#276 crate 补丁后 `proxy_url=None` 强制直连不读 env)。不再各自裸建 `httpx.AsyncClient`。discovery 失败仍 fail-soft：keyset 任意页失败则该 series 本轮返回0，不发布部分结果，下轮周期发现再试，cache 保留 last-good。
+
+### 2.1 源帧原子应用与二元市场发布(#357/#358)
+
+DataClient 把一条 venue 上游消息封装为 `OrderBookFrameDeltas`，其中可含多个按
+`binary_market_id` 分组的 `MarketOrderBookDeltas`。DataEngine 先验证并应用整条源帧的
+全部 inner OBD，之后才逐个发布二元市场 topic。Strategy/Matching 只订阅二元市场；
+同源帧其它 selection 的 Cache 更新已可见，却不会因此误触发当前 pair。
+
+OE/SE 二项盘一个 source market 对应一个二元市场；三项 Match Odds source market
+对应 home/draw/away 三个二元市场。PM condition 的 source/binary ID 相同。managed book、
+拒绝部分写入、兼容 per-instrument 通路及 snapshot/reset 边界的完整契约见
+`_cross-cutting/order-book-frame.md`；共享订阅 helper 见 common §3.2。
 
 ---
 

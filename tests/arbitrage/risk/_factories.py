@@ -86,7 +86,11 @@ def _betting_instrument(
         min_notional=Money(1, USD),
         ts_event=0,
         ts_init=0,
-        info={"competition": competition, "market_type": market_type},
+        info={
+            "competition": competition,
+            "market_type": market_type,
+            "binary_market_id": "1-123",
+        },
     )
 
 

@@ -546,3 +546,14 @@ CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口�
 - `test_oe_subscription_plan_from_instrument_pure` / `test_oe_update_and_remove_subscription_state_pure`:
   订阅状态机纯函数(对齐 SE):plan 提取缺字段返 None、合成 no 腿优先 venue_selection_id、
   写入幂等、移除返回孤儿 page_key 且两表同步清空。
+
+## #357/#358：OE source frame 原子应用、按二元 market 发布
+
+**前置**:同一 OE market 的 home/away runner 均在 routing，且已订阅
+`MarketOrderBookDeltas`。**输入**:一条同时包含两个 runner 的 price frame。
+**期望**:runner 各自转为 inner `OrderBookDeltas`，DataClient 向 DataEngine 发一个
+`CustomData(OrderBookFrameDeltas)`，其中 2-way 只有一个含两腿的 logical market；
+market-only 消费者不额外收到标准 OBD。3-way 完整帧拆成三个二元 market，每组 yes/no；
+只含 home 的源帧也只携带 home market。
+**验收**:`test_on_price_frame_publishes_one_market_batch_for_all_runners`、
+`test_three_way_price_frame_is_atomic_but_split_into_binary_markets`。

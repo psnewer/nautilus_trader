@@ -26,14 +26,13 @@ import asyncio
 from contextlib import suppress
 from typing import Optional
 
-from src.arbitrage.common.venues import probability_from_price
-
 from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 from nautilus_trader.adapters.orbitexch.websocket_handler import OrbitExchWebSocketHandler
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
@@ -41,9 +40,13 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-
+from src.arbitrage.common.venues import probability_from_price
 
 
 ORBITEXCH = "ORBITEXCH"
@@ -333,6 +336,40 @@ class OrbitExchDataClient(LiveMarketDataClient):
             self._log.debug("Canceled task 'update_instruments'")
 
     # ── NT type-specific subscribe 钩子 ──────────────────────────────
+    async def _subscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
+        source_market_id = str(command.params.get("source_market_id") or "")
+        instrument_ids = tuple(
+            value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            for value in command.params.get("instrument_ids") or ()
+        )
+        for instrument_id in instrument_ids:
+            instrument = self._cache.instrument(instrument_id)
+            info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
+            if (
+                instrument is None
+                or str(getattr(instrument, "market_id", "") or "") != source_market_id
+                or str(info.get("binary_market_id") or "") != binary_market_id
+            ):
+                raise ValueError(
+                    f"Invalid OrbitExch binary market member {instrument_id} "
+                    f"for {binary_market_id} (source={source_market_id})",
+                )
+            self._register_instrument_routing(instrument_id)
+            await self._ensure_competition_page(instrument_id)
+
+    async def _unsubscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        orphaned: set[str] = set()
+        for value in command.params.get("instrument_ids") or ():
+            instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            orphaned.update(self._unregister_instrument_routing(instrument_id))
+        for page_key in orphaned:
+            await self._close_competition_page(page_key)
+
     async def _subscribe_order_book_deltas(self, command) -> None:
         """#68:注册路由 + **eager 开 competition 页**(订阅即开 → 价格 WS 流起,供 strategy 评估)。
         page_key = `{sport_id}_{competition_id}`(同 competition 多腿共用一页)。"""
@@ -549,16 +586,49 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # #109:WS 存活由 handler 内部封装(心跳超时 + close → on_disconnect),此处不写任何存活锚。
         # #250:instrument.info["in_play"] 写回已废除 —— 比赛状态归 PMSPORTS sports 管线
         # (snapshot.sports_state),赔率帧只产出 OrderBookDeltas。
+        market_deltas: dict[str, list[OrderBookDeltas]] = {}
+        standard_subscriptions = self.subscribed_order_book_deltas()
         for runner in parsed.get("runners", []):
             sel_id = str(runner.get("selection_id", ""))
             # #228:同一 selection 可有 yes + 合成 no 两条 instrument,同帧各发一份 deltas
             for instrument_id, claim in routing.get(sel_id, []):
                 deltas = oe_runner_to_book_deltas(instrument_id, runner, ts, claim=claim)
                 if deltas is not None:
+                    instrument = self._cache.instrument(instrument_id)
+                    info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
+                    binary_market_id = str(info.get("binary_market_id") or "")
+                    market_subscribed = bool(binary_market_id) and (
+                        market_order_book_data_type(self.venue, binary_market_id)
+                        in self.subscribed_custom_data()
+                    )
+                    if market_subscribed:
+                        market_deltas.setdefault(binary_market_id, []).append(deltas)
                     self._price_deltas_published += 1
                     if self._price_deltas_published == 1:
                         self._log.info(
                             f"OE OrderBookDeltas published: instrument_id={instrument_id}, "
                             f"deltas={len(deltas.deltas)}",
                         )
-                    self._handle_data(deltas)
+                    if not market_subscribed or instrument_id in standard_subscriptions:
+                        self._handle_data(deltas)
+        if market_deltas:
+            markets = tuple(
+                MarketOrderBookDeltas(
+                    venue=self.venue,
+                    market_id=binary_market_id,
+                    deltas=tuple(deltas_items),
+                    ts_event=ts,
+                    ts_init=ts,
+                )
+                for binary_market_id, deltas_items in sorted(market_deltas.items())
+            )
+            frame = OrderBookFrameDeltas(
+                venue=self.venue,
+                source_market_id=market_id,
+                markets=markets,
+                ts_event=ts,
+                ts_init=ts,
+            )
+            self._handle_data(
+                CustomData(order_book_frame_data_type(self.venue, market_id), frame),
+            )

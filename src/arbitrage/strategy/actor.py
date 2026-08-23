@@ -33,10 +33,16 @@ from nautilus_trader.adapters.polymarket.sports import sports_data_type
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.trading.config import StrategyConfig
 from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
+from src.arbitrage.common.market_books import MarketBookSubscription
+from src.arbitrage.common.market_books import market_book_subscriptions
+from src.arbitrage.common.market_books import market_book_topic
+from src.arbitrage.common.market_books import subscribe_market_book
+from src.arbitrage.common.market_books import unsubscribe_market_book
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
@@ -49,8 +55,8 @@ from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.events import MatchedPair
-from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.checks.quote_legs import best_ask
+from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
@@ -194,11 +200,11 @@ class StrategyEvaluator(Strategy):
         self._test_loop = deps.loop
         self._registered_task_loop = None
         self._log_evaluations = config.log_evaluations
-        self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
+        self._market_obd_subscribed: dict[tuple[str, str], MarketBookSubscription] = {}
         self._pair_inflight = deps.pair_inflight  # §7:per-pair **评估**串行闸(#261:不进执行段)
         self._sports_store = None                 # #250:SportsGameStateStore(lazy,注册后经 self.cache 建)
         self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
-        self._game_obd: dict[int, set[str]] = {}   # #250:gameId → 本 actor 订过的 OBD 腿(ended 全退)
+        self._game_market_obd: dict[int, set[tuple[str, str]]] = {}
         self._pair_price_store = None
         self._price_pairs_by_game: dict[int, set[str]] = {}
         self._price_game_by_pair: dict[str, int] = {}
@@ -228,14 +234,11 @@ class StrategyEvaluator(Strategy):
         # #108:strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)已退役 —— 旧理由是"健康检查 reload
         # **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、
         # 且 OE 下单是 page.evaluate(与焦点无关),不冲突。详见 synchronization §8.6 / refactor #108。
-        # slice 10e:OBD 不在 on_start 预订(无 instrument-level 订阅可言)——改 **MatchedPair fire 后
-        # per-iid `subscribe_order_book_deltas(iid)`**(`_ensure_obd_subscribed`),真实赔率进 cache;
-        # 订阅的 OBD 由 NT 投到 `on_order_book_deltas` → `_route_eval`(OBD-driven 重评)。
+        # OBD 不在 on_start 预订；MatchedPair 到达后才按 venue market 订阅批次 OBD。
 
     # ── data 入口(NT 路由)──────────────────────────────────────────
     def on_data(self, data) -> None:
-        # 1. slice 10e:MatchedPair fire → per-iid 订阅 OBD,把真实赔率引进 cache。
-        #    #250:同时按场订阅 sports 状态 + 记录该场的 OBD 腿(ended 时全退)
+        # 1. MatchedPair fire → 按 venue market 订阅 OBD，并按场订阅 sports。
         if isinstance(data, MatchedPair):
             self._initialize_pair_prices(data)
             self._ensure_obd_subscribed(data)
@@ -244,6 +247,9 @@ class StrategyEvaluator(Strategy):
         if isinstance(data, SportsGameUpdate):
             self._capture_start_prices(data)
             self._route_eval_sports(data)
+            return
+        if isinstance(data, MarketOrderBookDeltas):
+            self._route_eval_market(data)
             return
         self._route_eval(data)
 
@@ -257,6 +263,44 @@ class StrategyEvaluator(Strategy):
         if not price_changed and not self._arbitrage_params.evaluate_on_depth_change:
             return
         self._route_eval(deltas, event_name="OrderBookDeltas")
+
+    def _update_pair_prices_from_market(self, batch: MarketOrderBookDeltas) -> None:
+        """高优先级同步 handler：在 Strategy 路由前更新完整 pair 价格内存。"""
+        representatives = {}
+        for deltas in batch.deltas:
+            pair_id = self._pair_registry.get(deltas.instrument_id)
+            if pair_id is not None:
+                representatives.setdefault(pair_id, deltas)
+        for deltas in representatives.values():
+            self._capture_first_price(deltas)
+            self._update_extreme_prices(deltas)
+            self._update_trend_price(deltas)
+
+    def _route_eval_market(self, batch: MarketOrderBookDeltas) -> None:
+        price_changed = False
+        pair_ids = set()
+        for deltas in batch.deltas:
+            instrument_id = deltas.instrument_id
+            key = str(instrument_id)
+            current = best_ask(self.cache.order_book(instrument_id))
+            if current is not None and math.isfinite(current) and current > 0:
+                previous = self._last_best_ask.get(key)
+                self._last_best_ask[key] = current
+                if previous is not None and current != previous:
+                    price_changed = True
+            pair_id = self._pair_registry.get(instrument_id)
+            if pair_id is not None:
+                pair_ids.add(pair_id)
+        if not price_changed and not self._arbitrage_params.evaluate_on_depth_change:
+            return
+        for pair_id in sorted(pair_ids):
+            sport, competition = self._pair_scope(pair_id)
+            self._dispatch_eval(
+                pair_id,
+                sport,
+                competition,
+                event_name="MarketOrderBookDeltas",
+            )
 
     def _top_ask_changed(self, deltas) -> bool:
         """记录单腿最新 best ask，仅返回本帧是否发生真实顶价变化。"""
@@ -309,7 +353,7 @@ class StrategyEvaluator(Strategy):
             self._release_game_subscriptions(update.game_id)
 
     def _ensure_sports_subscribed(self, mp: MatchedPair) -> None:
-        """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态,并记录该场的 OBD 腿。
+        """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态。
 
         gid 经 PairRegistry 反查(matching 注册先于发布,同步时序安全);无 gid 的 pair
         (无 sports 覆盖的赛事)静默跳过。
@@ -317,7 +361,6 @@ class StrategyEvaluator(Strategy):
         gid = self._pair_registry.game_id_for_pair(mp.pair_id)
         if gid is None:
             return
-        self._game_obd.setdefault(gid, set()).update(mp.tradable_instrument_ids)
         if gid in self._sports_subscribed:
             return
         self._sports_subscribed.add(gid)
@@ -331,23 +374,26 @@ class StrategyEvaluator(Strategy):
     def _release_game_subscriptions(self, game_id: int) -> None:
         """#250:比赛终局 —— 退订本场 sports 与各 pair 腿 OBD(与 matching 侧退订汇合后
         归零,NT 收尾 + 内存回收:sports Store 条目、OBD managed book)。"""
-        from nautilus_trader.model.identifiers import InstrumentId
-
         if game_id in self._sports_subscribed:
             self._sports_subscribed.discard(game_id)
             try:
                 self.unsubscribe_data(sports_data_type(game_id, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
             except Exception as e:  # noqa: BLE001
                 self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
-        for iid_str in sorted(self._game_obd.pop(game_id, set())):
-            if iid_str not in self._obd_subscribed:
+        for key in sorted(self._game_market_obd.pop(game_id, set())):
+            subscription = self._market_obd_subscribed.pop(key, None)
+            if subscription is None:
                 continue
-            self._obd_subscribed.discard(iid_str)
-            self._last_best_ask.pop(iid_str, None)
+            for instrument_id in subscription.instrument_ids:
+                self._last_best_ask.pop(str(instrument_id), None)
             try:
-                self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid_str))
+                self._msgbus.unsubscribe(
+                    topic=market_book_topic(subscription),
+                    handler=self._update_pair_prices_from_market,
+                )
+                unsubscribe_market_book(self, subscription)
             except Exception as e:  # noqa: BLE001 — 单腿退订失败不挡其它
-                self._log.warning(f"OBD unsubscribe {iid_str} failed: {e!r}")
+                self._log.warning(f"Market OBD unsubscribe {key} failed: {e!r}")
 
     def _pair_scope(self, pair_id: str) -> tuple[str | None, str | None]:
         """从该 pair 任一腿的 instrument.info 解析 (sport, competition)(策略 scope 查找用)。"""
@@ -582,24 +628,38 @@ class StrategyEvaluator(Strategy):
             self._price_pairs_by_game.pop(game_id, None)
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
-        """slice 10e:MatchedPair 的两边各腿首次见到时订阅 OrderBookDeltas(去重)。
-        instrument 已在 cache(slice A 发现);OE/PM data client `_subscribe_order_book_deltas` 接 WS 流。"""
-        from nautilus_trader.model.identifiers import InstrumentId
-
-        instrument_ids = list(mp.tradable_instrument_ids)
-        for iid_str in instrument_ids:
-            if iid_str in self._obd_subscribed:
+        """按 venue 原生 market 订阅 OBD；同 market 多腿共享一个上游批次。"""
+        try:
+            subscriptions = market_book_subscriptions(self.cache, mp.tradable_instrument_ids)
+        except ValueError as exc:
+            self._log.warning(f"Market OBD subscription build failed for {mp.pair_id}: {exc}")
+            return
+        game_id = self._pair_registry.game_id_for_pair(mp.pair_id)
+        for subscription in subscriptions:
+            key = subscription.key
+            if game_id is not None:
+                self._game_market_obd.setdefault(int(game_id), set()).add(key)
+            if key in self._market_obd_subscribed:
                 continue
-            self._obd_subscribed.add(iid_str)
+            self._market_obd_subscribed[key] = subscription
             try:
-                # 概率校验通路已由 Matching 建好 managed book；这里只加入现有 feed，避免
-                # DataEngine 再建空 OrderBook 覆盖 cache 首帧。关闭校验时仍由 Strategy 建 book。
-                self.subscribe_order_book_deltas(
-                    InstrumentId.from_str(iid_str),
+                self._msgbus.subscribe(
+                    topic=market_book_topic(subscription),
+                    handler=self._update_pair_prices_from_market,
+                    priority=5,
+                )
+                subscribe_market_book(
+                    self,
+                    subscription,
                     managed=not mp.order_books_managed,
                 )
-            except Exception as e:  # noqa: BLE001 — 单腿订阅失败不挡其它
-                self._log.warning(f"OBD subscribe {iid_str} failed: {e!r}")
+            except Exception as e:  # noqa: BLE001 — 单 market 订阅失败不挡其它
+                self._market_obd_subscribed.pop(key, None)
+                self._msgbus.unsubscribe(
+                    topic=market_book_topic(subscription),
+                    handler=self._update_pair_prices_from_market,
+                )
+                self._log.warning(f"Market OBD subscribe {key} failed: {e!r}")
 
     # ── 评估主流程 ────────────────────────────────────────────────────
     async def _evaluate_and_fire(

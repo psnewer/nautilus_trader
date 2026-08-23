@@ -193,18 +193,16 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **OE inplay 写入**:
 - ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise
 
-## Slice 10e(2026-06-04 #61):OBD per-iid 订阅 + OBD-driven 重评
+## Slice 10e(#61/#357/#358):binary-market OBD 订阅 + OBD-driven 重评
 
-`StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:按 `tradable_instrument_ids`
-订各可交易腿,首次见到时
-`subscribe_order_book_deltas(InstrumentId, managed=not event.order_books_managed)`(去重
-`_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
-流进 cache → Check 从 live Cache 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
-`on_order_book_deltas` → `_route_eval`(经 `instrument_id→PairRegistry→pair_id` 评估,OBD-driven 重评)。
+`StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:把 `tradable_instrument_ids`
+按 `(venue,binary_market_id)` 分组，并订阅 `MarketOrderBookDeltas`。PM CLOB / OE/SE WS
+把真实赔率以 source frame 流进 DataEngine；DataEngine 先写完该帧全部 OrderBook，
+再逐二元 market 发布。Strategy 先更新 PairPriceStore，再按 pair 去重评估。
 - 概率校验已建立 managed books 时，Strategy 只注册自己的 handler，不重建 DataEngine OrderBook；
   Matching 在同步 publish 全组后才统一退订，完整交接契约见 matching architecture §4.2.1。
-- ✅ `test_evaluator.py` `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿以
-  `managed=False` 订 OBD，同 pair 再来去重。
+- ✅ `test_evaluator.py` `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 各 venue market 以
+  `managed=False` 订 market OBD，同 pair 再来去重。
 - ✅ `test_evaluator.py` `test_matched_pair_without_managed_books_creates_strategy_books`:关闭概率校验时
   事件不携带 managed feed，Strategy 使用 `managed=True` 建 book。
 - ✅ `test_evaluator.py` +1 `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:PMSPORTS anchor id 不触发 OBD 订阅。
@@ -220,10 +218,10 @@ state 读取经 `PairRegistry.instrument_ids_for_pair()` 默认只取可交易�
 `PlaceBetsAction` 已有 fail-closed 兜底:若上游误传 `tradable=false` / `anchor=true` leg,不提交任何 spec。仍需端到端 smoke 验证 `.PMSPORTS` 不进入正常 `ctx.scratch["legs"]`。详细设计见
 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 
-- ✅ `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:anchor id 不触发 `subscribe_order_book_deltas`。
+- ✅ `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:anchor id 不进入 market OBD 成员集。
 - ✅ `PairRegistry.instrument_ids_for_pair()` 的既有测试保证默认只返回 tradable ids。
 - ✅ `test_action_aborts_when_leg_is_non_tradable_anchor`:若上游误传 `tradable=false` / `anchor=true` leg,action 不提交。
-- **live smoke15 验**:MatchedPair mensik-zverev → 4 个 `SubscribeOrderBook`(2 PM token + 2 OE selection)→ 两 data client `Subscribed ... order book deltas`,0 ERROR。
+- **历史 live smoke15(#61)**:per-iid 旧通路曾验证 PM/OE 均有 OBD；#357 market 通路尚未 live 验证。
 
 ## Slice 10e 观测增强(2026-06-07):`log_evaluations` 评估锚点
 
@@ -710,7 +708,8 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 
 ## strategy-4.35:one_side_rebate 价格变化撤单补偿
 
-- `test_check_price_change_recovery.py`:OBD 唤醒(`event_name=OrderBookDeltas`)且该 pair 存在
+- `test_check_price_change_recovery.py`:market OBD 唤醒(`event_name=MarketOrderBookDeltas`；
+  兼容旧 `OrderBookDeltas`)且该 pair 存在
   open order 时写 `price_change_recovery` 整组撤单请求；不再读取 momentum。
 - MatchedPair/sports 等非 OBD 唤醒不命中；OBD 唤醒但无 open order 也不命中。
 - 默认深度开关关闭时，纯深度帧在 Evaluator 入口已被过滤，不会进入 Check；
@@ -718,6 +717,23 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 - `arb_config.json` 的 `one_side_rebate.compensation_tree` 使用
   `price_change_recovery OR one_side_recovery`；撤单仍经补偿 Action 链生成 `cancel_pair` plan，
   再由统一 dispatcher 执行，不在 Check 内直接撤单。
+
+## strategy-4.36:binary-market OBD 单次评估(#357/#358)
+
+**前置**:MatchedPair 的多条腿归属同一 `binary_market_id`。
+**输入**:一个含多 instrument 变化的 `MarketOrderBookDeltas`。
+**步骤/期望**:Strategy 按 market 而非 instrument 订阅；priority=5 handler 先从完整
+Cache 整组更新 first/extreme/trend price，priority=0 `on_data` 再做顶价变化门控，
+对每个 pair 最多调度一次。纯深度批次仍受 `evaluate_on_depth_change`控制；
+ended 按 market 退订并清 `_last_best_ask`。
+**验收**:`test_evaluator.py::test_market_obd_routes_each_pair_once_and_injects_market_event_name` /
+`test_market_price_memory_handler_runs_before_strategy_route` 及 market 订阅/退订用例，以及
+`test_check_price_change_recovery.py::test_hits_when_market_order_book_trigger_has_open_order`。
+
+3-way source frame 可同时更新 home/draw/away 三个二元市场，但每个 logical event 仅路由
+对应 pair；不把六条投影腿作为一个策略市场。源帧原子性由 DataEngine 单测覆盖，分组由
+`matching/test_actor.py::test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`
+覆盖；该路径仍为 live-unvalidated。
 ### strategy-action-place-bets-log: 实际策略汇总日志
 
 - **前置**:`PlaceBetsAction` 分别消费 mean_rebate legs-only 候选和带

@@ -8,11 +8,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
+from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
+from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchMarketEvent
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchRunner
+from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
-from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.book import OrderBook
+from nautilus_trader.model.data import CustomData
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
@@ -20,15 +27,13 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
-
-from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
-from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
-from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
 
 
 @pytest.fixture(autouse=True)
@@ -253,6 +258,85 @@ def test_on_price_frame_routes_to_handle_data():
     assert isinstance(captured[0], OrderBookDeltas)
     assert c._price_frames_seen == 1
     assert c._price_deltas_published == 1
+
+
+def test_on_price_frame_publishes_one_market_batch_for_all_runners():
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    home = oe_instrument("EPL", "home", selection_id=42)
+    away = oe_instrument("EPL", "away", selection_id=43)
+    for instrument in (home, away):
+        c._cache.add_instrument(instrument)
+        c._register_instrument_routing(instrument.id)
+    data_type = market_order_book_data_type(Venue("ORBITEXCH"), home.market_id)
+    c._add_subscription(data_type)
+    captured = []
+    c._handle_data = captured.append
+
+    c._on_price_frame({
+        "id": home.market_id,
+        "rc": [
+            {"id": 42, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}], "bdatl": []},
+            {"id": 43, "bdatb": [{"index": 0, "odds": 3.0, "amount": 10}], "bdatl": []},
+        ],
+        "marketDefinition": {},
+    })
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], CustomData)
+    assert isinstance(captured[0].data, OrderBookFrameDeltas)
+    assert captured[0].data.markets[0].instrument_ids == (home.id, away.id)
+
+
+def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
+    c = _client()
+    event = OrbitExchMarketEvent(
+        sport="Soccer",
+        competition="EPL",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        sport_id="1",
+        competition_id="10932509",
+        market_id="1-456",
+        start_ts=1782768600000 * 1_000_000,
+        runners=(
+            OrbitExchRunner(selection_id="111", runner_name="Arsenal", role="home"),
+            OrbitExchRunner(selection_id="333", runner_name="The Draw", role="draw"),
+            OrbitExchRunner(selection_id="222", runner_name="Chelsea", role="away"),
+        ),
+    )
+    legs = list(OrbitExchInstrumentProvider(SimpleNamespace())._build_legs(event))
+    for instrument in legs:
+        c._cache.add_instrument(instrument)
+        c._register_instrument_routing(instrument.id)
+        c._add_subscription(
+            market_order_book_data_type(Venue("ORBITEXCH"), instrument.info["binary_market_id"]),
+        )
+    captured = []
+    c._handle_data = captured.append
+
+    def frame(selection_ids):
+        return {
+            "id": event.market_id,
+            "rc": [
+                {"id": selection_id, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}], "bdatl": []}
+                for selection_id in selection_ids
+            ],
+            "marketDefinition": {},
+        }
+
+    c._on_price_frame(frame(("111", "333", "222")))
+
+    assert len(captured) == 1
+    source_frame = captured[0].data
+    assert isinstance(source_frame, OrderBookFrameDeltas)
+    assert len(source_frame.markets) == 3
+    assert all(len(market.instrument_ids) == 2 for market in source_frame.markets)
+
+    captured.clear()
+    c._on_price_frame(frame(("111",)))
+    assert len(captured) == 1
+    assert [market.market_id for market in captured[0].data.markets] == ["1-456:111"]
 
 
 def test_on_price_frame_unsubscribed_market_dropped():
@@ -732,10 +816,9 @@ def test_oe_subscription_plan_from_instrument_pure():
 
 def test_oe_update_and_remove_subscription_state_pure():
     """#251:写入幂等(同 iid 不重复)+ 移除返回孤儿 page_key,两表同步清空。"""
-    from nautilus_trader.model.identifiers import InstrumentId
-
     from nautilus_trader.adapters.orbitexch.data import oe_remove_subscription_state
     from nautilus_trader.adapters.orbitexch.data import oe_update_subscription_state
+    from nautilus_trader.model.identifiers import InstrumentId
 
     iid = InstrumentId.from_str("A-1.ORBITEXCH")
     routing: dict = {}

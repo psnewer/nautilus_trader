@@ -778,6 +778,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 | Q17 余额 | 账户状态本组件维护写 cache;可用余额计算在 Risk |
 | §6.6 Debug | ✅ #40/#93 落地:`SkipExecution{PM,OE}Client`(`src/arbitrage/debug/execution_clients.py`)子类化 `_submit_order`;`is_override_active("skip_execution")` 真时**保留 `_begin_session` / `execution.started/finished` / per-pair gate 生命周期**,只跳真 venue IO,随后 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=USD,commission=0,liquidity=TAKER);`_begin_session` 返回 False(cancel-only)时不 mock fill;否则透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Skip 子类传 `debug=cfg`)。**不实现订单 lifecycle 时序**(Q11.4 `timeline.py` 仅在真需要部分填 / 拒单 / 撤单时序时才做)。`skip_settlement`(健康检查路径不真上链)待后续。详见 `_cross-cutting/debug-injection.md` |
 | §6.7 锁 | 上游 ClobClient 不加外层锁(初版);遇问题再子类化只对写操作加锁 |
+| 订单簿源帧身份 | Execution 下单/撤单仍使用真实 `instrument.market_id` 与 `selection_id`；Provider 新增的 `info.binary_market_id` 只服务行情订阅，禁止写入 venue payload。见 `_cross-cutting/order-book-frame.md` |
 
 ---
 

@@ -12,16 +12,19 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.control import SetArbitrageParamsCommand
+from src.arbitrage.common.market_books import market_book_topic
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
-from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
 from src.arbitrage.strategy.actor import _RuntimeDeps
-from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.bool_expr import AndExpr
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
@@ -113,8 +116,10 @@ class _CaptureRuntimeAction(Action):
 class _CaptureEventNameAction(Action):
     def __init__(self):
         self.value = None
+        self.calls = 0
 
     async def execute(self, ctx):
+        self.calls += 1
         self.value = ctx.event_name
 
 
@@ -384,6 +389,59 @@ def test_obd_injects_event_name_into_eval_context():
     _run(_drain(loop))
 
     assert action.value == "OrderBookDeltas"
+
+
+def test_market_obd_routes_each_pair_once_and_injects_market_event_name(monkeypatch):
+    actor, _, pair_reg, strat_reg, loop, _ = _harness(
+        arbitrage_params=ArbitrageParams(evaluate_on_depth_change=True),
+    )
+    pair_reg.register("match_X", ["Y.POLYMARKET", "N.POLYMARKET"])
+    action = _CaptureEventNameAction()
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    actor._update_trend_price = MagicMock()
+    batch = MarketOrderBookDeltas(
+        venue=Venue("POLYMARKET"),
+        market_id="condition",
+        deltas=(_obd("Y.POLYMARKET"), _obd("N.POLYMARKET")),
+        ts_event=0,
+        ts_init=0,
+    )
+
+    actor.on_data(batch)
+    _run(_drain(loop))
+
+    assert action.value == "MarketOrderBookDeltas"
+    assert action.calls == 1
+
+
+def test_market_price_memory_handler_runs_before_strategy_route(monkeypatch):
+    actor, _, pair_reg, _, _, _ = _harness()
+    mp = _market_pair(actor)
+    pair_reg.register(mp.pair_id, mp.tradable_instrument_ids)
+    monkeypatch.setattr("src.arbitrage.strategy.actor.subscribe_market_book", lambda *a, **k: None)
+    actor.on_data(mp)
+    subscription = actor._market_obd_subscribed[("POLYMARKET", "0xcond")]
+    order = []
+    actor._capture_first_price = lambda deltas: order.append("prices")
+    actor._update_extreme_prices = lambda deltas: None
+    actor._update_trend_price = lambda deltas: None
+    actor._route_eval_market = lambda batch: order.append("eval")
+    actor.msgbus.subscribe(
+        topic=market_book_topic(subscription),
+        handler=actor.on_data,
+        priority=0,
+    )
+    batch = MarketOrderBookDeltas(
+        venue=Venue("POLYMARKET"),
+        market_id="0xcond",
+        deltas=(_obd(mp.venue_instrument_ids["POLYMARKET"][0]),),
+        ts_event=0,
+        ts_init=0,
+    )
+
+    actor.msgbus.publish(topic=market_book_topic(subscription), msg=batch)
+
+    assert order == ["prices", "eval"]
 
 
 def test_depth_only_obd_does_not_trigger_evaluation_by_default():
@@ -731,71 +789,90 @@ def test_non_routable_data_silently_skipped():
     assert loop.tasks == []                            # 全 skip,无 evaluate task
 
 
-def test_matched_pair_subscribes_obd_deduped():
-    """slice 10e:MatchedPair fire → 两边各腿订 OrderBookDeltas;同 pair 再来不重复订。"""
-    actor, *_ = _harness()
-    calls = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append((str(iid), k))
-    mp = _mp(
-        tradable_instrument_ids=["A.PM", "B.PM", "X.OE"],
-        venue_instrument_ids={"PM": ["A.PM", "B.PM"], "OE": ["X.OE"]},
+def _market_pair(actor):
+    from tests.arbitrage.matching.test_actor import _oe
+    from tests.arbitrage.matching.test_actor import _pm
+
+    instruments = [
+        _pm("ATP", "A", "B", "home", "h"),
+        _pm("ATP", "A", "B", "away", "a"),
+        _oe("ATP", "A", "B", "home", 11),
+        _oe("ATP", "A", "B", "away", 12),
+    ]
+    for instrument in instruments:
+        actor.cache.add_instrument(instrument)
+    ids = [str(instrument.id) for instrument in instruments]
+    return _mp(
+        tradable_instrument_ids=ids,
+        venue_instrument_ids={"POLYMARKET": ids[:2], "ORBITEXCH": ids[2:]},
         order_books_managed=True,
     )
-    assert mp.tradable_instrument_ids == ["A.PM", "B.PM", "X.OE"]
+
+
+def test_matched_pair_subscribes_market_obd_deduped(monkeypatch):
+    """MatchedPair 按 venue market 订阅；同 market 再来不重复订。"""
+    actor, *_ = _harness()
+    calls = []
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actor.subscribe_market_book",
+        lambda _actor, subscription, *, managed: calls.append((subscription, managed)),
+    )
+    mp = _market_pair(actor)
     actor.on_data(mp)
-    assert {iid for iid, _ in calls} == {"A.PM", "B.PM", "X.OE"}
-    assert all(kwargs == {"managed": False} for _, kwargs in calls)
+    assert {subscription.key for subscription, _ in calls} == {
+        ("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123"),
+    }
+    assert all(managed is False for _, managed in calls)
     actor.on_data(mp)                                  # 再来同 pair → 去重,不再订
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
-def test_matched_pair_without_managed_books_creates_strategy_books():
+def test_matched_pair_without_managed_books_creates_strategy_books(monkeypatch):
     """关闭 matching 概率校验时，Strategy 仍以 managed=True 建立 order books。"""
     actor, *_ = _harness()
     calls = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append((str(iid), k))
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actor.subscribe_market_book",
+        lambda _actor, subscription, *, managed: calls.append((subscription.key, managed)),
+    )
 
-    actor.on_data(_mp(
-        tradable_instrument_ids=["A.PM"],
-        venue_instrument_ids={"PM": ["A.PM"]},
-        order_books_managed=False,
-    ))
+    mp = _market_pair(actor)
+    mp.order_books_managed = False
+    actor.on_data(mp)
 
-    assert calls == [("A.PM", {"managed": True})]
+    assert all(managed is True for _, managed in calls)
 
 
-def test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids():
+def test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids(monkeypatch):
     """strategy-pmsports-anchor.1:PMSPORTS anchor 不参与 OBD 订阅。"""
     actor, *_ = _harness()
     calls = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
-    mp = _mp(
-        anchor_instrument_ids=["anchor.PMSPORTS"],
-        tradable_instrument_ids=["A.POLYMARKET", "X.ORBITEXCH"],
-        venue_instrument_ids={"POLYMARKET": ["A.POLYMARKET"], "ORBITEXCH": ["X.ORBITEXCH"]},
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actor.subscribe_market_book",
+        lambda _actor, subscription, *, managed: calls.extend(map(str, subscription.instrument_ids)),
     )
+    mp = _market_pair(actor)
+    mp.anchor_instrument_ids = ["anchor.PMSPORTS"]
 
     actor.on_data(mp)
 
-    assert set(calls) == {"A.POLYMARKET", "X.ORBITEXCH"}
+    assert set(calls) == set(mp.tradable_instrument_ids)
+    assert "anchor.PMSPORTS" not in calls
 
 
-def test_matched_pair_obd_subscription_consumes_only_main_fields():
+def test_matched_pair_obd_subscription_consumes_only_main_fields(monkeypatch):
     """venue-registry.10:Strategy 只消费 MatchedPair 主字段。"""
     actor, *_ = _harness()
     calls = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
-    mp = MatchedPair(
-        ts_event=0, ts_init=0,
-        pair_id="match_X", sport="Soccer", competition="EPL",
-        confidence=0,
-        tradable_instrument_ids=["A.POLYMARKET", "X.ORBITEXCH"],
-        venue_instrument_ids={"POLYMARKET": ["A.POLYMARKET"], "ORBITEXCH": ["X.ORBITEXCH"]},
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actor.subscribe_market_book",
+        lambda _actor, subscription, *, managed: calls.append(subscription.key),
     )
+    mp = _market_pair(actor)
 
     actor.on_data(mp)
 
-    assert set(calls) == {"A.POLYMARKET", "X.ORBITEXCH"}
+    assert set(calls) == {("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123")}
 
 
 # ── eval.15(§6.10 §7,#84):同 pair 并发触发 → per-pair 闸只放一次 fire ──
@@ -961,27 +1038,33 @@ def test_matched_pair_subscribes_per_game_topic_and_routes_events():
     assert action.calls == calls_after_mp + 1      # sports 事件恰好触发一次评估
 
 
-def test_ended_releases_sports_and_obd_subscriptions():
+def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):
     """strategy-4.sports.6:ended 分发完毕后释放本场全部订阅(sports + 各腿 OBD)→
     与 matching 侧退订汇合归零,触发 NT 收尾 + 内存回收。"""
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     a1 = _RecordingAction("m1")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
-    pair_reg.register("m1", ["H1.PM", "H2.OE"], game_id=888)
+    mp = _market_pair(actor)
+    mp.pair_id = "m1"
+    pair_reg.register("m1", mp.tradable_instrument_ids, game_id=888)
+    monkeypatch.setattr("src.arbitrage.strategy.actor.subscribe_market_book", lambda *a, **k: None)
+    monkeypatch.setattr("src.arbitrage.strategy.actor.unsubscribe_market_book", lambda *a, **k: None)
 
     actor.start()
-    actor.on_data(_mp("m1", tradable_instrument_ids=["H1.PM", "H2.OE"]))
+    actor.on_data(mp)
     assert 888 in actor._sports_subscribed
-    assert actor._game_obd[888] == {"H1.PM", "H2.OE"}
-    assert actor._obd_subscribed == {"H1.PM", "H2.OE"}
+    assert actor._game_market_obd[888] == {
+        ("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123"),
+    }
+    assert set(actor._market_obd_subscribed) == actor._game_market_obd[888]
     actor._runtime_store.update("head_rebate", "m1", {"standard": 0.2})
 
     actor.on_data(_sports_update(888, live=False, ended=True))
     _run(_drain(loop))
 
     assert 888 not in actor._sports_subscribed
-    assert 888 not in actor._game_obd
-    assert actor._obd_subscribed == set()           # 各腿 OBD 已退订(归零 → book 回收)
+    assert 888 not in actor._game_market_obd
+    assert actor._market_obd_subscribed == {}
     assert actor._runtime_store.snapshot() == {}    # 同场跨轮策略变量一并释放
 
 

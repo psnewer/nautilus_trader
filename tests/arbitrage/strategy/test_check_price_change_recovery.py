@@ -41,6 +41,16 @@ def test_hits_when_order_book_trigger_has_open_order():
     }
 
 
+def test_hits_when_market_order_book_trigger_has_open_order():
+    ctx = _context(
+        event_name="MarketOrderBookDeltas",
+        orders=[_order("N.POLYMARKET")],
+    )
+
+    assert PriceChangeRecoveryCheck().passes(ctx) is True
+    assert ctx.scratch["cancel_pair_orders"]["reason"] == "price_change_recovery"
+
+
 def test_non_order_book_trigger_does_not_cancel():
     ctx = _context(event_name="SportsGameUpdate", orders=[_order("Y.POLYMARKET")])
 

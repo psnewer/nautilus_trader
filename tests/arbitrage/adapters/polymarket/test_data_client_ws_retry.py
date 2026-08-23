@@ -3,27 +3,36 @@
 from __future__ import annotations
 
 import asyncio
-
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
+from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuote
+from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuotes
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BookAction
+from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import RecordFlag
-from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BinaryOption
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -62,12 +71,12 @@ def _client(loop: asyncio.AbstractEventLoop) -> PolymarketDataClient:
     )
 
 
-def _instrument() -> BinaryOption:
-    instrument_id = InstrumentId.from_str("0xCONDITION-0xTOKEN.POLYMARKET")
+def _instrument(*, token_id: str = "0xTOKEN", outcome: str = "YES") -> BinaryOption:
+    instrument_id = InstrumentId.from_str(f"0xCONDITION-{token_id}.POLYMARKET")
     return BinaryOption(
         instrument_id=instrument_id,
         raw_symbol=instrument_id.symbol,
-        outcome="YES",
+        outcome=outcome,
         description="Test Polymarket Instrument",
         asset_class=AssetClass.ALTERNATIVE,
         currency=USDC,
@@ -156,6 +165,110 @@ def test_publish_deltas_records_first_pm_obd() -> None:
 
         assert c._book_deltas_published == 2
         assert emitted == [deltas, deltas]
+    finally:
+        loop.close()
+
+
+def test_quotes_publish_one_market_batch_for_all_changed_assets() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        yes = _instrument(token_id="0xYES", outcome="YES")
+        no = _instrument(token_id="0xNO", outcome="NO")
+        for instrument in (yes, no):
+            c._cache.add_instrument(instrument)
+            c._create_local_book(instrument.id)
+
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (yes.id, no.id)
+        c._market_books_bootstrapped.add(market_id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xYES", "0.45", PolymarketOrderSide.BUY, "10", "h1"),
+                PolymarketQuote("0xNO", "0.53", PolymarketOrderSide.BUY, "8", "h2"),
+            ],
+            timestamp="1000",
+        ))
+
+        assert len(captured) == 1
+        assert isinstance(captured[0], CustomData)
+        assert isinstance(captured[0].data, OrderBookFrameDeltas)
+        assert captured[0].data.markets[0].instrument_ids == (yes.id, no.id)
+    finally:
+        loop.close()
+
+
+def test_market_snapshots_wait_for_all_members_before_publish() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        yes = _instrument(token_id="0xYES", outcome="YES")
+        no = _instrument(token_id="0xNO", outcome="NO")
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (yes.id, no.id)
+        c._cache.add_instrument(yes)
+        c._cache.add_instrument(no)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_deltas(yes, _deltas(yes))
+        assert captured == []
+
+        c._handle_deltas(no, _deltas(no))
+        assert len(captured) == 1
+        assert captured[0].data.markets[0].instrument_ids == (yes.id, no.id)
+        assert market_id in c._market_books_bootstrapped
+
+        captured.clear()
+        c._handle_deltas(yes, _deltas(yes))
+        assert len(captured) == 1
+        assert captured[0].data.markets[0].instrument_ids == (yes.id,)
+    finally:
+        loop.close()
+
+
+def test_market_bootstrap_uses_latest_local_book_after_interleaved_quote() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        yes = _instrument(token_id="0xYES", outcome="YES")
+        no = _instrument(token_id="0xNO", outcome="NO")
+        for instrument in (yes, no):
+            c._cache.add_instrument(instrument)
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (yes.id, no.id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_deltas(yes, _deltas(yes))
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xYES", "0.60", PolymarketOrderSide.BUY, "10", "h1"),
+            ],
+            timestamp="1000",
+        ))
+        c._handle_deltas(no, _deltas(no))
+
+        assert len(captured) == 1
+        yes_deltas = next(
+            item
+            for item in captured[0].data.markets[0].deltas
+            if item.instrument_id == yes.id
+        )
+        book = OrderBook(yes.id, BookType.L2_MBP)
+        book.apply_deltas(yes_deltas)
+        assert float(book.best_bid_price()) == 0.60
     finally:
         loop.close()
 

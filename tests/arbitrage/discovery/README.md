@@ -268,6 +268,8 @@ info 写入；完整 Gamma HTTP 路径仍由 live smoke 验。
 - `info["home_team"]` (str)
 - `info["away_team"]` (str)
 - `info["selection_role"]` (str: "home" / "draw" / "away")
+- `info["binary_market_id"]`：2-way 两个 selection 共用 source market ID；3-way 每个
+  selection 的 yes/no 两腿共用 `{source_market_id}:{selection_id}`
 
 **验收标准**: matching key 全部存在且类型正确(`MarketMatchingActor` 跨 venue 归一依赖此)。`start_ts` 是 discovery event / NT instrument 时间字段,不属于 matching info。
 
@@ -321,3 +323,14 @@ info 写入；完整 Gamma HTTP 路径仍由 live smoke 验。
 
 - `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no));合成 no 使用负 selection + null handicap 的非 composite identity，真实 selection 存 `venue_selection_id`，并携带 `claim=no/quote_claim=no/exec_instrument_id`。
 - `test_build_legs_two_way_drops_missing_draw`:2-way 只产真实 home/away 两腿，但 claim 统一为 yes/no，且无执行重定向。
+
+### discovery-1.8：源市场与二元市场身份分离(#358)
+
+**前置/输入**：分别构造 OE/SE 2-way 和 3-way Provider event。
+**步骤**：检查每条 instrument 的真实 `market_id`、`selection_id` 与
+`info.binary_market_id`。
+**期望**：2-way 归为一个二元市场；3-way 归为 home/draw/away 三个二元市场，每组
+恰含同 selection 的 yes/no；真实 venue market/selection 不被改写。
+**验收**：`test_orbitexch_provider.py::{test_build_legs_three_way,test_build_legs_two_way_drops_missing_draw}`、
+`tests/arbitrage/adapters/sharpexch/test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`
+及 `tests/arbitrage/matching/test_actor.py::test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`。

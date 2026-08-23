@@ -24,6 +24,7 @@ from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENU
 from nautilus_trader.adapters.polymarket.common.deltas import compute_effective_deltas
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
 from nautilus_trader.adapters.polymarket.common.parsing import update_instrument
+from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_token_id
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
@@ -58,6 +59,7 @@ from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
@@ -68,6 +70,10 @@ from nautilus_trader.model.enums import RecordFlag
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import BinaryOption
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 
 
 class PolymarketDataClient(LiveMarketDataClient):
@@ -153,6 +159,9 @@ class PolymarketDataClient(LiveMarketDataClient):
         # Hot caches
         self._last_quotes: dict[InstrumentId, QuoteTick] = {}
         self._local_books: dict[InstrumentId, OrderBook] = {}
+        self._market_order_book_members: dict[str, tuple[InstrumentId, ...]] = {}
+        self._market_snapshot_buffer: dict[str, dict[InstrumentId, OrderBookDeltas]] = {}
+        self._market_books_bootstrapped: set[str] = set()
         self._book_deltas_published = 0
 
         # Auto-load coordination
@@ -366,6 +375,53 @@ class PolymarketDataClient(LiveMarketDataClient):
             self._ws_client.add_subscription(token_id)
             self._schedule_delayed_connect()
 
+    async def _subscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        market_id = str((command.data_type.metadata or {}).get("market_id") or "")
+        source_market_id = str(command.params.get("source_market_id") or "")
+        instrument_ids = tuple(
+            value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            for value in command.params.get("instrument_ids") or ()
+        )
+        if market_id != source_market_id or not instrument_ids or any(
+            get_polymarket_condition_id(instrument_id) != market_id
+            for instrument_id in instrument_ids
+        ):
+            raise ValueError(f"Invalid Polymarket market members for {market_id}")
+        for instrument_id in instrument_ids:
+            if not await self._ensure_instrument_loaded(instrument_id):
+                raise ValueError(f"Cannot load Polymarket instrument {instrument_id}")
+            if instrument_id not in self._local_books:
+                self._create_local_book(instrument_id)
+        self._market_order_book_members[market_id] = instrument_ids
+        self._market_snapshot_buffer.pop(market_id, None)
+        self._market_books_bootstrapped.discard(market_id)
+        for instrument_id in instrument_ids:
+            token_id = get_polymarket_token_id(instrument_id)
+            if self._ws_client.is_connected():
+                await self._ws_client.subscribe(token_id)
+            else:
+                self._ws_client.add_subscription(token_id)
+        if not self._ws_client.is_connected():
+            self._schedule_delayed_connect()
+
+    async def _unsubscribe(self, command) -> None:
+        if command.data_type.type is not MarketOrderBookDeltas:
+            raise NotImplementedError
+        market_id = str((command.data_type.metadata or {}).get("market_id") or "")
+        instrument_ids = self._market_order_book_members.pop(market_id, ())
+        self._market_snapshot_buffer.pop(market_id, None)
+        self._market_books_bootstrapped.discard(market_id)
+        for instrument_id in instrument_ids:
+            if (
+                instrument_id in self.subscribed_order_book_deltas()
+                or instrument_id in self.subscribed_quote_ticks()
+                or any(instrument_id in members for members in self._market_order_book_members.values())
+            ):
+                continue
+            await self._ws_client.unsubscribe(get_polymarket_token_id(instrument_id))
+
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         if not await self._ensure_instrument_loaded(command.instrument_id):
             return
@@ -572,7 +628,59 @@ class PolymarketDataClient(LiveMarketDataClient):
 
         # Check if any effective deltas remain
         if deltas:
-            self._publish_deltas(deltas)
+            if instrument.id in self.subscribed_order_book_deltas():
+                self._publish_deltas(deltas)
+            self._buffer_market_snapshot(instrument.id, deltas)
+
+    def _buffer_market_snapshot(self, instrument_id: InstrumentId, deltas: OrderBookDeltas) -> None:
+        market_id = get_polymarket_condition_id(instrument_id)
+        members = self._market_order_book_members.get(market_id)
+        if members is None:
+            return
+        if market_id in self._market_books_bootstrapped:
+            self._publish_market_deltas(market_id, (deltas,))
+            return
+        pending = self._market_snapshot_buffer.setdefault(market_id, {})
+        pending[instrument_id] = deltas
+        if not all(member in pending for member in members):
+            return
+        now_ns = self._clock.timestamp_ns()
+        # 某成员 snapshot 到齐前可能已收到 price_change；首批必须从当前 local book
+        # 重建，不能把先到成员的旧 snapshot 回放进 DataEngine。
+        complete = tuple(
+            self._local_books[member].to_deltas_c(now_ns, now_ns)
+            for member in members
+        )
+        pending.clear()
+        self._market_books_bootstrapped.add(market_id)
+        self._publish_market_deltas(market_id, complete)
+
+    def _publish_market_deltas(
+        self,
+        market_id: str,
+        deltas: tuple[OrderBookDeltas, ...],
+    ) -> None:
+        data_type = market_order_book_data_type(self.venue, market_id)
+        if not deltas or data_type not in self.subscribed_custom_data():
+            return
+        now_ns = self._clock.timestamp_ns()
+        batch = MarketOrderBookDeltas(
+            venue=self.venue,
+            market_id=market_id,
+            deltas=deltas,
+            ts_event=max(item.ts_event for item in deltas),
+            ts_init=now_ns,
+        )
+        frame = OrderBookFrameDeltas(
+            venue=self.venue,
+            source_market_id=market_id,
+            markets=(batch,),
+            ts_event=batch.ts_event,
+            ts_init=now_ns,
+        )
+        self._handle_data(
+            CustomData(order_book_frame_data_type(self.venue, market_id), frame),
+        )
 
     def _publish_deltas(self, deltas: OrderBookDeltas) -> None:
         self._book_deltas_published += 1
@@ -587,6 +695,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         self,
         ws_message: PolymarketQuotes,
     ) -> None:
+        grouped: dict[InstrumentId, list[OrderBookDelta]] = {}
         for price_change in ws_message.price_changes:
             instrument_id = get_polymarket_instrument_id(ws_message.market, price_change.asset_id)
             instrument = self._cache.instrument(instrument_id)
@@ -594,10 +703,24 @@ class PolymarketDataClient(LiveMarketDataClient):
                 self._log.error(f"Cannot find instrument for {instrument_id}")
                 continue
 
-            self._handle_quote(
+            deltas = self._handle_quote(
                 instrument=instrument,
                 ws_message=ws_message,
                 price_change=price_change,
+            )
+            if deltas is not None:
+                grouped.setdefault(instrument.id, []).extend(deltas.deltas)
+        market_id = str(ws_message.market)
+        if (
+            grouped
+            and market_id in self._market_books_bootstrapped
+        ):
+            self._publish_market_deltas(
+                market_id,
+                tuple(
+                    OrderBookDeltas(instrument_id, deltas)
+                    for instrument_id, deltas in grouped.items()
+                ),
             )
 
     def _handle_quote(
@@ -605,7 +728,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         instrument: BinaryOption,
         ws_message: PolymarketQuotes,
         price_change: PolymarketQuote,
-    ) -> None:
+    ) -> OrderBookDeltas | None:
         now_ns = self._clock.timestamp_ns()
 
         order = BookOrder(
@@ -631,14 +754,19 @@ class PolymarketDataClient(LiveMarketDataClient):
             if (
                 instrument.id not in self.subscribed_quote_ticks()
                 and instrument.id not in self.subscribed_order_book_deltas()
+                and not any(
+                    instrument.id in members
+                    for members in self._market_order_book_members.values()
+                )
             ):
-                return
+                return None
             self._create_local_book(instrument.id)
 
         local_book = self._local_books[instrument.id]
         local_book.apply(deltas)
 
-        self._publish_deltas(deltas)
+        if instrument.id in self.subscribed_order_book_deltas():
+            self._publish_deltas(deltas)
 
         if instrument.id in self.subscribed_quote_ticks():
             bid_price = local_book.best_bid_price()
@@ -653,7 +781,7 @@ class PolymarketDataClient(LiveMarketDataClient):
                         f"Dropping QuoteTick for {instrument.id}: "
                         f"bid_price={bid_price}, ask_price={ask_price}",
                     )
-                    return
+                    return deltas
                 else:
                     # Use boundary prices with zero volume for missing sides
                     # POLYMARKET_MIN_PRICE = 0.001, POLYMARKET_MAX_PRICE = 0.999
@@ -682,10 +810,11 @@ class PolymarketDataClient(LiveMarketDataClient):
                 and quote.bid_size == last_quote.bid_size
                 and quote.ask_size == last_quote.ask_size
             ):
-                return  # No top-of-book change
+                return deltas  # No top-of-book change
 
             self._last_quotes[instrument.id] = quote
             self._handle_data(quote)
+        return deltas
 
     def _handle_trade(
         self,
@@ -752,12 +881,15 @@ class PolymarketDataClient(LiveMarketDataClient):
         new_book.apply_deltas(deltas)
         self._local_books[instrument.id] = new_book
 
-        if self._config.compute_effective_deltas:
-            effective = compute_effective_deltas(old_book, new_book, instrument)
-            if effective:
-                self._handle_data(effective)
-        else:
-            self._handle_data(deltas)
+        output = (
+            compute_effective_deltas(old_book, new_book, instrument)
+            if self._config.compute_effective_deltas
+            else deltas
+        )
+        if output:
+            if instrument.id in self.subscribed_order_book_deltas():
+                self._publish_deltas(output)
+            self._buffer_market_snapshot(instrument.id, output)
 
         if instrument.id in self.subscribed_quote_ticks():
             quote = snapshot.parse_to_quote(

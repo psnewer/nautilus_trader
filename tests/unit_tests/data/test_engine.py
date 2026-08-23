@@ -74,6 +74,7 @@ from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import InstrumentStatus
@@ -103,6 +104,10 @@ from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.model.instruments.currency_pair import CurrencyPair
 from nautilus_trader.model.instruments.option_contract import OptionContract
 from nautilus_trader.model.instruments.option_spread import OptionSpread
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -526,6 +531,172 @@ class TestDataEngine:
         # Assert
         assert self.data_engine.command_count == 2
         assert self.data_engine.subscribed_custom_data() == []
+
+    def test_market_order_book_batch_updates_all_books_before_single_publish(self):
+        data_type = market_order_book_data_type(BINANCE, "spot-pair")
+        command = SubscribeData(
+            instrument_id=None,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            data_type=data_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={
+                "instrument_ids": (BTCUSDT_BINANCE.id, ETHUSDT_BINANCE.id),
+                "source_market_id": "spot-pair",
+                "managed": True,
+                "book_type": BookType.L2_MBP,
+            },
+        )
+        assert self.data_engine._setup_market_order_books(command)
+
+        received = []
+
+        def handler(batch):
+            received.append(batch)
+            assert self.cache.order_book(BTCUSDT_BINANCE.id).best_bid_price() == Price.from_str("100.00")
+            assert self.cache.order_book(ETHUSDT_BINANCE.id).best_bid_price() == Price.from_str("200.00")
+
+        self.msgbus.subscribe(topic=f"data.{data_type.topic}", handler=handler)
+        now = self.clock.timestamp_ns()
+
+        def deltas(instrument_id, price):
+            return OrderBookDeltas(instrument_id, [OrderBookDelta(
+                instrument_id=instrument_id,
+                action=BookAction.ADD,
+                order=BookOrder(OrderSide.BUY, Price.from_str(price), Quantity.from_int(1), 1),
+                flags=RecordFlag.F_LAST,
+                sequence=0,
+                ts_event=now,
+                ts_init=now,
+            )])
+
+        batch = MarketOrderBookDeltas(
+            venue=BINANCE,
+            market_id="spot-pair",
+            deltas=(deltas(BTCUSDT_BINANCE.id, "100.00"), deltas(ETHUSDT_BINANCE.id, "200.00")),
+            ts_event=now,
+            ts_init=now,
+        )
+        self.data_engine._handle_custom_data(CustomData(data_type, batch))
+
+        assert received == [batch]
+
+    def test_market_order_book_batch_rejects_unregistered_instrument_without_partial_apply(self):
+        data_type = market_order_book_data_type(BINANCE, "spot-pair")
+        command = SubscribeData(
+            instrument_id=None,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            data_type=data_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={
+                "instrument_ids": (BTCUSDT_BINANCE.id,),
+                "source_market_id": "spot-pair",
+                "managed": True,
+            },
+        )
+        assert self.data_engine._setup_market_order_books(command)
+        now = self.clock.timestamp_ns()
+        invalid = OrderBookDeltas(ETHUSDT_BINANCE.id, [OrderBookDelta(
+            instrument_id=ETHUSDT_BINANCE.id,
+            action=BookAction.ADD,
+            order=BookOrder(OrderSide.BUY, Price.from_str("200.00"), Quantity.from_int(1), 1),
+            flags=RecordFlag.F_LAST,
+            sequence=0,
+            ts_event=now,
+            ts_init=now,
+        )])
+        batch = MarketOrderBookDeltas(
+            venue=BINANCE,
+            market_id="spot-pair",
+            deltas=(invalid,),
+            ts_event=now,
+            ts_init=now,
+        )
+        received = []
+        self.msgbus.subscribe(topic=f"data.{data_type.topic}", handler=received.append)
+
+        self.data_engine._handle_custom_data(CustomData(data_type, batch))
+
+        assert received == []
+        assert self.cache.order_book(BTCUSDT_BINANCE.id).best_bid_price() is None
+
+    def test_order_book_frame_updates_all_binary_markets_before_publishing_each(self):
+        source_market_id = "match-odds"
+        btc_type = market_order_book_data_type(BINANCE, "match-odds:home")
+        eth_type = market_order_book_data_type(BINANCE, "match-odds:draw")
+        for data_type, instrument_id in (
+            (btc_type, BTCUSDT_BINANCE.id),
+            (eth_type, ETHUSDT_BINANCE.id),
+        ):
+            command = SubscribeData(
+                instrument_id=None,
+                client_id=ClientId(BINANCE.value),
+                venue=BINANCE,
+                data_type=data_type,
+                command_id=UUID4(),
+                ts_init=self.clock.timestamp_ns(),
+                params={
+                    "instrument_ids": (instrument_id,),
+                    "source_market_id": source_market_id,
+                    "managed": True,
+                    "book_type": BookType.L2_MBP,
+                },
+            )
+            assert self.data_engine._setup_market_order_books(command)
+
+        received = []
+
+        def handler(batch):
+            received.append(batch.market_id)
+            assert self.cache.order_book(BTCUSDT_BINANCE.id).best_bid_price() == Price.from_str("100.00")
+            assert self.cache.order_book(ETHUSDT_BINANCE.id).best_bid_price() == Price.from_str("200.00")
+
+        self.msgbus.subscribe(topic=f"data.{btc_type.topic}", handler=handler)
+        self.msgbus.subscribe(topic=f"data.{eth_type.topic}", handler=handler)
+        now = self.clock.timestamp_ns()
+
+        def deltas(instrument_id, price):
+            return OrderBookDeltas(instrument_id, [OrderBookDelta(
+                instrument_id=instrument_id,
+                action=BookAction.ADD,
+                order=BookOrder(OrderSide.BUY, Price.from_str(price), Quantity.from_int(1), 1),
+                flags=RecordFlag.F_LAST,
+                sequence=0,
+                ts_event=now,
+                ts_init=now,
+            )])
+
+        markets = (
+            MarketOrderBookDeltas(
+                venue=BINANCE,
+                market_id="match-odds:home",
+                deltas=(deltas(BTCUSDT_BINANCE.id, "100.00"),),
+                ts_event=now,
+                ts_init=now,
+            ),
+            MarketOrderBookDeltas(
+                venue=BINANCE,
+                market_id="match-odds:draw",
+                deltas=(deltas(ETHUSDT_BINANCE.id, "200.00"),),
+                ts_event=now,
+                ts_init=now,
+            ),
+        )
+        frame = OrderBookFrameDeltas(
+            venue=BINANCE,
+            source_market_id=source_market_id,
+            markets=markets,
+            ts_event=now,
+            ts_init=now,
+        )
+        frame_type = order_book_frame_data_type(BINANCE, source_market_id)
+
+        self.data_engine._handle_custom_data(CustomData(frame_type, frame))
+
+        assert received == ["match-odds:home", "match-odds:draw"]
 
     def test_execute_unsubscribe_when_data_type_unrecognized_logs_and_does_nothing(self):
         # Arrange

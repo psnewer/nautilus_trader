@@ -151,7 +151,7 @@
 
 **步骤**:
 1. Matching 先生成 candidate。
-2. MatchingActor 对 candidate 的可交易腿临时订阅 OBD。
+2. MatchingActor 按 candidate 的 `binary_market_id` 临时订阅 `MarketOrderBookDeltas`。
 3. 概率校验读取 best ask;每个 venue 的互斥腿 ask 和 `<= 1.05`,跨 venue 各 outcome 最优 ask 概率和 `>= 0.95`。
 
 **期望**:
@@ -223,8 +223,8 @@
 - `test_actor.py::test_three_way_pm_anchor_splits_into_role_pairs`:PM-anchor 路径 3-way 拆 3 个 role pair(role 后缀在 venue 后缀之前),每 pair `outcomes=["yes","no"]`、每 venue 每 outcome 恰好一条腿、event_key 正确。
 - `test_actor.py::test_three_way_pmsports_anchor_splits_and_duplicates_anchor`:PMSPORTS 聚合路径拆 3 个无 venue 后缀 pair;每场唯一合成锚在各 pair `anchor_instrument_ids` 重复登记(`PairRegistry._by_anchor` 多值);`game_to_pair[gid]` 覆盖 3 个 pair。
 - `test_actor.py::test_three_way_validation_publishes_only_after_all_roles_pass`:home/draw/away 全部 PASS 后才统一注册发布;任一 `_finalize_pair` 执行时整组状态已全为 PASSED。
-- 当前退订时序:每个 role pair 自身 PASS 后立即取消自己的 Matching 临时 OBD 订阅；统一的是
-  register/publish，不是退订。该描述与 `_try_validate_pair` 的实际调用顺序一致。
+- 当前交接时序:整组 role pair 通过后先统一 register/publish，Strategy 加入同一
+  market 订阅后，Matching 再释放自己的 market 引用，避免 managed book 中断。
 - `test_actor.py::test_three_way_validation_fail_never_publishes_event_siblings`:门控 pair 级 + FAIL 连坐双向——早到 pair 即使先 PASS 也不发布;任一 sibling FAIL 后整组 sticky FAILED,不存在先发布后反注册的真钱窗口;decimal no 腿 ask 概率经 claim 感知换算(1−1/lay)。
 
 ## #233:binary pair outcome 统一
@@ -279,3 +279,18 @@ unregister/re-register 时映射同步清理。
 **用例**:`test_reconcile_evicts_pending_keeps_passed_and_failed_marker`。
 **期望/验收**:已订阅 − 本 tick candidate:PENDING 清校验态(退校验 books)+ 释放订阅;
 PASSED 不动(eviction 纯 ended 驱动);FAILED 保留 sticky 连坐标记、仅释放订阅。
+
+## matching-prob-validation.market-batch:#357/#358 二元 market OBD 校验去中间态
+
+**前置**:同一二元 market 内有多个 instrument，多个 pending validation 可共享该订阅。
+**输入**:一个 `MarketOrderBookDeltas` 批次。
+**步骤/期望**:Matching 对该 market 只建一条 custom-data 订阅；DataEngine 更新完
+批次后，每个关联 pair 只校验一次。订阅失败必须回滚 actor 引用状态；
+PASSED 交接期间 Strategy 订阅先建立，Matching 退订后 feed/book 不归零。
+**验收**:`test_probability_validation_passes_then_registers_and_publishes`、
+`test_probability_validation_waits_when_venue_sum_not_clean`、
+`test_probability_validation_subscription_failure_rolls_back_for_retry` 及 market 订阅数断言。
+
+**3-way 身份验收**：同一个 OE/SE source market 的六条投影腿必须拆为三个二元订阅，
+且 helper 不从 Cache 扩入调用方未传入的其它 selection；2-way 仍只有一个订阅。
+验收：`test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`。

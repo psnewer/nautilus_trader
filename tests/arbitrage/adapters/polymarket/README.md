@@ -98,6 +98,22 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: 第一次发布时记录 `PM OrderBookDeltas published: instrument_id=..., deltas=...`,并递增 `_book_deltas_published`
 **验收**: `test_data_client_ws_retry.py::test_publish_deltas_records_first_pm_obd`;live smoke 用该日志判定 PM 盘口已进入 NT DataEngine 前的数据出口
 
+### pm-adapter-2.5: PM source/binary 同一 market 的 OBD 批次(#357/#358)
+
+**前置**:同一 condition 的 YES/NO instrument 已建立 market custom-data 订阅。
+**输入**:两个 asset 的初始 snapshot 分别到达，以及一条同时含 YES/NO change 的
+`price_change` WS 消息。
+**步骤/期望**:首个 snapshot 只缓冲；第二个到达后只发一个含两腿的
+`OrderBookFrameDeltas`，其内含一个 `MarketOrderBookDeltas`。PM condition 的
+`source_market_id == binary_market_id`。snapshot 齐备前夹入的 price change 已写 local book，首批必须
+从当前 local book 重建，不得回放旧 snapshot；bootstrap 后的单腿 resnapshot
+立即发单腿 market 批次。后续同一 price-change 消息的多 asset 变化按
+instrument 合并，也只发一个 market 批次；market-only 订阅不额外发
+per-instrument OBD。
+**验收**:`test_market_snapshots_wait_for_all_members_before_publish` /
+`test_market_bootstrap_uses_latest_local_book_after_interleaved_quote` /
+`test_quotes_publish_one_market_batch_for_all_changed_assets`。
+
 ### pm-adapter-5.1: 上游 ExecutionClient 下单 + 事件回写
 
 **前置**: 测试网或 paper trading 账户

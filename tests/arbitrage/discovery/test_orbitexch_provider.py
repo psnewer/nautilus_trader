@@ -71,6 +71,9 @@ def test_build_legs_three_way(provider):
     assert no_home.id.symbol.is_composite() is False
     assert no_home.info["quote_claim"] == "no"
     assert no_home.info["exec_instrument_id"] == str(yes_home.id)
+    assert yes_home.info["binary_market_id"] == "1-123456:1"
+    assert no_home.info["binary_market_id"] == yes_home.info["binary_market_id"]
+    assert len({leg.info["binary_market_id"] for leg in legs}) == 3
 
 
 def test_build_legs_two_way_drops_missing_draw(provider):
@@ -79,6 +82,7 @@ def test_build_legs_two_way_drops_missing_draw(provider):
     assert [leg.info["selection_role"] for leg in legs] == ["home", "away"]
     assert [leg.info["claim"] for leg in legs] == ["yes", "no"]
     assert all("exec_instrument_id" not in leg.info for leg in legs)
+    assert {leg.info["binary_market_id"] for leg in legs} == {"1-123456"}
 
 
 def test_build_legs_fills_matching_info_keys(provider):

@@ -56,6 +56,10 @@ from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import FIXED_PRECISION
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Currency
@@ -113,6 +117,8 @@ __all__ = [
     "InstrumentStatus",
     "MarginBalance",
     "MarkPriceUpdate",
+    "MarketOrderBookDeltas",
+    "OrderBookFrameDeltas",
     "Money",
     "OrderBook",
     "OrderBookDelta",
@@ -128,6 +134,8 @@ __all__ = [
     "Symbol",
     "TradeId",
     "TradeTick",
+    "market_order_book_data_type",
+    "order_book_frame_data_type",
     "TraderId",
     "Venue",
     "VenueOrderId",

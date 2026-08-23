@@ -14,20 +14,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
+from src.arbitrage.common.market_books import MarketBookSubscription
+from src.arbitrage.common.market_books import market_book_subscriptions
+from src.arbitrage.common.market_books import subscribe_market_book
+from src.arbitrage.common.market_books import unsubscribe_market_book
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
@@ -81,14 +85,14 @@ class _PairValidationState:
     candidate: _PairCandidate
     log_message: str | None = None
     status: str = "PENDING"
-    subscribed_instrument_ids: set[str] = None
+    subscribed_market_keys: set[tuple[str, str]] = None
     venue_sums: dict[str, float] = None
     best_sum: float | None = None
     fail_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.subscribed_instrument_ids is None:
-            self.subscribed_instrument_ids = set()
+        if self.subscribed_market_keys is None:
+            self.subscribed_market_keys = set()
         if self.venue_sums is None:
             self.venue_sums = {}
 
@@ -113,7 +117,8 @@ class MarketMatchingActor(Actor):
         self._sports_subscribed: set[int] = set()  # #250:已发起 per-game sports 订阅的 gameId
         self._scan_candidate_gids: set[int] = set()  # #252:本 tick candidate 场次(差集清理基准)
         self._pair_validations: dict[str, _PairValidationState] = {}
-        self._validation_pairs_by_instrument: dict[str, set[str]] = {}
+        self._validation_pairs_by_market: dict[tuple[str, str], set[str]] = {}
+        self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
@@ -195,17 +200,19 @@ class MarketMatchingActor(Actor):
         self._unsubscribe_validation_books(pair_id, state)
 
     def _unsubscribe_validation_books(self, pair_id: str, state: _PairValidationState) -> None:
-        for iid in list(state.subscribed_instrument_ids):
-            pair_ids = self._validation_pairs_by_instrument.get(iid)
+        for key in list(state.subscribed_market_keys):
+            pair_ids = self._validation_pairs_by_market.get(key)
             if pair_ids is not None:
                 pair_ids.discard(pair_id)
                 if not pair_ids:
-                    self._validation_pairs_by_instrument.pop(iid, None)
+                    self._validation_pairs_by_market.pop(key, None)
             try:
-                self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid))
+                if not pair_ids:
+                    subscription = self._validation_market_subscriptions.pop(key)
+                    unsubscribe_market_book(self, subscription)
             except Exception as e:  # noqa: BLE001
-                self._log.warning(f"matching validation unsubscribe {iid} failed: {e!r}")
-            state.subscribed_instrument_ids.discard(iid)
+                self._log.warning(f"matching validation unsubscribe {key} failed: {e!r}")
+            state.subscribed_market_keys.discard(key)
 
     def on_stop(self) -> None:
         self._cancel_alert()
@@ -490,13 +497,33 @@ class MarketMatchingActor(Actor):
         state = _PairValidationState(candidate=candidate)
         state.log_message = log_message
         self._pair_validations[candidate.pair_id] = state
-        for iid in candidate.tradable_instrument_ids:
-            self._validation_pairs_by_instrument.setdefault(iid, set()).add(candidate.pair_id)
-            state.subscribed_instrument_ids.add(iid)
+        try:
+            subscriptions = market_book_subscriptions(self.cache, candidate.tradable_instrument_ids)
+        except ValueError as exc:
+            state.status = "FAILED"
+            state.fail_reason = str(exc)
+            self._log.warning(f"matching validation market subscription failed: {exc}")
+            return
+        for subscription in subscriptions:
+            key = subscription.key
+            pair_ids = self._validation_pairs_by_market.setdefault(key, set())
+            first_subscriber = not pair_ids
+            pair_ids.add(candidate.pair_id)
+            state.subscribed_market_keys.add(key)
+            self._validation_market_subscriptions.setdefault(key, subscription)
             try:
-                self.subscribe_order_book_deltas(InstrumentId.from_str(iid))
+                if first_subscriber:
+                    subscribe_market_book(self, subscription)
             except Exception as e:  # noqa: BLE001
-                self._log.warning(f"matching validation subscribe {iid} failed: {e!r}")
+                pair_ids.discard(candidate.pair_id)
+                state.subscribed_market_keys.discard(key)
+                if not pair_ids:
+                    self._validation_pairs_by_market.pop(key, None)
+                    self._validation_market_subscriptions.pop(key, None)
+                self._unsubscribe_validation_books(candidate.pair_id, state)
+                self._pair_validations.pop(candidate.pair_id, None)
+                self._log.warning(f"matching validation subscribe {key} failed: {e!r}")
+                return
         self._try_validate_pair(candidate.pair_id)
 
     def _register_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
@@ -537,18 +564,15 @@ class MarketMatchingActor(Actor):
         self._register_pair(candidate, log_message=log_message)
         self._publish_pair(candidate)
 
-    def on_order_book_deltas(self, deltas) -> None:
-        instrument_id = str(getattr(deltas, "instrument_id", "") or "")
-        for pair_id in list(self._validation_pairs_by_instrument.get(instrument_id, set())):
-            self._try_validate_pair(pair_id)
-
     def on_data(self, data) -> None:
         if isinstance(data, SportsGameUpdate):
             if data.ended:
                 self._evict_game(data.game_id)
             return
-        if isinstance(data, OrderBookDeltas):
-            self.on_order_book_deltas(data)
+        if isinstance(data, MarketOrderBookDeltas):
+            key = (data.venue.value, data.market_id)
+            for pair_id in list(self._validation_pairs_by_market.get(key, set())):
+                self._try_validate_pair(pair_id)
 
     def _try_validate_pair(self, pair_id: str) -> None:
         state = self._pair_validations.get(pair_id)

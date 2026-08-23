@@ -83,6 +83,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 | `home_team` | `event.home_team` |
 | `away_team` | `event.away_team` |
 | `selection_role` | `"home"` / `"draw"` / `"away"`(由本腿对应的 selection_id 决定) |
+| `binary_market_id` | 2-way 两个真实 selection 均为 `event.market_id`；3-way 每个 selection 的 yes/合成 no 均为 `f"{event.market_id}:{selection_id}"` |
 
 `start_ts` 仍保留在 discovery event model 内,用于设置 NT `BettingInstrument.event_open_date` /
 `market_start_time`;它不写入 `instrument.info`,也不参与 matching key。
@@ -190,7 +191,8 @@ for role, sel_id in [("home", event.home_selection_id),
             currency="USD",
             min_notional=Money(Decimal("7") * Decimal(str(fx)), USD),  # OE 最小 stake 的 USD 数值
             info={"sport": ..., "competition": ..., "home_team": ..., "away_team": ...,
-                  "selection_role": role},
+                  "selection_role": role,
+                  "binary_market_id": binary_market_id},
         )
 ```
 
@@ -212,6 +214,7 @@ OE 的 `quantity` 在 adapter 外部表示 **USD stake**;`BettingInstrument.noti
 | 横切 | 约束 |
 |---|---|
 | Q9 matching key | Provider 层硬契约:OE/SE/PM/PMSPORTS 都必须填全 sport/competition/home_team/away_team/selection_role;matching 只读不写 |
+| 订单簿源帧身份 | OE/SE Provider 保留真实 `instrument.market_id`/`selection_id` 供 venue IO，并另写 `info.binary_market_id` 供 Matching/Strategy 订阅；见 `_cross-cutting/order-book-frame.md` |
 | §6.10 同步 | discovery 周期与 execution 无关,不接 `_execution_active` |
 | §6.3 NT 持久化 | 周期发现 interval 走 DataClient config;不再通过 Refresher `on_save/on_load` 热持久化 |
 | P8 目录 | `src/arbitrage/discovery/` 只保留 discovery capability 公共入口;具体 Provider/DataClient 归各 adapter |
