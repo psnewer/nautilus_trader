@@ -582,6 +582,65 @@ class TestDataEngine:
 
         assert received == [batch]
 
+    def test_market_order_book_batch_clear_empties_all_books_before_publish(self):
+        data_type = market_order_book_data_type(BINANCE, "spot-pair")
+        command = SubscribeData(
+            instrument_id=None,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            data_type=data_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={
+                "instrument_ids": (BTCUSDT_BINANCE.id, ETHUSDT_BINANCE.id),
+                "source_market_id": "spot-pair",
+                "managed": True,
+                "book_type": BookType.L2_MBP,
+            },
+        )
+        assert self.data_engine._setup_market_order_books(command)
+        now = self.clock.timestamp_ns()
+
+        for instrument_id, price in (
+            (BTCUSDT_BINANCE.id, "100.00"),
+            (ETHUSDT_BINANCE.id, "200.00"),
+        ):
+            self.cache.order_book(instrument_id).apply_delta(OrderBookDelta(
+                instrument_id=instrument_id,
+                action=BookAction.ADD,
+                order=BookOrder(OrderSide.BUY, Price.from_str(price), Quantity.from_int(1), 1),
+                flags=RecordFlag.F_LAST,
+                sequence=0,
+                ts_event=now,
+                ts_init=now,
+            ))
+
+        received = []
+
+        def handler(batch):
+            received.append(batch)
+            assert self.cache.order_book(BTCUSDT_BINANCE.id).best_bid_price() is None
+            assert self.cache.order_book(ETHUSDT_BINANCE.id).best_bid_price() is None
+
+        self.msgbus.subscribe(topic=f"data.{data_type.topic}", handler=handler)
+        batch = MarketOrderBookDeltas(
+            venue=BINANCE,
+            market_id="spot-pair",
+            deltas=tuple(
+                OrderBookDeltas(
+                    instrument_id,
+                    [OrderBookDelta.clear(instrument_id, 0, now, now)],
+                )
+                for instrument_id in (BTCUSDT_BINANCE.id, ETHUSDT_BINANCE.id)
+            ),
+            ts_event=now,
+            ts_init=now,
+        )
+
+        self.data_engine._handle_custom_data(CustomData(data_type, batch))
+
+        assert received == [batch]
+
     def test_market_order_book_batch_rejects_unregistered_instrument_without_partial_apply(self):
         data_type = market_order_book_data_type(BINANCE, "spot-pair")
         command = SubscribeData(

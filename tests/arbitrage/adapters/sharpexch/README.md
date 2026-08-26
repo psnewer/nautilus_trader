@@ -230,3 +230,15 @@ CURRENT_BETS 撤单终态与 5 秒未知结果处理不变。通用同步入口�
 3-way 含 home/draw/away 三个二元 market，只变化 home 时只携带 home；market-only 订阅
 不再收到 per-instrument OBD。**验收**:`test_on_price_frame_publishes_one_market_batch_for_all_runners`、
 `test_three_way_price_frame_is_atomic_but_split_into_binary_markets`。
+
+## #359：SE prices 断线先清空盘口再 reload
+
+**前置**：一个 competition 页所辖 source market 已订阅 market OBD，二元市场两腿均在
+routing。**输入**：`close:prices` 或 `liveness_timeout`。**步骤**：断线防护命中后先置
+reload-in-flight，以单个 `OrderBookFrameDeltas` 为每条腿发布 `BookAction.CLEAR`，随后才
+调度页 reload。**期望**：DataEngine Cache 在 reload 期间无旧赔率；同一 binary market
+两腿同批清空；其它 page 不受影响；task 启动前重复断线不重复 CLEAR。
+
+**验收**：`test_comp_disconnect_clears_binary_market_before_reload`、
+`test_comp_duplicate_disconnect_does_not_clear_twice`；DataEngine 对 CLEAR 的
+apply-before-publish 由 `test_market_order_book_batch_clear_empties_all_books_before_publish` 锁定。

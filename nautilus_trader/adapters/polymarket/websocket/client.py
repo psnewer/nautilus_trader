@@ -73,6 +73,9 @@ class PolymarketWebSocketClient:
         Authentication credentials for USER channel.
     max_subscriptions_per_connection : int, default 200
         The maximum number of subscriptions per WebSocket connection (Polymarket limit is 500).
+    handler_disconnect : Callable[[tuple[str, ...]], None], optional
+        The callback handler called when a connection enters automatic reconnection,
+        with the subscriptions assigned to that connection.
 
     References
     ----------
@@ -91,6 +94,7 @@ class PolymarketWebSocketClient:
         auth: PolymarketWebSocketAuth | None = None,
         max_subscriptions_per_connection: int = 200,
         proxy_url: str | None = None,
+        handler_disconnect: Callable[[tuple[str, ...]], None] | None = None,
     ) -> None:
         self._clock = clock
         self._log: Logger = Logger(type(self).__name__)
@@ -102,6 +106,7 @@ class PolymarketWebSocketClient:
         self._auth = auth
         self._handler: Callable[[bytes], None] = handler
         self._handler_reconnect: Callable[..., Awaitable[None]] | None = handler_reconnect
+        self._handler_disconnect = handler_disconnect
         self._loop = loop
         self._proxy_url: str | None = proxy_url
         self._tasks: WeakSet[asyncio.Task] = WeakSet()
@@ -379,6 +384,7 @@ class PolymarketWebSocketClient:
                 config=config,
                 handler=self._handler,
                 post_reconnection=lambda cid=client_id: self._handle_reconnect(cid),
+                post_disconnection=lambda cid=client_id: self._handle_disconnect(cid),
             )
 
             # Use current tracked subscriptions (may include ones added while connecting)
@@ -414,6 +420,16 @@ class PolymarketWebSocketClient:
         if self._handler_reconnect:
             task = self._loop.create_task(self._handler_reconnect())  # type: ignore
             self._tasks.add(task)
+
+    def _handle_disconnect(self, client_id: int) -> None:
+        subscriptions = tuple(self._client_subscriptions.get(client_id, ()))
+        if not subscriptions:
+            return
+        self._log.warning(
+            f"ws-client {client_id}: Disconnected from {self._ws_url}; reconnecting",
+        )
+        if self._handler_disconnect:
+            self._handler_disconnect(subscriptions)
 
     async def disconnect(self) -> None:
         """

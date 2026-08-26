@@ -1384,6 +1384,7 @@ impl WebSocketClient {
             connection_mode.clone(),
             state_notify.clone(),
             post_reconnect,
+            None,
             Arc::clone(&auth_tracker),
         );
 
@@ -1427,6 +1428,27 @@ impl WebSocketClient {
         keyed_quotas: Vec<(String, Quota)>,
         default_quota: Option<Quota>,
     ) -> Result<Self, TransportError> {
+        Self::connect_with_callbacks(
+            config,
+            message_handler,
+            ping_handler,
+            post_reconnection,
+            None,
+            keyed_quotas,
+            default_quota,
+        )
+        .await
+    }
+
+    pub(crate) async fn connect_with_callbacks(
+        config: WebSocketConfig,
+        message_handler: Option<MessageHandler>,
+        ping_handler: Option<PingHandler>,
+        post_reconnection: Option<Arc<dyn Fn() + Send + Sync>>,
+        post_disconnection: Option<Arc<dyn Fn() + Send + Sync>>,
+        keyed_quotas: Vec<(String, Quota)>,
+        default_quota: Option<Quota>,
+    ) -> Result<Self, TransportError> {
         // Validate that handler mode has a message handler
         if message_handler.is_none() {
             return Err(TransportError::Io(std::io::Error::new(
@@ -1450,6 +1472,7 @@ impl WebSocketClient {
             connection_mode.clone(),
             state_notify.clone(),
             post_reconnection,
+            post_disconnection,
             Arc::clone(&auth_tracker),
         );
 
@@ -1772,6 +1795,7 @@ impl WebSocketClient {
         connection_mode: Arc<AtomicU8>,
         state_notify: Arc<tokio::sync::Notify>,
         post_reconnection: Option<Arc<dyn Fn() + Send + Sync>>,
+        post_disconnection: Option<Arc<dyn Fn() + Send + Sync>>,
         auth_tracker: Arc<OnceLock<AuthTracker>>,
     ) -> tokio::task::JoinHandle<()> {
         const CONTROLLER_FALLBACK_INTERVAL_MS: u64 = 100;
@@ -1845,6 +1869,12 @@ impl WebSocketClient {
                     {
                         if let Some(tracker) = auth_tracker.get() {
                             tracker.invalidate();
+                        }
+                        if target.is_reconnect()
+                            && let Some(ref callback) = post_disconnection
+                        {
+                            callback();
+                            log::debug!("Called `post_disconnection` handler");
                         }
                         log::debug!("Detected dead connection, transitioning to {target:?}");
                     }
@@ -2829,6 +2859,8 @@ mod rust_tests {
     #[tokio::test]
     async fn test_send_waits_during_reconnection() {
         // Test that send operations wait for reconnection to complete (up to timeout)
+        use std::sync::atomic::AtomicUsize;
+
         use nautilus_common::testing::wait_until_async;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2876,9 +2908,22 @@ mod rust_tests {
             proxy_url: None,
         };
 
-        let client = WebSocketClient::connect(config, Some(handler), None, None, vec![], None)
-            .await
-            .unwrap();
+        let disconnect_count = Arc::new(AtomicUsize::new(0));
+        let disconnect_count_clone = Arc::clone(&disconnect_count);
+        let post_disconnection = Arc::new(move || {
+            disconnect_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        let client = WebSocketClient::connect_with_callbacks(
+            config,
+            Some(handler),
+            None,
+            None,
+            Some(post_disconnection),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
 
         // Wait for reconnection to trigger
         wait_until_async(
@@ -2886,6 +2931,7 @@ mod rust_tests {
             Duration::from_secs(2),
         )
         .await;
+        assert_eq!(disconnect_count.load(Ordering::SeqCst), 1);
 
         // Try to send while reconnecting - should wait and succeed after reconnect
         let send_result = tokio::time::timeout(
@@ -2900,6 +2946,7 @@ mod rust_tests {
         );
 
         client.disconnect().await;
+        assert_eq!(disconnect_count.load(Ordering::SeqCst), 1);
         server.abort();
     }
 

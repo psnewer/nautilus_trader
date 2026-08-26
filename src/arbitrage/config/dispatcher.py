@@ -76,6 +76,7 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
         base_url_http=pm.clob_url,
         base_url_ws=_polymarket_ws_base_url(pm.ws_url),
         proxy_url=pm.proxy_url,
+        update_instruments_interval_mins=cfg.discovery.update_instruments_interval_mins,
     )
 
 
@@ -85,6 +86,7 @@ def to_sports_data_client_config(cfg: ArbConfig) -> PolymarketSportsDataClientCo
     return PolymarketSportsDataClientConfig(
         sports_ws_url=sports.ws_url,
         proxy_url=cfg.venues.polymarket.proxy_url,
+        update_instruments_interval_mins=cfg.discovery.update_instruments_interval_mins,
     )
 
 
@@ -121,6 +123,7 @@ def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig
         page_timeout=int(oe.page_load_timeout_sec * 1000),
         # #109:OE 无 HealthCheckLoop;`staleness_timeout_secs` 改作 WS handler 内部 liveness timeout。
         staleness_timeout_secs=oe.staleness_timeout_sec,
+        update_instruments_interval_mins=cfg.discovery.update_instruments_interval_mins,
     )
 
 
@@ -151,6 +154,7 @@ def to_sharpexch_data_client_config(cfg: ArbConfig) -> SharpExchDataClientConfig
         proxy_url=se.proxy_url,
         page_timeout=int(se.page_load_timeout_sec * 1000),
         staleness_timeout_secs=se.staleness_timeout_sec,
+        update_instruments_interval_mins=cfg.discovery.update_instruments_interval_mins,
     )
 
 

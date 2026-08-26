@@ -46,6 +46,30 @@ home 时只发布 home 的二元市场事件，不误触发 draw/away 策略评�
 MessageBus handler priority 不承担跨 instrument 原子性；它只排序同一次 publish 的同步
 handler。本契约在 publish 之前由 DataEngine 建立完整 Cache 可见性。
 
+### 3.1 行情连接失效帧（#359/#360）
+
+OE/SE 的 prices feed 发生 `close:prices` 或 `liveness_timeout` 且通过既有
+shutdown、reload-in-flight、page existence 与 cooldown 门控后，DataClient 必须在
+competition 页 reload 前发布失效帧：
+
+1. 按断线 `page_key` 从订阅路由中选出其负责的 `source_market_id`；
+2. 按 `binary_market_id` 分组，并为该逻辑市场的全部已订阅成员生成 NT 原生
+   `OrderBookDelta.clear(...)`；
+3. 每个 source market 只发布一个 `OrderBookFrameDeltas`。DataEngine 先清空其中全部
+   managed books，再逐 binary market 发布 `MarketOrderBookDeltas`；
+4. 完成同步 CLEAR 后才调度 reload。新完整快照到达前，Cache 的 best bid/ask 均为空，
+   其它事件即使唤醒 Strategy 也不能复用断线前赔率。
+
+失效范围以订阅路由为准，不扫描全 venue，也不直接改 Cache。一个 competition 页断线
+不得清空其它页。reload task 排队前先置 reload-in-flight，重复 close/timeout 不重复发帧。
+
+PM 由 NT Rust `WebSocketClient` 在连接状态成功从 `Active` 转为 `Reconnect` 时触发
+`post_disconnection`；Python binding 将回调安全调度到 event loop。PM WS wrapper 按
+`client_id` 提供该分片的 token 集，DataClient 随即发布 CLEAR。PM 多连接池的失效范围是
+**断线分片**而非整个 venue：仅清该分片 token 对应的 local/DataEngine books；一个二元市场
+的两腿若跨分片，健康腿不清。主动 shutdown 不触发回调。重连后的重新订阅与 snapshot 恢复
+沿用原状态机；不得延后至 `post_reconnection` 才清空。
+
 ## 4. 订阅与组件职责
 
 - Provider：写入 `binary_market_id`；2-way 共用源 market ID，3-way 按 selection 派生。
@@ -65,7 +89,8 @@ PM snapshot、snapshot 夹增量、单腿 resnapshot 与 tick-size reset 仍由 
 - DataEngine：同源帧的多个二元市场全部更新后才开始回调；非法成员整帧无部分写入。
 - OE/SE：三项完整帧生成三个二元市场；只含 home 的帧只生成 home 市场。
 - Provider/Matching：二项盘形成一组，三项盘形成三组，每组恰好 yes/no 两腿。
-- PM：同 condition 仍是一组，snapshot/retry/reset 行为不退化。
+- PM：同 condition 仍是一组；断线回调只清对应 WS 分片且主动 shutdown 不误清，
+  snapshot/retry/reset 行为不退化。
 
 对应离线测试见 DataEngine unit tests、各 adapter README，以及 Matching/Strategy README
 中的 #357/#358 用例；真钱 live 验证不在本次范围。

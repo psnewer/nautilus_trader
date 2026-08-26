@@ -34,6 +34,7 @@ class TestPolymarketWebSocketClient:
         self.clock = LiveClock()
         self.handler = MagicMock()
         self.handler_reconnect = AsyncMock()
+        self.handler_disconnect = MagicMock()
 
     def create_client(
         self,
@@ -47,6 +48,7 @@ class TestPolymarketWebSocketClient:
             handler=self.handler,
             handler_reconnect=self.handler_reconnect,
             loop=self.loop,
+            handler_disconnect=self.handler_disconnect,
             auth=auth,
         )
 
@@ -291,6 +293,7 @@ class TestPolymarketWebSocketClientAsync:
         self.clock = LiveClock()
         self.handler = MagicMock()
         self.handler_reconnect = AsyncMock()
+        self.handler_disconnect = MagicMock()
 
     def create_client(
         self,
@@ -303,6 +306,7 @@ class TestPolymarketWebSocketClientAsync:
             handler=self.handler,
             handler_reconnect=self.handler_reconnect,
             loop=self.loop,
+            handler_disconnect=self.handler_disconnect,
         )
 
     @pytest.mark.asyncio
@@ -482,6 +486,15 @@ class TestPolymarketWebSocketClientAsync:
         # Verify handler_reconnect was NOT called (since we returned early)
         if client._handler_reconnect:
             client._handler_reconnect.assert_not_called()
+
+    def test_handle_disconnect_reports_only_client_subscriptions(self):
+        client = self.create_client()
+        client._client_subscriptions[0] = ["token_1", "token_2"]
+        client._client_subscriptions[1] = ["token_3"]
+
+        client._handle_disconnect(1)
+
+        self.handler_disconnect.assert_called_once_with(("token_3",))
 
 
 class TestPolymarketWebSocketClientMultiClient:

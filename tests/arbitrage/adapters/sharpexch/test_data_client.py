@@ -6,17 +6,18 @@ from types import SimpleNamespace
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.data import SharpExchDataClient
 from nautilus_trader.adapters.sharpexch.data import se_update_market_routing
-from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
+from nautilus_trader.adapters.sharpexch.data import se_update_subscription_state
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketEvent
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
+from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -470,6 +471,80 @@ def test_comp_disconnect_schedules_reload_for_prices_close():
 
     assert calls == [{"page_key": "2_12597512", "sport_id": "2", "competition_id": "12597512"}]
     assert client._comp_reloading == set()
+
+
+def test_comp_disconnect_clears_binary_market_before_reload():
+    """SE prices 断线先以同一 market frame 清空两腿，再 reload。"""
+    client = _client()
+    yes = _instrument("home")
+    no = _instrument("away")
+    for instrument in (yes, no):
+        client._cache.add_instrument(instrument)
+        plan = se_update_subscription_state(
+            market_routing=client._market_to_instruments,
+            market_to_page_key=client._market_to_page_key,
+            comp_page_refs=client._comp_page_refs,
+            instrument_id=instrument.id,
+            inst=instrument,
+        )
+        assert plan is not None
+    market_id = str(yes.info["binary_market_id"])
+    client._add_subscription(market_order_book_data_type(client.venue, market_id))
+    client._comp_pages["2_12597512"] = object()
+    events = []
+    client._handle_data = lambda data: events.append(("clear", data))
+
+    async def open_page(**kwargs):
+        events.append(("reload", kwargs))
+
+    client._open_or_reload_competition_page = open_page
+    client._on_comp_disconnect("2_12597512", "close:prices")
+
+    assert [event[0] for event in events] == ["clear"]
+    frame = events[0][1].data
+    assert isinstance(frame, OrderBookFrameDeltas)
+    assert frame.source_market_id == str(yes.market_id)
+    assert len(frame.markets) == 1
+    assert set(frame.markets[0].instrument_ids) == {yes.id, no.id}
+    assert all(
+        len(deltas.deltas) == 1
+        and deltas.deltas[0].action == BookAction.CLEAR
+        for deltas in frame.markets[0].deltas
+    )
+
+    client._loop.run_until_complete(asyncio.sleep(0))
+    assert [event[0] for event in events] == ["clear", "reload"]
+    assert client._comp_reloading == set()
+
+
+def test_comp_duplicate_disconnect_does_not_clear_twice():
+    """reload task 尚未运行时的重复 close 也只能清空一次。"""
+    client = _client()
+    instrument = _instrument("home")
+    client._cache.add_instrument(instrument)
+    plan = se_update_subscription_state(
+        market_routing=client._market_to_instruments,
+        market_to_page_key=client._market_to_page_key,
+        comp_page_refs=client._comp_page_refs,
+        instrument_id=instrument.id,
+        inst=instrument,
+    )
+    assert plan is not None
+    market_id = str(instrument.info["binary_market_id"])
+    client._add_subscription(market_order_book_data_type(client.venue, market_id))
+    client._comp_pages["2_12597512"] = object()
+    emitted = []
+    scheduled = []
+    client._handle_data = emitted.append
+    client._schedule_task = scheduled.append
+
+    client._on_comp_disconnect("2_12597512", "close:prices")
+    client._on_comp_disconnect("2_12597512", "liveness_timeout")
+
+    assert len(emitted) == 1
+    assert len(scheduled) == 1
+    for task in scheduled:
+        task.close()
 
 
 def test_comp_disconnect_ignores_non_price_reason():

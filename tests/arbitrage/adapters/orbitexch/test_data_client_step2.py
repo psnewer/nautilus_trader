@@ -712,6 +712,74 @@ def test_disconnect_liveness_timeout_schedules_reload():
         t.close()
 
 
+def test_disconnect_clears_binary_market_before_reload():
+    """data-2.health.18:断线先以同一 market frame 清空两腿，再 reload。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client_with_bm(_FakeBM())
+    yes = oe_instrument("EPL", "home", selection_id=42)
+    no = oe_instrument("EPL", "away", selection_id=43)
+    for instrument in (yes, no):
+        c._cache.add_instrument(instrument)
+        c._register_instrument_routing(instrument.id)
+    c._market_to_page_key["1-123"] = "1_1"
+    c._add_subscription(market_order_book_data_type(c.venue, "1-123"))
+    other = oe_instrument("EPL", "other", selection_id=44)
+    other.info["binary_market_id"] = "other-market"
+    c._cache.add_instrument(other)
+    c._market_to_instruments["other-source"] = {"44": [(other.id, "yes")]}
+    c._market_to_page_key["other-source"] = "1_2"
+    c._add_subscription(market_order_book_data_type(c.venue, "other-market"))
+    c._comp_pages["1_1"] = object()
+    events = []
+    c._handle_data = lambda data: events.append(("clear", data))
+
+    async def reload_page(*args):
+        events.append(("reload", args))
+
+    c._open_or_reload_competition_page = reload_page
+    c._on_comp_disconnect("1_1", "close:prices")
+
+    assert [event[0] for event in events] == ["clear"]
+    frame = events[0][1].data
+    assert isinstance(frame, OrderBookFrameDeltas)
+    assert frame.source_market_id == "1-123"
+    assert len(frame.markets) == 1
+    assert set(frame.markets[0].instrument_ids) == {yes.id, no.id}
+    assert all(
+        len(deltas.deltas) == 1 and deltas.deltas[0].is_clear
+        for deltas in frame.markets[0].deltas
+    )
+
+    c._loop.run_until_complete(asyncio.sleep(0))
+    assert [event[0] for event in events] == ["clear", "reload"]
+    assert c._comp_reloading == set()
+
+
+def test_duplicate_disconnect_does_not_clear_twice_before_reload_starts():
+    """reload task 尚未运行时的重复 close 也只能清空一次。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client_with_bm(_FakeBM())
+    instrument = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(instrument)
+    c._register_instrument_routing(instrument.id)
+    c._market_to_page_key["1-123"] = "1_1"
+    c._add_subscription(market_order_book_data_type(c.venue, "1-123"))
+    c._comp_pages["1_1"] = object()
+    emitted = []
+    c._handle_data = emitted.append
+    c._loop = _RecordLoop()
+
+    c._on_comp_disconnect("1_1", "close:prices")
+    c._on_comp_disconnect("1_1", "liveness_timeout")
+
+    assert len(emitted) == 1
+    assert len(c._loop.tasks) == 1
+    for task in c._loop.tasks:
+        task.close()
+
+
 def test_disconnect_guards():
     """data-2.health.16:非 prices/非心跳 reason / 关停 / reload 中 / 页未开 → 不调度。"""
     c = _client_with_bm(_FakeBM())

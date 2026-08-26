@@ -38,7 +38,8 @@ class VenueDiscoveryConfig(ConfigStruct):
 
 
 class DiscoveryConfig(ConfigStruct):
-    refresh_interval_secs: float = 10.0     # #59:MarketMatchingActor timer 轮询间隔(锁 10s;发现间隔在 data client update_instruments_interval_mins,与此解耦)
+    refresh_interval_secs: float = 10.0     # #59:MarketMatchingActor timer 轮询间隔(锁 10s;发现间隔见下方 update_instruments_interval_mins,与此解耦)
+    update_instruments_interval_mins: int = 60  # 各 venue DataClient 原生周期发现间隔(分钟);dispatcher 透传给 PM/OE/SE/PMSPORTS
     polymarket: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)
     orbitexch: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)
     sharpexch: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)

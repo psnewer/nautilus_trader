@@ -145,6 +145,7 @@ class PolymarketDataClient(LiveMarketDataClient):
             handler=self._handle_raw_ws_message,
             handler_reconnect=None,
             loop=self._loop,
+            handler_disconnect=self._handle_ws_disconnect,
             max_subscriptions_per_connection=self._config.ws_max_subscriptions_per_connection,
             proxy_url=self._config.proxy_url,
         )
@@ -238,6 +239,58 @@ class PolymarketDataClient(LiveMarketDataClient):
         local_book = OrderBook(instrument_id, book_type=BookType.L2_MBP)
         self._local_books[instrument_id] = local_book
         return local_book
+
+    def _handle_ws_disconnect(self, token_ids: tuple[str, ...]) -> None:
+        """清空断线 WS 分片负责的盘口,避免自动重连期间继续使用旧赔率。"""
+        if self._disconnecting:
+            return
+
+        disconnected_tokens = set(token_ids)
+        instrument_ids = {
+            instrument_id
+            for instrument_id in self._local_books
+            if get_polymarket_token_id(instrument_id) in disconnected_tokens
+        }
+        for members in self._market_order_book_members.values():
+            instrument_ids.update(
+                instrument_id
+                for instrument_id in members
+                if get_polymarket_token_id(instrument_id) in disconnected_tokens
+            )
+        if not instrument_ids:
+            return
+
+        ts = self._clock.timestamp_ns()
+        clears = {
+            instrument_id: OrderBookDeltas(
+                instrument_id,
+                [OrderBookDelta.clear(instrument_id, 0, ts, ts)],
+            )
+            for instrument_id in instrument_ids
+        }
+
+        for instrument_id, deltas in clears.items():
+            self._create_local_book(instrument_id)
+            self._last_quotes.pop(instrument_id, None)
+            if instrument_id in self.subscribed_order_book_deltas():
+                self._publish_deltas(deltas)
+
+        cleared_markets = 0
+        for market_id, members in self._market_order_book_members.items():
+            market_clears = tuple(clears[member] for member in members if member in clears)
+            if not market_clears:
+                continue
+            pending = self._market_snapshot_buffer.get(market_id)
+            if pending is not None:
+                for member in instrument_ids:
+                    pending.pop(member, None)
+            self._publish_market_deltas(market_id, market_clears)
+            cleared_markets += 1
+
+        self._log.warning(
+            f"PM market WS disconnected: cleared {len(instrument_ids)} book(s) "
+            f"across {cleared_markets} market(s) before reconnect",
+        )
 
     def _cleanup_expired_books(self) -> None:
         now_ns = self._clock.timestamp_ns()

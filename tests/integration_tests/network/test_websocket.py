@@ -110,9 +110,15 @@ async def test_client_send_recv_json(websocket_server):
 async def test_reconnect_after_close(websocket_server):
     # Arrange
     store = []
+    disconnects = []
     loop = asyncio.get_running_loop()
     config = WebSocketConfig(_server_url(websocket_server), [])
-    client = await WebSocketClient.connect(loop, config, store.append)
+    client = await WebSocketClient.connect(
+        loop,
+        config,
+        store.append,
+        post_disconnection=lambda: disconnects.append(True),
+    )
     await eventually(lambda: client.is_active())
 
     # Act
@@ -120,7 +126,9 @@ async def test_reconnect_after_close(websocket_server):
 
     # Assert
     await eventually(lambda: store == [b"connected"] * 2)
+    assert disconnects == [True]
     await client.disconnect()
+    assert disconnects == [True]
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,26 @@ OE/SE 二项盘一个 source market 对应一个二元市场；三项 Match Odds
 拒绝部分写入、兼容 per-instrument 通路及 snapshot/reset 边界的完整契约见
 `_cross-cutting/order-book-frame.md`；共享订阅 helper 见 common §3.2。
 
+### 2.2 Prices WS 断线时盘口失效（#359/#360）
+
+OE/SE competition 页的 prices feed 断线通过现有存活门控后，DataClient 在 reload 前按
+`page_key` 清空该页所辖、当前已订阅的逻辑市场。清空仍走
+`CustomData(OrderBookFrameDeltas) → DataEngine`：同一个 binary market 的 YES/NO 用
+NT 原生 `BookAction.CLEAR` 放进同一批，DataEngine 先更新 Cache，再发布 market OBD。
+不得直接改 Cache，也不得清空其它 competition 页或整个 venue。reload 成功并收到新快照
+前，Strategy 从 Cache 读取该 venue 时得到空盘口并跳过机会。
+
+断线回调先置 reload-in-flight，再同步发 CLEAR，最后创建 reload task；由此覆盖回调返回
+前的重复 close/timeout。完整时序与失效范围见 `_cross-cutting/order-book-frame.md §3.1`。
+
+PM 的 NT Rust `WebSocketClient` 同时向 Python 暴露 `post_disconnection` 与
+`post_reconnection`。前者只在原生状态成功从 `Active` 切到 `Reconnect` 时调度到 Python
+event loop，主动 shutdown 不触发。`PolymarketWebSocketClient` 将断线的 `client_id` 转成该
+WS 分片负责的 token 集；DataClient 只清这些 token 对应的 local book 与已订阅 DataEngine
+book，并按 binary market 发布 CLEAR 帧，不清健康分片。随后原生客户端继续指数退避重连，
+成功后按原逻辑重新订阅并以 venue snapshot 恢复盘口。若 YES/NO 恰好跨 WS 分片，只失效断线
+分片的腿，另一腿保持有效。
+
 ---
 
 ## 3. 接口

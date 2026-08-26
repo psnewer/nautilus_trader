@@ -557,3 +557,15 @@ market-only 消费者不额外收到标准 OBD。3-way 完整帧拆成三个二�
 只含 home 的源帧也只携带 home market。
 **验收**:`test_on_price_frame_publishes_one_market_batch_for_all_runners`、
 `test_three_way_price_frame_is_atomic_but_split_into_binary_markets`。
+
+## #359：OE prices 断线先清空盘口再 reload
+
+**前置**：一个 competition 页所辖 source market 已订阅 market OBD，二元市场两腿均在
+routing。**输入**：`close:prices` 或 `liveness_timeout`。**步骤**：断线防护命中后先置
+reload-in-flight，以单个 `OrderBookFrameDeltas` 为每条腿发布 `BookAction.CLEAR`，随后才
+调度页 reload。**期望**：DataEngine Cache 在 reload 期间无旧赔率；同一 binary market
+两腿同批清空；其它 page 不受影响；task 启动前重复断线不重复 CLEAR。
+
+**验收**：`test_disconnect_clears_binary_market_before_reload`、
+`test_duplicate_disconnect_does_not_clear_twice_before_reload_starts`；DataEngine 对 CLEAR 的
+apply-before-publish 由 `test_market_order_book_batch_clear_empties_all_books_before_publish` 锁定。

@@ -601,6 +601,20 @@ ended 在 `phase` 通道放行一次后该场帧全拒(终态,覆盖退订异步
 Sports config;禁用客户端主动 heartbeat;app-level `ping` 经同一 client 回复 `pong`。
 初连失败由后台 task 每 5s 重试，连接成功后的断线重连归 NT client。
 
+### pm-adapter-data.disconnect-clear：断线窗口盘口失效（#359/#360）
+
+**用例**：native `test_send_waits_during_reconnection`、pyo3
+`tests/integration_tests/network/test_websocket.py::test_reconnect_after_close`、wrapper
+`test_handle_disconnect_reports_only_client_subscriptions`、DataClient
+`test_ws_disconnect_clears_only_disconnected_shard_books` /
+`test_ws_disconnect_does_not_clear_during_client_shutdown`。
+
+**期望/验收**：NT Rust `WebSocketClient` 仅在 `Active → Reconnect` 成功切换时触发一次
+`post_disconnection`，主动关闭不触发；Python binding 把回调调度到原 event loop；PM wrapper
+只上报断线 `client_id` 所辖 token。DataClient 清空这些 token 对应的 local book，并通过
+`OrderBookFrameDeltas` 清 DataEngine managed book；健康 WS 分片及其 token 不受影响。原生重连
+成功后仍执行既有重新订阅，由新 snapshot 恢复盘口。离线已验证，尚未 live 验证。
+
 ### pm-adapter-exec.cancel.grouped:grouped cancel 复用同步预建 session
 
 **前置**:Execution grouped CancelOrder barrier 已收齐并 release PM 撤单命令。

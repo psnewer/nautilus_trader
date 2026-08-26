@@ -273,6 +273,56 @@ def test_market_bootstrap_uses_latest_local_book_after_interleaved_quote() -> No
         loop.close()
 
 
+def test_ws_disconnect_clears_only_disconnected_shard_books() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        yes = _instrument(token_id="0xYES", outcome="YES")
+        no = _instrument(token_id="0xNO", outcome="NO")
+        for instrument in (yes, no):
+            c._cache.add_instrument(instrument)
+            c._handle_deltas(instrument, _deltas(instrument))
+
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (yes.id, no.id)
+        c._market_books_bootstrapped.add(market_id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_ws_disconnect(("0xYES",))
+
+        assert c._local_books[yes.id].best_bid_price() is None
+        assert float(c._local_books[no.id].best_bid_price()) == 0.5
+        assert len(captured) == 1
+        assert isinstance(captured[0], CustomData)
+        assert captured[0].data.markets[0].instrument_ids == (yes.id,)
+        clear = captured[0].data.markets[0].deltas[0].deltas[0]
+        assert clear.action == BookAction.CLEAR
+    finally:
+        loop.close()
+
+
+def test_ws_disconnect_does_not_clear_during_client_shutdown() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        instrument = _instrument()
+        c._cache.add_instrument(instrument)
+        c._handle_deltas(instrument, _deltas(instrument))
+        c._disconnecting = True
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_ws_disconnect(("0xTOKEN",))
+
+        assert float(c._local_books[instrument.id].best_bid_price()) == 0.5
+        assert captured == []
+    finally:
+        loop.close()
+
+
 def test_update_instruments_continues_after_provider_error(monkeypatch) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

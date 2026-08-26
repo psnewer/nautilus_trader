@@ -334,3 +334,12 @@ info 写入；完整 Gamma HTTP 路径仍由 live smoke 验。
 **验收**：`test_orbitexch_provider.py::{test_build_legs_three_way,test_build_legs_two_way_drops_missing_draw}`、
 `tests/arbitrage/adapters/sharpexch/test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`
 及 `tests/arbitrage/matching/test_actor.py::test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`。
+
+### discovery-2.1：行情 WS 断线时订阅盘口失效(#359/#360)
+
+**前置**：DataClient 已按 market 订阅并建立 source/page 或 WS-shard routing。**输入**：OE/SE
+prices WS `close` / liveness timeout，或 PM native WS 从 `Active` 进入 `Reconnect`。**步骤**：
+OE/SE 以 page routing、PM 以断线 `client_id` 的 token routing 确定失效范围，在 reload/重连
+恢复前通过 DataEngine market-frame 管道清空对应逻辑市场成员。**期望**：Cache 不保留断线
+源的旧赔率，健康 page/WS 分片不受影响；主动 shutdown 不误清。**验收**：OE/SE adapter
+README #359、PM adapter `pm-adapter-data.disconnect-clear` 及对应 DataClient 测试。

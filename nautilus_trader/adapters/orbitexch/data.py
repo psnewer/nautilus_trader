@@ -552,11 +552,13 @@ class OrbitExchDataClient(LiveMarketDataClient):
         if last and (now - last) < secs_to_nanos(_COMP_RELOAD_COOLDOWN_SECS):
             return  # 冷却窗内(venue 持续不可用)→ 跳过,防风暴
         self._comp_last_reload_ns[page_key] = now
+        # 先占住 reload 状态，避免 CLEAR 同步发布期间或 task 真正启动前重复处理断线。
+        self._comp_reloading.add(page_key)
+        self._clear_competition_order_books(page_key)
         self._log.info(f"OE competition page {page_key} disconnect ({reason}) → reload (#109)")
         self._loop.create_task(self._reload_comp_on_disconnect(page_key))
 
     async def _reload_comp_on_disconnect(self, page_key: str) -> None:
-        self._comp_reloading.add(page_key)
         try:
             sport_id, _, competition_id = page_key.partition("_")
             async with self._comp_pages_lock:
@@ -566,6 +568,63 @@ class OrbitExchDataClient(LiveMarketDataClient):
             self._log.error(f"OE competition page {page_key} disconnect-driven reload failed: {e}")
         finally:
             self._comp_reloading.discard(page_key)
+
+    def _clear_competition_order_books(self, page_key: str) -> None:
+        """通过 market-frame 管道清空断线 competition 页所辖的已订阅盘口。"""
+        subscribed = self.subscribed_custom_data()
+        ts = self._clock.timestamp_ns()
+        cleared = 0
+        for source_market_id in sorted(
+            market_id
+            for market_id, owner_page_key in self._market_to_page_key.items()
+            if owner_page_key == page_key
+        ):
+            members_by_market: dict[str, set[InstrumentId]] = {}
+            for entries in self._market_to_instruments.get(source_market_id, {}).values():
+                for instrument_id, _ in entries:
+                    instrument = self._cache.instrument(instrument_id)
+                    info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
+                    binary_market_id = str(info.get("binary_market_id") or "")
+                    if not binary_market_id:
+                        continue
+                    if market_order_book_data_type(self.venue, binary_market_id) not in subscribed:
+                        continue
+                    members_by_market.setdefault(binary_market_id, set()).add(instrument_id)
+            markets = tuple(
+                MarketOrderBookDeltas(
+                    venue=self.venue,
+                    market_id=binary_market_id,
+                    deltas=tuple(
+                        OrderBookDeltas(
+                            instrument_id,
+                            [OrderBookDelta.clear(instrument_id, 0, ts, ts)],
+                        )
+                        for instrument_id in sorted(instrument_ids, key=str)
+                    ),
+                    ts_event=ts,
+                    ts_init=ts,
+                )
+                for binary_market_id, instrument_ids in sorted(members_by_market.items())
+            )
+            if not markets:
+                continue
+            self._handle_data(
+                CustomData(
+                    order_book_frame_data_type(self.venue, source_market_id),
+                    OrderBookFrameDeltas(
+                        venue=self.venue,
+                        source_market_id=source_market_id,
+                        markets=markets,
+                        ts_event=ts,
+                        ts_init=ts,
+                    ),
+                ),
+            )
+            cleared += sum(len(market.deltas) for market in markets)
+        if cleared:
+            self._log.warning(
+                f"OE competition page {page_key} prices disconnected; cleared {cleared} cached order book(s)",
+            )
 
     # ── WS 帧回调 → OrderBookDeltas → DataEngine ─────────────────────
     def _on_price_frame(self, message) -> None:

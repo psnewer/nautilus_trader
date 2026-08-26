@@ -1,7 +1,7 @@
 """PreMoveCheck —— pre_rebate 买入概率下行的 outcome。
 
 当前 PM best ask 必须是满足 commission 区间的完整概率向量。任一 outcome 从历史最高价
-下跌达阈值时买它自身；从历史最低价上涨达阈值时买它的互补 outcome。多个信号同时命中时取变化幅度最大者。
+下跌比例达阈值时买它自身；从历史最低价上涨比例达阈值时买它的互补 outcome。多个信号同时命中时取变化比例最大者。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class PreMoveCheck(Check):
-    """某 outcome 相对历史极值变化 >= move_threshold → 写概率下行方 PM BUY leg。"""
+    """某 outcome 相对历史极值的变化比例达阈值 → 写概率下行方 PM BUY leg。"""
 
     def __init__(self, move_threshold: float) -> None:
         self._move_threshold = float(move_threshold)
@@ -50,7 +50,7 @@ class PreMoveCheck(Check):
         if best_signal is None:
             return False
 
-        movement, buy_outcome, source_outcome, direction = best_signal
+        movement_ratio, buy_outcome, source_outcome, direction = best_signal
         best_leg = pm_legs[buy_outcome]
 
         qty = qty_from_share(POLYMARKET, share, float(best_leg["price"]))
@@ -65,7 +65,7 @@ class PreMoveCheck(Check):
         _LOG.info(
             f"PreMove: pair={ctx.pair_id} buy outcome={buy_outcome} "
             f"source_outcome={source_outcome} direction={direction} "
-            f"movement={movement:.4f} >= {self._move_threshold} qty={qty}",
+            f"movement_ratio={movement_ratio:.4f} >= {self._move_threshold} qty={qty}",
         )
         return True
 
@@ -108,12 +108,18 @@ def _best_signal(state, outcomes, current, threshold):
     best = None
     for outcome in outcomes:
         now = current[outcome]
-        signals = [(float(state.up_price[outcome]) - now, outcome, outcome, "down")]
+        high = float(state.up_price[outcome])
+        low = float(state.down_price[outcome])
+        signals = []
+        if math.isfinite(high) and high > _EPS:
+            signals.append(((high - now) / high, outcome, outcome, "down"))
         opposite = _opposite_outcome(outcomes, outcome)
-        if opposite is not None:
-            signals.append((now - float(state.down_price[outcome]), opposite, outcome, "up"))
+        if opposite is not None and math.isfinite(low) and low > _EPS:
+            signals.append(((now - low) / low, opposite, outcome, "up"))
         for signal in signals:
-            movement = signal[0]
-            if movement + _EPS >= threshold and (best is None or movement > best[0]):
+            movement_ratio = signal[0]
+            if movement_ratio + _EPS >= threshold and (
+                best is None or movement_ratio > best[0]
+            ):
                 best = signal
     return best

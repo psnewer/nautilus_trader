@@ -134,7 +134,7 @@ impl WebSocketClient {
     ///
     /// See `WebSocketConfig` documentation for comparison with stream mode.
     #[staticmethod]
-    #[pyo3(name = "connect", signature = (loop_, config, handler, ping_handler = None, post_reconnection = None, keyed_quotas = Vec::new(), default_quota = None))]
+    #[pyo3(name = "connect", signature = (loop_, config, handler, ping_handler = None, post_reconnection = None, keyed_quotas = Vec::new(), default_quota = None, post_disconnection = None))]
     #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_connect(
         loop_: Py<PyAny>,
@@ -144,6 +144,7 @@ impl WebSocketClient {
         post_reconnection: Option<Py<PyAny>>,
         keyed_quotas: Vec<(String, Quota)>,
         default_quota: Option<Quota>,
+        post_disconnection: Option<Py<PyAny>>,
         py: Python<'_>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let call_soon_threadsafe: Py<PyAny> = loop_.getattr(py, "call_soon_threadsafe")?;
@@ -193,12 +194,25 @@ impl WebSocketClient {
             }) as std::sync::Arc<dyn Fn() + Send + Sync>
         });
 
+        let post_disconnection_fn = post_disconnection.map(|callback| {
+            let callback_clone = clone_py_object(&callback);
+            let call_soon_clone = clone_py_object(&call_soon_threadsafe);
+            Arc::new(move || {
+                Python::attach(|py| {
+                    if let Err(e) = call_soon_clone.call1(py, (&callback_clone,)) {
+                        log::error!("Error scheduling post_disconnection handler: {e}");
+                    }
+                });
+            }) as std::sync::Arc<dyn Fn() + Send + Sync>
+        });
+
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            Box::pin(Self::connect(
+            Box::pin(Self::connect_with_callbacks(
                 config,
                 Some(message_handler),
                 ping_handler_fn,
                 post_reconnection_fn,
+                post_disconnection_fn,
                 keyed_quotas,
                 default_quota,
             ))

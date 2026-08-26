@@ -52,7 +52,7 @@ def _ctx(*, now, extremes=None, share=5.0):
 
 def test_buys_outcome_whose_probability_dropped_enough():
     ctx = _ctx(
-        now={"yes": 0.38, "no": 0.62},
+        now={"yes": 0.42, "no": 0.58},
         extremes=[{"yes": 0.50, "no": 0.50}],
     )
 
@@ -63,20 +63,20 @@ def test_buys_outcome_whose_probability_dropped_enough():
     assert leg["instrument_id"] == "Y.POLYMARKET"
     assert leg["side"] == "BUY"
     assert leg["claim"] == "yes"
-    assert leg["prob"] == 0.38
+    assert leg["prob"] == 0.42
     assert leg["qty"] == 5.0          # PM:qty_from_share = share
     assert leg["share_if_wins"] == 5.0
 
 
 def test_no_hit_when_drop_below_threshold():
-    ctx = _ctx(now={"yes": 0.38, "no": 0.62}, extremes=[{"yes": 0.50, "no": 0.50}])
-    assert PreMoveCheck(move_threshold=0.15).passes(ctx) is False
+    ctx = _ctx(now={"yes": 0.46, "no": 0.54}, extremes=[{"yes": 0.50, "no": 0.50}])
+    assert PreMoveCheck(move_threshold=0.10).passes(ctx) is False
     assert "legs" not in ctx.scratch
 
 
 def test_equal_threshold_hits():
     ctx = _ctx(now={"yes": 0.40, "no": 0.60}, extremes=[{"yes": 0.50, "no": 0.50}])
-    assert PreMoveCheck(move_threshold=0.10).passes(ctx) is True
+    assert PreMoveCheck(move_threshold=0.20).passes(ctx) is True
     assert ctx.scratch["legs"][0]["claim"] == "yes"
 
 
@@ -97,7 +97,7 @@ def test_zero_share_fails_closed():
 
 
 def test_picks_largest_drop_outcome():
-    # yes 跌 0.05(不够),no 跌 0.20(够)→ 买 no
+    # yes 从 0.70 跌 7.14%，no 从 0.50 跌 40% → 买 no。
     ctx = _ctx(
         now={"yes": 0.65, "no": 0.30},
         extremes=[{"yes": 0.70, "no": 0.30}, {"yes": 0.50, "no": 0.50}],
@@ -108,11 +108,11 @@ def test_picks_largest_drop_outcome():
 
 def test_price_rise_buys_opposite_probability_down_outcome():
     ctx = _ctx(
-        now={"yes": 0.62, "no": 0.38},
+        now={"yes": 0.46, "no": 0.54},
         extremes=[{"yes": 0.40, "no": 0.60}],
     )
 
-    assert PreMoveCheck(move_threshold=0.2).passes(ctx) is True
+    assert PreMoveCheck(move_threshold=0.1).passes(ctx) is True
     assert ctx.scratch["legs"][0]["claim"] == "no"
 
 

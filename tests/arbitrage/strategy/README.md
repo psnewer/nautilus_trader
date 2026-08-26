@@ -381,9 +381,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 缺 game_id / 缺 sports_store → `in_game` False(fail-closed)。
 
 ### strategy-4.pre_rebate.2: pre_move 追腿命中/不命中
-- 极值 `{up:{yes:0.5,no:0.5}, down:{yes:0.5,no:0.5}}`、现价 `{yes:0.38,no:0.62}`、`move_threshold=0.1` → yes 从高点下跌 0.12 → PM `BUY yes`。
-- 极值低点 `{yes:0.4,no:0.6}`、现价 `{yes:0.62,no:0.38}`、`move_threshold=0.2` → yes 上涨 0.22，概率下行方是 no → PM `BUY no`。
-- 同一轮多个信号达阈时取绝对变化幅度最大者；等于阈值命中。
+- 极值 `{up:{yes:0.5,no:0.5}, down:{yes:0.5,no:0.5}}`、现价 `{yes:0.42,no:0.58}`、`move_threshold=0.1` → yes 从高点相对下跌 `(0.5-0.42)/0.5=16%` → PM `BUY yes`；该例同时证明阈值不是绝对概率差 0.1。
+- 极值低点 `{yes:0.4,no:0.6}`、现价 `{yes:0.46,no:0.54}`、`move_threshold=0.1` → yes 相对上涨 `(0.46-0.4)/0.4=15%`，概率下行方是 no → PM `BUY no`。
+- 同一轮多个信号达阈时取相对变化比例最大者；等于阈值命中。
 - `up_price/down_price` 空、PM 盘口缺腿/键不匹配、或当前概率和不在 `[0.95,1.05]` → False。
 - OBD 极值采集仅接受完整 PM 向量且概率和在 `[0.95,1.05]`；新高/新低分别更新 `up_price/down_price`，脏向量不改极值。
 
