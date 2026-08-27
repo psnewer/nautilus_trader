@@ -29,6 +29,7 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.venues import ORBITEXCH
@@ -109,14 +110,17 @@ def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
     assert price_from_probability(ORBITEXCH, float(book.best_bid_price())) == pytest.approx(1.88)
 
 
-def test_runner_to_book_deltas_returns_none_when_empty():
-    """data-2.snap.2: back + lay 都空 → 返 None(调用方 skip,避免空簿噪音)。"""
-    assert oe_runner_to_book_deltas(_iid(), {"back": [], "lay": []}, ts_init_ns=1) is None
-    assert oe_runner_to_book_deltas(_iid(), {}, ts_init_ns=1) is None
+def test_runner_to_book_deltas_emits_clear_when_empty():
+    """data-2.snap.2:完整快照双边为空时必须清掉 DataEngine 的旧盘口。"""
+    for runner in ({"back": [], "lay": []}, {}):
+        out = oe_runner_to_book_deltas(_iid(), runner, ts_init_ns=1)
+        assert out is not None
+        assert len(out.deltas) == 1
+        assert out.deltas[0].action == BookAction.CLEAR
 
 
 def test_runner_to_book_deltas_skips_zero_or_invalid_sizes():
-    """data-2.snap.3: size<=0 或缺字段的档跳过,只 CLEAR 也返 None(无实际档不噪)。"""
+    """data-2.snap.3:非空原始档全部非法时保留最后可信盘口。"""
     runner = {
         "back": [{"price": 2.26, "size": 0}, {"price": 0, "size": 50}],
         "lay":  [{"price": 2.36, "size": -1}],
@@ -333,10 +337,18 @@ def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
     assert len(source_frame.markets) == 3
     assert all(len(market.instrument_ids) == 2 for market in source_frame.markets)
 
-    captured.clear()
     c._on_price_frame(frame(("111",)))
     assert len(captured) == 1
-    assert [market.market_id for market in captured[0].data.markets] == ["1-456:111"]
+    c._handle_market_frame_processed(
+        OrderBookFrameProcessed(
+            source_frame.venue,
+            source_frame.source_market_id,
+            source_frame.frame_id,
+            True,
+        ),
+    )
+    assert len(captured) == 2
+    assert [market.market_id for market in captured[1].data.markets] == ["1-456:111"]
 
 
 def test_on_price_frame_unsubscribed_market_dropped():

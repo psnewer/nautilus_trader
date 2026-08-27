@@ -922,7 +922,7 @@ def test_market_price_message_to_book_deltas_returns_none_for_unrouted_or_bad_me
     assert se_market_price_message_to_book_deltas({}, {"1.259502313": {"111": [(_iid(), "yes")]}}, ts_init_ns=1000) is None
 
 
-def test_market_price_message_to_book_deltas_keeps_frame_metadata_when_no_deltas():
+def test_market_price_message_to_book_deltas_keeps_metadata_with_empty_book_clear():
     message = {
         "id": "1.259502313",
         "marketDefinition": {"inPlay": False},
@@ -935,7 +935,8 @@ def test_market_price_message_to_book_deltas_keeps_frame_metadata_when_no_deltas
     assert out["in_play"] is False
     assert out["runners"] == 1
     assert out["subscribed_selections"] == 1
-    assert out["deltas"] == []
+    assert len(out["deltas"]) == 1
+    assert out["deltas"][0].deltas[0].action == BookAction.CLEAR
 
 
 def test_publish_routed_book_deltas_publishes():
@@ -1003,7 +1004,7 @@ def test_handle_price_frame_returns_none_for_unrouted_frame():
     assert published == []
 
 
-def test_handle_price_frame_returns_summary_without_publish_for_empty_book():
+def test_handle_price_frame_publishes_clear_for_empty_book():
     published = []
     out = se_handle_price_frame(
         {"id": "1.259502313", "marketDefinition": {"inPlay": False}, "rc": [{"id": 111, "bdatb": [], "bdatl": []}]},
@@ -1012,9 +1013,10 @@ def test_handle_price_frame_returns_summary_without_publish_for_empty_book():
         published.append,
     )
     assert out["market_id"] == "1.259502313"
-    assert out["published_count"] == 0
-    assert out["deltas"] == []
-    assert published == []
+    assert out["published_count"] == 1
+    assert len(out["deltas"]) == 1
+    assert out["deltas"][0].deltas[0].action == BookAction.CLEAR
+    assert published == out["deltas"]
 
 
 def test_price_message_to_book_deltas_skips_unsubscribed_and_empty_runners():
@@ -1074,9 +1076,12 @@ def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
     assert price_from_probability(SHARPEXCH, float(book.best_bid_price())) == pytest.approx(1.88)
 
 
-def test_runner_to_book_deltas_returns_none_when_empty():
-    assert se_runner_to_book_deltas(_iid(), {"back": [], "lay": []}, ts_init_ns=1) is None
-    assert se_runner_to_book_deltas(_iid(), {}, ts_init_ns=1) is None
+def test_runner_to_book_deltas_emits_clear_when_empty():
+    for runner in ({"back": [], "lay": []}, {}):
+        out = se_runner_to_book_deltas(_iid(), runner, ts_init_ns=1)
+        assert out is not None
+        assert len(out.deltas) == 1
+        assert out.deltas[0].action == BookAction.CLEAR
 
 
 def test_runner_to_book_deltas_skips_zero_or_invalid_sizes():

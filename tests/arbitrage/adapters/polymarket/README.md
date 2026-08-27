@@ -114,6 +114,16 @@ per-instrument OBD。
 `test_market_bootstrap_uses_latest_local_book_after_interleaved_quote` /
 `test_quotes_publish_one_market_batch_for_all_changed_assets`。
 
+### pm-adapter-2.6: PM source single-flight 与增量快照合流（#362）
+
+**前置**：同一 condition 已有一个带 `frame_id` 的源帧进入 DataEngine、尚未收到
+`OrderBookFrameProcessed`。**输入**：期间连续收到同 token 或 YES/NO 多 token 的增量。
+**期望**：DataClient 不继续向 DataEngine 入队；每次增量仍先更新 `_local_books`，pending
+从 local book 重建各变化 token 的最新完整 `CLEAR + ADD` 快照。收到当前 frame completion
+后只 flush 一帧最新状态；退订后的迟到 completion 不复活旧帧，断线 CLEAR 不被后续 snapshot
+覆盖。**验收**：`test_market_frame_waits_for_processed_before_flushing_pending`，以及
+`tests/unit_tests/live/test_market_frame.py` 的合流/barrier/退订/拒绝用例。
+
 ### pm-adapter-5.1: 上游 ExecutionClient 下单 + 事件回写
 
 **前置**: 测试网或 paper trading 账户

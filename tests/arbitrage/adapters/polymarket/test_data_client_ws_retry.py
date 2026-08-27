@@ -32,7 +32,9 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -227,10 +229,15 @@ def test_market_snapshots_wait_for_all_members_before_publish() -> None:
         assert captured[0].data.markets[0].instrument_ids == (yes.id, no.id)
         assert market_id in c._market_books_bootstrapped
 
-        captured.clear()
         c._handle_deltas(yes, _deltas(yes))
         assert len(captured) == 1
-        assert captured[0].data.markets[0].instrument_ids == (yes.id,)
+        first = captured[0].data
+        c._msgbus.publish(
+            topic=order_book_frame_processed_topic(first.venue),
+            msg=OrderBookFrameProcessed(first.venue, first.source_market_id, first.frame_id, True),
+        )
+        assert len(captured) == 2
+        assert captured[1].data.markets[0].instrument_ids == (yes.id,)
     finally:
         loop.close()
 

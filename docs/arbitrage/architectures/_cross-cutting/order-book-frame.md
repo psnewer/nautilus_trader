@@ -1,8 +1,8 @@
 # 横切：订单簿源帧与二元市场边界
 
 > **定位**：跨 DataClient、DataEngine、Matching、Strategy 的行情一致性契约。
-> **状态**：2026-08-23 已落地并完成离线测试，尚未 live 验证。
-> **决策理由**：见 `refactor.md #357/#358`。本文只定义现行机制。
+> **状态**：2026-08-26 已落地并完成离线测试，尚未 live 验证。
+> **决策理由**：见 `refactor.md #357/#358/#362/#363`。本文只定义现行机制。
 
 ## 1. 身份边界
 
@@ -70,6 +70,33 @@ PM 由 NT Rust `WebSocketClient` 在连接状态成功从 `Active` 转为 `Recon
 的两腿若跨分片，健康腿不清。主动 shutdown 不触发回调。重连后的重新订阅与 snapshot 恢复
 沿用原状态机；不得延后至 `post_reconnection` 才清空。
 
+### 3.2 源市场 single-flight 与完成回执（#362）
+
+DataEngine 的 `data_queue` 是无损 FIFO；行情洪峰时不能靠丢队列项、扫描队列或在消费者中
+批次让权来限流。每个 DataClient 因此在进入 DataEngine 前按
+`(venue, source_market_id)` 使用 `MarketFrameConflater`：同一 source market 最多有一个
+带 `frame_id` 的 `OrderBookFrameDeltas` 在途；在途期间到达的新帧仍全部进入 venue adapter
+的解析/状态更新路径，但只把各 instrument 的最新完整快照保留在 pending 中。前一帧完成后，
+有 pending 则立即组成下一帧发送，没有则回到 idle。不同 source market 互不阻塞。
+
+pending 只能保存可独立重放的完整快照。OE/SE runner 帧本来就是
+`CLEAR + ADD` 全深度快照；双边无档时完整快照退化为单独 `CLEAR`，不能因“无 ADD”而跳过。
+PM 普通增量在合流前必须从 `_local_books` 重建本次变化 instrument
+的当前完整 `CLEAR + ADD` 快照。相邻普通 pending 按 instrument last-write-wins 合并，再按
+`binary_market_id` 重新分组；这会省略已经被更新状态覆盖的中间行情，但不会丢失最新订单簿
+状态。断线 CLEAR 是显式 barrier，必须独占一个 pending 段，之后到达的恢复快照不得覆盖或
+越过它。
+
+DataEngine 对 `frame_id > 0` 的每条源帧，在成功、校验拒绝或异常三个终态都只发布一次
+`OrderBookFrameProcessed` 到 venue completion topic。`applied` 表示该帧是否已经完整写入
+Cache，而不是 Strategy/Matching 是否成功处理：若 Cache 已写完、随后某个 market 消费者
+抛错，回执仍为 `applied=true`。DataClient 只接受当前在途 `frame_id` 的回执；退订会清掉
+对应 source 状态，迟到回执不得重新发送旧 pending。`applied=false` 时丢弃 pending 并阻塞
+该 source，直到后续订阅生命周期重新激活，避免在未知 Cache 基线上继续合流。
+
+`frame_id=0` 保留旧调用方兼容语义：DataEngine 正常应用，但不发布 completion。该机制不改
+`ThrottledEnqueuer`，也不改变 DataEngine 对其它数据类型的队列与调度行为。
+
 ## 4. 订阅与组件职责
 
 - Provider：写入 `binary_market_id`；2-way 共用源 market ID，3-way 按 selection 派生。
@@ -91,6 +118,8 @@ PM snapshot、snapshot 夹增量、单腿 resnapshot 与 tick-size reset 仍由 
 - Provider/Matching：二项盘形成一组，三项盘形成三组，每组恰好 yes/no 两腿。
 - PM：同 condition 仍是一组；断线回调只清对应 WS 分片且主动 shutdown 不误清，
   snapshot/retry/reset 行为不退化。
+- single-flight：同 source 在途时只保留最新完整状态；completion 后立即 flush；CLEAR barrier
+  不被恢复快照覆盖；退订后的迟到 completion 无副作用；拒绝帧 fail-closed 到重新激活。
 
 对应离线测试见 DataEngine unit tests、各 adapter README，以及 Matching/Strategy README
 中的 #357/#358 用例；真钱 live 验证不在本次范围。

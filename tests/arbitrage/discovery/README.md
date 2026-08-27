@@ -8,6 +8,8 @@
 > **#59(slice A)架构反转**:`InstrumentRefresher` Actor 与 `InstrumentsRefreshed` 事件已退役删除。周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE/SE 自写 DataClient 各自维护 `_send_all_instruments_to_data_engine` + `_update_instruments` task;PMSPORTS data-only client 同形首抓 + 周期重抓)。Matching 不再订 discovery 事件,而是 timer 读 cache。旧 refresher 相关 skipped 测试/README 条目不再作为当前验收。
 > **2026-06-29 overnight 修;2026-07-10 SE 对齐**:PM/OE/SE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` / SE context CSRF 暂未就绪杀死整个 60min 周期 discovery task。验收落在 PM/OE/SE adapter 测试: `test_update_instruments_continues_after_provider_error` / `test_connect_initial_load_failure_still_starts_periodic_retry`。
 > **2026-07-02 venue/data-source keyed context**:PM/OE/SE Data factory 只从 `ArbContext` keyed map 读取 discovery/session/alias 相关配置并回写 `instrument_provider_by_venue`;PMSPORTS factory 只读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`;专属 `pm_*` / `oe_*` / `se_*` ArbContext 字段已删除。验收落在 PM/OE/SE adapter factory 测试。
+> **2026-08-26 source single-flight(#362)**:PM/OE/SE DataClient 的订单簿出口按 `(venue,source_market_id)` 最多保留一个 DataEngine 在途帧；completion 前只合并最新完整快照，断线 CLEAR 作为 barrier。该变化不涉及 Provider 或周期 discovery 行为；DataClient 详细验收分别落在 PM/OE/SE adapter README，共享状态机见 `tests/unit_tests/live/test_market_frame.py`。
+> **2026-08-26 空 runner 清盘(#363)**:OE/SE 完整 runner 快照双边无档时输出单独 CLEAR，不再跳过并遗留 DataEngine 旧盘口；Provider 与周期 discovery 行为不变，验收归 OE/SE adapter README。
 
 **落地状态(2026-07-08)**:发现路径以 adapter DataClient + Provider 测试为准:
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、matching info、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)

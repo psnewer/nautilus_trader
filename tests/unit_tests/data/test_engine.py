@@ -106,6 +106,7 @@ from nautilus_trader.model.instruments.option_contract import OptionContract
 from nautilus_trader.model.instruments.option_spread import OptionSpread
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import Currency
@@ -756,6 +757,128 @@ class TestDataEngine:
         self.data_engine._handle_custom_data(CustomData(frame_type, frame))
 
         assert received == ["match-odds:home", "match-odds:draw"]
+
+    def test_order_book_frame_publishes_applied_completion(self):
+        source_market_id = "spot-pair"
+        data_type = market_order_book_data_type(BINANCE, source_market_id)
+        command = SubscribeData(
+            instrument_id=None,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            data_type=data_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={
+                "instrument_ids": (BTCUSDT_BINANCE.id,),
+                "source_market_id": source_market_id,
+                "managed": True,
+            },
+        )
+        assert self.data_engine._setup_market_order_books(command)
+        now = self.clock.timestamp_ns()
+        deltas = OrderBookDeltas(
+            BTCUSDT_BINANCE.id,
+            [OrderBookDelta.clear(BTCUSDT_BINANCE.id, 0, now, now)],
+        )
+        frame = OrderBookFrameDeltas(
+            venue=BINANCE,
+            source_market_id=source_market_id,
+            markets=(MarketOrderBookDeltas(BINANCE, source_market_id, (deltas,), now, now),),
+            ts_event=now,
+            ts_init=now,
+            frame_id=7,
+        )
+        completed = []
+        self.msgbus.subscribe(
+            topic=order_book_frame_processed_topic(BINANCE),
+            handler=completed.append,
+        )
+
+        self.data_engine._handle_custom_data(
+            CustomData(order_book_frame_data_type(BINANCE, source_market_id), frame),
+        )
+
+        assert len(completed) == 1
+        assert completed[0].frame_id == 7
+        assert completed[0].applied is True
+
+    def test_order_book_frame_publishes_rejected_completion(self):
+        now = self.clock.timestamp_ns()
+        source_market_id = "not-subscribed"
+        deltas = OrderBookDeltas(
+            BTCUSDT_BINANCE.id,
+            [OrderBookDelta.clear(BTCUSDT_BINANCE.id, 0, now, now)],
+        )
+        frame = OrderBookFrameDeltas(
+            venue=BINANCE,
+            source_market_id=source_market_id,
+            markets=(MarketOrderBookDeltas(BINANCE, source_market_id, (deltas,), now, now),),
+            ts_event=now,
+            ts_init=now,
+            frame_id=8,
+        )
+        completed = []
+        self.msgbus.subscribe(
+            topic=order_book_frame_processed_topic(BINANCE),
+            handler=completed.append,
+        )
+
+        self.data_engine._handle_custom_data(
+            CustomData(order_book_frame_data_type(BINANCE, source_market_id), frame),
+        )
+
+        assert len(completed) == 1
+        assert completed[0].frame_id == 8
+        assert completed[0].applied is False
+
+    def test_order_book_frame_publishes_completion_when_market_handler_raises(self):
+        source_market_id = "spot-pair"
+        data_type = market_order_book_data_type(BINANCE, source_market_id)
+        command = SubscribeData(
+            instrument_id=None,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            data_type=data_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={
+                "instrument_ids": (BTCUSDT_BINANCE.id,),
+                "source_market_id": source_market_id,
+                "managed": True,
+            },
+        )
+        assert self.data_engine._setup_market_order_books(command)
+        now = self.clock.timestamp_ns()
+        deltas = OrderBookDeltas(
+            BTCUSDT_BINANCE.id,
+            [OrderBookDelta.clear(BTCUSDT_BINANCE.id, 0, now, now)],
+        )
+        frame = OrderBookFrameDeltas(
+            venue=BINANCE,
+            source_market_id=source_market_id,
+            markets=(MarketOrderBookDeltas(BINANCE, source_market_id, (deltas,), now, now),),
+            ts_event=now,
+            ts_init=now,
+            frame_id=9,
+        )
+        completed = []
+        self.msgbus.subscribe(
+            topic=order_book_frame_processed_topic(BINANCE),
+            handler=completed.append,
+        )
+
+        def fail(_):
+            raise RuntimeError("market handler failed")
+
+        self.msgbus.subscribe(topic=f"data.{data_type.topic}", handler=fail)
+        with pytest.raises(RuntimeError, match="market handler failed"):
+            self.data_engine._handle_custom_data(
+                CustomData(order_book_frame_data_type(BINANCE, source_market_id), frame),
+            )
+
+        assert len(completed) == 1
+        assert completed[0].frame_id == 9
+        assert completed[0].applied is True
 
     def test_execute_unsubscribe_when_data_type_unrecognized_logs_and_does_nothing(self):
         # Arrange

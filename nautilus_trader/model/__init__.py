@@ -58,6 +58,7 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects import FIXED_PRECISION
@@ -119,6 +120,7 @@ __all__ = [
     "MarkPriceUpdate",
     "MarketOrderBookDeltas",
     "OrderBookFrameDeltas",
+    "OrderBookFrameProcessed",
     "Money",
     "OrderBook",
     "OrderBookDelta",

@@ -82,6 +82,16 @@ book，并按 binary market 发布 CLEAR 帧，不清健康分片。随后原生
 成功后按原逻辑重新订阅并以 venue snapshot 恢复盘口。若 YES/NO 恰好跨 WS 分片，只失效断线
 分片的腿，另一腿保持有效。
 
+### 2.3 DataEngine 入队前的源市场合流（#362）
+
+PM/OE/SE DataClient 均按 `(venue, source_market_id)` 限制最多一个行情源帧在 DataEngine
+处理中；DataEngine 通过 `OrderBookFrameProcessed` 明确释放在途状态，随后 DataClient 才把
+期间积累的最新完整快照送入队列。PM 增量先从 local book 重建完整快照，OE/SE 直接复用
+runner 全深度快照；runner 双边无档时仍发单独 CLEAR，防止 DataEngine 留存旧盘口；非空
+原始档全部非法时 fail-soft 保留最后可信盘口。断线 CLEAR 作为不可跨越的 barrier。完整状态机、回执终态和失败语义见
+`_cross-cutting/order-book-frame.md §3.2`。本机制不扫描或丢弃 DataEngine `data_queue`，也不
+修改 `ThrottledEnqueuer` 的公平性与调度。
+
 ---
 
 ## 3. 接口

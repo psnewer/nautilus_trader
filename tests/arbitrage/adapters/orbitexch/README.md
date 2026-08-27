@@ -569,3 +569,22 @@ reload-in-flight，以单个 `OrderBookFrameDeltas` 为每条腿发布 `BookActi
 **验收**：`test_disconnect_clears_binary_market_before_reload`、
 `test_duplicate_disconnect_does_not_clear_twice_before_reload_starts`；DataEngine 对 CLEAR 的
 apply-before-publish 由 `test_market_order_book_batch_clear_empties_all_books_before_publish` 锁定。
+
+## #362：OE source single-flight 与最新 runner 快照合流
+
+**前置**：一个 source market 的首帧已在 DataEngine 中。**输入**：completion 前连续收到
+同一 market 的 runner 全深度帧。**期望**：不继续占用 DataEngine 队列；pending 按
+instrument last-write-wins 保存 `CLEAR + ADD` 完整快照，当前 frame completion 后立即只发送
+最新组合。断线 CLEAR 独占 barrier 段，退订后的迟到 completion 无副作用。
+**验收**：`test_three_way_price_frame_is_atomic_but_split_into_binary_markets` 同时验证第二帧先
+pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
+`tests/unit_tests/live/test_market_frame.py`。
+
+## #363：OE 空 runner 快照清除旧盘口
+
+**前置**：订阅 instrument 的 DataEngine book 已有旧档位。**输入**：OE parser 输出
+`back=[]/lay=[]` 的完整 runner 快照。**期望**：`oe_runner_to_book_deltas` 返回仅含一个
+`BookAction.CLEAR` 的 `OrderBookDeltas`，经 source frame 清空旧盘口；原始档非空但全部非法
+仍返回 None，保留最后可信状态。**验收**：
+`test_runner_to_book_deltas_emits_clear_when_empty` /
+`test_runner_to_book_deltas_skips_zero_or_invalid_sizes`。

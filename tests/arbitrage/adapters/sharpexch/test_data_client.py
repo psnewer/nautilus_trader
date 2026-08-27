@@ -19,6 +19,7 @@ from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from tests.arbitrage.adapters.sharpexch.test_provider import _event
@@ -436,10 +437,18 @@ def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
     assert len(source_frame.markets) == 3
     assert all(len(market.instrument_ids) == 2 for market in source_frame.markets)
 
-    captured.clear()
     client._on_price_frame(frame(("111",)))
     assert len(captured) == 1
-    assert [market.market_id for market in captured[0].data.markets] == ["1.259502399:111"]
+    client._handle_market_frame_processed(
+        OrderBookFrameProcessed(
+            source_frame.venue,
+            source_frame.source_market_id,
+            source_frame.frame_id,
+            True,
+        ),
+    )
+    assert len(captured) == 2
+    assert [market.market_id for market in captured[1].data.markets] == ["1.259502399:111"]
 
 
 def test_on_price_frame_drops_unrouted_market():

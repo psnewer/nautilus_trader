@@ -57,9 +57,9 @@ from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.live.market_frame import MarketFrameConflater
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import BookOrder
-from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
@@ -72,8 +72,9 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
-from nautilus_trader.model.market_order_book import order_book_frame_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 
 
 class PolymarketDataClient(LiveMarketDataClient):
@@ -163,6 +164,14 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._market_order_book_members: dict[str, tuple[InstrumentId, ...]] = {}
         self._market_snapshot_buffer: dict[str, dict[InstrumentId, OrderBookDeltas]] = {}
         self._market_books_bootstrapped: set[str] = set()
+        self._market_frame_conflater = MarketFrameConflater(
+            POLYMARKET_VENUE,
+            lambda data: self._handle_data(data),
+        )
+        self._msgbus.subscribe(
+            topic=order_book_frame_processed_topic(POLYMARKET_VENUE),
+            handler=self._handle_market_frame_processed,
+        )
         self._book_deltas_published = 0
 
         # Auto-load coordination
@@ -284,7 +293,7 @@ class PolymarketDataClient(LiveMarketDataClient):
             if pending is not None:
                 for member in instrument_ids:
                     pending.pop(member, None)
-            self._publish_market_deltas(market_id, market_clears)
+            self._publish_market_deltas(market_id, market_clears, barrier=True)
             cleared_markets += 1
 
         self._log.warning(
@@ -448,6 +457,7 @@ class PolymarketDataClient(LiveMarketDataClient):
             if instrument_id not in self._local_books:
                 self._create_local_book(instrument_id)
         self._market_order_book_members[market_id] = instrument_ids
+        self._market_frame_conflater.activate(market_id)
         self._market_snapshot_buffer.pop(market_id, None)
         self._market_books_bootstrapped.discard(market_id)
         for instrument_id in instrument_ids:
@@ -463,6 +473,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         if command.data_type.type is not MarketOrderBookDeltas:
             raise NotImplementedError
         market_id = str((command.data_type.metadata or {}).get("market_id") or "")
+        self._market_frame_conflater.deactivate(market_id)
         instrument_ids = self._market_order_book_members.pop(market_id, ())
         self._market_snapshot_buffer.pop(market_id, None)
         self._market_books_bootstrapped.discard(market_id)
@@ -712,11 +723,23 @@ class PolymarketDataClient(LiveMarketDataClient):
         self,
         market_id: str,
         deltas: tuple[OrderBookDeltas, ...],
+        *,
+        barrier: bool = False,
     ) -> None:
         data_type = market_order_book_data_type(self.venue, market_id)
         if not deltas or data_type not in self.subscribed_custom_data():
             return
         now_ns = self._clock.timestamp_ns()
+        if not barrier:
+            # PM price_change 是档位增量；single-flight 覆盖必须使用已吸收全部
+            # WS 变化的 local book 当前完整状态，不能只保留最后一条增量。
+            deltas = tuple(
+                self._local_books[item.instrument_id].to_deltas_c(item.ts_event, now_ns)
+                for item in deltas
+                if item.instrument_id in self._local_books
+            )
+            if not deltas:
+                return
         batch = MarketOrderBookDeltas(
             venue=self.venue,
             market_id=market_id,
@@ -731,9 +754,10 @@ class PolymarketDataClient(LiveMarketDataClient):
             ts_event=batch.ts_event,
             ts_init=now_ns,
         )
-        self._handle_data(
-            CustomData(order_book_frame_data_type(self.venue, market_id), frame),
-        )
+        self._market_frame_conflater.offer(frame, barrier=barrier)
+
+    def _handle_market_frame_processed(self, processed: OrderBookFrameProcessed) -> None:
+        self._market_frame_conflater.on_processed(processed)
 
     def _publish_deltas(self, deltas: OrderBookDeltas) -> None:
         self._book_deltas_published += 1

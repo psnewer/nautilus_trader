@@ -159,6 +159,8 @@ from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.instruments.synthetic cimport SyntheticInstrument
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_data_type
 from nautilus_trader.model.objects cimport Price
@@ -2811,13 +2813,28 @@ cdef class DataEngine(Component):
 
     cpdef void _handle_custom_data(self, CustomData data, bint historical = False):
         if isinstance(data.data, OrderBookFrameDeltas):
-            if historical:
-                self._log.error("Historical OrderBookFrameDeltas are not supported")
-                return
-            if not self._apply_order_book_frame_deltas(data):
-                return
-            for market in data.data.markets:
-                self._publish_market_order_book_deltas(market)
+            frame = data.data
+            applied = False
+            try:
+                if historical:
+                    self._log.error("Historical OrderBookFrameDeltas are not supported")
+                    return
+                if not self._apply_order_book_frame_deltas(data):
+                    return
+                applied = True
+                for market in frame.markets:
+                    self._publish_market_order_book_deltas(market)
+            finally:
+                if frame.frame_id > 0:
+                    self._msgbus.publish_c(
+                        topic=order_book_frame_processed_topic(frame.venue),
+                        msg=OrderBookFrameProcessed(
+                            venue=frame.venue,
+                            source_market_id=frame.source_market_id,
+                            frame_id=frame.frame_id,
+                            applied=applied,
+                        ),
+                    )
             return
         if isinstance(data.data, MarketOrderBookDeltas):
             if historical:

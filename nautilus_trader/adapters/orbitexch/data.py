@@ -31,8 +31,8 @@ from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessagePa
 from nautilus_trader.adapters.orbitexch.websocket_handler import OrbitExchWebSocketHandler
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.live.market_frame import MarketFrameConflater
 from nautilus_trader.model.data import BookOrder
-from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
@@ -42,8 +42,9 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
-from nautilus_trader.model.market_order_book import order_book_frame_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.venues import probability_from_price
@@ -89,12 +90,16 @@ def oe_runner_to_book_deltas(
     #228 `claim="no"`(3-way 合成 no 腿):两侧换位——ask ← LAY 列、bid ← BACK 列,换位后
     仍用同一个 `claim` 做概率变换(数学上这正好让方向配平,见上)。
 
-    返回 None 表示本 runner 无可用档(`back` + `lay` 都空)→ 调用方跳过 publish。
+    `back` + `lay` 显式为空时仍返回单独 CLEAR，表示完整快照已经清盘；非空原始档全部
+    无效时返回 None，避免坏 payload 清掉最后可信盘口。
     """
     back = runner.get("back") or []
     lay = runner.get("lay") or []
     if not back and not lay:
-        return None
+        return OrderBookDeltas(
+            instrument_id=instrument_id,
+            deltas=[OrderBookDelta.clear(instrument_id, 0, ts_init_ns, ts_init_ns)],
+        )
 
     deltas: list[OrderBookDelta] = [
         OrderBookDelta(
@@ -123,7 +128,7 @@ def oe_runner_to_book_deltas(
         deltas.append(_make_add(instrument_id, OrderSide.BUY, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
-    if len(deltas) == 1:  # 只有 CLEAR,无实际档位 → 不发(避免空簿噪音)
+    if len(deltas) == 1:  # 原始档非空但全部非法，保留最后可信盘口
         return None
     return OrderBookDeltas(instrument_id=instrument_id, deltas=deltas)
 
@@ -263,6 +268,14 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
         self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
+        self._market_frame_conflater = MarketFrameConflater(
+            self.venue,
+            lambda data: self._handle_data(data),
+        )
+        self._msgbus.subscribe(
+            topic=order_book_frame_processed_topic(self.venue),
+            handler=self._handle_market_frame_processed,
+        )
         # market_id(str) -> page_key:`_delayed_reopen` 据此判断页是否仍被订阅(决定是否继续重试开页)
         self._market_to_page_key: dict[str, str] = {}
         self._price_frames_seen = 0
@@ -359,14 +372,18 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 )
             self._register_instrument_routing(instrument_id)
             await self._ensure_competition_page(instrument_id)
+        self._market_frame_conflater.activate(source_market_id)
 
     async def _unsubscribe(self, command) -> None:
         if command.data_type.type is not MarketOrderBookDeltas:
             raise NotImplementedError
+        source_market_id = str(command.params.get("source_market_id") or "")
         orphaned: set[str] = set()
         for value in command.params.get("instrument_ids") or ():
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             orphaned.update(self._unregister_instrument_routing(instrument_id))
+        if source_market_id not in self._market_to_instruments:
+            self._market_frame_conflater.deactivate(source_market_id)
         for page_key in orphaned:
             await self._close_competition_page(page_key)
 
@@ -608,17 +625,15 @@ class OrbitExchDataClient(LiveMarketDataClient):
             )
             if not markets:
                 continue
-            self._handle_data(
-                CustomData(
-                    order_book_frame_data_type(self.venue, source_market_id),
-                    OrderBookFrameDeltas(
-                        venue=self.venue,
-                        source_market_id=source_market_id,
-                        markets=markets,
-                        ts_event=ts,
-                        ts_init=ts,
-                    ),
+            self._market_frame_conflater.offer(
+                OrderBookFrameDeltas(
+                    venue=self.venue,
+                    source_market_id=source_market_id,
+                    markets=markets,
+                    ts_event=ts,
+                    ts_init=ts,
                 ),
+                barrier=True,
             )
             cleared += sum(len(market.deltas) for market in markets)
         if cleared:
@@ -688,6 +703,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 ts_event=ts,
                 ts_init=ts,
             )
-            self._handle_data(
-                CustomData(order_book_frame_data_type(self.venue, market_id), frame),
-            )
+            self._market_frame_conflater.offer(frame)
+
+    def _handle_market_frame_processed(self, processed: OrderBookFrameProcessed) -> None:
+        self._market_frame_conflater.on_processed(processed)

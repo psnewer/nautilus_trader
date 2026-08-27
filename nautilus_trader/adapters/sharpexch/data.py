@@ -12,8 +12,8 @@ from nautilus_trader.adapters.sharpexch.message_parser import SharpExchMessagePa
 from nautilus_trader.adapters.sharpexch.websocket_handler import SharpExchWebSocketHandler
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.live.market_frame import MarketFrameConflater
 from nautilus_trader.model.data import BookOrder
-from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
@@ -23,8 +23,9 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
+from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
-from nautilus_trader.model.market_order_book import order_book_frame_data_type
+from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.venues import probability_from_price
@@ -65,6 +66,14 @@ class SharpExchDataClient(LiveMarketDataClient):
         self._browser_manager = browser_manager
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
         self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
+        self._market_frame_conflater = MarketFrameConflater(
+            self.venue,
+            lambda data: self._handle_data(data),
+        )
+        self._msgbus.subscribe(
+            topic=order_book_frame_processed_topic(self.venue),
+            handler=self._handle_market_frame_processed,
+        )
         self._market_to_page_key: dict[str, str] = {}
         self._comp_page_refs: dict[str, tuple[str, str]] = {}
         self._comp_pages: dict[str, object] = {}
@@ -112,13 +121,17 @@ class SharpExchDataClient(LiveMarketDataClient):
                     f"for {binary_market_id} (source={source_market_id})",
                 )
             await self._subscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
+        self._market_frame_conflater.activate(source_market_id)
 
     async def _unsubscribe(self, command) -> None:
         if command.data_type.type is not MarketOrderBookDeltas:
             raise NotImplementedError
+        source_market_id = str(command.params.get("source_market_id") or "")
         for value in command.params.get("instrument_ids") or ():
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             await self._unsubscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
+        if source_market_id not in self._market_to_instruments:
+            self._market_frame_conflater.deactivate(source_market_id)
 
         self._log.info("SharpExchDataClient connected (competition pages opened on subscribe)")
 
@@ -286,9 +299,7 @@ class SharpExchDataClient(LiveMarketDataClient):
                 ts_event=now_ns,
                 ts_init=now_ns,
             )
-            self._handle_data(
-                CustomData(order_book_frame_data_type(self.venue, market_id), frame),
-            )
+            self._market_frame_conflater.offer(frame)
             published_count += len(deltas_items)
         previous_published = self._price_deltas_published
         self._price_deltas_published += published_count
@@ -300,6 +311,9 @@ class SharpExchDataClient(LiveMarketDataClient):
                 f"SE OrderBookDeltas published: instrument_id={instrument_id}, "
                 f"deltas={delta_count}",
             )
+
+    def _handle_market_frame_processed(self, processed: OrderBookFrameProcessed) -> None:
+        self._market_frame_conflater.on_processed(processed)
 
     def _on_comp_disconnect(self, page_key: str, reason: str) -> None:
         if not se_should_reload_on_disconnect(
@@ -376,17 +390,15 @@ class SharpExchDataClient(LiveMarketDataClient):
             )
             if not markets:
                 continue
-            self._handle_data(
-                CustomData(
-                    order_book_frame_data_type(self.venue, source_market_id),
-                    OrderBookFrameDeltas(
-                        venue=self.venue,
-                        source_market_id=source_market_id,
-                        markets=markets,
-                        ts_event=ts,
-                        ts_init=ts,
-                    ),
+            self._market_frame_conflater.offer(
+                OrderBookFrameDeltas(
+                    venue=self.venue,
+                    source_market_id=source_market_id,
+                    markets=markets,
+                    ts_event=ts,
+                    ts_init=ts,
                 ),
+                barrier=True,
             )
             cleared += sum(len(market.deltas) for market in markets)
         if cleared:
@@ -997,12 +1009,18 @@ def se_runner_to_book_deltas(
 
     #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列、bid ← BACK 列(换位后
     仍用同一个 `claim` 做概率变换)。
+
+    `back` + `lay` 显式为空时仍返回单独 CLEAR，表示完整快照已经清盘；非空原始档全部
+    无效时返回 None，避免坏 payload 清掉最后可信盘口。
     """
 
     back = runner.get("back") or []
     lay = runner.get("lay") or []
     if not back and not lay:
-        return None
+        return OrderBookDeltas(
+            instrument_id=instrument_id,
+            deltas=[OrderBookDelta.clear(instrument_id, 0, ts_init_ns, ts_init_ns)],
+        )
 
     deltas: list[OrderBookDelta] = [
         OrderBookDelta(
@@ -1031,7 +1049,7 @@ def se_runner_to_book_deltas(
         deltas.append(_make_add(instrument_id, OrderSide.BUY, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
-    if len(deltas) == 1:
+    if len(deltas) == 1:  # 原始档非空但全部非法，保留最后可信盘口
         return None
     return OrderBookDeltas(instrument_id=instrument_id, deltas=deltas)
 

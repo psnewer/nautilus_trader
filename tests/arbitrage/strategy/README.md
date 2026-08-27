@@ -734,6 +734,16 @@ ended 按 market 退订并清 `_last_best_ask`。
 对应 pair；不把六条投影腿作为一个策略市场。源帧原子性由 DataEngine 单测覆盖，分组由
 `matching/test_actor.py::test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`
 覆盖；该路径仍为 live-unvalidated。
+
+## strategy-4.37:source single-flight 下的最新行情评估（#362）
+
+Strategy 的订阅契约仍是 `MarketOrderBookDeltas`，不直接消费源帧 completion。DataClient 在
+同一 source frame 在途期间合并中间状态，DataEngine 完整应用下一份最新快照后才发布对应
+market OBD；因此 Strategy 可能不观察已被后续状态覆盖的中间行情，但每次被唤醒时仍读取到
+完整 Cache，且不会因 DataEngine 队列积压在比赛结束后补跑大量旧评估。DataEngine 的
+apply-before-publish 及 single-flight 完成协议由 unit/adapters 测试覆盖，Strategy 的 market
+单次路由行为继续由 `strategy-4.36` 验收。
+
 ### strategy-action-place-bets-log: 实际策略汇总日志
 
 - **前置**:`PlaceBetsAction` 分别消费 mean_rebate legs-only 候选和带

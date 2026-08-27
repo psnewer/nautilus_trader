@@ -57,8 +57,8 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **期望**:⚠️ 2026-07-20/21(#256)起发布全档(取代此前"只发 top-of-book"):BACK/LAY 全部合法档
 (price>0 且 size>0)都发 ADD,BACK→SELL/ask、LAY→BUY/bid;存入值是 `probability_from_price`
 换算后的隐含概率,不是原始赔率(推导见 `docs/arbitrage/architectures/data/architecture.md`
-§2/§3.1);每帧先 CLEAR 再 ADD;空档返回 None。
-**验收**:已落地。`test_message_parser.py` 覆盖 `bdatb/bdatl` dict 档、真实 SE 常见 `bdatb/bdatl={"0":[price,size]}` dict-of-levels、以及 `batb/batl` list 档;`test_data.py` 覆盖 CLEAR + 全档 BACK/LAY(概率编码值,`probability_from_price`/`price_from_probability` 断言)、空档、无效 size,以及 `se_price_message_to_book_deltas` 按 `selection_id -> InstrumentId` routing 生成多 runner deltas、跳过未订阅/空档 runner、坏消息返回空列表;同时覆盖 `se_market_price_message_to_book_deltas` 按 `market_id -> selection_id -> InstrumentId` routing 找 market、输出 `market_id/in_play/runners/subscribed_selections/deltas`、未路由 market/坏消息返回 None、已路由但空档时保留 frame 元信息并返回空 deltas;`se_publish_routed_book_deltas` 逐个调用注入 publish、空 payload / 空 deltas no-op(#250:in_play 写回已废除);`se_handle_price_frame` 组合 routing+publish,返回 `published_count`,未路由 no-op,空档返回 metadata 但不 publish。
+§2/§3.1);每帧先 CLEAR 再 ADD；双边空档返回单独 CLEAR。
+**验收**:已落地。`test_message_parser.py` 覆盖 `bdatb/bdatl` dict 档、真实 SE 常见 `bdatb/bdatl={"0":[price,size]}` dict-of-levels、以及 `batb/batl` list 档;`test_data.py` 覆盖 CLEAR + 全档 BACK/LAY(概率编码值,`probability_from_price`/`price_from_probability` 断言)、双边空档发单独 CLEAR、无效 size 保留旧盘口,以及 `se_price_message_to_book_deltas` 按 `selection_id -> InstrumentId` routing 生成多 runner deltas、跳过未订阅 runner、坏消息返回空列表;同时覆盖 `se_market_price_message_to_book_deltas` 按 `market_id -> selection_id -> InstrumentId` routing 找 market、输出 `market_id/in_play/runners/subscribed_selections/deltas`、未路由 market/坏消息返回 None、已路由空档时保留 frame 元信息并携带 CLEAR;`se_publish_routed_book_deltas` 逐个调用注入 publish、空 payload / 空 deltas no-op(#250:in_play 写回已废除);`se_handle_price_frame` 组合 routing+publish,返回 `published_count`,未路由 no-op,空档发布 CLEAR。
 
 ### se-adapter-2.2:订阅即开 competition 页
 
@@ -242,3 +242,22 @@ reload-in-flight，以单个 `OrderBookFrameDeltas` 为每条腿发布 `BookActi
 **验收**：`test_comp_disconnect_clears_binary_market_before_reload`、
 `test_comp_duplicate_disconnect_does_not_clear_twice`；DataEngine 对 CLEAR 的
 apply-before-publish 由 `test_market_order_book_batch_clear_empties_all_books_before_publish` 锁定。
+
+## #362：SE source single-flight 与最新 runner 快照合流
+
+**前置**：一个 source market 的首帧已在 DataEngine 中。**输入**：completion 前连续收到
+同一 market 的 runner 全深度帧。**期望**：不继续占用 DataEngine 队列；pending 按
+instrument last-write-wins 保存 `CLEAR + ADD` 完整快照，当前 frame completion 后立即只发送
+最新组合。断线 CLEAR 独占 barrier 段，退订后的迟到 completion 无副作用。
+**验收**：`test_three_way_price_frame_is_atomic_but_split_into_binary_markets` 同时验证第二帧先
+pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
+`tests/unit_tests/live/test_market_frame.py`。
+
+## #363：SE 空 runner 快照清除旧盘口
+
+**前置**：订阅 instrument 的 DataEngine book 已有旧档位。**输入**：SE parser 输出
+`back=[]/lay=[]` 的完整 runner 快照。**期望**：`se_runner_to_book_deltas` 返回仅含一个
+`BookAction.CLEAR` 的 `OrderBookDeltas`，组合 helper 保留 frame metadata 并正常发布；原始档
+非空但全部非法仍返回 None。**验收**：`test_runner_to_book_deltas_emits_clear_when_empty`、
+`test_market_price_message_to_book_deltas_keeps_metadata_with_empty_book_clear`、
+`test_handle_price_frame_publishes_clear_for_empty_book`。

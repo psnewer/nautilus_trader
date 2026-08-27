@@ -79,7 +79,7 @@ class OrderBookFrameDeltas(Data):
     ``MarketOrderBookDeltas``; 因此源帧原子性与策略 market 事件边界互不混用。
     """
 
-    __slots__ = ("_ts_event", "_ts_init", "markets", "source_market_id", "venue")
+    __slots__ = ("_ts_event", "_ts_init", "frame_id", "markets", "source_market_id", "venue")
 
     def __init__(
         self,
@@ -88,6 +88,7 @@ class OrderBookFrameDeltas(Data):
         markets: tuple[MarketOrderBookDeltas, ...],
         ts_event: int,
         ts_init: int,
+        frame_id: int = 0,
     ) -> None:
         if not source_market_id:
             raise ValueError("source_market_id must not be empty")
@@ -103,9 +104,12 @@ class OrderBookFrameDeltas(Data):
         )
         if len(set(instrument_ids)) != len(instrument_ids):
             raise ValueError("markets must not share instruments within one frame")
+        if frame_id < 0:
+            raise ValueError("frame_id must not be negative")
         self.venue = venue
         self.source_market_id = source_market_id
         self.markets = tuple(markets)
+        self.frame_id = int(frame_id)
         self._ts_event = int(ts_event)
         self._ts_init = int(ts_init)
 
@@ -120,7 +124,37 @@ class OrderBookFrameDeltas(Data):
     def __repr__(self) -> str:
         return (
             f"OrderBookFrameDeltas(venue={self.venue}, source_market_id={self.source_market_id!r}, "
-            f"markets={len(self.markets)}, ts_event={self.ts_event}, ts_init={self.ts_init})"
+            f"markets={len(self.markets)}, frame_id={self.frame_id}, "
+            f"ts_event={self.ts_event}, ts_init={self.ts_init})"
+        )
+
+
+class OrderBookFrameProcessed:
+    """DataEngine 对一个带编号源帧的唯一处理终态。"""
+
+    __slots__ = ("applied", "frame_id", "source_market_id", "venue")
+
+    def __init__(
+        self,
+        venue: Venue,
+        source_market_id: str,
+        frame_id: int,
+        applied: bool,
+    ) -> None:
+        if not source_market_id:
+            raise ValueError("source_market_id must not be empty")
+        if frame_id <= 0:
+            raise ValueError("frame_id must be positive")
+        self.venue = venue
+        self.source_market_id = source_market_id
+        self.frame_id = int(frame_id)
+        self.applied = bool(applied)
+
+    def __repr__(self) -> str:
+        return (
+            f"OrderBookFrameProcessed(venue={self.venue}, "
+            f"source_market_id={self.source_market_id!r}, frame_id={self.frame_id}, "
+            f"applied={self.applied})"
         )
 
 
@@ -142,3 +176,8 @@ def order_book_frame_data_type(venue: Venue, source_market_id: str) -> DataType:
         OrderBookFrameDeltas,
         metadata={"venue": venue.value, "source_market_id": source_market_id},
     )
+
+
+def order_book_frame_processed_topic(venue: Venue) -> str:
+    """返回 DataEngine 源帧处理完成通知的 venue 级内部 topic。"""
+    return f"data.order_book_frame.processed.{venue.value}"
