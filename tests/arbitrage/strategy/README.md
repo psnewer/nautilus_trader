@@ -672,18 +672,18 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 **用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
 `test_extreme_prices_update_without_first_price_and_require_clean_sum`、
 `test_start_price_not_captured_without_witnessed_first_price`、
-`test_start_price_captures_in_play_after_first_price_witnessed`、
+`test_start_price_captures_in_play_after_none_state_first_price_witnessed`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
 
 **期望/验收**:
 - MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`、`trend_price={}`；
-- 只有赛前 PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]` 内才首次写 first price；
-  非 PM OBD与不干净向量不写；
+- Sports 状态为 `None` 或明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]`
+  内才首次写 first price；明确 live/ended、非 PM OBD 与不干净向量不写；
 - 每个 PM OBD 在评估前用干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
-- IN_PLAY phase **仅当该 pair 已采到 `first_price`(见证过赛前)**才对完整 PM 向量首次写
-  start price 且不做概率和校验；中途接入(采不到 first_price)不写、保持默认 0.6
-  (#322 修订的 late-join 护栏,避免盘中赔率误当开赛价污染 dash_gate 阈值);
+- IN_PLAY phase **仅当该 pair 已采到 `first_price`**才对完整 PM 向量首次写 start price，且不做
+  概率和校验；没有先行 PM OBD 见证则保持默认 0.6；`None` 视为赛前的已知代价是 sports live 帧
+  到达前的盘中 late-join 短窗可能误采，见决策 #364；
 - ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
   game 索引。
 

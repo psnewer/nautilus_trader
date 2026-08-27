@@ -512,7 +512,7 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 5. Strategy 不冻结 sports state。新 phase update 由 per-(game,phase) topic 触发下一轮评估；
    查询发生时读取当时的 Store 当前值。
 
-#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-16)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-27)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
 `first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
@@ -525,22 +525,16 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 
 **first_price**：仅 PM instrument 的 OBD 可触发。NT 已在回调前更新 managed OrderBook，
 Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整的 best ask 概率向量。
-**Sports Store 必须正面确认 PRE（存在且 `not live/ended`）才视为未开赛并采集；`None`（无状态）
-与 `live/ended` 一律不采**（#322 修订续，2026-08-06）。完整向量的概率和位于闭区间
+**Sports Store 为 `None` 或明确 PRE（存在且 `not live/ended`）均视为赛前并采集；只有明确
+`live/ended` 才禁止采集**（#364，2026-08-27）。完整向量的概率和位于闭区间
 `[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持空值。OE/SE OBD
 只继续触发既有策略评估，不参与参考价采集。
 
-> **为何 `None` 不再当赛前(late-join 根因)**：旧逻辑把 `None` 当"未开赛"采集,理由是 firehose
-> 不推赛前帧、真赛前 game 的 Sports Store 本就是 `None`——但 `None` 二义:它**也**是 late-join 的
-> 状态。matching 用 **Gamma discovery anchor**(非 firehose)成型 MatchedPair,sports 订阅在
-> `_emit_pair` 同步发布之时/之后才发生(matching `_reconcile_sports_subscriptions`),故 MatchedPair
-> 到达、strategy 订 OBD 的**那一刻 Sports Store 对该 game 必空 = `None`**;PM OBD 紧随 OBD 订阅先到、
-> firehose 首帧未到 → `_capture_first_price` 把盘中盘口误采成 first_price → 进而污染 start_price
-> (0.6→盘中价)、`DashGateAction` 阈值塌陷不删崩腿(实盘 2026-08-06 ATP 复现:start_price 0.6→0.13,
-> no@0.06 腿本该删却被买 30 手)。因两种 `None` 采集时刻无法区分、且 firehose 无 PRE 帧 → 无法正面
-> 确认赛前 → **实盘 first_price 基本不再采集,start_price 恒默认 `0.6`、gate 用固定 `0.5×0.6=0.30`
-> 阈值**(late-join 正确删崩腿)。这是有意放弃 adaptive 开赛价采集换 robust——它与 late-join 污染
-> 共用同一 `None` 窗口、无法只留 happy-path。
+> **`None` 的现行取舍**：PMS firehose 实盘通常不推 PRE，真赛前在首个 IN_PLAY 帧前长期表现为
+> `None`。若要求正面确认 PRE，正常赛前 pair 基本无法采到 `first_price/start_price`。#364 明确将
+> `None` 与 `in_game=False` 统一为赛前，以恢复真实开赛价采集；已知代价是盘中 late-join 且首个
+> sports live 帧尚未到达的短窗，可能把盘中盘口记作 first price。该风险由用户接受；旧的相反取舍
+> 及实盘案例保留在决策日志 #323/#324 修订续，不在详细设计重复维护。
 
 **start_price**：收到 `live=True && ended=False` 的 phase 消息时，按 game 扇出全部 pair；
 **仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且所有 start values 仍为默认 `0.6` 时，
@@ -553,13 +547,9 @@ PM 盘口则保留默认值，后续 OBD 不补写。
 `down=min(down,now)`。本采集不依赖 Sports Store/`first_price`：`pre_move` 由 `NOT in_game`
 限定下单阶段，极值内存只负责忠实记录有效行情。OE/SE OBD 不更新该字段。
 
-**`first_price` 前置 = late-join 护栏（#322 修订）**：firehose 不推赛前帧、一场首帧即
-IN_PLAY（data §3.4.2），故"phase live 帧"本身无法区分"赛前订上、首帧≈开赛"与"中途接入、
-首帧已深盘中"——两者都是 null→IN_PLAY。而 `first_price` 只在赛前 OBD 可采（`live/ended` 禁写），
-它非空即**证明本 pair 见证过赛前**。中途接入的 pair 采不到 `first_price` → start_price 保持默认
-`0.6`，不会把盘中（可能已崩）赔率误当开赛价、污染 `DashGateAction` 的 `0.5×start` 阈值。
-（实盘 WTA pair 复现：late-join 把盘中 ~0.15 存成开赛价 → 阈值塌到 ~0.075、gate 形同虚设、
-0.1 腿照下。修法在 capture 侧加 `first_price` 前置，不改 phase 通道广播语义 data §3.4.2。）
+**`first_price` 前置**：start price 仍只在 `first_price` 非空时采集，避免没有任何先行 PM OBD
+见证就把首个 live 帧盘口直接当作开赛价。#364 后 `None` 时的干净赛前 PM OBD 可以构成该见证；
+明确 live/ended 后到达的 OBD 仍不能补写 first price。
 
 **释放**：ended 到达后仍先调度该场最后一次策略评估，并立即沿用 §3.8.1 释放 sports/OBD
 订阅；价格记录进入 pending cleanup。Evaluator 按 pair 统计已排程 task，最后一个 task 的

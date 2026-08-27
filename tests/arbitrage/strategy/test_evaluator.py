@@ -1090,8 +1090,7 @@ def _wire_pair_price_books(actor, pair_reg, *, yes_ask: float, no_ask: float, ga
 
 
 def test_first_price_captures_when_sports_state_confirmed_pre():
-    # #322 修订续:first_price 只在 sports_state **正面确认 PRE**(存在且 not live/ended)才采。
-    # (firehose 实盘不推赛前帧,此路径罕见,但语义正确——见证到赛前才记赛前价。)
+    # 明确 PRE 时采集赛前首价。
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
     actor._get_sports_store().put(_sports_update(888, live=False, ended=False))  # PRE
@@ -1104,9 +1103,8 @@ def test_first_price_captures_when_sports_state_confirmed_pre():
     assert state.start_price == {"yes": 0.6, "no": 0.6}
 
 
-def test_first_price_not_captured_when_sports_state_none():
-    # late-join 根因修复:sports_store 无该 game 状态(None)= 未确认赛前(match 刚订 sports、
-    # firehose 首帧未到,sports_store 必空)→ **不采** first_price,避免把盘中盘口误当赛前价。
+def test_first_price_captures_when_sports_state_none():
+    # sports_state=None 与 in_game=False 统一视为赛前；firehose 不推 PRE 时仍能采到首价。
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
     # 不 put 任何 sports 状态 → sports_store.get(888) 返 None
@@ -1114,7 +1112,7 @@ def test_first_price_not_captured_when_sports_state_none():
     actor.on_order_book_deltas(_obd(str(yes.id)))
     _run(_drain(loop))
 
-    assert actor._get_pair_price_store().get("match_X").first_price == {}
+    assert actor._get_pair_price_store().get("match_X").first_price == {"yes": 0.44, "no": 0.56}
 
 
 def test_first_price_rejects_dirty_sum_and_non_pm_obd():
@@ -1145,6 +1143,7 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
 
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    actor._get_sports_store().put(_sports_update(888, live=True, ended=False))
 
     actor.on_order_book_deltas(_obd(str(yes.id)))
     _run(_drain(loop))
@@ -1172,7 +1171,7 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
 
 def test_start_price_not_captured_without_witnessed_first_price():
     # late-join 护栏:没采到 first_price → 收到 live phase 也不采 start_price,保持默认。
-    # (sports_state=None 时 first_price 本就不采,此路径天然满足——避免盘中价污染 dash_gate 阈值。)
+    # 本用例不发送赛前 OBD，因此即使 None 视为赛前也没有见证 first_price。
     actor, _, pair_reg, _, loop, _ = _harness()
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.8, no_ask=0.7)
 
@@ -1184,16 +1183,14 @@ def test_start_price_not_captured_without_witnessed_first_price():
     assert state.start_price == {"yes": 0.6, "no": 0.6}
 
 
-def test_start_price_captures_in_play_after_first_price_witnessed():
-    # happy-path:确认 PRE → 赛前 OBD 采到 first_price → live phase 帧把当时完整 PM 盘口整组写成
-    # start_price(不做概率和校验),证明 first_price 前置不误伤真见证到赛前的 pair。
+def test_start_price_captures_in_play_after_none_state_first_price_witnessed():
+    # happy-path:无 sports 状态时按赛前采 first_price → live phase 把当时完整 PM 盘口整组写成
+    # start_price(不做概率和校验)，覆盖 firehose 首帧通常即 IN_PLAY 的实盘路径。
     from tests.arbitrage.matching.test_actor import _add_order_book
 
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
-    actor._get_sports_store().put(_sports_update(888, live=False, ended=False))  # PRE
-
-    actor.on_order_book_deltas(_obd(str(yes.id)))     # 确认赛前 → 采 first_price
+    actor.on_order_book_deltas(_obd(str(yes.id)))     # None 按赛前 → 采 first_price
     _run(_drain(loop))
     assert actor._get_pair_price_store().get("match_X").first_price == {"yes": 0.44, "no": 0.56}
 

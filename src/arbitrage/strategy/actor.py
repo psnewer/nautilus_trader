@@ -517,13 +517,9 @@ class StrategyEvaluator(Strategy):
             return
         sports_store = self._get_sports_store()
         sports_state = sports_store.get(game_id) if sports_store is not None else None
-        # None = 未确认赛前,不采(#322 修订续):late-join 时 match 才刚订 sports、firehose 首帧未到
-        # → sports_store 必空 = None;而 firehose 不推赛前帧 → 真赛前的 game 也是 None,两者同为 None
-        # 采集时刻无法区分。旧逻辑把 None 当赛前 → late-join 把盘中盘口误采成 first_price,进而污染
-        # start_price(0.6→盘中价)、dash_gate 阈值塌陷。改为**仅 sports_state 正面确认 PRE**(存在且
-        # not live/ended)才采;None/live/ended 一律不采。代价:firehose 无 PRE 帧 → 实盘 first_price
-        # 基本不再采 → start_price 恒默认 0.6、gate 用固定 0.5×0.6=0.30 阈值(late-join 正确删崩腿)。
-        if sports_state is None or sports_state.live or sports_state.ended:
+        # Sports 尚无状态(None)与明确 PRE 均按赛前处理；仅明确 live/ended 禁止采集。
+        # 这与 in_game 的 None=False 语义一致，并允许 firehose 首帧通常即 IN_PLAY 时仍先见证赛前盘口。
+        if sports_state is not None and (sports_state.live or sports_state.ended):
             return
         store = self._get_pair_price_store()
         state = store.get(pair_id) if store is not None else None
