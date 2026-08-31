@@ -642,6 +642,14 @@ test_cancel_track_marks_execution_active_before_dispatch` 覆盖；PM 已预建 
 由 `test_polymarket_client.py::test_polymarket_residual_cancel_reaches_venue_despite_active_session`
 覆盖。
 
+### pm-adapter-sports.phase-store:#365 PMS 推进聚合 phase
+
+**输入**：PMS `SportsGameUpdate` 依次为 IN_PLAY、POST。**期望**：详细 payload 仍写
+`SportsGameStateStore`，同时在 phase 通道发布前推进共享 `SportsPhaseStore`；POST 仍只来自
+PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**验收**：
+`test_processor_advances_shared_phase_store_from_pms_state`，以及 common
+`test_sports_phase.py` 的单调推进/删除用例。
+
 ### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 
 **输入**:CLOB 返回任一正常撤单响应，再分别解析 `canceled[]` / `not_canceled`。

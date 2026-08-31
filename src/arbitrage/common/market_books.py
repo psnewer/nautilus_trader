@@ -20,6 +20,7 @@ class MarketBookSubscription:
     market_id: str
     source_market_id: str
     instrument_ids: tuple[InstrumentId, ...]
+    game_id: int | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -31,15 +32,23 @@ class MarketBookSubscription:
 
     @property
     def params(self) -> dict:
-        return {
+        params = {
             "instrument_ids": self.instrument_ids,
             "source_market_id": self.source_market_id,
             "managed": True,
             "book_type": BookType.L2_MBP,
         }
+        if self.game_id is not None:
+            params["game_id"] = self.game_id
+        return params
 
 
-def market_book_subscriptions(cache, instrument_ids) -> tuple[MarketBookSubscription, ...]:
+def market_book_subscriptions(
+    cache,
+    instrument_ids,
+    *,
+    game_id: int | None = None,
+) -> tuple[MarketBookSubscription, ...]:
     """把真实 instrument 按 ``(venue, binary_market_id)`` 分组。"""
     grouped: dict[tuple[str, str, str], list[InstrumentId]] = {}
     for value in instrument_ids:
@@ -74,6 +83,7 @@ def market_book_subscriptions(cache, instrument_ids) -> tuple[MarketBookSubscrip
             market_id,
             source_market_id,
             tuple(sorted(members, key=str)),
+            game_id,
         )
         for (venue, market_id, source_market_id), members in sorted(grouped.items())
     )

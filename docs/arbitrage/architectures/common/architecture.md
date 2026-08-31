@@ -118,6 +118,18 @@ source/binary ID；OE/SE 的 `instrument.market_id` 是 source ID，
 `instrument.info["binary_market_id"]` 是策略 ID。该 helper 不更新 OrderBook，完整身份、
 源帧与 DataEngine 应用语义见 `_cross-cutting/order-book-frame.md`。
 
+`game_id` 是可选路由元数据，不参与订阅身份：Matching 在概率校验首订时、Strategy 在直接首订时
+把 PairRegistry 已知的赛事 ID 放入 params，OE/SE DataClient 用它建立
+`source_market_id → game_id`。同一 source market 出现冲突 ID 必须拒绝，不能静默覆盖。
+
+### 3.3 SportsPhaseStore(#365)
+
+`src/arbitrage/common/sports_phase.py` 在 NT Cache 通用对象区按 `sports:phase:{game_id}` 保存
+聚合后的 `PRE / IN_PLAY / POST`。状态只允许向前推进：OE/SE `inPlay=false` 只能初始化 PRE，
+`true` 推进到 IN_PLAY；POST 只由 PMSPORTS `ended` 推进。记录同时保留最后一次有效跃迁的
+`source/ts_event`。完整多源生产、生命周期与消费契约见
+`_cross-cutting/sports-event-anchor.md`；common 只拥有 codec 与单调写入 API。
+
 ## 4. 控制台命令(`control.py`,#119)
 
 `src/arbitrage/common/control.py` = Web 控制台 → 组件的运行时控制命令(topic 常量 + frozen dataclass):

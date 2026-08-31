@@ -294,3 +294,10 @@ PASSED 交接期间 Strategy 订阅先建立，Matching 退订后 feed/book 不�
 **3-way 身份验收**：同一个 OE/SE source market 的六条投影腿必须拆为三个二元订阅，
 且 helper 不从 Cache 扩入调用方未传入的其它 selection；2-way 仍只有一个订阅。
 验收：`test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`。
+
+## matching-phase-route:#365 market 订阅携带 game_id
+
+**前置**：candidate 已由 PMSPORTS anchor 取得 `game_id`。**步骤**：Matching 为概率校验建立
+market OBD 首订。**期望**：订阅 params 携带同一 `game_id`，但订阅 key 仍为
+`(venue,binary_market_id)`；2-way/3-way 分组不变。**验收**：
+`test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market`。

@@ -744,6 +744,15 @@ market OBD；因此 Strategy 可能不观察已被后续状态覆盖的中间行
 apply-before-publish 及 single-flight 完成协议由 unit/adapters 测试覆盖，Strategy 的 market
 单次路由行为继续由 `strategy-4.36` 验收。
 
+## strategy-4.38：多源 phase 读取（#365）
+
+**前置**：PairRegistry 可由 pair 取得 `game_id`，PMS/OE/SE 任一来源已推进
+`SportsPhaseStore`。**期望**：`in_game`、first_price 门控和 start_price 采集读取统一
+PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 phase 变化本身不绕过
+价格变化门控。后续正常 OBD 可幂等采 start_price，仍要求 first_price 已存在。
+**验收**：`test_query_in_game.py`、`test_evaluator.py` 的 first/start price 用例，以及
+`tests/arbitrage/common/test_sports_phase.py`。
+
 ### strategy-action-place-bets-log: 实际策略汇总日志
 
 - **前置**:`PlaceBetsAction` 分别消费 mean_rebate legs-only 候选和带

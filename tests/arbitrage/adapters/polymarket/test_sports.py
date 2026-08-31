@@ -13,14 +13,14 @@ import pytest
 import nautilus_trader.adapters.polymarket.sports as sports_module
 import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.polymarket import arb_factories as pm_factories
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataFilter
 from nautilus_trader.adapters.polymarket.sports import SportsGameDataProcessor
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import channel_of_data_type
 from nautilus_trader.adapters.polymarket.sports import game_id_of_data_type
@@ -30,6 +30,9 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.identifiers import TraderId
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_POST
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import SPORTS_CLIENT
 
@@ -225,7 +228,8 @@ def _update(game_id=1, *, ts=100, score="0-0", live=True, ended=False, finished_
 
 def _processor(store=None, *, data_filter=None, subscribed_channels=None, log=None):
     calls: list = []
-    store = store or SportsGameStateStore(_MemCache())
+    cache = _MemCache()
+    store = store or SportsGameStateStore(cache)
     orig_put = store.put
     def recording_put(update):
         orig_put(update)
@@ -233,6 +237,7 @@ def _processor(store=None, *, data_filter=None, subscribed_channels=None, log=No
     store.put = recording_put
     proc = SportsGameDataProcessor(
         store=store,
+        phase_store=SportsPhaseStore(cache),
         data_filter=data_filter or SportsGameDataFilter(),
         subscribed_channels=(
             subscribed_channels if subscribed_channels is not None
@@ -402,6 +407,27 @@ def test_processor_phase_change_only_publishes_phase_channel():
     proc.process(_update(game_id=7, ts=200, score="1-0", live=False, ended=True,
                          finished_ts="2026-07-17T00:00:00Z"))          # score 同,phase 变
     assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_PHASE)]
+
+
+def test_processor_advances_shared_phase_store_from_pms_state():
+    cache = _MemCache()
+    phase_store = SportsPhaseStore(cache)
+    published = []
+    proc = SportsGameDataProcessor(
+        store=SportsGameStateStore(cache),
+        phase_store=phase_store,
+        data_filter=SportsGameDataFilter(),
+        subscribed_channels=lambda _gid: {SPORTS_CHANNEL_PHASE},
+        publish=lambda update, channel: published.append((update.game_id, channel)),
+        log=logging.getLogger("test_sports_phase"),
+    )
+
+    proc.process(_update(game_id=7, ts=100, live=True))
+    assert phase_store.get(7).phase == PHASE_IN_PLAY
+
+    proc.process(_update(game_id=7, ts=200, live=False, ended=True))
+    assert phase_store.get(7).phase == PHASE_POST
+    assert published[-1] == (7, SPORTS_CHANNEL_PHASE)
 
 
 def test_processor_only_publishes_subscribed_channels():

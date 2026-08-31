@@ -290,11 +290,11 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
   `_disconnect` 先取消初连 task，再断开 client。不得改回 `websockets.connect`：其 15/16
   新 asyncio 代理实现存在握手超时后的清理竞态，会额外抛出 callback traceback。
 - 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate`；processor 对至少有一个已订阅
-  channel 的比赛先写 `SportsGameStateStore`，再按变化通道以
+  channel 的比赛先写 `SportsGameStateStore` 与 `SportsPhaseStore`，再按变化通道以
   `CustomData(sports_data_type(game_id, channel), update)` 交给 DataEngine，路由到该场该通道的 topic。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
-- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 收到该场更新后触发评估，
-  条件判断按需查询 `SportsGameStateStore`。详见 strategy architecture §3.1/§3.8.1。
+- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 收到该场更新后触发评估；
+  比分等详情查询 `SportsGameStateStore`，阶段查询 `SportsPhaseStore`。详见 strategy §3.8.1。
 
 #### 3.4.1 CustomData 状态管线(#250,已落地)
 
@@ -329,7 +329,8 @@ sports_data_type(game_id, "phase")
 5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串；无已订阅通道发生变化时只刷新 Cache 时戳。
 6. **比分日志**:Store 成功写入后，首个比分或比分字符串变化时记录比赛、旧比分→新比分、
    `period/elapsed/status`；该日志不要求订阅 `score` 通道，也不改变逐通道发布语义。
-7. **先写 `SportsGameStateStore`**(key `pmsports:game:{gid}`,NT Cache 通用对象区,codec Store 私有)。
+7. **先写 Store**：完整 PMS payload 写 `SportsGameStateStore`；归一阶段再单调推进
+   `SportsPhaseStore`。phase Store 写失败时不得发布 phase 通道，score 通道不受影响。
 8. 对发生变化且已订阅的通道发布 `CustomData(sports_data_type(gid, channel), update)`
    → DataEngine → per-(game,channel) topic。
 
@@ -343,7 +344,7 @@ sports_data_type(game_id, "phase")
 | Strategy | `MatchedPair` 到达(gid 经 PairRegistry `game_id_for_pair`)| 收到 ended、扇出分发完毕后 |
 
 双侧退订汇合 → msgbus 订阅数归零 → engine 转发 unsubscribe → client `_unsubscribe`:
-移出对应 channel；该场全部 channel 归零后才 **`store.delete(gid)` 回收 Store 条目**。
+移出对应 channel；该场全部 channel 归零后才回收详细状态与 phase 两个 Store 条目。
 Store 条目生命周期 = 该场所有通道订阅的并集生命周期；进程重启即清(纯内存)。
 
 **本轮 NT Cython 核心修补**(#250 定夺;升级合并时需保留):
@@ -405,6 +406,22 @@ POST    = ended
 - [ ] 细粒度 phase per-league 归一模块(有消费者再上)。
 
 **分期建议**:先落 agnostic 双通道 + 变化才发(strategy 改订 phase-only,甚至 ended-only);score 通道等真有消费者、细粒度 phase 等有需求再上。
+
+#### 3.4.3 OE/SE `inPlay` 聚合到赛事 phase(#365,已落地 · live-unvalidated)
+
+OE/SE 的有效已订阅 price snapshot 仍按既有路径重建 OrderBook；它们不会比较新旧价格后再决定
+是否写 Cache。`MarketFrameConflater` 可在一帧在途时合并中间快照，因此不是每条物理 WS 消息
+都逐条落 Cache。
+
+Matching/Strategy 的 market 订阅以可选 params 携带 `game_id`，DataClient 建立
+`source_market_id → game_id`。解析器必须区分 `inPlay` 缺失与明确 false：缺失不更新；false
+只初始化 PRE；true 推进 IN_PLAY。状态写到 common `SportsPhaseStore`，不写可变
+`instrument.info`，也不伪造缺少比分字段的 `SportsGameUpdate`。OE/SE 不推断 POST；PMS
+`ended=True` 是唯一 POST 来源。完整聚合不变量见 `_cross-cutting/sports-event-anchor.md`。
+
+处理顺序为：解析并确认 routing → 写 phase（若有效跃迁）→ offer source frame → DataEngine
+完整应用盘口 → 发布 market OBD。phase 变化本身不另发事件、不绕过 Strategy 的价格变化门控；
+后续正常 OBD/PMS 评估读取最新 phase。
 
 ---
 

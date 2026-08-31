@@ -20,6 +20,9 @@ from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.market_books import market_book_topic
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_POST
+from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actor import StrategyEvaluator
@@ -818,10 +821,12 @@ def test_matched_pair_subscribes_market_obd_deduped(monkeypatch):
         lambda _actor, subscription, *, managed: calls.append((subscription, managed)),
     )
     mp = _market_pair(actor)
+    actor._pair_registry.register(mp.pair_id, mp.tradable_instrument_ids, game_id=888)
     actor.on_data(mp)
     assert {subscription.key for subscription, _ in calls} == {
         ("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123"),
     }
+    assert {subscription.game_id for subscription, _ in calls} == {888}
     assert all(managed is False for _, managed in calls)
     actor.on_data(mp)                                  # 再来同 pair → 去重,不再订
     assert len(calls) == 2
@@ -971,6 +976,17 @@ def _sports_update(game_id=888, *, ts=1, live=True, ended=False):
     )
 
 
+def _store_sports_update(actor, update):
+    actor._get_sports_store().put(update)
+    phase = PHASE_POST if update.ended else PHASE_IN_PLAY if update.live else PHASE_PRE
+    actor._get_phase_store().advance(
+        update.game_id,
+        phase,
+        source="PMSPORTS",
+        ts_event=update.ts_event,
+    )
+
+
 def test_sports_update_fans_out_to_all_registered_pairs_for_game():
     """strategy-4.sports.2:同 game 注册多 pair(3-way 场景)→ 一次 strategy 事件全部调度。"""
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
@@ -1093,7 +1109,7 @@ def test_first_price_captures_when_sports_state_confirmed_pre():
     # 明确 PRE 时采集赛前首价。
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
-    actor._get_sports_store().put(_sports_update(888, live=False, ended=False))  # PRE
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))  # PRE
 
     actor.on_order_book_deltas(_obd(str(yes.id)))
     _run(_drain(loop))
@@ -1118,7 +1134,7 @@ def test_first_price_captures_when_sports_state_none():
 def test_first_price_rejects_dirty_sum_and_non_pm_obd():
     actor, _, pair_reg, _, loop, _ = _harness()
     _, _wire_no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.7)
-    actor._get_sports_store().put(_sports_update(888, live=False, ended=False))  # PRE:让流程走到 sum 校验
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))  # PRE:让流程走到 sum 校验
 
     actor.on_order_book_deltas(_obd("A.ORBITEXCH"))
     actor.on_order_book_deltas(_obd(str(_wire_no.id)))
@@ -1130,7 +1146,7 @@ def test_first_price_rejects_dirty_sum_and_non_pm_obd():
 def test_first_price_is_not_captured_after_game_is_live():
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
-    actor._get_sports_store().put(_sports_update(888, live=True, ended=False))
+    _store_sports_update(actor, _sports_update(888, live=True, ended=False))
 
     actor.on_order_book_deltas(_obd(str(yes.id)))
     _run(_drain(loop))
@@ -1143,7 +1159,7 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
 
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
-    actor._get_sports_store().put(_sports_update(888, live=True, ended=False))
+    _store_sports_update(actor, _sports_update(888, live=True, ended=False))
 
     actor.on_order_book_deltas(_obd(str(yes.id)))
     _run(_drain(loop))
@@ -1183,7 +1199,9 @@ def test_start_price_not_captured_without_witnessed_first_price():
     actor, _, pair_reg, _, loop, _ = _harness()
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.8, no_ask=0.7)
 
-    actor.on_data(_sports_update(888, live=True, ended=False))
+    update = _sports_update(888, live=True, ended=False)
+    _store_sports_update(actor, update)
+    actor.on_data(update)
     _run(_drain(loop))
 
     state = actor._get_pair_price_store().get("match_X")
@@ -1204,7 +1222,9 @@ def test_start_price_captures_in_play_after_none_state_first_price_witnessed():
 
     _add_order_book(actor.cache, yes.id, 0.8)          # 开赛前后盘口移动
     _add_order_book(actor.cache, no.id, 0.7)
-    actor.on_data(_sports_update(888, live=True, ended=False))
+    update = _sports_update(888, live=True, ended=False)
+    _store_sports_update(actor, update)
+    actor.on_data(update)
     _run(_drain(loop))
 
     state = actor._get_pair_price_store().get("match_X")

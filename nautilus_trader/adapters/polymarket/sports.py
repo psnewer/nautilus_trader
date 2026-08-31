@@ -60,6 +60,7 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments.betting import null_handicap
 from nautilus_trader.model.objects import Money
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 
 
 SPORTS_CLIENT = "PMSPORTS"   # 不含 `-`:NT node_builder 按 `key.partition("-")[0]` 找 factory,
@@ -450,8 +451,18 @@ class SportsGameDataProcessor:
     ended 帧无跃迁且被终态拒收拦下),覆盖退订命令异步生效前的小窗。
     """
 
-    def __init__(self, *, store, data_filter, subscribed_channels, publish, log) -> None:
+    def __init__(
+        self,
+        *,
+        store,
+        phase_store,
+        data_filter,
+        subscribed_channels,
+        publish,
+        log,
+    ) -> None:
         self._store = store
+        self._phase_store = phase_store
         self._filter = data_filter
         self._subscribed_channels = subscribed_channels  # callable(game_id) -> set[str]
         self._publish = publish                           # callable(update, channel) — client 注入
@@ -482,6 +493,19 @@ class SportsGameDataProcessor:
         except Exception as e:  # noqa: BLE001
             self._log.error(f"sports store write game {update.game_id} failed: {e!r}; not published")
             return
+        try:
+            self._phase_store.advance(
+                update.game_id,
+                sports_phase(update),
+                source=SPORTS_CLIENT,
+                ts_event=update.ts_event,
+            )
+        except Exception as e:  # noqa: BLE001 — phase 状态未写入时不得发布 phase 通知
+            self._log.error(
+                f"sports phase store write game {update.game_id} failed: {e!r}; "
+                "phase not published",
+            )
+            to_publish = [ch for ch in to_publish if ch != SPORTS_CHANNEL_PHASE]
         if (previous is None and update.score) or (
             previous is not None and previous.score != update.score
         ):
@@ -538,8 +562,10 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
         # engine 首订转发/归零退订;归零时序依赖本轮 engine 归零判断修复)。
         # 定了就推(先写 Store 再发布),不定不存不推。
         self._sports_store = SportsGameStateStore(cache)
+        self._phase_store = SportsPhaseStore(cache)
         self._processor = SportsGameDataProcessor(
             store=self._sports_store,
+            phase_store=self._phase_store,
             data_filter=data_filter or SportsGameDataFilter(),
             subscribed_channels=self._subscribed_channels,
             publish=self._publish_update,
@@ -679,6 +705,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
             return
         try:
             self._sports_store.delete(gid)
+            self._phase_store.delete(gid)
         except Exception as e:  # noqa: BLE001 — 回收失败不影响退订本体
             self._log.warning(f"PMSPORTS store reclaim for game {gid} failed: {e!r}")
         self._log.info(f"PMSPORTS game unsubscribed (all channels zero), store reclaimed: {gid}")

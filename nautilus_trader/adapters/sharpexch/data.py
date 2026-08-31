@@ -28,6 +28,7 @@ from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import probability_from_price
 
 
@@ -66,6 +67,8 @@ class SharpExchDataClient(LiveMarketDataClient):
         self._browser_manager = browser_manager
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
         self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
+        self._market_to_game_id: dict[str, int] = {}
+        self._phase_store = SportsPhaseStore(cache)
         self._market_frame_conflater = MarketFrameConflater(
             self.venue,
             lambda data: self._handle_data(data),
@@ -107,6 +110,15 @@ class SharpExchDataClient(LiveMarketDataClient):
             raise NotImplementedError
         binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
         source_market_id = str(command.params.get("source_market_id") or "")
+        game_id = command.params.get("game_id")
+        if game_id is not None:
+            game_id = int(game_id)
+            existing = self._market_to_game_id.get(source_market_id)
+            if existing is not None and existing != game_id:
+                raise ValueError(
+                    f"SharpExch source market {source_market_id} maps to conflicting "
+                    f"game_id values: {existing} != {game_id}",
+                )
         for value in command.params.get("instrument_ids") or ():
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             instrument = self._cache.instrument(instrument_id)
@@ -121,6 +133,8 @@ class SharpExchDataClient(LiveMarketDataClient):
                     f"for {binary_market_id} (source={source_market_id})",
                 )
             await self._subscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
+        if game_id is not None:
+            self._market_to_game_id[source_market_id] = game_id
         self._market_frame_conflater.activate(source_market_id)
 
     async def _unsubscribe(self, command) -> None:
@@ -131,6 +145,7 @@ class SharpExchDataClient(LiveMarketDataClient):
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             await self._unsubscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
         if source_market_id not in self._market_to_instruments:
+            self._market_to_game_id.pop(source_market_id, None)
             self._market_frame_conflater.deactivate(source_market_id)
 
         self._log.info("SharpExchDataClient connected (competition pages opened on subscribe)")
@@ -265,6 +280,20 @@ class SharpExchDataClient(LiveMarketDataClient):
         deltas_items = list(out.get("deltas") or [])
         standard_subscriptions = self.subscribed_order_book_deltas()
         market_id = str(out.get("market_id") or "")
+        in_play = out.get("in_play")
+        game_id = self._market_to_game_id.get(market_id)
+        if game_id is not None and in_play is not None:
+            changed = self._phase_store.observe_in_play(
+                game_id,
+                bool(in_play),
+                source=f"{SHARPEXCH}:{market_id}",
+                ts_event=self._clock.timestamp_ns(),
+            )
+            if changed:
+                self._log.info(
+                    f"Sports phase updated: game={game_id} "
+                    f"phase={'IN_PLAY' if in_play else 'PRE'} source={SHARPEXCH}:{market_id}",
+                )
         market_deltas: dict[str, list[OrderBookDeltas]] = {}
         published_count = 0
         for deltas in deltas_items:
@@ -936,7 +965,7 @@ def se_market_price_message_to_book_deltas(
                 deltas.append(item)
     return {
         "market_id": market_id,
-        "in_play": bool(parsed.get("in_play", False)),
+        "in_play": parsed.get("in_play"),
         "runners": len(parsed.get("runners", [])),
         "subscribed_selections": len(routing),
         "deltas": deltas,

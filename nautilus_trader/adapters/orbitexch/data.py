@@ -47,6 +47,7 @@ from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import probability_from_price
 
 
@@ -268,6 +269,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
         self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
+        self._market_to_game_id: dict[str, int] = {}
+        self._phase_store = SportsPhaseStore(cache)
         self._market_frame_conflater = MarketFrameConflater(
             self.venue,
             lambda data: self._handle_data(data),
@@ -354,6 +357,15 @@ class OrbitExchDataClient(LiveMarketDataClient):
             raise NotImplementedError
         binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
         source_market_id = str(command.params.get("source_market_id") or "")
+        game_id = command.params.get("game_id")
+        if game_id is not None:
+            game_id = int(game_id)
+            existing = self._market_to_game_id.get(source_market_id)
+            if existing is not None and existing != game_id:
+                raise ValueError(
+                    f"OrbitExch source market {source_market_id} maps to conflicting "
+                    f"game_id values: {existing} != {game_id}",
+                )
         instrument_ids = tuple(
             value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             for value in command.params.get("instrument_ids") or ()
@@ -372,6 +384,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 )
             self._register_instrument_routing(instrument_id)
             await self._ensure_competition_page(instrument_id)
+        if game_id is not None:
+            self._market_to_game_id[source_market_id] = game_id
         self._market_frame_conflater.activate(source_market_id)
 
     async def _unsubscribe(self, command) -> None:
@@ -383,6 +397,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             orphaned.update(self._unregister_instrument_routing(instrument_id))
         if source_market_id not in self._market_to_instruments:
+            self._market_to_game_id.pop(source_market_id, None)
             self._market_frame_conflater.deactivate(source_market_id)
         for page_key in orphaned:
             await self._close_competition_page(page_key)
@@ -657,9 +672,22 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 f"subscribed_selections={len(routing)}",
             )
         ts = self._clock.timestamp_ns()
+        in_play = parsed.get("in_play")
+        game_id = self._market_to_game_id.get(market_id)
+        if game_id is not None and in_play is not None:
+            changed = self._phase_store.observe_in_play(
+                game_id,
+                bool(in_play),
+                source=f"{ORBITEXCH}:{market_id}",
+                ts_event=ts,
+            )
+            if changed:
+                self._log.info(
+                    f"Sports phase updated: game={game_id} "
+                    f"phase={'IN_PLAY' if in_play else 'PRE'} source={ORBITEXCH}:{market_id}",
+                )
         # #109:WS 存活由 handler 内部封装(心跳超时 + close → on_disconnect),此处不写任何存活锚。
-        # #250:instrument.info["in_play"] 写回已废除 —— 比赛状态归 PMSPORTS sports 管线
-        # (snapshot.sports_state),赔率帧只产出 OrderBookDeltas。
+        # phase 写入独立的 SportsPhaseStore；instrument.info 仍保持不可变。
         market_deltas: dict[str, list[OrderBookDeltas]] = {}
         standard_subscriptions = self.subscribed_order_book_deltas()
         for runner in parsed.get("runners", []):

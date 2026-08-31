@@ -261,3 +261,13 @@ pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
 非空但全部非法仍返回 None。**验收**：`test_runner_to_book_deltas_emits_clear_when_empty`、
 `test_market_price_message_to_book_deltas_keeps_metadata_with_empty_book_clear`、
 `test_handle_price_frame_publishes_clear_for_empty_book`。
+
+## #365：SE inPlay 写入统一 phase
+
+已订阅 source market 的订阅 params 提供 `game_id`；DataClient 保存路由并在有效 price frame 中
+把明确 `inPlay` 写入 `SportsPhaseStore`。parser 对缺失字段返回 None，不得默认成 false；不写
+`instrument.info`，也不新增 phase 评估事件。**验收**：
+`test_market_subscription_records_source_market_game_id`、
+`test_on_price_frame_updates_phase_without_instrument_info_mutation`、
+`test_on_price_frame_missing_inplay_does_not_create_phase`、
+`test_parse_price_message_supports_list_levels`。

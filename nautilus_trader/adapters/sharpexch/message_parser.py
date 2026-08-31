@@ -27,6 +27,7 @@ class SharpExchMessageParser:
             if not market_id:
                 return None
             market_def = message.get("marketDefinition") or {}
+            raw_in_play = market_def.get("inPlay")
             runners = []
             for runner in message.get("rc") or []:
                 if not isinstance(runner, dict):
@@ -49,7 +50,7 @@ class SharpExchMessageParser:
                 "event_name": message.get("mainEventName", "Unknown"),
                 "market_name": message.get("marketNameWithParents", "Unknown"),
                 "status": market_def.get("status", "UNKNOWN"),
-                "in_play": bool(market_def.get("inPlay", False)),
+                "in_play": raw_in_play if isinstance(raw_in_play, bool) else None,
                 "runners": runners,
                 "timestamp": message.get("apiPt"),
             }

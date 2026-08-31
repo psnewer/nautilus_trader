@@ -48,6 +48,7 @@ def test_parse_price_message_supports_list_levels():
     runner = parsed["runners"][0]
     assert runner["back"] == [{"price": 2.0, "size": 10.0}]
     assert runner["lay"] == [{"price": 2.1, "size": 5.0}]
+    assert parsed["in_play"] is None
 
 
 def test_parse_price_message_supports_dict_of_level_arrays():

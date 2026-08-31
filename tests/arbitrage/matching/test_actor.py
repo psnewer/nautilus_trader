@@ -31,10 +31,10 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import probability_from_price
-from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.matching.actor import _RuntimeDeps
@@ -771,10 +771,11 @@ def test_market_book_subscriptions_group_two_way_and_three_way_by_binary_market(
     for instrument in (*two_way, *three_way):
         cache.add_instrument(instrument)
 
-    two_way_subscriptions = market_book_subscriptions(cache, [leg.id for leg in two_way])
+    two_way_subscriptions = market_book_subscriptions(cache, [leg.id for leg in two_way], game_id=42)
     assert len(two_way_subscriptions) == 1
     assert two_way_subscriptions[0].market_id == "1-123"
     assert set(two_way_subscriptions[0].instrument_ids) == {leg.id for leg in two_way}
+    assert two_way_subscriptions[0].params["game_id"] == 42
 
     three_way_subscriptions = market_book_subscriptions(cache, [leg.id for leg in three_way])
     assert {subscription.market_id for subscription in three_way_subscriptions} == {

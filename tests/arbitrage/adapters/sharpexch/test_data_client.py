@@ -22,6 +22,7 @@ from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
 from tests.arbitrage.adapters.sharpexch.test_provider import _event
 
 
@@ -53,6 +54,28 @@ def test_data_client_constructs_offline():
     assert str(client.venue) == "SHARPEXCH"
     assert client._market_to_instruments == {}
     assert client._comp_pages == {}
+
+
+def test_market_subscription_records_source_market_game_id():
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+
+    async def no_book(_command):
+        return None
+
+    client._subscribe_order_book_deltas = no_book
+    command = SimpleNamespace(
+        data_type=market_order_book_data_type(Venue("SHARPEXCH"), inst.info["binary_market_id"]),
+        params={
+            "source_market_id": inst.market_id,
+            "instrument_ids": (inst.id,),
+            "game_id": 77,
+        },
+    )
+    client._loop.run_until_complete(client._subscribe(command))
+
+    assert client._market_to_game_id[inst.market_id] == 77
 
 
 def test_connect_starts_browser_loads_provider_and_sends_instruments():
@@ -358,6 +381,37 @@ def test_on_price_frame_publishes_deltas():
     assert "in_play" not in inst.info      # #250:info["in_play"] 写回已废除
     assert client._price_frames_seen == 1
     assert client._price_deltas_published == 1
+
+
+def test_on_price_frame_updates_phase_without_instrument_info_mutation():
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): [(inst.id, "yes")]}}
+    client._market_to_game_id[inst.market_id] = 77
+    client._handle_data = lambda _data: None
+
+    client._on_price_frame({
+        "id": inst.market_id,
+        "marketDefinition": {"inPlay": True},
+        "rc": [{"id": inst.selection_id, "bdatb": [], "bdatl": []}],
+    })
+
+    assert client._phase_store.get(77).phase == PHASE_IN_PLAY
+    assert "in_play" not in inst.info
+
+
+def test_on_price_frame_missing_inplay_does_not_create_phase():
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): [(inst.id, "yes")]}}
+    client._market_to_game_id[inst.market_id] = 77
+    client._handle_data = lambda _data: None
+
+    client._on_price_frame({"id": inst.market_id, "marketDefinition": {}, "rc": [{"id": inst.selection_id}]})
+
+    assert client._phase_store.get(77) is None
 
 
 def test_on_price_frame_publishes_one_market_batch_for_all_runners():

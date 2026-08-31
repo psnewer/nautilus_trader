@@ -52,6 +52,9 @@ from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.positions import pair_positions_digest
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_POST
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.events import MatchedPair
@@ -203,6 +206,7 @@ class StrategyEvaluator(Strategy):
         self._market_obd_subscribed: dict[tuple[str, str], MarketBookSubscription] = {}
         self._pair_inflight = deps.pair_inflight  # §7:per-pair **评估**串行闸(#261:不进执行段)
         self._sports_store = None                 # #250:SportsGameStateStore(lazy,注册后经 self.cache 建)
+        self._phase_store = None
         self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
         self._game_market_obd: dict[int, set[tuple[str, str]]] = {}
         self._pair_price_store = None
@@ -260,6 +264,10 @@ class StrategyEvaluator(Strategy):
         self._capture_first_price(deltas)
         self._update_extreme_prices(deltas)
         self._update_trend_price(deltas)
+        instrument_id = getattr(deltas, "instrument_id", None)
+        pair_id = self._pair_registry.get(instrument_id) if instrument_id is not None else None
+        if pair_id is not None:
+            self._capture_start_price_for_pair(pair_id)
         if not price_changed and not self._arbitrage_params.evaluate_on_depth_change:
             return
         self._route_eval(deltas, event_name="OrderBookDeltas")
@@ -275,6 +283,9 @@ class StrategyEvaluator(Strategy):
             self._capture_first_price(deltas)
             self._update_extreme_prices(deltas)
             self._update_trend_price(deltas)
+            pair_id = self._pair_registry.get(deltas.instrument_id)
+            if pair_id is not None:
+                self._capture_start_price_for_pair(pair_id)
 
     def _route_eval_market(self, batch: MarketOrderBookDeltas) -> None:
         price_changed = False
@@ -515,11 +526,11 @@ class StrategyEvaluator(Strategy):
         game_id = self._price_game_by_pair.get(pair_id) if pair_id is not None else None
         if pair_id is None or game_id is None:
             return
-        sports_store = self._get_sports_store()
-        sports_state = sports_store.get(game_id) if sports_store is not None else None
+        phase_store = self._get_phase_store()
+        sports_state = phase_store.get(game_id) if phase_store is not None else None
         # Sports 尚无状态(None)与明确 PRE 均按赛前处理；仅明确 live/ended 禁止采集。
         # 这与 in_game 的 None=False 语义一致，并允许 firehose 首帧通常即 IN_PLAY 时仍先见证赛前盘口。
-        if sports_state is not None and (sports_state.live or sports_state.ended):
+        if sports_state is not None and sports_state.phase in {PHASE_IN_PLAY, PHASE_POST}:
             return
         store = self._get_pair_price_store()
         state = store.get(pair_id) if store is not None else None
@@ -565,23 +576,27 @@ class StrategyEvaluator(Strategy):
             store.update_trend(pair_id, prices)
 
     def _capture_start_prices(self, update: SportsGameUpdate) -> None:
-        if not update.live or update.ended:
-            return
-        store = self._get_pair_price_store()
-        if store is None:
+        phase_store = self._get_phase_store()
+        phase_state = phase_store.get(update.game_id) if phase_store is not None else None
+        if phase_state is None or phase_state.phase != PHASE_IN_PLAY:
             return
         for pair_id in sorted(self._price_pairs_by_game.get(int(update.game_id), set())):
-            state = store.get(pair_id)
-            # late-join 护栏:仅当已采到 first_price(= 见证过赛前盘口)才认这帧 live 为开赛价。
-            # firehose 不推赛前帧、一场首帧即 IN_PLAY(data §3.4.2),"phase live 帧"本身分不清
-            # "赛前订上、首帧≈开赛"与"中途接入、首帧已深盘中";first_price 只在赛前 OBD 可采
-            # (live/ended 禁写)→ 它非空即证明见证过赛前。中途接入采不到 first_price → start_price
-            # 保持默认 0.6,不把盘中(可能已崩)赔率误当开赛价污染 dash_gate 阈值(#322 修订,strategy §3.8.2)。
-            if state is None or not state.first_price:
-                continue
-            prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
-            if prices is not None:
-                store.capture_start(pair_id, prices)
+            self._capture_start_price_for_pair(pair_id)
+
+    def _capture_start_price_for_pair(self, pair_id: str) -> None:
+        game_id = self._price_game_by_pair.get(pair_id)
+        phase_store = self._get_phase_store()
+        phase_state = phase_store.get(game_id) if phase_store is not None and game_id is not None else None
+        if phase_state is None or phase_state.phase != PHASE_IN_PLAY:
+            return
+        store = self._get_pair_price_store()
+        state = store.get(pair_id) if store is not None else None
+        # 仅已见证赛前盘口的 pair 才采 start_price；OE/SE 确认 IN_PLAY 后也沿用同一护栏。
+        if state is None or not state.first_price:
+            return
+        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+        if prices is not None:
+            store.capture_start(pair_id, prices)
 
     def _pm_ask_prices(self, pair_id: str, outcomes: tuple[str, ...]) -> dict[str, float] | None:
         expected = set(outcomes)
@@ -625,12 +640,16 @@ class StrategyEvaluator(Strategy):
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
         """按 venue 原生 market 订阅 OBD；同 market 多腿共享一个上游批次。"""
+        game_id = self._pair_registry.game_id_for_pair(mp.pair_id)
         try:
-            subscriptions = market_book_subscriptions(self.cache, mp.tradable_instrument_ids)
+            subscriptions = market_book_subscriptions(
+                self.cache,
+                mp.tradable_instrument_ids,
+                game_id=game_id,
+            )
         except ValueError as exc:
             self._log.warning(f"Market OBD subscription build failed for {mp.pair_id}: {exc}")
             return
-        game_id = self._pair_registry.game_id_for_pair(mp.pair_id)
         for subscription in subscriptions:
             key = subscription.key
             if game_id is not None:
@@ -675,6 +694,7 @@ class StrategyEvaluator(Strategy):
         instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
         positions_digest = pair_positions_digest(self.cache, instrument_ids)  # #317:仅 position
         sports_store = self._get_sports_store()
+        phase_store = self._get_phase_store()
         # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
         # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
         submitter = self._make_submitter()
@@ -683,6 +703,7 @@ class StrategyEvaluator(Strategy):
             "cache": self.cache,
             "pair_registry": self._pair_registry,
             "sports_store": sports_store,
+            "phase_store": phase_store,
             "positions_digest": positions_digest,
             "submitter": submitter,
             "pair_order_canceler": self._make_pair_order_canceler(),
@@ -748,6 +769,14 @@ class StrategyEvaluator(Strategy):
             except Exception:  # noqa: BLE001 — 未注册 harness 无 cache
                 return None
         return self._sports_store
+
+    def _get_phase_store(self):
+        if self._phase_store is None:
+            try:
+                self._phase_store = SportsPhaseStore(self.cache)
+            except Exception as e:  # noqa: BLE001
+                self._log.warning(f"SportsPhaseStore unavailable: {e!r}")
+        return self._phase_store
 
     def _get_pair_price_store(self):
         """lazy 建 PairPriceStore，保存 pair 参考价与趋势基准。"""

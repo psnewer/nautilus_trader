@@ -32,6 +32,7 @@ from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
@@ -207,6 +208,29 @@ def test_register_routing_reads_market_and_selection_from_instrument():
     assert c._market_to_instruments["1-123"]["42"] == [(inst.id, "yes")]
 
 
+def test_market_subscription_records_source_market_game_id():
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+
+    async def no_page(_instrument_id):
+        return None
+
+    c._ensure_competition_page = no_page
+    command = SimpleNamespace(
+        data_type=market_order_book_data_type(Venue("ORBITEXCH"), inst.info["binary_market_id"]),
+        params={
+            "source_market_id": inst.market_id,
+            "instrument_ids": (inst.id,),
+            "game_id": 77,
+        },
+    )
+    c._loop.run_until_complete(c._subscribe(command))
+
+    assert c._market_to_game_id[inst.market_id] == 77
+
+
 def test_register_synthetic_no_routing_uses_real_venue_selection_id():
     """合成 no 的负 selection 只用于缓存身份，WS 路由必须使用真实 selection。"""
     from tests.arbitrage.risk._factories import oe_instrument
@@ -262,6 +286,39 @@ def test_on_price_frame_routes_to_handle_data():
     assert isinstance(captured[0], OrderBookDeltas)
     assert c._price_frames_seen == 1
     assert c._price_deltas_published == 1
+
+
+def test_on_price_frame_updates_phase_without_instrument_info_mutation():
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+    c._register_instrument_routing(inst.id)
+    c._market_to_game_id[inst.market_id] = 77
+    c._handle_data = lambda _data: None
+
+    c._on_price_frame({
+        "id": inst.market_id,
+        "rc": [{"id": 42, "bdatb": [], "bdatl": []}],
+        "marketDefinition": {"inPlay": True},
+    })
+
+    assert c._phase_store.get(77).phase == PHASE_IN_PLAY
+    assert "in_play" not in inst.info
+
+
+def test_on_price_frame_missing_inplay_does_not_create_phase():
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+    c._register_instrument_routing(inst.id)
+    c._market_to_game_id[inst.market_id] = 77
+    c._handle_data = lambda _data: None
+
+    c._on_price_frame({"id": inst.market_id, "rc": [{"id": 42}], "marketDefinition": {}})
+
+    assert c._phase_store.get(77) is None
 
 
 def test_on_price_frame_publishes_one_market_batch_for_all_runners():

@@ -11,7 +11,9 @@
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
+from typing import Dict
+from typing import Optional
 
 
 class OrbitExchMessageParser:
@@ -82,7 +84,8 @@ class OrbitExchMessageParser:
             # 市场状态
             market_def = message.get('marketDefinition', {})
             status = market_def.get('status', 'UNKNOWN')
-            in_play = market_def.get('inPlay', False)
+            raw_in_play = market_def.get('inPlay')
+            in_play = raw_in_play if isinstance(raw_in_play, bool) else None
             
             # 解析选手/赔率
             runners = []

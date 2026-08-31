@@ -327,6 +327,11 @@ def _evict_game(gid):
 > Store 条目。旧裸 `data.SportsGameUpdate*` 订阅与 lifecycle/strategy 通道已废除。生产、订阅
 > 模型与归零回收契约见 data §3.4.1;本文只拥有 eviction 行为。
 
+> **#365 phase 路由元数据**：概率校验创建 market OBD 首订时，将 `_PairCandidate.game_id`
+> 放入 `MarketBookSubscription.params`。它不改变 `(venue,binary_market_id)` 订阅身份或校验算法，
+> 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
+> `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
+
 ---
 
 ## 5. 与横切的咬合

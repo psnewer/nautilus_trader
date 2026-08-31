@@ -498,7 +498,11 @@ class MarketMatchingActor(Actor):
         state.log_message = log_message
         self._pair_validations[candidate.pair_id] = state
         try:
-            subscriptions = market_book_subscriptions(self.cache, candidate.tradable_instrument_ids)
+            subscriptions = market_book_subscriptions(
+                self.cache,
+                candidate.tradable_instrument_ids,
+                game_id=candidate.game_id,
+            )
         except ValueError as exc:
             state.status = "FAILED"
             state.fail_reason = str(exc)
