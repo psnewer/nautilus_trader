@@ -482,6 +482,15 @@ class SportsGameDataProcessor:
         except Exception as e:  # noqa: BLE001
             self._log.error(f"sports store write game {update.game_id} failed: {e!r}; not published")
             return
+        if (previous is None and update.score) or (
+            previous is not None and previous.score != update.score
+        ):
+            old_score = previous.score if previous is not None else "<none>"
+            self._log.info(
+                f"Sports score updated: game={update.game_id} "
+                f"{update.home_team} vs {update.away_team} score={old_score}->{update.score} "
+                f"period={update.period} elapsed={update.elapsed} status={update.status}",
+            )
         for ch in to_publish:   # 空 → 只存不发
             try:
                 self._publish(update, ch)

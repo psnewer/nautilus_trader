@@ -223,7 +223,7 @@ def _update(game_id=1, *, ts=100, score="0-0", live=True, ended=False, finished_
     )
 
 
-def _processor(store=None, *, data_filter=None, subscribed_channels=None):
+def _processor(store=None, *, data_filter=None, subscribed_channels=None, log=None):
     calls: list = []
     store = store or SportsGameStateStore(_MemCache())
     orig_put = store.put
@@ -239,7 +239,7 @@ def _processor(store=None, *, data_filter=None, subscribed_channels=None):
             else (lambda gid: {SPORTS_CHANNEL_PHASE, SPORTS_CHANNEL_SCORE})
         ),
         publish=lambda update, channel: calls.append(("publish", update.game_id, channel)),
-        log=logging.getLogger("test_sports"),
+        log=log or logging.getLogger("test_sports"),
     )
     return proc, store, calls
 
@@ -370,6 +370,27 @@ def test_processor_score_change_only_publishes_score_channel():
 
     proc.process(_update(game_id=7, ts=200, score="2-1", live=True))   # phase 同,score 变
     assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_SCORE)]
+
+
+def test_processor_logs_score_after_store_write_even_without_score_subscription():
+    """比分变化写入 Cache 后记录 INFO；无需订阅 score 通道，也不额外发布消息。"""
+    log = MagicMock()
+    proc, store, calls = _processor(
+        subscribed_channels=lambda gid: {SPORTS_CHANNEL_PHASE},
+        log=log,
+    )
+    proc.process(_update(game_id=7, ts=100, score="1-0", live=True))
+    log.info.reset_mock()
+    calls.clear()
+
+    proc.process(_update(game_id=7, ts=200, score="2-1", live=True))
+
+    assert store.get(7).score == "2-1"
+    log.info.assert_called_once_with(
+        "Sports score updated: game=7 A vs B score=1-0->2-1 "
+        "period=Q1 elapsed= status=InProgress",
+    )
+    assert [c for c in calls if c[0] == "publish"] == []
 
 
 def test_processor_phase_change_only_publishes_phase_channel():

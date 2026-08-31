@@ -18,8 +18,8 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 _EPS = 1e-9
-_COMMISSION_MIN = 0.95
-_COMMISSION_MAX = 1.05
+_COMMISSION_MIN = 0.98
+_COMMISSION_MAX = 1.02
 _LOG = logging.getLogger(__name__)
 
 

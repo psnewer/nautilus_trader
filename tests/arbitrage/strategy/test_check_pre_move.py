@@ -97,9 +97,9 @@ def test_zero_share_fails_closed():
 
 
 def test_picks_largest_drop_outcome():
-    # yes 从 0.70 跌 7.14%，no 从 0.50 跌 40% → 买 no。
+    # yes 从 0.70 跌 2.86%，no 从 0.50 跌 40% → 买 no。
     ctx = _ctx(
-        now={"yes": 0.65, "no": 0.30},
+        now={"yes": 0.68, "no": 0.30},
         extremes=[{"yes": 0.70, "no": 0.30}, {"yes": 0.50, "no": 0.50}],
     )
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is True
@@ -124,3 +124,31 @@ def test_current_prices_outside_commission_range_do_not_trigger():
 
     assert PreMoveCheck(move_threshold=0.1).passes(ctx) is False
     assert "legs" not in ctx.scratch
+
+
+def test_current_prices_at_commission_boundaries_can_trigger():
+    lower = _ctx(
+        now={"yes": 0.38, "no": 0.60},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
+    upper = _ctx(
+        now={"yes": 0.40, "no": 0.62},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
+
+    assert PreMoveCheck(move_threshold=0.1).passes(lower) is True
+    assert PreMoveCheck(move_threshold=0.1).passes(upper) is True
+
+
+def test_current_prices_inside_old_but_outside_new_commission_range_do_not_trigger():
+    below = _ctx(
+        now={"yes": 0.38, "no": 0.59},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
+    above = _ctx(
+        now={"yes": 0.40, "no": 0.63},
+        extremes=[{"yes": 0.50, "no": 0.50}],
+    )
+
+    assert PreMoveCheck(move_threshold=0.1).passes(below) is False
+    assert PreMoveCheck(move_threshold=0.1).passes(above) is False

@@ -601,6 +601,12 @@ ended 在 `phase` 通道放行一次后该场帧全拒(终态,覆盖退订异步
 未订阅的通道其字段变化不发布(但仍写 Store);同场订了 phase+score 时退订其一 Store 不回收,
 两通道全归零才 `delete`(依赖基类先 `_remove_subscription` 再调 `_unsubscribe` 的时序)。
 
+### pm-adapter-sports.state.9:比分变化日志
+
+**用例**:`test_processor_logs_score_after_store_write_even_without_score_subscription`。
+**期望/验收**:首个比分或比分变化在 Store 成功写入后记录 INFO，包含比赛、旧比分→新比分及
+`period/elapsed/status`；只订 `phase` 时同样记录，但不额外发布 `score` 消息。
+
 ### pm-adapter-sports.state.7:NT 原生 WS 与显式代理
 
 **用例**:`test_sports_ws_uses_nt_client_with_explicit_proxy` /

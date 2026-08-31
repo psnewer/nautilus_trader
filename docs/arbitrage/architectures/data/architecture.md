@@ -327,8 +327,10 @@ sports_data_type(game_id, "phase")
    (eviction 依赖),覆盖退订命令异步生效前的小窗。
 4. **过期拒收**:`ts_event` 倒退整体丢弃,Store 不回退。
 5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串；无已订阅通道发生变化时只刷新 Cache 时戳。
-6. **先写 `SportsGameStateStore`**(key `pmsports:game:{gid}`,NT Cache 通用对象区,codec Store 私有)。
-7. 对发生变化且已订阅的通道发布 `CustomData(sports_data_type(gid, channel), update)`
+6. **比分日志**:Store 成功写入后，首个比分或比分字符串变化时记录比赛、旧比分→新比分、
+   `period/elapsed/status`；该日志不要求订阅 `score` 通道，也不改变逐通道发布语义。
+7. **先写 `SportsGameStateStore`**(key `pmsports:game:{gid}`,NT Cache 通用对象区,codec Store 私有)。
+8. 对发生变化且已订阅的通道发布 `CustomData(sports_data_type(gid, channel), update)`
    → DataEngine → per-(game,channel) topic。
 
 **错误边界**:Store 写失败 → 不发布(记录 error,后续帧重试);publish 失败 → Cache 不回滚。

@@ -285,6 +285,25 @@
 - 期望:`venue_order_alive[venue]=false`;position 失败同理只置 `venue_position_alive=false`。
 - 验收:`test_engine_barrier.py::test_periodic_order_query_exception_marks_only_order_dead` / `test_periodic_position_query_exception_marks_only_position_dead`；启动 mass-status 整体失败与部分失败分别见 `test_session.py::test_generate_mass_status_none_marks_both_dimensions_dead` / `test_generate_mass_status_partial_failure_marks_each_dimension_independently`。
 
+### execution-4.5.3a: order 批量查询失败不推进 missing-order
+- 前置:本地 cache 存在该 venue 的 open/inflight 订单，周期 open-order reconcile 已发起。
+- 输入:该 venue 的 `generate_order_status_reports` 抛异常；其他 venue 可正常返回。
+- 步骤:聚合各 client 的查询结果，再进入 NT missing-at-venue 比较。
+- 期望:失败 venue 只置 `order_alive=false`；其本地 open/inflight client order id 进入保护集，不增加
+  `open_check_missing_retries`，不触发单订单查询，也不生成 `OrderRejected` / `OrderCanceled`。
+  查询成功并真实返回 `[]` 时仍按既有 missing-order 语义处理。
+- 验收:`tests/arbitrage/execution/test_engine_barrier.py::test_periodic_order_query_exception_marks_only_order_dead`。
+
+### execution-4.5.3b: 外部挂单导入建立完整 client/account 归属
+- 前置:启动或周期对账返回 cache 中不存在的 open order；report 可缺 `account_id`，但 instrument venue
+  已注册既有 ExecutionClient routing。
+- 输入:状态为 `ACCEPTED` 的 `OrderStatusReport`，包含 client/venue order id。
+- 步骤:按 report account 或既有 venue/default routing 解析报告来源，生成 external order 并应用 accepted。
+- 期望:report 与 order 的 `account_id` 均为报告来源 client 的账户；cache 同时建立
+  `client_order_id → client_id` 与 `venue_order_id → client_order_id` 索引。后续 QueryOrder/CancelOrder
+  可路由到原 client，不依赖历史不完整订单兼容逻辑。
+- 验收:`tests/arbitrage/execution/test_engine_barrier.py::test_external_open_order_reconciliation_indexes_account_and_execution_client`。
+
 ### execution-4.5.4: 普通 submit 不主动置 false
 - 前置:venue order/position 均 alive。
 - 输入:普通 submit+track session 开始。

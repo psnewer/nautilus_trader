@@ -3053,6 +3053,23 @@ class LiveExecutionEngine(ExecutionEngine):
                 )
                 return True  # Filtered instrument not loaded
 
+            # 外部订单必须绑定产生报告的执行客户端；报告缺账户时，以既有路由客户端账户补齐。
+            reporting_client = next(
+                (
+                    client
+                    for client in self._clients.values()
+                    if report.account_id is not None and client.account_id == report.account_id
+                ),
+                None,
+            )
+            if reporting_client is None:
+                reporting_client = self._routing_map.get(
+                    report.instrument_id.venue,
+                    self._default_client,
+                )
+            if report.account_id is None and reporting_client is not None:
+                report.account_id = reporting_client.account_id
+
             order = self._generate_order(report, is_external)
 
             if order is None:
@@ -3060,7 +3077,10 @@ class LiveExecutionEngine(ExecutionEngine):
                 return True  # No further reconciliation
 
             # Add to cache without determining any position ID initially
-            self._cache.add_order(order)
+            self._cache.add_order(
+                order,
+                client_id=reporting_client.id if reporting_client is not None else None,
+            )
 
             # Explicitly index venue_order_id for external orders to ensure they can be found
             # by venue_order_id in subsequent reconciliation passes

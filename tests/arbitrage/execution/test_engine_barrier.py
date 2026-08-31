@@ -11,15 +11,21 @@ from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderCancelRejected
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.mocks.exec_clients import MockExecutionClient
@@ -654,6 +660,10 @@ def test_periodic_order_query_exception_marks_only_order_dead():
     ctx = _Ctx()
     ctx.liveness.mark_order_alive(ctx.client.venue)
     ctx.liveness.mark_position_alive(ctx.client.venue)
+    order = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",)).order
+    order.apply(TestEventStubs.order_submitted(order, ctx.client.account_id))
+    order.apply(TestEventStubs.order_accepted(order, ctx.client.account_id))
+    ctx.cache.add_order(order)
 
     async def fake_query(_command):
         raise RuntimeError("order unavailable")
@@ -662,11 +672,54 @@ def test_periodic_order_query_exception_marks_only_order_dead():
     reports, venue_reported_ids = ctx.loop.run_until_complete(
         ctx.engine._query_order_status_reports(),
     )
+    ctx.engine._recon_check_retries[order.client_order_id] = 1
+    ctx.loop.run_until_complete(
+        ctx.engine._handle_missing_orders_at_venue(
+            {order.client_order_id},
+            venue_reported_ids,
+        ),
+    )
 
     assert reports == []
-    assert venue_reported_ids == set()
+    assert venue_reported_ids == {order.client_order_id}
+    assert ctx.engine._recon_check_retries[order.client_order_id] == 1
     assert not ctx.liveness.order_alive(ctx.client.venue)
     assert ctx.liveness.position_alive(ctx.client.venue)
+
+
+def test_external_open_order_reconciliation_indexes_account_and_execution_client():
+    ctx = _Ctx()
+    account_id = AccountId("POLYMARKET-001")
+    ctx.client._set_account_id(account_id)
+    client_order_id = ClientOrderId("EXTERNAL-OPEN-1")
+    venue_order_id = VenueOrderId("VENUE-OPEN-1")
+    report = OrderStatusReport(
+        account_id=None,
+        instrument_id=ctx.instrument.id,
+        client_order_id=client_order_id,
+        venue_order_id=venue_order_id,
+        order_side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.ACCEPTED,
+        price=Price.from_str("0.40"),
+        quantity=Quantity.from_int(5),
+        filled_qty=Quantity.zero(6),
+        report_id=UUID4(),
+        ts_accepted=ctx.clock.timestamp_ns(),
+        ts_last=ctx.clock.timestamp_ns(),
+        ts_init=ctx.clock.timestamp_ns(),
+    )
+
+    assert ctx.engine._reconcile_order_report(report, trades=[])
+
+    order = ctx.cache.order(client_order_id)
+    assert order is not None
+    assert order.status == OrderStatus.ACCEPTED
+    assert report.account_id == account_id
+    assert order.account_id == account_id
+    assert ctx.cache.client_id(client_order_id) == ctx.client.id
+    assert ctx.cache.client_order_id(venue_order_id) == client_order_id
 
 
 def test_periodic_position_query_exception_marks_only_position_dead():

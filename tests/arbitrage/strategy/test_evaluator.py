@@ -1160,6 +1160,14 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
     assert state.up_price == {"yes": 0.7, "no": 0.56}
     assert state.down_price == {"yes": 0.44, "no": 0.3}
 
+    _add_order_book(actor.cache, yes.id, 0.48)
+    _add_order_book(actor.cache, no.id, 0.49)
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+    state = actor._get_pair_price_store().get("match_X")
+    assert state.up_price == {"yes": 0.7, "no": 0.56}
+    assert state.down_price == {"yes": 0.44, "no": 0.3}
+
     _add_order_book(actor.cache, yes.id, 0.9)
     _add_order_book(actor.cache, no.id, 0.9)
     actor.on_order_book_deltas(_obd(str(yes.id)))

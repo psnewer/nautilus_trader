@@ -129,6 +129,12 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             if isinstance(batch, Exception):
                 self._mark_reconciliation_liveness(client, "order", alive=False)
                 self._log.error(f"Failed to generate order status reports: {batch}")
+                # 查询失败只表示 venue 真相未知，不能把该 venue 的本地订单当作“未返回”。
+                protected_order_ids.update(
+                    order.client_order_id
+                    for order in self._cache.orders(venue=client.venue)
+                    if order.is_open or order.is_inflight
+                )
                 continue
             self._mark_reconciliation_liveness(client, "order", alive=True)
             # #318:逐 pair(报告与本地 open/inflight 单并入同一 scope)判 order_digest。通过的 pair 纳入

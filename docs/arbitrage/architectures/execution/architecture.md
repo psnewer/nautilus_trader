@@ -466,6 +466,8 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 - `venue_position_alive=true` 只表示该 venue 的持仓真相可信,即拿到真实 position response。
 - PM/OE/SE 的 `generate_order_status_report(s)` / `generate_position_status_reports` 只负责远端查询、翻译并返回，查询失败继续抛异常；这些 adapter 方法本身不写 liveness。单条 QueryOrder 属于 in-flight 恢复路径，成功、空结果或异常均不改变 venue liveness(#311)。
 - **启动与周期 reconciliation 是 report 查询 liveness 的唯一上层裁决者**：查询协程正常返回即标记对应维度 alive，包括 `[]` 和单条查询的 `None`；查询抛异常即标记对应维度 dead。标记发生在远端查询返回后、本地摘要校验与 report 应用之前。因此 report 后续因本地状态变化而被丢弃，仍表示 venue 查询可达，不得改回 dead。
+- **周期订单批量查询失败时，失败 venue 的本地 open/inflight 订单必须进入 `venue_reported_ids` 保护集**：异常只证明 venue 真相未知，不能把该 venue 从聚合结果中缺席误读成“venue 明确未返回这些订单”，也不得推进 `open_check_missing_retries`、触发单订单查询或生成本地终态。只有查询成功后的真实空响应 `[]` 才具有“venue 当前没有挂单”的业务语义。
+- **外部挂单导入必须一次建立完整归属**：先按 report `account_id` 解析 ExecutionClient，缺失或无法匹配时复用 NT 既有 instrument venue/default routing。report 缺账户时，从该 routing client 补齐。随后 `Cache.add_order(..., client_id=...)` 建立 `client_order_id → client_id`，并建立既有 `venue_order_id → client_order_id` 索引。外部订单没有本地下单阶段的 `OrderSubmitted`，所以 `OrderAccepted` 本身也是账户归属的权威事件，NT Order FSM 在应用 accepted 时必须写入 `order.account_id`。这样后续单订单查询、撤单及对账均可路由到原 ExecutionClient；不再为旧的不完整 cache 订单增加猜测式兼容分支，进程重启后由权威 report 重新导入。
 - 启动 `generate_mass_status()` 由 `ArbExecutionSessionMixin` 记录实际成功返回的 order/position 批次并逐维裁决：已返回的维度标 alive，缺失的维度标 dead。即使 NT 因另一维异常把聚合结果吞成 `None`，已成功查询的维度也不会被误伤。
 - OE/SE 的常规 `CURRENT_BETS` 是完整 order/position 快照，仍可在完整业务帧处理后实时同时标记两维 alive；reload 静默帧由发起该查询的上层 reconciliation 判定。该实时路径与启动/周期查询路径并存，但都不依赖 report 的本地应用是否成功。
   ⚠️ 2026-07-22(#259)修订 #122:NT 判定「venue 查询失败」的唯一通道是 client 抛异常(`live/execution_engine.py:875-881`

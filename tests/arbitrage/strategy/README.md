@@ -384,8 +384,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 极值 `{up:{yes:0.5,no:0.5}, down:{yes:0.5,no:0.5}}`、现价 `{yes:0.42,no:0.58}`、`move_threshold=0.1` → yes 从高点相对下跌 `(0.5-0.42)/0.5=16%` → PM `BUY yes`；该例同时证明阈值不是绝对概率差 0.1。
 - 极值低点 `{yes:0.4,no:0.6}`、现价 `{yes:0.46,no:0.54}`、`move_threshold=0.1` → yes 相对上涨 `(0.46-0.4)/0.4=15%`，概率下行方是 no → PM `BUY no`。
 - 同一轮多个信号达阈时取相对变化比例最大者；等于阈值命中。
-- `up_price/down_price` 空、PM 盘口缺腿/键不匹配、或当前概率和不在 `[0.95,1.05]` → False。
-- OBD 极值采集仅接受完整 PM 向量且概率和在 `[0.95,1.05]`；新高/新低分别更新 `up_price/down_price`，脏向量不改极值。
+- `up_price/down_price` 空、PM 盘口缺腿/键不匹配、或当前概率和不在 `[0.98,1.02]` → False；`0.98/1.02` 边界命中，旧窗口内的 `0.97/1.03` 不命中。
+- OBD 极值采集仅接受完整 PM 向量且概率和在 `[0.98,1.02]`；新高/新低分别更新 `up_price/down_price`，脏向量不改极值。
 
 ### strategy-4.pre_rebate.3: 赛前门只赛前追腿
 - `NOT in_game` 为真(赛前)且 pre_move 命中 → arb 树出 submit plan。
@@ -679,7 +679,7 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 - MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`、`trend_price={}`；
 - Sports 状态为 `None` 或明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]`
   内才首次写 first price；明确 live/ended、非 PM OBD 与不干净向量不写；
-- 每个 PM OBD 在评估前用干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
+- 每个 PM OBD 在评估前仅用概率和位于 `[0.98,1.02]` 的干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
 - IN_PLAY phase **仅当该 pair 已采到 `first_price`**才对完整 PM 向量首次写 start price，且不做
   概率和校验；没有先行 PM OBD 见证则保持默认 0.6；`None` 视为赛前的已知代价是 sports live 帧
