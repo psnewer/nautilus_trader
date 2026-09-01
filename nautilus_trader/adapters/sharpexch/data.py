@@ -24,7 +24,6 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
-from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -67,6 +66,8 @@ class SharpExchDataClient(LiveMarketDataClient):
         self._browser_manager = browser_manager
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
         self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
+        # 二元 market 级自定义盘口订阅的 O(1) 真值,行情热路径不得调用会排序的 subscribed_custom_data()。
+        self._market_order_book_members: dict[str, set[InstrumentId]] = {}
         self._market_to_game_id: dict[str, int] = {}
         self._phase_store = SportsPhaseStore(cache)
         self._market_frame_conflater = MarketFrameConflater(
@@ -119,8 +120,11 @@ class SharpExchDataClient(LiveMarketDataClient):
                     f"SharpExch source market {source_market_id} maps to conflicting "
                     f"game_id values: {existing} != {game_id}",
                 )
-        for value in command.params.get("instrument_ids") or ():
-            instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+        instrument_ids = tuple(
+            value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+            for value in command.params.get("instrument_ids") or ()
+        )
+        for instrument_id in instrument_ids:
             instrument = self._cache.instrument(instrument_id)
             info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
             if (
@@ -132,6 +136,8 @@ class SharpExchDataClient(LiveMarketDataClient):
                     f"Invalid SharpExch binary market member {instrument_id} "
                     f"for {binary_market_id} (source={source_market_id})",
                 )
+        self._market_order_book_members[binary_market_id] = set(instrument_ids)
+        for instrument_id in instrument_ids:
             await self._subscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
         if game_id is not None:
             self._market_to_game_id[source_market_id] = game_id
@@ -140,7 +146,9 @@ class SharpExchDataClient(LiveMarketDataClient):
     async def _unsubscribe(self, command) -> None:
         if command.data_type.type is not MarketOrderBookDeltas:
             raise NotImplementedError
+        binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
         source_market_id = str(command.params.get("source_market_id") or "")
+        self._market_order_book_members.pop(binary_market_id, None)
         for value in command.params.get("instrument_ids") or ():
             instrument_id = value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
             await self._unsubscribe_order_book_deltas(type("Command", (), {"instrument_id": instrument_id})())
@@ -300,10 +308,8 @@ class SharpExchDataClient(LiveMarketDataClient):
             instrument = self._cache.instrument(deltas.instrument_id)
             info = (getattr(instrument, "info", None) or {}) if instrument is not None else {}
             binary_market_id = str(info.get("binary_market_id") or "")
-            market_subscribed = bool(binary_market_id) and (
-                market_order_book_data_type(self.venue, binary_market_id)
-                in self.subscribed_custom_data()
-            )
+            members = self._market_order_book_members.get(binary_market_id)
+            market_subscribed = members is not None and deltas.instrument_id in members
             if market_subscribed:
                 market_deltas.setdefault(binary_market_id, []).append(deltas)
             if not market_subscribed or deltas.instrument_id in standard_subscriptions:
@@ -382,7 +388,6 @@ class SharpExchDataClient(LiveMarketDataClient):
 
     def _clear_competition_order_books(self, page_key: str) -> None:
         """通过 market-frame 管道清空断线 competition 页所辖的已订阅盘口。"""
-        subscribed = self.subscribed_custom_data()
         ts = self._clock.timestamp_ns()
         cleared = 0
         for source_market_id in sorted(
@@ -398,7 +403,8 @@ class SharpExchDataClient(LiveMarketDataClient):
                     binary_market_id = str(info.get("binary_market_id") or "")
                     if not binary_market_id:
                         continue
-                    if market_order_book_data_type(self.venue, binary_market_id) not in subscribed:
+                    members = self._market_order_book_members.get(binary_market_id)
+                    if members is None or instrument_id not in members:
                         continue
                     members_by_market.setdefault(binary_market_id, set()).add(instrument_id)
             markets = tuple(

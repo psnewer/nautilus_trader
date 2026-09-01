@@ -229,6 +229,10 @@ def test_market_subscription_records_source_market_game_id():
     c._loop.run_until_complete(c._subscribe(command))
 
     assert c._market_to_game_id[inst.market_id] == 77
+    assert c._market_order_book_members[inst.info["binary_market_id"]] == {inst.id}
+
+    c._loop.run_until_complete(c._unsubscribe(command))
+    assert inst.info["binary_market_id"] not in c._market_order_book_members
 
 
 def test_register_synthetic_no_routing_uses_real_venue_selection_id():
@@ -331,6 +335,8 @@ def test_on_price_frame_publishes_one_market_batch_for_all_runners():
         c._register_instrument_routing(instrument.id)
     data_type = market_order_book_data_type(Venue("ORBITEXCH"), home.market_id)
     c._add_subscription(data_type)
+    c._market_order_book_members[home.market_id] = {home.id, away.id}
+    c.subscribed_custom_data = lambda: (_ for _ in ()).throw(AssertionError("hot-path scan"))
     captured = []
     c._handle_data = captured.append
 
@@ -373,6 +379,7 @@ def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
         c._add_subscription(
             market_order_book_data_type(Venue("ORBITEXCH"), instrument.info["binary_market_id"]),
         )
+        c._market_order_book_members.setdefault(instrument.info["binary_market_id"], set()).add(instrument.id)
     captured = []
     c._handle_data = captured.append
 
@@ -793,12 +800,14 @@ def test_disconnect_clears_binary_market_before_reload():
         c._register_instrument_routing(instrument.id)
     c._market_to_page_key["1-123"] = "1_1"
     c._add_subscription(market_order_book_data_type(c.venue, "1-123"))
+    c._market_order_book_members["1-123"] = {yes.id, no.id}
     other = oe_instrument("EPL", "other", selection_id=44)
     other.info["binary_market_id"] = "other-market"
     c._cache.add_instrument(other)
     c._market_to_instruments["other-source"] = {"44": [(other.id, "yes")]}
     c._market_to_page_key["other-source"] = "1_2"
     c._add_subscription(market_order_book_data_type(c.venue, "other-market"))
+    c._market_order_book_members["other-market"] = {other.id}
     c._comp_pages["1_1"] = object()
     events = []
     c._handle_data = lambda data: events.append(("clear", data))
@@ -835,6 +844,7 @@ def test_duplicate_disconnect_does_not_clear_twice_before_reload_starts():
     c._register_instrument_routing(instrument.id)
     c._market_to_page_key["1-123"] = "1_1"
     c._add_subscription(market_order_book_data_type(c.venue, "1-123"))
+    c._market_order_book_members["1-123"] = {instrument.id}
     c._comp_pages["1_1"] = object()
     emitted = []
     c._handle_data = emitted.append

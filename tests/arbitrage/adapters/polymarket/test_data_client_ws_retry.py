@@ -186,6 +186,7 @@ def test_quotes_publish_one_market_batch_for_all_changed_assets() -> None:
         c._add_subscription(data_type)
         c._market_order_book_members[market_id] = (yes.id, no.id)
         c._market_books_bootstrapped.add(market_id)
+        c.subscribed_custom_data = lambda: (_ for _ in ()).throw(AssertionError("hot-path scan"))
         captured = []
         c._handle_data = captured.append  # type: ignore[method-assign]
 

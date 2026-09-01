@@ -76,6 +76,10 @@ def test_market_subscription_records_source_market_game_id():
     client._loop.run_until_complete(client._subscribe(command))
 
     assert client._market_to_game_id[inst.market_id] == 77
+    assert client._market_order_book_members[inst.info["binary_market_id"]] == {inst.id}
+
+    client._loop.run_until_complete(client._unsubscribe(command))
+    assert inst.info["binary_market_id"] not in client._market_order_book_members
 
 
 def test_connect_starts_browser_loads_provider_and_sends_instruments():
@@ -428,6 +432,8 @@ def test_on_price_frame_publishes_one_market_batch_for_all_runners():
     }
     data_type = market_order_book_data_type(Venue("SHARPEXCH"), home.market_id)
     client._add_subscription(data_type)
+    client._market_order_book_members[home.market_id] = {home.id, away.id}
+    client.subscribed_custom_data = lambda: (_ for _ in ()).throw(AssertionError("hot-path scan"))
     captured = []
     client._handle_data = captured.append
 
@@ -470,6 +476,7 @@ def test_three_way_price_frame_is_atomic_but_split_into_binary_markets():
         client._add_subscription(
             market_order_book_data_type(Venue("SHARPEXCH"), instrument.info["binary_market_id"]),
         )
+        client._market_order_book_members.setdefault(instrument.info["binary_market_id"], set()).add(instrument.id)
     captured = []
     client._handle_data = captured.append
 
@@ -553,6 +560,7 @@ def test_comp_disconnect_clears_binary_market_before_reload():
         assert plan is not None
     market_id = str(yes.info["binary_market_id"])
     client._add_subscription(market_order_book_data_type(client.venue, market_id))
+    client._market_order_book_members[market_id] = {yes.id, no.id}
     client._comp_pages["2_12597512"] = object()
     events = []
     client._handle_data = lambda data: events.append(("clear", data))
@@ -595,6 +603,7 @@ def test_comp_duplicate_disconnect_does_not_clear_twice():
     assert plan is not None
     market_id = str(instrument.info["binary_market_id"])
     client._add_subscription(market_order_book_data_type(client.venue, market_id))
+    client._market_order_book_members[market_id] = {instrument.id}
     client._comp_pages["2_12597512"] = object()
     emitted = []
     scheduled = []

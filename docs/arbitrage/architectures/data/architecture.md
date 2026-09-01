@@ -62,6 +62,12 @@ OE/SE 二项盘一个 source market 对应一个二元市场；三项 Match Odds
 拒绝部分写入、兼容 per-instrument 通路及 snapshot/reset 边界的完整契约见
 `_cross-cutting/order-book-frame.md`；共享订阅 helper 见 common §3.2。
 
+PM/OE/SE 均在 DataClient 的 market 订阅生命周期内维护 O(1) 的
+`binary_market_id → instrument members` 索引。行情组帧和断线 CLEAR 以该索引判断当前 market
+订阅及成员身份，不在 runner/delta 热路径调用会排序完整集合的
+`subscribed_custom_data()`；该优化不改变 DataEngine 的引用计数或发布协议。完整不变量见
+`_cross-cutting/order-book-frame.md §3.3`。
+
 ### 2.2 Prices WS 断线时盘口失效（#359/#360）
 
 OE/SE competition 页的 prices feed 断线通过现有存活门控后，DataClient 在 reload 前按

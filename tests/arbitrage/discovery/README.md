@@ -345,3 +345,10 @@ OE/SE 以 page routing、PM 以断线 `client_id` 的 token routing 确定失效
 恢复前通过 DataEngine market-frame 管道清空对应逻辑市场成员。**期望**：Cache 不保留断线
 源的旧赔率，健康 page/WS 分片不受影响；主动 shutdown 不误清。**验收**：OE/SE adapter
 README #359、PM adapter `pm-adapter-data.disconnect-clear` 及对应 DataClient 测试。
+
+### discovery-2.2：DataClient 行情热路径订阅判断（#366）
+
+**前置**：PM/OE/SE market 订阅已由 DataEngine 下发。**输入**：连续 runner/delta 行情及断线
+CLEAR。**期望**：adapter 自有 `binary_market_id → members` 与首订/最终退订同生命周期；行情
+处理只做 O(1) membership 查询，不复制或排序 NT 的完整 custom subscription 集合。
+**验收**：三家 adapter README #366 及对应 DataClient tests。

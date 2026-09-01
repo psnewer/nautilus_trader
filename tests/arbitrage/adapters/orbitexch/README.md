@@ -597,3 +597,11 @@ pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
 **验收**：`test_market_subscription_records_source_market_game_id`、
 `test_on_price_frame_updates_phase_without_instrument_info_mutation`、
 `test_on_price_frame_missing_inplay_does_not_create_phase`。
+
+## #366：OE market 订阅热路径不扫描完整集合
+
+market `_subscribe` 建立 `binary_market_id → instrument members`，最终 `_unsubscribe` 删除；
+普通 runner 组帧及断线 CLEAR 只做 O(1) market/member 查询，不调用会排序完整集合的
+`subscribed_custom_data()`。`test_market_subscription_records_source_market_game_id` 验证索引写入；
+`test_on_price_frame_publishes_one_market_batch_for_all_runners` 以失败桩锁定热路径不扫描；
+断线 CLEAR 用例锁定同一索引仍只清当前页已订阅成员。

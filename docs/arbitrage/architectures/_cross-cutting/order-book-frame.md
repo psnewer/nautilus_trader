@@ -1,8 +1,8 @@
 # 横切：订单簿源帧与二元市场边界
 
 > **定位**：跨 DataClient、DataEngine、Matching、Strategy 的行情一致性契约。
-> **状态**：2026-08-26 已落地并完成离线测试，尚未 live 验证。
-> **决策理由**：见 `refactor.md #357/#358/#362/#363`。本文只定义现行机制。
+> **状态**：2026-08-31 已落地并完成离线测试，尚未 live 验证。
+> **决策理由**：见 `refactor.md #357/#358/#362/#363/#366`。本文只定义现行机制。
 
 ## 1. 身份边界
 
@@ -97,6 +97,18 @@ Cache，而不是 Strategy/Matching 是否成功处理：若 Cache 已写完、�
 `frame_id=0` 保留旧调用方兼容语义：DataEngine 正常应用，但不发布 completion。该机制不改
 `ThrottledEnqueuer`，也不改变 DataEngine 对其它数据类型的队列与调度行为。
 
+### 3.3 行情热路径的订阅真值（#366）
+
+PM/OE/SE DataClient 在 market 自定义订阅的 `_subscribe` / `_unsubscribe` 生命周期内维护
+`binary_market_id → instrument members` 的 adapter 本地索引。普通行情组帧与断线 CLEAR
+只对该索引做 O(1) 查询；不得在每条 runner/delta 上调用 NT
+`subscribed_custom_data()`。后者面向控制面返回排序后的完整订阅列表，在高频路径重复调用会把
+订阅规模引入每条行情的时间复杂度，并阻塞与 DataEngine 共用的 event loop。
+
+该索引只是 NT 自定义订阅集合的等价运行时投影，不改变订阅引用计数、MessageBus topic、
+DataEngine managed book 或源帧协议。首订成功后写入，最终退订时删除；成员判断同时校验
+`binary_market_id` 与 `instrument_id`，防止同一 source market 的其它二元 selection 被误发。
+
 ## 4. 订阅与组件职责
 
 - Provider：写入 `binary_market_id`；2-way 共用源 market ID，3-way 按 selection 派生。
@@ -120,6 +132,8 @@ PM snapshot、snapshot 夹增量、单腿 resnapshot 与 tick-size reset 仍由 
   snapshot/retry/reset 行为不退化。
 - single-flight：同 source 在途时只保留最新完整状态；completion 后立即 flush；CLEAR barrier
   不被恢复快照覆盖；退订后的迟到 completion 无副作用；拒绝帧 fail-closed 到重新激活。
+- hot path：PM/OE/SE 普通组帧与断线 CLEAR 不扫描/排序完整 custom subscription 集合；
+  subscribe/unsubscribe 后本地 market members 与实际 market 订阅同生命周期。
 
 对应离线测试见 DataEngine unit tests、各 adapter README，以及 Matching/Strategy README
 中的 #357/#358 用例；真钱 live 验证不在本次范围。

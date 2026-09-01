@@ -658,3 +658,10 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 接线由 `test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session` 和
 `test_polymarket_cancel_order_reject_generates_cancel_rejected_event` 验收；结果未知时结束 session
 但不生成拒绝/撤单终态，由 `test_polymarket_cancel_order_unknown_result_ends_session` 验收。
+
+### pm-adapter-data.subscription-hot-path：market 订阅 O(1) 判断（#366）
+
+**前置**：market 自定义订阅已建立并登记两腿 members。**输入**：PM price-change 组帧。
+**期望/验收**：DataClient 直接查询 `_market_order_book_members` 并发布 market frame；即使
+`subscribed_custom_data()` 被替换为失败桩，行情路径也不得调用。由
+`test_quotes_publish_one_market_batch_for_all_changed_assets` 覆盖。

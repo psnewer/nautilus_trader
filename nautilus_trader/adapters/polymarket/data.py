@@ -73,7 +73,6 @@ from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
-from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 
 
@@ -726,8 +725,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         *,
         barrier: bool = False,
     ) -> None:
-        data_type = market_order_book_data_type(self.venue, market_id)
-        if not deltas or data_type not in self.subscribed_custom_data():
+        if not deltas or market_id not in self._market_order_book_members:
             return
         now_ns = self._clock.timestamp_ns()
         if not barrier:
