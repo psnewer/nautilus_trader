@@ -513,7 +513,7 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
    OE/SE `inPlay` 只更新 `SportsPhaseStore`，**不新增独立唤醒，也不绕过既有价格变化门控**。
    后续正常 OBD/PMS 评估读取 Store 当前值。
 
-#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364,已落地 · 离线已验证 · live-unvalidated · as-of 2026-08-27)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-01)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
 `first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
@@ -526,17 +526,15 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 
 **first_price**：仅 PM instrument 的 OBD 可触发。NT 已在回调前更新 managed OrderBook，
 Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整的 best ask 概率向量。
-**SportsPhaseStore 为 `None` 或明确 PRE 均视为赛前并采集；明确 IN_PLAY/POST 禁止采集**。
-其中 OE/SE `inPlay=true` 可在 PMS 首帧前关闭 late-join 窗口；完全没有任何来源状态时仍沿用
-#364 的 None=赛前取舍。完整向量的概率和位于闭区间
+**仅 SportsPhaseStore 明确为 PRE 时采集；Store 无记录(`None`)=UNKNOWN，IN_PLAY/POST 也禁止采集**。
+OE/SE `inPlay=false` 可在 PMS 赛前帧缺失时提供明确 PRE；`inPlay=true` 可在 PMS 首帧前
+关闭 late-join 窗口。完整向量的概率和位于闭区间
 `[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持空值。OE/SE OBD
 只继续触发既有策略评估，不参与参考价采集。
 
-> **`None` 的现行取舍**：PMS firehose 实盘通常不推 PRE，真赛前在首个 IN_PLAY 帧前长期表现为
-> `None`。若要求正面确认 PRE，正常赛前 pair 基本无法采到 `first_price/start_price`。#364 明确将
-> `None` 与 `in_game=False` 统一为赛前，以恢复真实开赛价采集；已知代价是盘中 late-join 且首个
-> sports live 帧尚未到达的短窗，可能把盘中盘口记作 first price。该风险由用户接受；旧的相反取舍
-> 及实盘案例保留在决策日志 #323/#324 修订续，不在详细设计重复维护。
+> **UNKNOWN 取舍**：#367 取代 #364 的 `None=赛前`。系统宁可在所有源均未确认 PRE 时
+> 不采 `first_price`，也不在 UNKNOWN 阶段执行赛前策略，不接受盘中 late-join 窗口的误判。
+> 决策变更理由与历史仍保留在 `refactor.md #364/#367`。
 
 **start_price**：有效 phase 为 IN_PLAY 时采集；PMS phase 消息按 game 扇出全部 pair，OE/SE
 确认 IN_PLAY 后则在后续正常 OBD 价格内存回调中幂等尝试，且不强制触发策略评估。
@@ -547,11 +545,11 @@ PM 盘口则保留默认值，后续 OBD 不补写。
 **up_price/down_price(#341)**：每个 PM OBD 回调在路由评估前，读取该 pair 各 outcome 唯一且
 完整的 PM best ask 概率向量；仅当概率和位于 pre_move commission 闭区间 `[0.98,1.02]` 才采样。
 首个有效向量同时初始化两组极值，后续按 outcome 分别更新 `up=max(up,now)` 与
-`down=min(down,now)`。本采集不依赖 Sports Store/`first_price`：`pre_move` 由 `NOT in_game`
+`down=min(down,now)`。本采集不依赖 Sports Store/`first_price`：`pre_move` 由 `pre_game`
 限定下单阶段，极值内存只负责忠实记录有效行情。OE/SE OBD 不更新该字段。
 
 **`first_price` 前置**：start price 仍只在 `first_price` 非空时采集，避免没有任何先行 PM OBD
-见证就把首个 live 帧盘口直接当作开赛价。#364 后 `None` 时的干净赛前 PM OBD 可以构成该见证；
+见证就把首个 live 帧盘口直接当作开赛价。仅明确 PRE 时的干净赛前 PM OBD 可以构成该见证；
 明确 live/ended 后到达的 OBD 仍不能补写 first price。
 
 **释放**：ended 到达后仍先调度该场最后一次策略评估，并立即沿用 §3.8.1 释放 sports/OBD
@@ -749,14 +747,14 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 
 | 行为 | 触发 | 命中条件 | 动作 |
 |---|---|---|---|
-| B1 赛前追腿 | PM OBD | 赛前(`NOT in_game`)且任一 outcome 相对 `up_price/down_price` 的变化比例 `≥ move_threshold` | PM `BUY` 概率下行 outcome,量 = `arbitrage.share` |
+| B1 赛前追腿 | PM OBD | 明确赛前(`pre_game`)且任一 outcome 相对 `up_price/down_price` 的变化比例 `≥ move_threshold` | PM `BUY` 概率下行 outcome,量 = `arbitrage.share` |
 | B2 赛前返水补救 | OBD / phase | 赛前 且已有失衡持仓 且 `mean_rebate_recovery` 补后率 ≥ `min_repaired_rebate` | 补另一腿(recovery)|
 | B3 开赛强制补救 | phase `live` | 赛中(`in_game`)且仍失衡 | `mean_rebate_recovery(force=true)` 无条件补,不看率 |
 
 ```jsonc
 "pre_rebate": {
   "arbitrage_tree": {
-    "self_hits": {"NOT": {"type": "in_game"}},
+    "self_hits": {"type": "pre_game"},
     "checktion": {"type": "pre_move", "params": {"move_threshold": 0.1}},
     "actions": [{"type": "place_bets"}]
   },
@@ -765,7 +763,7 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
       { "self_hits": {"type": "in_game"},
         "checktion": {"type": "mean_rebate_recovery", "params": {"force": true, "pnl": false}},
         "actions": [{"type": "place_bets", "params": {"intent": "recovery", "market": true}}] },
-      { "self_hits": {"NOT": {"type": "in_game"}},
+      { "self_hits": {"type": "pre_game"},
         "checktion": {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": 0.0, "pnl": false}},
         "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}] }
     ]
@@ -844,13 +842,11 @@ order/position digests，但不能共享 `scratch`，也不能跨树搬运 candi
   `standard` 自然归属 StrategyRuntimeStore，由 `head/reverse` 叶子命中时更新。
 
 **已注册 StateQuery**:
-- `InGameQuery`(`src/arbitrage/strategy/queries/in_game.py`,注册名 `in_game`):经
-  `ctx.pair_registry.game_id_for_pair(pair_id)` → `ctx.sports_store.get(gid)`,`state` 存在且
-  `live` 且 `not ended` → True(= 比赛进行中)。**赛前门 = `{"NOT": {"type": "in_game"}}`**,
-  它同时覆盖真赛前(sports_store 为 `None` / 未 live)。**边界**:`ended` 落入 `NOT in_game`
-  (与赛前同支),因 ended 后 pair 立即回收(§3.8.1)、只触及最后一次评估,影响可忽略;
-  将来若需显式排除 ended,另加 `pre_game`(`not live and not ended`)叶子。此前框架里
-  `self_hits` 全是 `{}`(vacuous truth),`in_game` 是第一个实用叶子。注册经 §3.7
+- `InGameQuery` / `PreGameQuery`(`src/arbitrage/strategy/queries/in_game.py`,注册名
+  `in_game` / `pre_game`):经 `ctx.pair_registry.game_id_for_pair(pair_id)` →
+  `ctx.phase_store.get(gid)` 只分别命中明确 `IN_PLAY` / `PRE`。Store 无记录、缺 game_id 或
+  phase_store 均为 UNKNOWN，两者都不命中；POST 也不命中。赛前门必须显式用
+  `{"type":"pre_game"}`，禁止用 `NOT in_game` 反推 PRE。注册经 §3.7
   `register_state_query`,JSON 走 `bool_expr_from_json`(支持叶子 + `AND/OR/NOT`)。
 - `HeadQuery`（注册名 `head`）：`Portfolio.outcome_shares(pair_id)` 中有效 yes/no outcome 数为
   0 或 2 时命中；命中后以当轮即时返水率覆盖 `standard`。

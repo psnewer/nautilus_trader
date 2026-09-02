@@ -128,6 +128,8 @@ account   = None
      `SportsPhaseStore(game_id)`；完整比分等字段仍只由 PMS 写 `SportsGameStateStore`。
    - OE/SE 的 `game_id` 来自 Matching/Strategy market 订阅 params，不从 venue event id 猜测。
    - `inPlay` 缺失不更新；false 只能建立 PRE，true 推进 IN_PLAY；POST 只由 PMS ended 推进。
+   - 所有源都未给出有效 phase 时 Store 无记录，语义为 UNKNOWN；消费者不得用
+     `NOT in_game` 将 UNKNOWN 反推为 PRE。显式 PRE 与 IN_PLAY 分别由 `pre_game` / `in_game` 查询。
    - OE/SE phase 变化不建立第二条事件管线；现有 OBD/PMS 唤醒后读取最新 phase。
 
 当前代码 `adapters/polymarket/sports.py` 已经是独立 client 形态。注册生命周期由

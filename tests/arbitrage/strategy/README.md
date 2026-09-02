@@ -373,12 +373,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 设计见 strategy §3.10。
 
-### strategy-4.pre_rebate.1: in_game StateQuery 判态
-- sports_store `live=True, ended=False` → `in_game` True;`NOT in_game` False。
-- sports_store `None`(真赛前 / 未订上)→ `in_game` False;`NOT in_game` True。
-- sports_store `live=False`(赛前有帧)→ `in_game` False。
-- sports_store `ended=True` → `in_game` False(落入赛前支,已知边界)。
-- 缺 game_id / 缺 sports_store → `in_game` False(fail-closed)。
+### strategy-4.pre_rebate.1: in_game / pre_game StateQuery 判态
+- phase `IN_PLAY` → `in_game` True，`pre_game` False。
+- phase `PRE`(包括明确 `inPlay=false` 建立的状态)→ `pre_game` True，`in_game` False。
+- Store 无记录(`None`)、缺 game_id 或缺 phase_store → UNKNOWN，两个 query 都是 False。
+- phase `POST` → 两个 query 都是 False，不得落入赛前支。
 
 ### strategy-4.pre_rebate.2: pre_move 追腿命中/不命中
 - 极值 `{up:{yes:0.5,no:0.5}, down:{yes:0.5,no:0.5}}`、现价 `{yes:0.42,no:0.58}`、`move_threshold=0.1` → yes 从高点相对下跌 `(0.5-0.42)/0.5=16%` → PM `BUY yes`；该例同时证明阈值不是绝对概率差 0.1。
@@ -388,7 +387,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - OBD 极值采集仅接受完整 PM 向量且概率和在 `[0.98,1.02]`；新高/新低分别更新 `up_price/down_price`，脏向量不改极值。
 
 ### strategy-4.pre_rebate.3: 赛前门只赛前追腿
-- `NOT in_game` 为真(赛前)且 pre_move 命中 → arb 树出 submit plan。
+- `pre_game` 为真(明确赛前)且 pre_move 命中 → arb 树出 submit plan。
+- UNKNOWN / POST 时 `pre_game` 为假 → 不追腿，也不进入赛前补偿支。
 - `in_game` 为真(赛中)→ arb 树 self_hits False → 不追腿(即便极值变化已达阈)。
 
 ### strategy-4.pre_rebate.4: 赛前按率补 vs 开赛强补
@@ -672,18 +672,17 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 **用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
 `test_extreme_prices_update_without_first_price_and_require_clean_sum`、
 `test_start_price_not_captured_without_witnessed_first_price`、
-`test_start_price_captures_in_play_after_none_state_first_price_witnessed`、
+`test_start_price_captures_in_play_after_explicit_pre_first_price_witnessed`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
 
 **期望/验收**:
 - MatchedPair 按 outcomes 幂等初始化 `first_price={}`、`start_price={outcome:0.6}`、`up_price={}`、`down_price={}`、`trend_price={}`；
-- Sports 状态为 `None` 或明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]`
-  内才首次写 first price；明确 live/ended、非 PM OBD 与不干净向量不写；
+- 仅 Sports phase 明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]`
+  内才首次写 first price；Store 无记录(UNKNOWN)、明确 IN_PLAY/POST、非 PM OBD 与不干净向量不写；
 - 每个 PM OBD 在评估前仅用概率和位于 `[0.98,1.02]` 的干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
-- IN_PLAY phase **仅当该 pair 已采到 `first_price`**才对完整 PM 向量首次写 start price，且不做
-  概率和校验；没有先行 PM OBD 见证则保持默认 0.6；`None` 视为赛前的已知代价是 sports live 帧
-  到达前的盘中 late-join 短窗可能误采，见决策 #364；
+- IN_PLAY phase **仅当该 pair 已在明确 PRE 下采到 `first_price`**才对完整 PM 向量
+  首次写 start price，且不做概率和校验；没有该见证则保持默认 0.6，见决策 #367；
 - ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
   game 索引。
 

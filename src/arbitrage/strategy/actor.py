@@ -53,7 +53,7 @@ from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.positions import pair_positions_digest
 from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
-from src.arbitrage.common.sports_phase import PHASE_POST
+from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -528,9 +528,8 @@ class StrategyEvaluator(Strategy):
             return
         phase_store = self._get_phase_store()
         sports_state = phase_store.get(game_id) if phase_store is not None else None
-        # Sports 尚无状态(None)与明确 PRE 均按赛前处理；仅明确 live/ended 禁止采集。
-        # 这与 in_game 的 None=False 语义一致，并允许 firehose 首帧通常即 IN_PLAY 时仍先见证赛前盘口。
-        if sports_state is not None and sports_state.phase in {PHASE_IN_PLAY, PHASE_POST}:
+        # 仅明确 PRE 可采集；无状态是 UNKNOWN，不得反推为赛前。
+        if sports_state is None or sports_state.phase != PHASE_PRE:
             return
         store = self._get_pair_price_store()
         state = store.get(pair_id) if store is not None else None

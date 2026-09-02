@@ -96,6 +96,7 @@ from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecov
 from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
+from src.arbitrage.strategy.queries.in_game import PreGameQuery
 from src.arbitrage.strategy.queries.position_mode import HeadQuery
 from src.arbitrage.strategy.queries.position_mode import ReverseQuery
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
@@ -126,6 +127,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("pre_move", PreMoveCheck)
     register_check("reverse", ReverseCheck)
     register_state_query("in_game", InGameQuery)
+    register_state_query("pre_game", PreGameQuery)
     register_state_query("head", HeadQuery)
     register_state_query("reverse", ReverseQuery)
     register_action("share_limit", ShareLimitModification)

@@ -1,10 +1,11 @@
-"""InGameQuery: 赛前/赛中 self_hits 判据(#326)。strategy-4.pre_rebate.1。"""
+"""赛前/赛中 self_hits 判据。strategy-4.pre_rebate.1。"""
 
 from types import SimpleNamespace
 
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.queries.in_game import InGameQuery
+from src.arbitrage.strategy.queries.in_game import PreGameQuery
 
 
 class _SportsStore:
@@ -30,17 +31,19 @@ def test_live_not_ended_is_in_game():
     assert InGameQuery().matches(_ctx(_state("IN_PLAY"))) is True
 
 
-def test_pre_game_none_state_not_in_game():
+def test_none_state_is_neither_in_game_nor_pre_game():
     assert InGameQuery().matches(_ctx(None)) is False
+    assert PreGameQuery().matches(_ctx(None)) is False
 
 
-def test_not_live_not_in_game():
+def test_explicit_pre_is_pre_game_only():
     assert InGameQuery().matches(_ctx(_state("PRE"))) is False
+    assert PreGameQuery().matches(_ctx(_state("PRE"))) is True
 
 
-def test_ended_not_in_game():
-    # ended 落入 NOT in_game(与赛前同支),已知边界。
+def test_ended_is_neither_in_game_nor_pre_game():
     assert InGameQuery().matches(_ctx(_state("POST"))) is False
+    assert PreGameQuery().matches(_ctx(_state("POST"))) is False
 
 
 def test_missing_game_id_fail_closed():
@@ -52,3 +55,4 @@ def test_missing_game_id_fail_closed():
 
 def test_missing_phase_store_fail_closed():
     assert InGameQuery().matches(_ctx(_state("IN_PLAY"), phase_store=None)) is False
+    assert PreGameQuery().matches(_ctx(_state("PRE"), phase_store=None)) is False
