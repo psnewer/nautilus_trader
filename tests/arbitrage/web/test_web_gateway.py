@@ -251,6 +251,7 @@ class _StubRisk:
             match_sl=-0.05,
             min_probability=0.03,
             max_probability=0.97,
+            prob_buy_only=False,
         )
 
 
@@ -287,6 +288,7 @@ def test_update_risk_config_writes_file_and_publishes_command(tmp_path):
             "match_tp": 0.1,
             "min_probability": 0.04,
             "max_probability": 0.96,
+            "prob_buy_only": True,
         },
     )
     assert result["applied"] == "live"
@@ -295,6 +297,19 @@ def test_update_risk_config_writes_file_and_publishes_command(tmp_path):
     assert topic == TOPIC_RISK_PARAMS
     assert cmd.match_tp == 0.1
     assert cmd.min_probability == 0.04 and cmd.max_probability == 0.96
+    assert cmd.prob_buy_only is True
+
+
+def test_update_risk_rejects_non_boolean_prob_buy_only(tmp_path):
+    actor = _control_actor(tmp_path)
+    path = tmp_path / "arb_config.json"
+    path.write_text(_json.dumps({"risk": {"prob_buy_only": False}}))
+
+    with pytest.raises(ValueError, match="prob_buy_only 必须是 boolean"):
+        actor.update_config_section("risk", {"prob_buy_only": "true"})
+
+    assert _json.loads(path.read_text())["risk"]["prob_buy_only"] is False
+    assert actor.published == []
 
 
 def test_update_arbitrage_config_writes_file_and_publishes_command(tmp_path):
@@ -365,6 +380,7 @@ def test_config_snapshot_returns_file_and_live(tmp_path):
     assert snap["file"]["arbitrage"]["share"] == 22.5
     assert snap["live"]["trading_state"] == "HALTED"
     assert snap["live"]["risk"]["min_probability"] == 0.03
+    assert snap["live"]["risk"]["prob_buy_only"] is False
     assert snap["live"]["arbitrage"]["max_leg_share"] == 100.0
 
 

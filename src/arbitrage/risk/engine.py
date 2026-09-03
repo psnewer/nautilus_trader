@@ -77,6 +77,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _on_set_risk_params_cmd(self, cmd) -> None:
         if not isinstance(cmd, SetRiskParamsCommand):
             return
+        if cmd.prob_buy_only is not None and not isinstance(cmd.prob_buy_only, bool):
+            self._log.error(
+                f"invalid risk params hot-update: prob_buy_only={cmd.prob_buy_only!r}",
+            )
+            return
         overrides = {
             k: v
             for k, v in (
@@ -84,6 +89,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
                 ("match_sl", cmd.match_sl),
                 ("min_probability", cmd.min_probability),
                 ("max_probability", cmd.max_probability),
+                ("prob_buy_only", cmd.prob_buy_only),
             )
             if v is not None
         }
@@ -238,6 +244,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return True
 
         params = self._params
+        if params.prob_buy_only:
+            side = getattr(order, "side", None)
+            side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
+            if side_name != "BUY":
+                return True
         if not self._valid_probability_bounds(params):
             self._deny_order(
                 order=order,

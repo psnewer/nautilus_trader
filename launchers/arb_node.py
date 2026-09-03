@@ -79,6 +79,7 @@ from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
@@ -134,6 +135,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("venue_replace", VenueReplaceAction)
     register_action("candi_select", CandiSelectAction)
     register_action("dash_gate", DashGateAction)
+    register_action("score_selection", ScoreSelectionAction)
     register_action("trend_gate", TrendGateAction)
     register_action("place_bets", PlaceBetsAction)
 

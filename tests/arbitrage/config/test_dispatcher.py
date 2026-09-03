@@ -304,12 +304,14 @@ def test_strategy_evaluator_config_log_evaluations_maps_strategy_section():
 
 def test_arb_risk_params_maps_fields():
     cfg = _cfg(risk={"match_tp": 0.08, "match_sl": -0.06,
-                     "min_probability": 0.04, "max_probability": 0.96})
+                     "min_probability": 0.04, "max_probability": 0.96,
+                     "prob_buy_only": True})
     rp = to_arb_risk_params(cfg)
     assert rp.match_tp == 0.08
     assert rp.match_sl == -0.06
     assert rp.min_probability == 0.04
     assert rp.max_probability == 0.96
+    assert rp.prob_buy_only is True
 
 
 def test_arbitrage_params_maps_fields():

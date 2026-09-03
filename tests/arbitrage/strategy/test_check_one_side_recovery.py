@@ -90,6 +90,97 @@ def test_miss_when_one_side_rebate_is_below_min_rate():
     assert ctx.scratch == {}
 
 
+def test_less_true_hits_when_one_side_rebate_is_below_min_rate():
+    books = {
+        "H.POLYMARKET": _book(0.50),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", 5.0)],
+    )
+
+    assert OneSideRecoveryCheck(min_rate=0.01, force=True, less=True).passes(ctx) is True
+    assert ctx.scratch["one_side_recovery"] == {
+        "min_rate": 0.01,
+        "candidate_count": 2,
+    }
+
+
+def test_less_true_uses_strict_comparison_at_equal_min_rate():
+    books = {
+        "H.POLYMARKET": _book(0.50),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", 5.0)],
+    )
+
+    assert OneSideRecoveryCheck(min_rate=0.0, force=True, less=True).passes(ctx) is False
+    assert ctx.scratch == {}
+
+
+def test_less_true_hits_when_any_candidate_is_below_min_rate():
+    books = {
+        "H.POLYMARKET": _book(0.45),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", 5.0)],
+    )
+
+    assert OneSideRecoveryCheck(min_rate=0.105, force=True, less=True).passes(ctx) is True
+    assert ctx.scratch["one_side_recovery"]["candidate_count"] == 1
+
+
+def test_less_false_explicitly_keeps_default_comparison():
+    books = {
+        "H.POLYMARKET": _book(0.45),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", 5.0)],
+    )
+
+    assert OneSideRecoveryCheck(min_rate=0.10, force=True, less=False).passes(ctx) is True
+    assert ctx.scratch["one_side_recovery"] == {
+        "min_rate": 0.10,
+        "candidate_count": 2,
+    }
+
+
+def test_less_must_be_boolean():
+    try:
+        OneSideRecoveryCheck(less="true")
+    except ValueError as exc:
+        assert str(exc) == "one_side_recovery: less must be a boolean"
+    else:
+        raise AssertionError("expected invalid less to fail")
+
+
 def test_force_only_bypasses_recovery_rebate_gates():
     books = {
         "H.POLYMARKET": _book(0.45),

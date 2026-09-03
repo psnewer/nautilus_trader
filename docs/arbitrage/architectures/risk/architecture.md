@@ -147,11 +147,11 @@ def _check_profit_gates(self, order: Order) -> bool:
     ...
 ```
 
-**`_check_probability_gate` —— 概率/赔率上下界门控(2026-06-29)**:逐 submit deny,用于过滤极端概率/赔率订单。配置字段为 `min_probability` / `max_probability`,默认 `0.03 / 0.97`,闭区间放行:概率 `< min_probability` 或 `> max_probability` 才 deny。
+**`_check_probability_gate` —— 概率/赔率上下界门控(2026-06-29，#373 扩展)**:逐 submit deny,用于过滤极端概率/赔率订单。配置字段为 `min_probability` / `max_probability`,默认 `0.03 / 0.97`,闭区间放行:概率 `< min_probability` 或 `> max_probability` 才 deny。`prob_buy_only` 缺失/`False` 保持 BUY/SELL 都检查；显式 `True` 时只有 BUY 进入本门，SELL 直接通过本门但仍继续执行 `_check_order` 的余额、profit gates 与 NT 原生检查。
 
 - 订单概率统一调用 `src.arbitrage.common.venues.order_exposure_probability(venue, price, side)`。
 - BUY 按报价对应的 yes 概率校验；SELL 按其补集概率校验。该规则同时覆盖 PM 减仓 SELL 与 decimal LAY。
-- Web 可热改上下界,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1`,非法区间不 apply。
+- Web 可热改上下界与 `prob_buy_only`,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1` 及 `prob_buy_only` 必须为 boolean，非法值不 apply。
 - recovery 下单不跳过该门控:极端赔率/概率属于订单本身风险,不是 profit gate。
 
 `_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;解析统一调用 `common.venues.venue_id_from_leg_key`,兼容 `pm/oe/se` 旧缩写与完整 venue/config key,不在 Risk 内维护私有映射。任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。若 `expected_legs` 中出现无法解析的 leg key(例如误把 `pmsports:*` non-tradable anchor 写入),Risk 加入 unsupported sentinel 并 fail-closed,不能退化成只检查当前 order venue。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。

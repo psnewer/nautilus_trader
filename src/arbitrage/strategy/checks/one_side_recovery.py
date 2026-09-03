@@ -1,6 +1,6 @@
 """OneSideRecoveryCheck —— 单冲机会触发的仓位补救检查。
 
-先按 ``one_side_rebate`` 的口径确认当前盘口存在达到 ``min_rate`` 的单冲机会，
+先按 ``one_side_rebate`` 的口径确认当前盘口存在满足 ``min_rate`` 比较方向的单冲机会，
 再按 ``mean_rebate_recovery`` 的口径把各 outcome 补到当前最大实际 share。
 
 单冲检查只作为触发门，不向当前 condition 的 scratch 提交 candidates，避免后续 action
@@ -25,9 +25,14 @@ class OneSideRecoveryCheck(Check):
         min_rate: float = 0.01,
         min_repaired_rebate: float = -0.05,
         force: bool = False,
+        less: bool = False,
     ) -> None:
+        if not isinstance(less, bool):
+            raise ValueError("one_side_recovery: less must be a boolean")
         self._min_rate = float(min_rate)
-        self._one_side = OneSideRebateCheck(min_rate=self._min_rate)
+        self._less = less
+        probe_min_rate = float("-inf") if less else self._min_rate
+        self._one_side = OneSideRebateCheck(min_rate=probe_min_rate)
         self._recovery = MeanRebateRecoveryCheck(
             min_repaired_rebate=min_repaired_rebate,
             force=force,
@@ -39,12 +44,18 @@ class OneSideRecoveryCheck(Check):
         probe_ctx = replace(ctx, scratch={})
         if not self._one_side.passes(probe_ctx):
             return False
+        candidates = probe_ctx.scratch["candidates"]
+        if self._less:
+            candidates = [
+                candidate for candidate in candidates if candidate["rate"] < self._min_rate
+            ]
+            if not candidates:
+                return False
         if not self._recovery.passes(ctx):
             return False
 
-        one_side = probe_ctx.scratch["one_side_rebate"]
         ctx.scratch["one_side_recovery"] = {
             "min_rate": self._min_rate,
-            "candidate_count": one_side["candidate_count"],
+            "candidate_count": len(candidates),
         }
         return True

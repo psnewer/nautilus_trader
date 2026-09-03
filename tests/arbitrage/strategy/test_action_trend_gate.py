@@ -130,6 +130,31 @@ def test_noop_without_selected_candidate():
     assert "legs" not in ctx.scratch
 
 
+def test_filters_legs_without_selected_candidate():
+    ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
+    ctx.scratch["legs"] = [
+        {"instrument_id": "Y.POLYMARKET", "side": "BUY", "claim": "yes"},
+        {"instrument_id": "N.POLYMARKET", "side": "BUY", "claim": "no"},
+    ]
+
+    _run(TrendGateAction().execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+    assert "selected_candidate" not in ctx.scratch
+
+
+def test_missing_trend_price_drops_legs_without_selected_candidate():
+    ctx = _ctx(baseline=None)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "Y.POLYMARKET", "side": "BUY", "claim": "yes"},
+    ]
+
+    _run(TrendGateAction().execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+    assert "selected_candidate" not in ctx.scratch
+
+
 def test_skips_cancel_pair_candidate():
     ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
     candidate = {"candidate_id": "c", "cancel_pair_orders": True, "legs": []}

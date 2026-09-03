@@ -178,6 +178,9 @@ class ArbitrageSectionConfig(ConfigStruct):
 class RiskSectionConfig(ConfigStruct):
     match_tp:          float = 0.05
     match_sl:          float = -0.05
+    min_probability:   float = 0.03
+    max_probability:   float = 0.97
+    prob_buy_only:     bool = False
 
 
 class ExecutionSectionConfig(ConfigStruct):

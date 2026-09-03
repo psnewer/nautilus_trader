@@ -115,15 +115,15 @@ class WebGatewayActor(Actor):
 | 段 | 字段 | 生效方式 |
 |---|---|---|
 | arbitrage | `share` / `max_leg_share` / `fx` / `evaluate_on_depth_change` | **热改** → `command.arb.arbitrage_params` |
-| risk | `match_tp` / `match_sl` / `min_probability` / `max_probability` | **热改** → `command.arb.risk_params` |
+| risk | `match_tp` / `match_sl` / `min_probability` / `max_probability` / `prob_buy_only` | **热改** → `command.arb.risk_params` |
 | matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
 | venues | 凭证 / URL | **重启**(连接态,结构性) |
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
 | web / execution | host/port / 超时 | **重启** |
 
-`evaluate_on_depth_change` 必须是 JSON boolean；WebGatewayActor 在写回文件和 publish 命令**之前**
-校验，非 boolean 返错且不污染落盘配置。Strategy/Risk consumer 对直接注入的非 boolean 命令亦
-fail-closed 拒绝整次 arbitrage params 更新。
+`evaluate_on_depth_change` 与 `prob_buy_only` 必须是 JSON boolean；WebGatewayActor 在写回文件和
+publish 命令**之前**校验，非 boolean 返错且不污染落盘配置。Strategy/Risk consumer 对直接
+注入的非 boolean 命令亦 fail-closed 拒绝对应整次 params 更新。
 
 Execution 配置页不提供全局市价开关。需要市价执行的树在 strategy JSON 中配置
 `place_bets.params.market=true`；最终转换规则见 execution §3.6，WebGateway 不参与改价。
@@ -140,7 +140,7 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | 命令 topic | payload | 消费者 | apply |
 |---|---|---|---|
 | `command.arb.trading_state` | `{"state": "ACTIVE"\|"HALTED"}` | `ArbitrageLiveRiskEngine`(`configure_arb` 内 subscribe)| `self.set_trading_state(...)` |
-| `command.arb.risk_params` | risk 字段 dict(`match_tp`/`match_sl`/概率上下界;None=不动) | `ArbitrageLiveRiskEngine` | 校验并覆盖给定 `self._arb_params` 字段 |
+| `command.arb.risk_params` | risk 字段 dict(`match_tp`/`match_sl`/概率上下界/`prob_buy_only`;None=不动) | `ArbitrageLiveRiskEngine` | 校验并覆盖给定 `self._arb_params` 字段 |
 | `command.arb.arbitrage_params` | arbitrage 字段 dict(`share`/`max_leg_share`/`fx`/`evaluate_on_depth_change`;None=不动) | `ArbitrageLiveRiskEngine` / `StrategyEvaluator` | Risk 保持共享 `ArbitrageParams` 副本，但不消费深度开关；StrategyEvaluator 用规模字段构造 `strategy_defaults`，用 `evaluate_on_depth_change` 过滤 OBD 调度 |
 | `command.arb.refresh_interval` | `{"secs": float}` | `MarketMatchingActor`(`on_start` 内 subscribe)| 更新 `self._refresh_interval_secs` |
 

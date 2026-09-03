@@ -18,7 +18,9 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
+from src.arbitrage.strategy.check_action_registry import build_action
 from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
@@ -55,11 +57,19 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
                 "min_rate": 0.1,
                 "min_repaired_rebate": -0.05,
                 "force": True,
+                "less": True,
             },
         }),
         OneSideRecoveryCheck,
     )
     assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
+    assert isinstance(
+        build_action({
+            "type": "score_selection",
+            "params": {"win_or_draw": True, "tie_break": True},
+        }),
+        ScoreSelectionAction,
+    )
     with pytest.raises(StrategyConfigError, match="venue_select"):
         build_check({
             "type": "one_side_recovery",

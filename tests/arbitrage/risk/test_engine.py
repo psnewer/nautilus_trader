@@ -321,6 +321,27 @@ def test_probability_gate_pm_sell_uses_acquired_complement_probability():
     assert ctx.engine._check_probability_gate(pm, _DuckOrder(pm.id, price=0.96, side="SELL")) is True
 
 
+def test_probability_gate_buy_only_skips_sell_but_still_checks_buy():
+    ctx = _Ctx(ArbRiskParams(
+        min_probability=0.03,
+        max_probability=0.97,
+        prob_buy_only=True,
+    ))
+    pm = pm_instrument("match_X", "away")
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_probability_gate(
+        pm,
+        _DuckOrder(pm.id, price=0.99, side="SELL"),
+    ) is True
+    assert ctx.engine._check_probability_gate(
+        pm,
+        _DuckOrder(pm.id, price=0.99, side="BUY"),
+    ) is False
+    assert len(denials) == 1
+
+
 def test_profit_gate_denies_when_portfolio_invariant_is_broken():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
@@ -341,6 +362,16 @@ def test_probability_bounds_hot_update_rejects_invalid_interval():
     ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(min_probability=0.98))
     assert ctx.engine._params.min_probability == 0.03
     assert ctx.engine._params.max_probability == 0.97
+
+
+def test_probability_buy_only_hot_update_validates_boolean():
+    ctx = _Ctx(ArbRiskParams())
+
+    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(prob_buy_only=True))
+    assert ctx.engine._params.prob_buy_only is True
+
+    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(prob_buy_only="false"))
+    assert ctx.engine._params.prob_buy_only is True
 
 
 # ── 余额(Q17:统一读 account free,成本按 venue capability）────────────

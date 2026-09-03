@@ -5146,6 +5146,131 @@ async def test_handle_fill_quantity_mismatch_generates_inferred_fill(
     )
 
 
+@pytest.mark.parametrize("avg_px", [None, Decimal(0)])
+@pytest.mark.asyncio
+async def test_handle_fill_quantity_mismatch_rejects_missing_fill_without_valid_avg_px(
+    live_exec_engine,
+    cache,
+    account_id,
+    avg_px,
+):
+    """
+    Test a missing fill is not inferred when the report has no valid average price.
+    """
+    if AUDUSD_SIM.id not in [i.id for i in cache.instruments()]:
+        cache.add_instrument(AUDUSD_SIM)
+
+    order = TestExecStubs.limit_order(instrument=AUDUSD_SIM)
+    cache.add_order(order)
+
+    submitted = TestEventStubs.order_submitted(order, account_id=account_id)
+    order.apply(submitted)
+    live_exec_engine.process(submitted)
+
+    accepted = TestEventStubs.order_accepted(order, account_id=account_id)
+    order.apply(accepted)
+    live_exec_engine.process(accepted)
+
+    current_ns = live_exec_engine._clock.timestamp_ns()
+    report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId("V-1"),
+        order_side=order.side,
+        order_type=order.order_type,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.PARTIALLY_FILLED,
+        price=order.price,
+        quantity=order.quantity,
+        filled_qty=Quantity.from_int(50),
+        avg_px=avg_px,
+        report_id=UUID4(),
+        ts_accepted=current_ns,
+        ts_last=current_ns,
+        ts_init=current_ns,
+    )
+    initial_recent_fills = len(live_exec_engine._recent_fills_cache)
+
+    result = live_exec_engine._handle_fill_quantity_mismatch(
+        order,
+        report,
+        AUDUSD_SIM,
+        order.client_order_id,
+    )
+
+    assert result is False
+    assert order.filled_qty == Quantity.zero(order.quantity.precision)
+    assert order.client_order_id not in live_exec_engine._inferred_fill_ts
+    assert len(live_exec_engine._recent_fills_cache) == initial_recent_fills
+
+
+@pytest.mark.asyncio
+async def test_handle_fill_quantity_mismatch_ignores_avg_px_when_no_fill_is_missing(
+    live_exec_engine,
+    cache,
+    account_id,
+):
+    """
+    Test an absent average price does not matter when filled quantity already matches.
+    """
+    if AUDUSD_SIM.id not in [i.id for i in cache.instruments()]:
+        cache.add_instrument(AUDUSD_SIM)
+
+    order = TestExecStubs.limit_order(instrument=AUDUSD_SIM)
+    cache.add_order(order)
+
+    submitted = TestEventStubs.order_submitted(order, account_id=account_id)
+    order.apply(submitted)
+    live_exec_engine.process(submitted)
+
+    accepted = TestEventStubs.order_accepted(order, account_id=account_id)
+    order.apply(accepted)
+    live_exec_engine.process(accepted)
+
+    filled = TestEventStubs.order_filled(
+        order,
+        instrument=AUDUSD_SIM,
+        last_qty=Quantity.from_int(50),
+    )
+    order.apply(filled)
+    live_exec_engine.process(filled)
+    cache.update_order(order)
+
+    current_ns = live_exec_engine._clock.timestamp_ns()
+    report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId("V-1"),
+        order_side=order.side,
+        order_type=order.order_type,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.PARTIALLY_FILLED,
+        price=order.price,
+        quantity=order.quantity,
+        filled_qty=order.filled_qty,
+        avg_px=None,
+        report_id=UUID4(),
+        ts_accepted=current_ns,
+        ts_last=current_ns,
+        ts_init=current_ns,
+    )
+    initial_recent_fills = len(live_exec_engine._recent_fills_cache)
+
+    result = live_exec_engine._handle_fill_quantity_mismatch(
+        order,
+        report,
+        AUDUSD_SIM,
+        order.client_order_id,
+    )
+
+    assert result is True
+    assert order.filled_qty == Quantity.from_int(50)
+    assert order.client_order_id not in live_exec_engine._inferred_fill_ts
+    assert len(live_exec_engine._recent_fills_cache) == initial_recent_fills
+
+
 @pytest.mark.asyncio
 async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(
     live_exec_engine,
@@ -5713,6 +5838,7 @@ class TestHedgeModeReconciliation:
             venue_position_id=venue_position_id,
             position_side=PositionSide.LONG,
             quantity=Quantity.from_int(1000),
+            avg_px_open=Decimal("1.00000"),
             report_id=UUID4(),
             ts_last=self.clock.timestamp_ns(),
             ts_init=self.clock.timestamp_ns(),

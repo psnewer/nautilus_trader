@@ -212,6 +212,7 @@ class WebGatewayActor(Actor):
             "match_sl": params.match_sl,
             "min_probability": params.min_probability,
             "max_probability": params.max_probability,
+            "prob_buy_only": params.prob_buy_only,
         }
 
     def live_arbitrage_params(self) -> dict:
@@ -248,6 +249,9 @@ class WebGatewayActor(Actor):
         depth_change = fields.get("evaluate_on_depth_change") if section == "arbitrage" else None
         if depth_change is not None and not isinstance(depth_change, bool):
             raise ValueError("evaluate_on_depth_change 必须是 boolean")
+        prob_buy_only = fields.get("prob_buy_only") if section == "risk" else None
+        if prob_buy_only is not None and not isinstance(prob_buy_only, bool):
+            raise ValueError("prob_buy_only 必须是 boolean")
         path = Path(self._config_path)
         cfg = json.loads(path.read_text()) if path.exists() else {}
         cfg.setdefault(section, {})
@@ -265,6 +269,7 @@ class WebGatewayActor(Actor):
                     match_sl=fields.get("match_sl"),
                     min_probability=fields.get("min_probability"),
                     max_probability=fields.get("max_probability"),
+                    prob_buy_only=prob_buy_only,
                 ),
             )
             applied = "live"

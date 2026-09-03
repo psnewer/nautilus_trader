@@ -78,7 +78,8 @@
     "match_tp": 0.05,
     "match_sl": -0.05,
     "min_probability": 0.03,
-    "max_probability": 0.97
+    "max_probability": 0.97,
+    "prob_buy_only": false
   },
   "execution": {
     "tracking_timeout_sec": 30

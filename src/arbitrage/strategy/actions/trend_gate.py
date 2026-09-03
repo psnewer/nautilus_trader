@@ -18,7 +18,7 @@ class TrendGateAction(Action):
 
     `up` 缺失或为 True 时保留 `current_best_ask > trend_price` 的 outcome；False 时保留
     `current_best_ask < trend_price` 的 outcome。相等为 flat，不保留。基准或当前完整报价缺失时
-    fail-closed，全删 candidate 腿。
+    fail-closed，全删腿。优先处理 selected candidate；不存在时直接处理 legs-only 输出。
     """
 
     def __init__(self, up: bool = True) -> None:
@@ -28,9 +28,12 @@ class TrendGateAction(Action):
 
     async def execute(self, ctx: EvalContext) -> None:
         selected = ctx.scratch.get("selected_candidate")
-        if not isinstance(selected, dict) or selected.get("cancel_pair_orders"):
-            return
-        legs = selected.get("legs")
+        if isinstance(selected, dict):
+            if selected.get("cancel_pair_orders"):
+                return
+            legs = selected.get("legs")
+        else:
+            legs = ctx.scratch.get("legs")
         if not isinstance(legs, list) or not legs:
             return
 
@@ -46,9 +49,10 @@ class TrendGateAction(Action):
                 f"TrendGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
                 f"outcome={outcome} direction={directions.get(outcome)} target={target}",
             )
-        filtered = dict(selected)
-        filtered["legs"] = kept
-        ctx.scratch["selected_candidate"] = filtered
+        if isinstance(selected, dict):
+            filtered = dict(selected)
+            filtered["legs"] = kept
+            ctx.scratch["selected_candidate"] = filtered
         ctx.scratch["legs"] = kept
 
 

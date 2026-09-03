@@ -322,6 +322,13 @@
 - 期望:原 Position 的 `avg_px_open` 直接更新为 venue 值；quantity、realized PnL 与 Position 身份不变，不生成 EXTERNAL order、fill 或开平仓事件。已有正均价不一致、多个本地 Position、零仓或 venue 均价无效时不走该修复。
 - 验收:`tests/unit_tests/live/test_execution_recon.py::TestReconciliationEdgeCases::test_position_reconciliation_repairs_zero_avg_px_when_quantity_matches`；setter 边界由 `tests/unit_tests/model/test_position.py::TestPosition::test_set_avg_px_open_updates_in_place` 锁定。
 
+### execution-4.5.8b: order reconcile 禁止用无效均价补成交(#374)
+- 前置:本地订单累计成交量小于 venue `OrderStatusReport.filled_qty`,需要合成缺失成交。
+- 输入:`report.avg_px` 分别为 `None`、`0`;即使限价 `report.price` 有效也不作为成交价替代。
+- 期望:该订单对账返回失败,不生成 inferred `OrderFilled`,不改变本地 `filled_qty`、order/position 或 inferred-fill tracking,等待后续 reconcile 拿到有效均价再重试。
+- 边界:若 report 与本地 `filled_qty` 已相等,无需补成交,所以 `avg_px=None` 不阻塞既有订单状态对账。
+- 验收:`tests/unit_tests/live/test_execution_recon.py::test_handle_fill_quantity_mismatch_rejects_missing_fill_without_valid_avg_px`、`test_handle_fill_quantity_mismatch_ignores_avg_px_when_no_fill_is_missing`。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);

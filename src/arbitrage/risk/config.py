@@ -20,3 +20,4 @@ class ArbRiskParams:
     # 订单隐含概率闭区间:PM price 即概率;OE 十进制赔率换算为 1/price。
     min_probability: float = 0.03
     max_probability: float = 0.97
+    prob_buy_only: bool = False

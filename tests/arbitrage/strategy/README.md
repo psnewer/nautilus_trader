@@ -176,7 +176,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
 - ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；`one_side` 缺失/`True` 保持定向剩余预算分配，`False` 时两 outcome 均以 `arbitrage.share` 为 `share_if_wins`（decimal qty 仍按赔率反算）；缺 live state、缺 claim、缺 order book、非正价格、非正 share 及非法 `one_side` 均 fail-fast
-- ✅ `test_check_one_side_recovery.py`:先以 `min_rate` 命中 one-side 盘口，再以当前最大实际 share 为目标生成 mean recovery 缺口腿；覆盖未达单冲阈值不补、`min_repaired_rebate` 与 `force` 双向率门、默认跨 venue 最优价选择，以及内部 one-side candidates 不泄漏到 action scratch
+- ✅ `test_check_one_side_recovery.py`:先以 `min_rate` 命中 one-side 盘口，再以当前最大实际 share 为目标生成 mean recovery 缺口腿；`less` 缺失/`False` 保持 `rate >= min_rate`，`True` 使用严格 `rate < min_rate`（等号不命中，多 candidate 存在一条满足即通过）；覆盖两个比较方向、边界、非法参数、`min_repaired_rebate` 与 `force` 双向率门、默认跨 venue 最优价选择，以及内部 one-side candidates 不泄漏到 action scratch
 - ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
@@ -403,6 +403,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 赛前 B1(arb)与 B2(comp)同轮命中 → comp_plan 优先(先补救)。
 - 低于最小下注额的腿 → 由 Risk 兜底拒(无 candi_select 早筛)。
 
+### strategy-4.pre_rebate.6: 赛中 one-side 顺势非落后腿（#370）
+- 明确 `IN_PLAY`、跨 venue one-side 机会命中，`one_side=false` 使 yes/no 两腿都先规划为
+  `arbitrage.share`；`PRE/UNKNOWN/POST` 均不进入本分支。
+- `share_limit -> candi_select -> trend_gate(up=true) -> score_selection(win_or_draw=true)`：
+  只保留同时满足概率趋势 up 且比分非落后的 BUY 腿；up 但落后、非落后但 flat/down 均删除。
+- 比分平局时双方均属非落后，仍由 trend_gate 选出 up 腿；比分/映射未知、趋势基准缺失，或
+  抢七 `6-6` 且默认不比较抢七小分时 fail-closed。
+- 同轮补偿树与赛中套利树都命中时，仍由既有 `comp_plan > arb_plan` 规则优先执行补偿。
+- **验收**：`arb_config.json` 可经 builtin registry 完整装配；action 单体交集分别由
+  `test_action_trend_gate.py` 与 `test_action_score_selection.py` 覆盖，树间优先级沿用
+  `test_evaluator.py`。
+
 ## Pair 动态趋势基准 #356
 
 设计见 strategy §3.8.3。实现覆盖：`test_pair_prices.py`、`test_price_trend.py`、
@@ -427,8 +439,27 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - Action 从 live `PairPriceStore` 读取基准，从 live Cache 重算当前跨 venue 最优概率，不使用评估快照。
 - 默认/`up=true` 保留 `current > baseline` 的 outcome；`up=false` 保留 `current < baseline` 的 outcome。
 - 相等为 flat；两个 outcome 独立比较，不要求互补方向，也不要求各 venue 各自同向。
-- 基准为空、当前向量不完整或 outcome 不匹配时 fail-closed 全删；无 selected candidate 与撤单 candidate 保持 no-op。
+- 基准为空、当前向量不完整或 outcome 不匹配时 fail-closed 全删；无 candidate/legs 输入与撤单 candidate 保持 no-op。
+- mean/recovery 只写 `scratch["legs"]`、没有 selected candidate 时，`trend_gate` 直接过滤并回写
+  legs-only 输出，不要求为此插入 `candi_select`，也不构造伪 candidate。
 - `up` 非 boolean 构造即 `ValueError`；旧 `trend/steps` 参数已删除。
+
+## strategy-4.39：score_selection 比分方向过滤（#368）
+
+- `win_or_draw` 缺失时 Action 完全 no-op，不读取比分、不改 selected candidate。
+- `win_or_draw=true` 时，主/客方领先关系分别覆盖：非落后方 BUY 保留、落后方 SELL
+  保留；`false` 时反向保留落后方 BUY、非落后方 SELL。
+- 平分时两方均按非落后处理；多盘比分按已完成盘胜数优先、当前盘次之，覆盖当前盘暂时
+  落后但比赛级仍领先，以及抢七括号比分。
+- 缺 game_id、Sports Store/比分、坏比分格式、未知订单 side 或无法确定 home/away 的腿
+  fail-closed；3-way role pair 的 `claim=no` 不误映射成相反参赛方。
+- 无 selected candidate 与撤单 candidate 保持 no-op；非法非 boolean 参数构造失败。
+- `tie_break` 缺失/`false` 时，当前盘一到 `6-6`（包括 `6-6(x-y)`）即判为抢七态，
+  但不比较抢七小分，因此本轮无法判定并 fail-closed；不能把它降级成普通平分。
+- `tie_break=true` 时使用括号内抢七小分；裸 `6-6` 表示已进入抢七但尚为 `0-0`，双方
+  仍是非落后。覆盖抢七领先/落后、裸 6-6、默认关闭和参数类型错误。
+- **验收**：`test_action_score_selection.py`；launcher 注册由
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
 
 ## 策略内组合场景
 

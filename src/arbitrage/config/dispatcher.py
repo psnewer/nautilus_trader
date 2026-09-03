@@ -235,6 +235,7 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
         match_sl=r.match_sl,
         min_probability=r.min_probability,
         max_probability=r.max_probability,
+        prob_buy_only=r.prob_buy_only,
     )
 
 

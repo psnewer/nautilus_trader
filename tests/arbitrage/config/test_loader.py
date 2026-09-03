@@ -85,7 +85,7 @@ def test_full_json_parses(cfg_path):
             "evaluate_on_depth_change": True,
         },
         "venues": {"sharpexch": {"enabled": True}},
-        "risk": {"match_tp": 0.08, "min_probability": 0.04},
+        "risk": {"match_tp": 0.08, "min_probability": 0.04, "prob_buy_only": True},
         "strategy": {
             "strategies": {
                 "tennis_prematch": {
@@ -107,6 +107,7 @@ def test_full_json_parses(cfg_path):
     assert cfg.arbitrage.max_leg_share == 75.0
     assert cfg.arbitrage.evaluate_on_depth_change is True
     assert cfg.risk.min_probability == 0.04
+    assert cfg.risk.prob_buy_only is True
     assert cfg.strategy.bindings[0].scope == "competition:ATP"
     assert cfg.strategy.strategies["tennis_prematch"].arbitrage_tree is not None
 
@@ -119,6 +120,13 @@ def test_example_config_omits_data_sources_but_gets_defaults():
     assert cfg.data_sources.sports_status.provider == "polymarket_sports"
     assert cfg.data_sources.sports_status.sports == []
     assert cfg.discovery.polymarket.sports[0].competitions == ["wimbledon"]
+
+
+def test_risk_prob_buy_only_must_be_boolean(cfg_path):
+    cfg_path.write_text(json.dumps({"risk": {"prob_buy_only": "true"}}))
+
+    with pytest.raises(ConfigError, match="schema mismatch"):
+        load_arb_config(cfg_path)
 
 
 def test_unknown_risk_arbitrage_fields_raise_schema_mismatch(cfg_path):

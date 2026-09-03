@@ -505,6 +505,14 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 - **与 (4)/(5) 的关系**:远端 position query 正常返回即可证明 position 查询通道可达；上层 reconciliation 随即标 alive。本地 cache 是否因并发摘要失效而应用该批 report 是另一件事，不再引入 liveness-outcome 二次判定闸。
 - **⚠️ 计算型账户 × 自愈合成 fill(#264 交互;NT core 补丁 2026-08-06,live-unvalidated)**:`generate_missing_orders`(`8e2370ee22`,让 venue 权威持仓在 cache 缺失时自愈成本地 order，以便可管理/卖出)对这些 external 持仓合成 inferred fill，`strategy_id="EXTERNAL"`(tag `RECONCILIATION`/`VENUE`)。PM 是**计算型 CASH 账户**(#264,`calculate_account_state=True`,按每笔 fill 本地扣余额),连接时初始余额已从 venue 拉取、**已含这些持仓的成本**;若再让 EXTERNAL fill 走 `Portfolio.update_order → update_balances` 就**双重扣减** → 余额转负 → `CashAccount` 抛 `AccountBalanceNegative` 掀翻启动对账(实盘 2026-08-06 复现:`-0.132662 USDC.e`,节点起不来)。**修法(用户定,不动 `calculate_account_state`)**:`portfolio.pyx Portfolio.update_order` 的 `OrderFilled` 分支跳过 `strategy_id=="EXTERNAL"` 的 fill(与既有 `is_spread()` 跳过同构)——external 持仓成本已在 venue 拉取的初始余额里,不再重复入账;之后**真去卖**这个仓是真策略订单(strategy_id≠EXTERNAL)→ 照常入账,两头自洽。真实策略订单**漏收 fill** 触发的 inferred 补记(`_handle_fill_quantity_mismatch` 对真单也会发生)strategy_id 是真策略 → 不误伤。NT core 补丁,NT 升级须保留(memory `project_nt_core_patched_build`),须 `make build`。测试 `tests/unit_tests/portfolio/test_portfolio.py::test_external_strategy_fill_does_not_update_calculated_balance`。
 
+**(5e) order report 缺失成交的价格完整性(#374,2026-09-02,已落地)**:订单对账只有在
+`report.filled_qty > order.filled_qty` 时才需要合成缺失的 `OrderFilled`。此时 report 必须携带严格大于
+零的累计 `avg_px`;缺失或非正值一律 fail-closed,返回该订单对账失败且不修改 order/position,也不再
+用限价 `report.price` 或零价兜底。后续 reconcile 拿到有效均价后可自然重试。若 report 与本地
+`filled_qty` 已相等,则无需构造 fill,`avg_px` 缺失不阻塞订单终态同步。该不变量放在 NT
+`create_inferred_order_filled_event` 唯一构造入口,由 `_handle_fill_quantity_mismatch` 捕获
+`ValueError` 并停止本单应用。
+
 **(5c) OE fx 边界(已落地,2026-06-30)**:
 - adapter 外部统一 USD 口径:Strategy 生成的 OE `qty`、Risk 余额/利润门控、Portfolio outcome 指标、NT order/fill/report quantity 都按 USD stake 解释。
 - 入站:`BALANCE.balance` 乘当前 `arbitrage.fx` 后写入 NT account cache,使 Risk 余额门控直接比较 USD stake;`OrbitExchExecutionClient._on_current_bets` 调 `normalize_current_bets_to_usd`,把 `size*` 字段以及 `liability`/`profit*`/`pnl` 等金额字段乘当前 `arbitrage.fx` 后缓存到 `_current_bets`,供 order report / position report 使用。fill delta 例外:增量用 OE 原始 GBP `sizeMatched` 累积值计算,再把本次 delta 乘当前 `fx` 生成 NT fill quantity,避免 web 热改 fx 时把汇率变化误判成新增成交。

@@ -480,19 +480,17 @@ def create_inferred_order_filled_event(
     # Calculate last qty
     last_qty: Quantity = instrument.make_qty(report.filled_qty - order.filled_qty)
 
+    if report.avg_px is None or float(report.avg_px) <= 0:
+        raise ValueError(
+            f"Cannot infer fill without a valid average price, report.avg_px={report.avg_px}",
+        )
+
     # Calculate last px
     if order.avg_px is None:
         # For the first fill, use the report's average price
-        if report.avg_px:
-            last_px: Price = instrument.make_price(report.avg_px)
-        elif report.price is not None:
-            # If no avg_px but we have a price (e.g., from LIMIT order), use that
-            last_px = report.price
-        else:
-            # Retain original fallback for now
-            last_px = instrument.make_price(0.0)
+        last_px: Price = instrument.make_price(report.avg_px)
     else:
-        report_cost: float = float(report.avg_px or 0.0) * float(report.filled_qty)
+        report_cost: float = float(report.avg_px) * float(report.filled_qty)
         filled_cost = float(order.avg_px) * float(order.filled_qty)
         incremental_cost = report_cost - filled_cost
 

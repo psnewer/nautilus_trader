@@ -152,6 +152,14 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望: `_check_probability_gate` deny;price=0.03/0.97 或 OE price=2.0 放行。
 - 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability` / `test_probability_gate_converts_sharpexch_decimal_odds_to_probability`;转换入口由 `src.arbitrage.common.venues.probability_from_price` 提供,非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
 
+### risk-6.7.1e2: 概率门控可限制为仅 BUY（#373）
+- `prob_buy_only` 缺失/`false` 时，既有 BUY/SELL 概率门控及 SELL 补集换算完全不变。
+- `prob_buy_only=true` 时，同一越界价格的 SELL 跳过概率门，BUY 仍被拒；SELL 只跳过本门，
+  不跳过 NT 原生检查、余额与 profit gates。
+- 非 boolean 启动配置由 schema 拒绝；非法热更新命令不 apply。
+- 验收：`test_probability_gate_buy_only_skips_sell_but_still_checks_buy`、
+  `test_probability_buy_only_hot_update_validates_boolean`。
+
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,`share=22.5`,`match_tp=0.05`;所有 outcome 的 `net_profit > 1.125`
 - 输入: strategy 对该 pair 再 `submit_order`

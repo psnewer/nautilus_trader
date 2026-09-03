@@ -33,6 +33,7 @@ class SetRiskParamsCommand:
     match_sl: float | None = None
     min_probability: float | None = None
     max_probability: float | None = None
+    prob_buy_only: bool | None = None
 
 
 @dataclass(frozen=True)
