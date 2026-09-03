@@ -403,11 +403,13 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 赛前 B1(arb)与 B2(comp)同轮命中 → comp_plan 优先(先补救)。
 - 低于最小下注额的腿 → 由 Risk 兜底拒(无 candi_select 早筛)。
 
-### strategy-4.pre_rebate.6: 赛中 one-side 顺势非落后腿（#370）
+### strategy-4.pre_rebate.6: 赛中 one-side 顺势非落后腿（#370/#375）
 - 明确 `IN_PLAY`、跨 venue one-side 机会命中，`one_side=false` 使 yes/no 两腿都先规划为
   `arbitrage.share`；`PRE/UNKNOWN/POST` 均不进入本分支。
-- `share_limit -> candi_select -> trend_gate(up=true) -> score_selection(win_or_draw=true)`：
-  只保留同时满足概率趋势 up 且比分非落后的 BUY 腿；up 但落后、非落后但 flat/down 均删除。
+- `venue_replace -> share_limit -> trend_gate(up=true) -> score_selection(win_or_draw=true) -> candi_select`：
+  两个语义门先逐 candidate 取“趋势 up 且比分非落后”的腿交集并删除空 candidate，`candi_select`
+  再只对幸存腿做最小下注门控与候选选择。验收需证明被趋势或比分删除的低额腿不会误杀同
+  candidate 中的合格腿，以及单腿 candidate 可被 `candi_select` 接受。
 - 比分平局时双方均属非落后，仍由 trend_gate 选出 up 腿；比分/映射未知、趋势基准缺失，或
   抢七 `6-6` 且默认不比较抢七小分时 fail-closed。
 - 同轮补偿树与赛中套利树都命中时，仍由既有 `comp_plan > arb_plan` 规则优先执行补偿。
@@ -442,10 +444,14 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 基准为空、当前向量不完整或 outcome 不匹配时 fail-closed 全删；无 candidate/legs 输入与撤单 candidate 保持 no-op。
 - mean/recovery 只写 `scratch["legs"]`、没有 selected candidate 时，`trend_gate` 直接过滤并回写
   legs-only 输出，不要求为此插入 `candi_select`，也不构造伪 candidate。
+- `candidates` 尚未选择时，逐 candidate 过滤腿并保留元数据；全空 candidate 淘汰，撤单 candidate
+  原样保留。支持 `trend_gate -> candi_select`，并分别覆盖默认 up 与 `up=false`。
 - `up` 非 boolean 构造即 `ValueError`；旧 `trend/steps` 参数已删除。
 
 ## strategy-4.39：score_selection 比分方向过滤（#368）
 
+- 支持 `selected_candidate`、`candidates`、legs-only 三种输入；候选池输入逐 candidate 筛腿、
+  淘汰空 candidate、保留元数据和撤单 candidate，不提前选择。
 - `win_or_draw` 缺失时 Action 完全 no-op，不读取比分、不改 selected candidate。
 - `win_or_draw=true` 时，主/客方领先关系分别覆盖：非落后方 BUY 保留、落后方 SELL
   保留；`false` 时反向保留落后方 BUY、非落后方 SELL。
@@ -453,7 +459,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   落后但比赛级仍领先，以及抢七括号比分。
 - 缺 game_id、Sports Store/比分、坏比分格式、未知订单 side 或无法确定 home/away 的腿
   fail-closed；3-way role pair 的 `claim=no` 不误映射成相反参赛方。
-- 无 selected candidate 与撤单 candidate 保持 no-op；非法非 boolean 参数构造失败。
+- 无 `selected_candidate/candidates/legs` 输入时 no-op；撤单 candidate 原样保留；非法非 boolean
+  参数构造失败。
 - `tie_break` 缺失/`false` 时，当前盘一到 `6-6`（包括 `6-6(x-y)`）即判为抢七态，
   但不比较抢七小分，因此本轮无法判定并 fail-closed；不能把它降级成普通平分。
 - `tie_break=true` 时使用括号内抢七小分；裸 `6-6` 表示已进入抢七但尚为 `0-0`，双方

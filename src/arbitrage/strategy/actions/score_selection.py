@@ -1,4 +1,4 @@
-"""ScoreSelectionAction —— 按当前比分与订单方向筛选已选 candidate 的腿。"""
+"""ScoreSelectionAction —— 按当前比分与订单方向筛选执行腿。"""
 
 from __future__ import annotations
 
@@ -36,14 +36,68 @@ class ScoreSelectionAction(Action):
         if self._win_or_draw is None:
             return
         selected = ctx.scratch.get("selected_candidate")
-        if not isinstance(selected, dict) or selected.get("cancel_pair_orders"):
-            return
-        legs = selected.get("legs")
-        if not isinstance(legs, list) or not legs:
+        if isinstance(selected, dict):
+            if selected.get("cancel_pair_orders"):
+                return
+            legs = selected.get("legs")
+            if not isinstance(legs, list) or not legs:
+                return
+            kept = self._filter_legs(ctx, legs)
+            filtered = dict(selected)
+            filtered["legs"] = kept
+            ctx.scratch["selected_candidate"] = filtered
+            ctx.scratch["legs"] = kept
             return
 
-        standings = _standings(ctx, tie_break=self._tie_break)
-        pair_roles = _pair_roles(ctx)
+        if "candidates" in ctx.scratch:
+            candidates = ctx.scratch.get("candidates")
+            if not isinstance(candidates, list):
+                ctx.scratch["candidates"] = []
+                return
+            standings = _standings(ctx, tie_break=self._tie_break)
+            pair_roles = _pair_roles(ctx)
+            filtered_candidates = []
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if candidate.get("cancel_pair_orders"):
+                    filtered_candidates.append(candidate)
+                    continue
+                legs = candidate.get("legs")
+                if not isinstance(legs, list) or not legs:
+                    continue
+                kept = self._filter_legs(
+                    ctx,
+                    legs,
+                    standings=standings,
+                    pair_roles=pair_roles,
+                )
+                if not kept:
+                    continue
+                filtered = dict(candidate)
+                filtered["legs"] = kept
+                filtered_candidates.append(filtered)
+            ctx.scratch["candidates"] = filtered_candidates
+            return
+
+        legs = ctx.scratch.get("legs")
+        if not isinstance(legs, list) or not legs:
+            return
+        ctx.scratch["legs"] = self._filter_legs(ctx, legs)
+
+    def _filter_legs(
+        self,
+        ctx: EvalContext,
+        legs: list[dict],
+        *,
+        standings: dict[str, str] | None = None,
+        pair_roles: set[str] | None = None,
+    ) -> list[dict]:
+        standings = standings if standings is not None else _standings(
+            ctx,
+            tie_break=self._tie_break,
+        )
+        pair_roles = pair_roles if pair_roles is not None else _pair_roles(ctx)
         kept = []
         for leg in legs:
             side_role = _side_role(ctx, leg, pair_roles)
@@ -58,11 +112,7 @@ class ScoreSelectionAction(Action):
                 f"side={side} side_role={side_role} standing={standing} "
                 f"win_or_draw={self._win_or_draw} tie_break={self._tie_break}",
             )
-
-        filtered = dict(selected)
-        filtered["legs"] = kept
-        ctx.scratch["selected_candidate"] = filtered
-        ctx.scratch["legs"] = kept
+        return kept
 
 
 def _standings(ctx: EvalContext, *, tie_break: bool) -> dict[str, str]:

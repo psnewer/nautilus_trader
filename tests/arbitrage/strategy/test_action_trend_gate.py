@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from src.arbitrage.common.pair_prices import PairPriceStore
+from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -24,7 +25,7 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def _ctx(*, books=None, baseline=None):
+def _ctx(*, books=None, baseline=None, constraints=None):
     ctx = live_context(
         infos=_INFOS,
         instrument_ids=list(_INFOS),
@@ -34,6 +35,7 @@ def _ctx(*, books=None, baseline=None):
             "Y.ORBITEXCH": {"ask": 0.46},
             "N.ORBITEXCH": {"ask": 0.56},
         },
+        constraints=constraints,
     )
     store = PairPriceStore(ctx.cache)
     store.initialize(ctx.pair_id, ["yes", "no"])
@@ -153,6 +155,96 @@ def test_missing_trend_price_drops_legs_without_selected_candidate():
 
     assert ctx.scratch["legs"] == []
     assert "selected_candidate" not in ctx.scratch
+
+
+def test_filters_each_candidate_before_candidate_selection():
+    ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "two-legs",
+            "rate": 0.1,
+            "legs": [
+                {"instrument_id": "Y.POLYMARKET", "side": "BUY", "claim": "yes"},
+                {"instrument_id": "N.POLYMARKET", "side": "BUY", "claim": "no"},
+            ],
+        },
+        {
+            "candidate_id": "down-only",
+            "rate": 0.2,
+            "legs": [
+                {"instrument_id": "N.ORBITEXCH", "side": "BUY", "claim": "no"},
+            ],
+        },
+    ]
+
+    _run(TrendGateAction().execute(ctx))
+
+    assert len(ctx.scratch["candidates"]) == 1
+    candidate = ctx.scratch["candidates"][0]
+    assert candidate["candidate_id"] == "two-legs"
+    assert candidate["rate"] == 0.1
+    assert [leg["instrument_id"] for leg in candidate["legs"]] == ["Y.POLYMARKET"]
+    assert "selected_candidate" not in ctx.scratch
+
+
+def test_up_false_filters_candidate_pool_to_down_legs():
+    ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "two-legs",
+            "legs": [
+                {"instrument_id": "Y.POLYMARKET", "side": "BUY", "claim": "yes"},
+                {"instrument_id": "N.POLYMARKET", "side": "BUY", "claim": "no"},
+            ],
+        },
+    ]
+
+    _run(TrendGateAction(up=False).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["candidates"][0]["legs"]] == [
+        "N.POLYMARKET",
+    ]
+
+
+def test_trend_before_candi_ignores_minimum_failure_on_dropped_leg():
+    ctx = _ctx(
+        baseline={"yes": 0.45, "no": 0.57},
+        constraints={
+            "Y.POLYMARKET": {"min_quantity": 5.0},
+            "N.POLYMARKET": {"min_quantity": 5.0},
+        },
+    )
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "mixed",
+            "legs": [
+                {
+                    "instrument_id": "Y.POLYMARKET",
+                    "venue": "POLYMARKET",
+                    "side": "BUY",
+                    "claim": "yes",
+                    "price": 0.46,
+                    "qty": 5.0,
+                    "share_if_wins": 5.0,
+                },
+                {
+                    "instrument_id": "N.POLYMARKET",
+                    "venue": "POLYMARKET",
+                    "side": "BUY",
+                    "claim": "no",
+                    "price": 0.56,
+                    "qty": 1.0,
+                    "share_if_wins": 1.0,
+                },
+            ],
+        },
+    ]
+
+    _run(TrendGateAction().execute(ctx))
+    _run(CandiSelectAction().execute(ctx))
+
+    assert ctx.scratch["selected_candidate"]["candidate_id"] == "mixed"
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
 
 
 def test_skips_cancel_pair_candidate():

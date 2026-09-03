@@ -18,7 +18,7 @@ class TrendGateAction(Action):
 
     `up` 缺失或为 True 时保留 `current_best_ask > trend_price` 的 outcome；False 时保留
     `current_best_ask < trend_price` 的 outcome。相等为 flat，不保留。基准或当前完整报价缺失时
-    fail-closed，全删腿。优先处理 selected candidate；不存在时直接处理 legs-only 输出。
+    fail-closed，全删腿。按 `selected_candidate`、`candidates`、legs-only 的顺序处理现有输出。
     """
 
     def __init__(self, up: bool = True) -> None:
@@ -27,33 +27,69 @@ class TrendGateAction(Action):
         self._keep_up = up
 
     async def execute(self, ctx: EvalContext) -> None:
+        target = "up" if self._keep_up else "down"
         selected = ctx.scratch.get("selected_candidate")
         if isinstance(selected, dict):
             if selected.get("cancel_pair_orders"):
                 return
             legs = selected.get("legs")
-        else:
-            legs = ctx.scratch.get("legs")
-        if not isinstance(legs, list) or not legs:
-            return
-
-        directions = _directions(ctx)
-        target = "up" if self._keep_up else "down"
-        kept = []
-        for leg in legs:
-            outcome = _outcome(leg)
-            if directions.get(outcome) == target:
-                kept.append(leg)
-                continue
-            _LOG.info(
-                f"TrendGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-                f"outcome={outcome} direction={directions.get(outcome)} target={target}",
-            )
-        if isinstance(selected, dict):
+            if not isinstance(legs, list) or not legs:
+                return
+            kept = _filter_legs(ctx, legs, target, _directions(ctx))
             filtered = dict(selected)
             filtered["legs"] = kept
             ctx.scratch["selected_candidate"] = filtered
-        ctx.scratch["legs"] = kept
+            ctx.scratch["legs"] = kept
+            return
+
+        if "candidates" in ctx.scratch:
+            candidates = ctx.scratch.get("candidates")
+            if not isinstance(candidates, list):
+                ctx.scratch["candidates"] = []
+                return
+            directions = _directions(ctx)
+            filtered_candidates = []
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if candidate.get("cancel_pair_orders"):
+                    filtered_candidates.append(candidate)
+                    continue
+                legs = candidate.get("legs")
+                if not isinstance(legs, list) or not legs:
+                    continue
+                kept = _filter_legs(ctx, legs, target, directions)
+                if not kept:
+                    continue
+                filtered = dict(candidate)
+                filtered["legs"] = kept
+                filtered_candidates.append(filtered)
+            ctx.scratch["candidates"] = filtered_candidates
+            return
+
+        legs = ctx.scratch.get("legs")
+        if not isinstance(legs, list) or not legs:
+            return
+        ctx.scratch["legs"] = _filter_legs(ctx, legs, target, _directions(ctx))
+
+
+def _filter_legs(
+    ctx: EvalContext,
+    legs: list[dict],
+    target: str,
+    directions: dict[str, str],
+) -> list[dict]:
+    kept = []
+    for leg in legs:
+        outcome = _outcome(leg)
+        if directions.get(outcome) == target:
+            kept.append(leg)
+            continue
+        _LOG.info(
+            f"TrendGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
+            f"outcome={outcome} direction={directions.get(outcome)} target={target}",
+        )
+    return kept
 
 
 def _directions(ctx: EvalContext) -> dict[str, str]:

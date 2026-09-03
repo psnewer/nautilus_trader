@@ -1,10 +1,11 @@
-"""ScoreSelectionAction：按最新比分和订单方向过滤 selected candidate。"""
+"""ScoreSelectionAction：按最新比分和订单方向过滤 candidate、候选池或裸 legs。"""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
 
+from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.score_selection import _compare_score
 from tests.arbitrage.strategy._live_state import live_context
@@ -32,11 +33,12 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def _ctx(score="6-4, 2-3"):
+def _ctx(score="6-4, 2-3", *, constraints=None):
     ctx = live_context(
         infos=_INFOS,
         instrument_ids=list(_INFOS),
         sports_store=_SportsStore(score),
+        constraints=constraints,
     )
     ctx.pair_registry.register(ctx.pair_id, list(_INFOS), game_id=42)
     legs = [
@@ -126,6 +128,103 @@ def test_missing_param_passes_every_leg_without_reading_score():
 
     assert ctx.scratch["selected_candidate"] is before
     assert len(ctx.scratch["legs"]) == 4
+
+
+def test_filters_each_candidate_before_candidate_selection():
+    ctx = _ctx()
+    ctx.scratch.pop("selected_candidate")
+    ctx.scratch.pop("legs")
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "mixed",
+            "rate": 0.1,
+            "legs": [
+                {"instrument_id": "H.POLYMARKET", "side": "BUY", "claim": "yes"},
+                {"instrument_id": "A.POLYMARKET", "side": "BUY", "claim": "no"},
+            ],
+        },
+        {
+            "candidate_id": "trailing-buy-only",
+            "rate": 0.2,
+            "legs": [
+                {"instrument_id": "A.POLYMARKET", "side": "BUY", "claim": "no"},
+            ],
+        },
+    ]
+
+    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+
+    assert len(ctx.scratch["candidates"]) == 1
+    candidate = ctx.scratch["candidates"][0]
+    assert candidate["candidate_id"] == "mixed"
+    assert candidate["rate"] == 0.1
+    assert [leg["instrument_id"] for leg in candidate["legs"]] == ["H.POLYMARKET"]
+    assert "selected_candidate" not in ctx.scratch
+
+
+def test_filters_legs_without_selected_candidate():
+    ctx = _ctx()
+    ctx.scratch.pop("selected_candidate")
+
+    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+
+    assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
+        ("H.POLYMARKET", "BUY"),
+        ("A.POLYMARKET", "SELL"),
+    ]
+    assert "selected_candidate" not in ctx.scratch
+
+
+def test_candidate_pool_preserves_cancel_candidate():
+    ctx = _ctx()
+    ctx.scratch.clear()
+    candidate = {"candidate_id": "cancel", "cancel_pair_orders": True, "legs": []}
+    ctx.scratch["candidates"] = [candidate]
+
+    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+
+    assert ctx.scratch["candidates"] == [candidate]
+
+
+def test_score_before_candi_ignores_minimum_failure_on_dropped_leg():
+    ctx = _ctx(
+        constraints={
+            "H.POLYMARKET": {"min_quantity": 5.0},
+            "A.POLYMARKET": {"min_quantity": 5.0},
+        },
+    )
+    ctx.scratch.clear()
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "mixed",
+            "legs": [
+                {
+                    "instrument_id": "H.POLYMARKET",
+                    "venue": "POLYMARKET",
+                    "side": "BUY",
+                    "claim": "yes",
+                    "price": 0.6,
+                    "qty": 5.0,
+                    "share_if_wins": 5.0,
+                },
+                {
+                    "instrument_id": "A.POLYMARKET",
+                    "venue": "POLYMARKET",
+                    "side": "BUY",
+                    "claim": "no",
+                    "price": 0.4,
+                    "qty": 1.0,
+                    "share_if_wins": 1.0,
+                },
+            ],
+        },
+    ]
+
+    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(CandiSelectAction().execute(ctx))
+
+    assert ctx.scratch["selected_candidate"]["candidate_id"] == "mixed"
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["H.POLYMARKET"]
 
 
 @pytest.mark.parametrize("score", [None, "", "unknown", "6:4"])
