@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
+from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -174,8 +175,7 @@ def _pair_roles(ctx: EvalContext) -> set[str]:
         return set()
     roles = set()
     for instrument_id in ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id):
-        instrument = ctx.cache.instrument(instrument_id)
-        info = getattr(instrument, "info", None) or {}
+        info = instrument_info(ctx, instrument_id)
         role = str(info.get("selection_role") or "").lower()
         if role in {"home", "away"}:
             roles.add(role)
@@ -188,8 +188,7 @@ def _side_role(ctx: EvalContext, leg: dict, pair_roles: set[str]) -> str | None:
     instrument_id = leg.get("instrument_id")
     if not instrument_id:
         return None
-    instrument = ctx.cache.instrument(instrument_id)
-    info = getattr(instrument, "info", None) or {}
+    info = instrument_info(ctx, instrument_id)
     role = str(info.get("selection_role") or "").lower()
     claim = str(info.get("claim") or leg.get("claim") or "").lower()
     if pair_roles == {"home", "away"} and role in pair_roles:

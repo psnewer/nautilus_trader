@@ -208,8 +208,8 @@
 
 - 前置:残单为 `ACCEPTED`，barrier/per-client cancel-only 绕过 `Strategy.cancel_order` 直接撤单。
 - 输入:共用 residual cancel 入口发起撤单；随后 inflight QueryOrder 没有返回有效 report。
-- 期望:venue IO 前先发布 `OrderPendingCancel` 并把 Cache 订单置为 `PENDING_CANCEL`；再次遇到该残单时不重复发 venue cancel；只发送一次 inflight `QueryOrder`，下个 threshold 仍无有效报告时生成 `OrderCancelRejected(reason=UNKNOWN)`、恢复撤单前的 `ACCEPTED/PARTIALLY_FILLED` 并清理 tracking，使下一轮 cancel-only 可以再次撤。
-- 验收:`test_session.py::test_base_cancel_only_marks_residual_pending_cancel_before_venue_io` / `test_engine_barrier.py::test_pending_cancel_inflight_failure_rejects_cancel_and_restores_open_state`。
+- 期望:venue IO 前先发布 `OrderPendingCancel` 并把 Cache 订单置为 `PENDING_CANCEL`；再次遇到该残单时不重复发 venue cancel；等待 `10s` 后只发送一次 inflight `QueryOrder`，下个 threshold 仍无有效报告时生成 `OrderCancelRejected(reason=UNKNOWN)`、恢复撤单前的 `ACCEPTED/PARTIALLY_FILLED` 并清理 tracking，使下一轮 cancel-only 可以再次撤。
+- 验收:`test_session.py::test_base_cancel_only_marks_residual_pending_cancel_before_venue_io` / `test_engine_barrier.py::test_pending_cancel_inflight_failure_rejects_cancel_and_restores_open_state` / `tests/arbitrage/launchers/test_arb_node.py::test_build_trading_node_config_has_pm_oe_data_exec_clients`。
 
 ## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)
 

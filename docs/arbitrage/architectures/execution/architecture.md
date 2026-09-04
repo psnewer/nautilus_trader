@@ -527,8 +527,8 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   market；这些情形不得伪造 `OrderRejected` / `OrderCancelRejected`。venue 明确返回的业务错误才是
   terminal reject。
 - **查询次数统一为一次**:`LiveExecEngineConfig.inflight_check_retries=1`。超过
-  `inflight_check_threshold_ms`(#256 起 launcher 显式设 30 秒,不再用 NT 默认 5 秒——ack 改为
-  venue 广播式信号驱动后不是一次性回执,阈值放宽给信号到达留正常余量,同时仍小于
+  `inflight_check_threshold_ms`(#378 起 launcher 显式设 10 秒；ack 虽改为 venue 广播式信号驱动，
+  但异常 ACK 需要更快进入定向查询；该值仍小于
   `tracking_timeout_sec`=60 秒的 session 超时,保证 inflight-check 能在 session 结束前生效)后
   只发送一次 `QueryOrder`;若没有有效 report,下一次检查直接由 NT `_resolve_inflight_order()`
   收口,不再次访问 venue:`SUBMITTED → OrderRejected(reason=UNKNOWN)`；项目将
@@ -543,7 +543,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   alive。该恢复流程独立于 execution session，不读写 `_active_sessions`、session timer 或
   `pair_inflight`。
 - **OE/SE 已卡在飞时序**:place/cancel 自身的统一 5 秒 I/O timeout 先保证页锁及时释放(与
-  inflight threshold 是两个独立的 5 秒,不是同一个数字);NT 的 inflight threshold(#256 起 30 秒,
+  inflight threshold 是两个独立配置);NT 的 inflight threshold(#378 起 10 秒,
   见 (5) 一次性查询语义)独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task,
   强制 reload execution page 并等待一帧新的完整
   `CURRENT_BETS`(与常规 WS-stale 触发的 reload **复用同一套** `_ensure_exec_snapshot_fresh`/
@@ -607,7 +607,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 
 **(6) 互斥**:reload 与 place/cancel 同页冲突由 **OE ExecClient 页锁**串行(NT 不串行化,详见 synchronization §8.1/§8.2);本节只负责"reload-then-report"读写 `_current_bets`,锁的归属与 strategy 侧状态位迁移在横切章。
 
-**(7) NT 开关 / 配置(#105/#108/#110/#111/#256 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_threshold_ms=30_000, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`(`inflight_check_threshold_ms` 为 #256 追加,不再用 NT 默认 5s,配套 `tracking_timeout_sec=60`)。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
+**(7) NT 开关 / 配置(#105/#108/#110/#111/#256/#378 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_threshold_ms=10_000, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`(`#256` 首次显式配置该阈值，`#378` 收窄为 10s；配套 `tracking_timeout_sec=60`)。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
 
 **(8) 周期对账修复无效开仓均价(#339,2026-08-16)**:若同一 instrument 恰有一个本地
 open Position、venue 与本地的非零 signed quantity 完全相等、本地 `avg_px_open <= 0`，且

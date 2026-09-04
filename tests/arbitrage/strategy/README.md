@@ -452,6 +452,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - 支持 `selected_candidate`、`candidates`、legs-only 三种输入；候选池输入逐 candidate 筛腿、
   淘汰空 candidate、保留元数据和撤单 candidate，不提前选择。
+- PairRegistry 返回的字符串 instrument ID 必须先转换为 `InstrumentId` 再查询严格的 NT Cache；
+  使用拒绝字符串参数的 Cache stub 验证真实边界，不允许宽松测试替身掩盖类型错误。
 - `win_or_draw` 缺失时 Action 完全 no-op，不读取比分、不改 selected candidate。
 - `win_or_draw=true` 时，主/客方领先关系分别覆盖：非落后方 BUY 保留、落后方 SELL
   保留；`false` 时反向保留落后方 BUY、非落后方 SELL。

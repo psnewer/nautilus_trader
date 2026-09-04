@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.score_selection import _compare_score
@@ -62,6 +63,27 @@ def test_true_keeps_non_trailing_buy_and_trailing_sell():
         ("A.POLYMARKET", "SELL"),
     ]
     assert ctx.scratch["selected_candidate"]["rate"] == 0.1
+
+
+def test_cache_lookup_converts_registry_strings_to_instrument_ids():
+    ctx = _ctx()
+    original_instrument = ctx.cache.instrument
+    seen = []
+
+    def strict_instrument(instrument_id):
+        assert isinstance(instrument_id, InstrumentId)
+        seen.append(instrument_id)
+        return original_instrument(instrument_id)
+
+    ctx.cache.instrument = strict_instrument
+
+    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+
+    assert seen
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == [
+        "H.POLYMARKET",
+        "A.POLYMARKET",
+    ]
 
 
 def test_false_keeps_trailing_buy_and_non_trailing_sell():
