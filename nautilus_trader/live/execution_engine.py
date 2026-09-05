@@ -2937,70 +2937,12 @@ class LiveExecutionEngine(ExecutionEngine):
                     ts_init=now,
                 )
         else:
-            # No price information, fall back to generated MARKET order
-            avg_px = None
             self._log.warning(
                 f"Could not determine reconciliation price for {report.instrument_id}, "
-                f"generating MARKET order for position reconciliation "
+                f"deferring position reconciliation without generating an order "
                 f"(current: {position_signed_decimal_qty}, target: {report.signed_decimal_qty})",
             )
-
-            # Only reuse cached orders for netting mode
-            matching_diff_order = None
-
-            if report.venue_position_id is None:
-                matching_diff_order = self._find_matching_cached_order(
-                    instrument_id=report.instrument_id,
-                    order_side=order_side,
-                    quantity=diff_quantity,
-                    price=None,
-                    avg_px=None,
-                )
-
-            if matching_diff_order:
-                self._log.debug(
-                    f"Found matching cached order {matching_diff_order.client_order_id} "
-                    f"for position reconciliation {report.instrument_id}, reusing instead of creating synthetic order",
-                )
-                return self._create_order_status_report_from_cached_order(
-                    cached_order=matching_diff_order,
-                    instrument_id=report.instrument_id,
-                    account_id=report.account_id,
-                    order_side=order_side,
-                    quantity=diff_quantity,
-                    filled_qty=diff_quantity,
-                    price=None,
-                    avg_px=avg_px,
-                    ts_now=now,
-                    venue_position_id=report.venue_position_id,
-                )
-            else:
-                return OrderStatusReport(
-                    instrument_id=report.instrument_id,
-                    account_id=report.account_id,
-                    venue_order_id=self._create_synthetic_reconciliation_venue_order_id(
-                        account_id=report.account_id,
-                        instrument_id=report.instrument_id,
-                        order_side=order_side,
-                        order_type=OrderType.MARKET,
-                        quantity=diff_quantity,
-                        price=None,
-                        venue_position_id=report.venue_position_id,
-                        ts_last=report.ts_last,
-                    ),
-                    venue_position_id=report.venue_position_id,
-                    order_side=order_side,
-                    order_type=OrderType.MARKET,
-                    time_in_force=TimeInForce.IOC,
-                    order_status=OrderStatus.FILLED,
-                    quantity=diff_quantity,
-                    filled_qty=diff_quantity,
-                    avg_px=avg_px,
-                    report_id=UUID4(),
-                    ts_accepted=now,
-                    ts_last=now,
-                    ts_init=now,
-                )
+            return None
 
     def _create_synthetic_reconciliation_venue_order_id(
         self,

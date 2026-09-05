@@ -2333,6 +2333,7 @@ class TestReconciliationEdgeCases:
             instrument_id=instrument.id,
             position_side=PositionSide.LONG,
             quantity=Quantity.from_int(100),
+            avg_px_open=Decimal("1.0"),
             report_id=UUID4(),
             ts_last=0,
             ts_init=0,
@@ -2374,6 +2375,7 @@ class TestReconciliationEdgeCases:
             instrument_id=instrument.id,
             position_side=PositionSide.LONG,
             quantity=Quantity.from_int(150),
+            avg_px_open=Decimal("1.0"),
             report_id=UUID4(),
             ts_last=0,
             ts_init=0,
@@ -2474,21 +2476,21 @@ class TestReconciliationEdgeCases:
         assert generated_order.tags == ["RECONCILIATION"]
 
     @pytest.mark.asyncio
-    async def test_position_reconciliation_fallback_to_market_order_when_no_price_available(
+    async def test_position_reconciliation_defers_without_order_when_no_price_available(
         self,
         live_exec_engine,
     ):
         """
-        Test that position reconciliation falls back to MARKET order when no price
-        information is available (no positions, no market data).
+        Test that position reconciliation is deferred without generating an order when
+        no price information is available (no positions, no market data).
 
-        This tests the last resort fallback when:
+        This covers the failure path when:
         1. Reconciliation price calculation returns None (no target avg price)
         2. No quote tick is available in cache (no market data)
         3. No current position average price (starting from flat)
 
-        The reconciliation returns True in this case because we've done our best
-        to reconcile the position, even though price information is unavailable.
+        The position discrepancy remains for a later reconciliation cycle. No synthetic
+        order may leak into the cache because it could be mistaken for a venue order.
 
         """
         # Arrange
@@ -2509,7 +2511,7 @@ class TestReconciliationEdgeCases:
             ts_init=0,
         )
 
-        # Track reconciliation calls to verify MARKET order is generated
+        # Track reconciliation calls to verify no order report reaches order reconciliation
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
@@ -2520,37 +2522,15 @@ class TestReconciliationEdgeCases:
         live_exec_engine._reconcile_order_report = spy_reconcile
 
         # Act
-        result = live_exec_engine._reconcile_position_report(external_report)
+        first_result = live_exec_engine._reconcile_position_report(external_report)
+        second_result = live_exec_engine._reconcile_position_report(external_report)
 
         # Assert
-        # Reconciliation returns True because we've done our best to reconcile
-        assert result is True
-        assert len(reconcile_calls) == 1
-
-        # Verify the generated order report is a MARKET order (fallback)
-        order_report, trades, is_external = reconcile_calls[0]
-        assert order_report.order_type == OrderType.MARKET
-        assert order_report.time_in_force == TimeInForce.IOC
-        assert order_report.price is None  # MARKET orders don't have a price
-        assert order_report.order_side == OrderSide.BUY
-        assert order_report.quantity == Quantity.from_int(100)
-        assert order_report.filled_qty == Quantity.from_int(100)
-        assert order_report.order_status == OrderStatus.FILLED
-        assert is_external is False  # Internal reconciliation order
-
-        # Verify the order was added to cache with EXTERNAL strategy and RECONCILIATION tag
-        orders = self.cache.orders()
-        internal_recon_orders = [
-            o for o in orders if o.strategy_id.value == "EXTERNAL" and o.tags == ["RECONCILIATION"]
-        ]
-        assert len(internal_recon_orders) == 1
-
-        generated_order = internal_recon_orders[0]
-        assert generated_order.order_type == OrderType.MARKET
-        assert generated_order.side == OrderSide.BUY
-        assert generated_order.quantity == Quantity.from_int(100)
-        # Order might be ACCEPTED or FILLED depending on how reconciliation processes events
-        assert generated_order.status in (OrderStatus.ACCEPTED, OrderStatus.FILLED)
+        # Each report was handled safely, but its discrepancy remains for a later cycle
+        assert first_result is True
+        assert second_result is True
+        assert reconcile_calls == []
+        assert self.cache.orders() == []
 
     @pytest.mark.asyncio
     async def test_position_reconciliation_uses_limit_order_when_price_available(
@@ -2877,17 +2857,12 @@ class TestReconciliationEdgeCases:
         assert first_close != distinct_incident_close
         assert first_close != other_account_close
 
-    def test_reconciliation_market_fallback_venue_order_id_deterministic(
+    def test_reconciliation_without_price_does_not_create_report(
         self,
         live_exec_engine,
     ):
         """
-        MARKET-fallback reconciliation (no price available) must still produce a stable
-        venue_order_id across reconciliation cycles.
-
-        This covers the
-        `order_type=OrderType.MARKET, price=None` branch of
-        `_create_synthetic_reconciliation_venue_order_id`.
+        Reconciliation without a valid price must not create a synthetic report.
 
         """
         instrument = AUDUSD_SIM
@@ -2920,12 +2895,8 @@ class TestReconciliationEdgeCases:
             current_avg_px=None,
         )
 
-        assert first is not None
-        assert second is not None
-        assert first.order_type == OrderType.MARKET
-        assert first.price is None
-        assert first.venue_order_id == second.venue_order_id
-        assert first.id != second.id
+        assert first is None
+        assert second is None
 
     def test_reconciliation_venue_order_id_with_hedging_position_id(
         self,

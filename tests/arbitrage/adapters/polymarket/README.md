@@ -233,6 +233,19 @@ size，避免破坏 share/quote 口径。
 **期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)`。响应 `canceled[]` 包含目标 venue order ID 时立即 `generate_order_canceled` 并结束 cancel session；不等待可能缺失的 USER WS `CANCELLATION`。迟到的 WS cancellation 必须按 cache 状态和 client 侧有界窗口幂等跳过。`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。
 **验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session` / `test_polymarket_deferred_cancel_success_generates_canceled_event_and_ends_session` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
 
+### pm-adapter-5.2a: 撤单终态先到时仍应用真实迟到成交(#381)
+
+**前置**:本地订单已经收到真实 `OrderCanceled`；随后收到撮合时间早于撤单、但传输更晚的未处理
+USER trade `CONFIRMED`。
+
+**输入**:分别覆盖迟到 fill 后累计成交小于原 quantity、等于原 quantity，以及同一 trade 重复到达。
+
+**期望**:两种首次到达都生成真实 `OrderFilled`，使用 trade 的数量和价格且不触发 position reconcile；
+部分成交随后按原撤单时间重放 `OrderCanceled`，最终仍为 CANCELED 并保留 filled quantity；全成最终为
+FILLED，不重放 cancel；重复 trade 不再生成任何事件。
+
+**验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_canceled_order_books_late_fill_without_losing_terminal_state`。
+
 ### pm-adapter-5.3: Reconciliation(启动重连对账)
 
 **前置**: 模拟 Strategy 重启后,venue 上有上一会话遗留的挂单

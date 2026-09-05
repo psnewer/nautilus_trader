@@ -97,6 +97,15 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 **PM cancel 终态约束(#99/#113/#342,已落地,2026-08-16)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当 `canceled[]` 确实包含目标 venue order ID 时,adapter 立即经 `_generate_cancel_success_event` 生成 `OrderCanceled`,并 ACK/结束 cancel session,不再依赖可能缺失的 USER WS `CANCELLATION`。迟到的 USER WS cancellation 仍走同一 helper 并保持幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply REST 产生的 `OrderCanceled` 时,用有界 `_cancel_terminal_client_ids` 窗口按 `client_order_id` 跳过重复终态,避免向 NT 重放 `CANCELED -> CANCELED`。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(不能从该歧义文本判断撤单还是成交)。覆盖范围:单笔 `_cancel_order`、deferred cancel、batch/cancel-all 与 USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 
+**PM cancel/match 竞态的迟到成交(#381,已落地,2026-09-06)**:真实 trade 的撮合时间可能早于
+撤单确认，但 `MATCHED/MINED/CONFIRMED` WS 消息晚于 `OrderCanceled` 才到。若该
+`(trade_id, venue_order_id)` 尚未处理，adapter 对 `CANCELED` 订单仍以 trade 携带的真实
+`last_qty/last_px/liquidity_side` 生成 `OrderFilled`，不再跳过并依赖 position reconcile。若累计成交
+未满原订单，紧随 fill 按原 `OrderCanceled.ts_event` 重放一次 cancel，使 ExecEngine 队列依次应用
+`CANCELED -> PARTIALLY_FILLED -> CANCELED`；若累计已满，则只应用 fill，终态成为 `FILLED`，不得再
+生成非法的 `FILLED -> CANCELED`。per-fill 去重仍是唯一幂等边界，后续同一 trade 的状态升级不重复
+入账。其他 closed 状态保持原行为：不直接应用 fill，触发 position reconcile 兜底。
+
 **PM ack 语义:只来自 WS,不再回执即 ack(#256,2026-07-20 落地,取代 #253)**:
 
 > ⚠️ **失效横幅**:#253(2026-07-19,"下单回执即 ack")已被本条取代——HTTP 回执现在只做
@@ -500,7 +509,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 **(5d) PM reconcile 与 OE/SE 同构 = position 快照权威 NET,不依赖 trades API(#279,2026-07-27,已落地)**:PM 的 position 对账走 NT 原生 NET 路径(`_reconcile_position_report_netting`:凭 `/positions` 权威净仓 + `avg_px_open` 合成 inferred fill,**不需要真 fill**),与 OE/SE 的 currentBets 快照对账同构。因此 `ArbPolymarketExecutionClient.generate_fill_reports` **恒返回 `[]`**(对齐 OE/SE `execution.py::generate_fill_reports`),使 reconcile **完全不依赖 trades API**:
 - ① **启动 mass-reconcile 不再被 trades 查询连坐**:此前 trades API 超时抛异常会掀翻整个 `ExecutionMassStatus` 组装,连带丢弃**已拿到的权威 position**(见 refactor.md #279 根因日志)。返 `[]` 后 mass-status 正常组装(0 fill)→ `_reconcile_position_report_netting` 按权威净仓 NET 进 cache。
 - ② **连续对账不再走脆弱 fill-attach**:此前拉到真 fill 却指向历史母单(母单未 cache)→ `FillReport received before OrderStatusReport` → 挂不上 → NT core `_process_venue_reported_positions`(无 NET 兜底)卡死。返 `[]` 后不再进该路径。
-- **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg` → `generate_order_filled`)累加,与 `generate_fill_reports`(仅供 reconcile / 从 fill 反建未知订单)无关。
+- **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg` → `generate_order_filled`)累加,与 `generate_fill_reports`(仅供 reconcile / 从 fill 反建未知订单)无关；cancel/match 竞态下即使撤单终态先落地，也按 §3.1 #381 应用尚未处理的真实迟到 fill。
 - **代价**:重启一刻不再从 trades 反建"未知 venue 订单"的逐笔记录;净仓由 position 报表 NET 覆盖,open 单 `filled_qty` 由 order 报表带出(与 OE/SE 一致)。
 - **与 (4)/(5) 的关系**:远端 position query 正常返回即可证明 position 查询通道可达；上层 reconciliation 随即标 alive。本地 cache 是否因并发摘要失效而应用该批 report 是另一件事，不再引入 liveness-outcome 二次判定闸。
 - **⚠️ 计算型账户 × 自愈合成 fill(#264 交互;NT core 补丁 2026-08-06,live-unvalidated)**:`generate_missing_orders`(`8e2370ee22`,让 venue 权威持仓在 cache 缺失时自愈成本地 order，以便可管理/卖出)对这些 external 持仓合成 inferred fill，`strategy_id="EXTERNAL"`(tag `RECONCILIATION`/`VENUE`)。PM 是**计算型 CASH 账户**(#264,`calculate_account_state=True`,按每笔 fill 本地扣余额),连接时初始余额已从 venue 拉取、**已含这些持仓的成本**;若再让 EXTERNAL fill 走 `Portfolio.update_order → update_balances` 就**双重扣减** → 余额转负 → `CashAccount` 抛 `AccountBalanceNegative` 掀翻启动对账(实盘 2026-08-06 复现:`-0.132662 USDC.e`,节点起不来)。**修法(用户定,不动 `calculate_account_state`)**:`portfolio.pyx Portfolio.update_order` 的 `OrderFilled` 分支跳过 `strategy_id=="EXTERNAL"` 的 fill(与既有 `is_spread()` 跳过同构)——external 持仓成本已在 venue 拉取的初始余额里,不再重复入账;之后**真去卖**这个仓是真策略订单(strategy_id≠EXTERNAL)→ 照常入账,两头自洽。真实策略订单**漏收 fill** 触发的 inferred 补记(`_handle_fill_quantity_mismatch` 对真单也会发生)strategy_id 是真策略 → 不误伤。NT core 补丁,NT 升级须保留(memory `project_nt_core_patched_build`),须 `make build`。测试 `tests/unit_tests/portfolio/test_portfolio.py::test_external_strategy_fill_does_not_update_calculated_balance`。
@@ -617,6 +626,15 @@ venue report 给出正的 `avg_px_open`，ExecutionEngine 直接通过
 取得修复值。普通的正均价不一致仍沿用既有告警语义，不由本路径覆盖。限定单 Position 是因为
 venue 均价是 instrument 净仓的聚合值，不能无依据拆给多个内部 Position。该值有意不单独持久化；
 进程重启后仍由启动/周期 reconciliation 再次从 venue 权威 report 修复。
+
+**(9) 无有效价格的仓位差异延后处理(#380,2026-09-05)**:venue position quantity 与本地存在
+差异时，ExecutionEngine 只有在能从 `avg_px_open`、当前 `QuoteTick` 或已有本地仓位均价得到正的
+reconciliation price 后，才生成合成 `OrderStatusReport` 并进入 order/fill reconciliation。三者均
+不可用时仅记录 warning 并结束本轮处理，不生成 MARKET 合成订单、不写 order cache；仓位差异保持，
+由后续周期报告在价格信息完整后重试。原因是无成交价的合成 order 会先以 open order 进入 cache，
+再因 inferred fill 的均价门控失败，随后被 Strategy 当成真实 venue 残单反复撤销；其确定性 UUID
+并非 venue order id，撤单只会得到 `invalid orderID`。本规则与 (8) 正交：(8) 处理 quantity 已相等
+时的原地均价修复，本规则处理 quantity 不相等且无法安全合成 fill 的场景。
 
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 

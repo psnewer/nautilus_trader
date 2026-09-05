@@ -43,6 +43,7 @@ from nautilus_trader.adapters.polymarket.settlement import SettlementResult
 from nautilus_trader.adapters.polymarket.websocket.types import USER_WS_MESSAGE
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.factories import OrderFactory
+from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
@@ -54,6 +55,7 @@ from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
@@ -1200,6 +1202,103 @@ def test_polymarket_realtime_fill_books_early_when_opted_in():
         order_id="PM-OID-1",
     )
     assert len(captured) == 1
+
+
+@pytest.mark.parametrize(
+    ("order_qty", "expected_events", "expected_status"),
+    [
+        (6, ["fill", "cancel"], OrderStatus.CANCELED),
+        (5, ["fill"], OrderStatus.FILLED),
+    ],
+)
+def test_polymarket_canceled_order_books_late_fill_without_losing_terminal_state(
+    order_qty,
+    expected_events,
+    expected_status,
+):
+    """撤单先落地、CONFIRMED 后到时，真实 fill 仍入账并保持正确终态。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(order_qty), inst.make_price(0.42))
+    order.apply(TestEventStubs.order_submitted(order, ts_event=100))
+    order.apply(
+        TestEventStubs.order_accepted(
+            order,
+            venue_order_id=VenueOrderId("PM-OID-1"),
+            ts_event=110,
+        ),
+    )
+    order.apply(TestEventStubs.order_canceled(order, ts_event=120))
+    cache.add_order(order)
+    cache.add_venue_order_id(order.client_order_id, VenueOrderId("PM-OID-1"))
+
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _fill_tracker=_PMFillTracker(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    emitted = []
+    reconciled = []
+    client.generate_order_filled = lambda **kwargs: emitted.append(("fill", kwargs))
+    client.generate_order_canceled = lambda **kwargs: emitted.append(("cancel", kwargs))
+    client._trigger_position_reconcile = lambda instrument_id: reconciled.append(instrument_id)
+    client._should_book_early_fill = lambda _venue_order_id: False
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+
+    msg = _PMTradeMsg(PolymarketTradeStatus.CONFIRMED)
+    client._handle_user_trade_in_ws_trade_msg(
+        msg,
+        trade_id=TradeId("trade-late"),
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+    client._handle_user_trade_in_ws_trade_msg(
+        msg,
+        trade_id=TradeId("trade-late"),
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+
+    assert [kind for kind, _ in emitted] == expected_events
+    assert emitted[0][1]["last_qty"] == inst.make_qty(5)
+    assert emitted[0][1]["last_px"] == inst.make_price(0.42)
+    assert reconciled == []
+
+    order.apply(
+        TestEventStubs.order_filled(
+            order,
+            instrument=inst,
+            last_qty=emitted[0][1]["last_qty"],
+            last_px=emitted[0][1]["last_px"],
+            trade_id=TradeId("trade-late:PM-OID-1"),
+            ts_event=secs_to_nanos(1_710_000_000),
+        ),
+    )
+    if expected_status == OrderStatus.CANCELED:
+        assert order.status == OrderStatus.PARTIALLY_FILLED
+        assert emitted[1][1]["ts_event"] == 120
+        order.apply(TestEventStubs.order_canceled(order, ts_event=emitted[1][1]["ts_event"]))
+    assert order.status == expected_status
+    assert order.filled_qty == inst.make_qty(5)
 
 
 def test_arb_should_book_early_fill_only_when_enable_timeout_false():

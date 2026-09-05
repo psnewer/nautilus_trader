@@ -2445,11 +2445,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
             return
 
-        if order.is_closed:
-            # cancel/match race edge: the order was already terminal when this fill arrived, so
-            # applying it here would fight the order FSM. Instead trust the server: trigger an
-            # immediate position reconcile so the venue's authoritative net position (which
-            # includes this fill) is booked now, rather than waiting for the periodic cycle.
+        if order.is_closed and order.status != OrderStatus.CANCELED:
             self._log.warning(
                 f"Order already closed - skipping trade processing, triggering position "
                 f"reconcile: {order}",
@@ -2457,6 +2453,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
             self._trigger_position_reconcile(instrument_id)
             return
 
+        was_canceled = order.status == OrderStatus.CANCELED
+        canceled_ts_event = order.last_event.ts_event if was_canceled else 0
         last_qty = instrument.make_qty(msg.last_qty(order_id))
         last_qty = self._fill_tracker.snap_fill_qty(venue_order_id, last_qty)
         last_px = instrument.make_price(msg.last_px(order_id))
@@ -2486,6 +2484,18 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts_event=ts_event,
             info=msg.to_dict(),
         )
+
+        # 撤单回执可能先于已经撮合的 trade 到达。NT 允许 CANCELED 接受迟到 fill;若该 fill
+        # 仍未填满原订单,则按原撤单时间重放 cancel,使队列依次应用
+        # CANCELED -> PARTIALLY_FILLED -> CANCELED,并保留真实 filled_qty/position。
+        if was_canceled and order.filled_qty + last_qty < order.quantity:
+            self.generate_order_canceled(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=canceled_ts_event,
+            )
 
         self._record_processed_fill(trade_id, venue_order_id)
         self._fill_tracker.record_fill(

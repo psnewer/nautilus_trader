@@ -329,6 +329,21 @@
 - 边界:若 report 与本地 `filled_qty` 已相等,无需补成交,所以 `avg_px=None` 不阻塞既有订单状态对账。
 - 验收:`tests/unit_tests/live/test_execution_recon.py::test_handle_fill_quantity_mismatch_rejects_missing_fill_without_valid_avg_px`、`test_handle_fill_quantity_mismatch_ignores_avg_px_when_no_fill_is_missing`。
 
+### execution-4.5.8c: position reconcile 无有效价格不生成幽灵订单(#380)
+- 前置:venue `PositionStatusReport` 的非零 quantity 与本地仓位不一致，`avg_px_open=None`，且 cache
+  无 `QuoteTick`、本地也无可用开仓均价。
+- 输入:连续两轮调用 position reconciliation，模拟周期对账反复看到同一仓位差异。
+- 期望:两轮均不进入 order reconciliation，不生成 MARKET `OrderStatusReport`，cache order 数量保持不变；
+  仓位差异留待后续取得有效价格后重试。有 `avg_px_open` 或有效 quote 时仍走既有 LIMIT 合成 fill。
+- 验收:`tests/unit_tests/live/test_execution_recon.py::TestReconciliationEdgeCases::test_position_reconciliation_defers_without_order_when_no_price_available`、`test_reconciliation_without_price_does_not_create_report`、`test_position_reconciliation_uses_limit_order_when_price_available`。
+
+### execution-4.5.8d: PM cancel/match 竞态直接应用迟到真实 fill(#381)
+- 前置:真实 PM order 已在 NT 落为 CANCELED，但同一 order 尚有未处理的 WS trade 后到。
+- 输入:迟到 fill 分别使累计成交达到部分成交和完全成交；随后重复发送同一 trade。
+- 期望:真实 fill 进入标准 ExecEngine/Portfolio 管道；部分成交按事件队列顺序恢复 CANCELED，全成保持
+  FILLED；重复帧被 per-fill key 去重，不借缺均价 position report 补仓。
+- 验收:`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_canceled_order_books_late_fill_without_losing_terminal_state`。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);
