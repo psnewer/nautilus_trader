@@ -181,6 +181,103 @@ def test_less_must_be_boolean():
         raise AssertionError("expected invalid less to fail")
 
 
+def test_current_position_only_checks_max_position_outcome_candidate():
+    books = {
+        "H.POLYMARKET": _book(0.45),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    # 当前盘口 rate:home=(1-.45-.50)/.45≈0.1111,away=0.10。
+    # 最大持仓在 away 时,只能看 away,不能被达标的 home candidate 带过门。
+    default_ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[
+            _position("H.POLYMARKET", 2.0),
+            _position("A.POLYMARKET", 5.0),
+        ],
+    )
+    current_ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[
+            _position("H.POLYMARKET", 2.0),
+            _position("A.POLYMARKET", 5.0),
+        ],
+    )
+
+    assert OneSideRecoveryCheck(min_rate=0.105, force=True).passes(default_ctx) is True
+    assert OneSideRecoveryCheck(
+        min_rate=0.105,
+        force=True,
+        current_position=True,
+    ).passes(current_ctx) is False
+    assert current_ctx.scratch == {}
+
+
+def test_current_position_hits_using_current_market_rate_not_open_price():
+    books = {
+        "H.POLYMARKET": _book(0.45),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        # 开仓价故意与当前 0.45 不同,rate 仍按当前盘口约 0.1111。
+        positions=[_position("H.POLYMARKET", 5.0, price=0.80)],
+    )
+
+    assert OneSideRecoveryCheck(
+        min_rate=0.105,
+        force=True,
+        current_position=True,
+    ).passes(ctx) is True
+    assert ctx.scratch["one_side_recovery"] == {
+        "min_rate": 0.105,
+        "candidate_count": 1,
+    }
+
+
+def test_current_position_combines_with_less_direction():
+    books = {
+        "H.POLYMARKET": _book(0.45),
+        "A.POLYMARKET": _book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("A.POLYMARKET", 5.0)],
+    )
+
+    assert OneSideRecoveryCheck(
+        min_rate=0.105,
+        force=True,
+        less=True,
+        current_position=True,
+    ).passes(ctx) is True
+    assert ctx.scratch["one_side_recovery"]["candidate_count"] == 1
+
+
+def test_current_position_must_be_boolean():
+    try:
+        OneSideRecoveryCheck(current_position="true")
+    except ValueError as exc:
+        assert str(exc) == "one_side_recovery: current_position must be a boolean"
+    else:
+        raise AssertionError("expected invalid current_position to fail")
+
+
 def test_force_only_bypasses_recovery_rebate_gates():
     books = {
         "H.POLYMARKET": _book(0.45),

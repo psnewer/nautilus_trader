@@ -59,6 +59,7 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
                 "min_repaired_rebate": -0.05,
                 "force": True,
                 "less": True,
+                "current_position": True,
             },
         }),
         OneSideRecoveryCheck,

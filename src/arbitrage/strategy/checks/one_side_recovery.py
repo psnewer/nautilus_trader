@@ -13,6 +13,7 @@ from dataclasses import replace
 
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
+from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -26,12 +27,16 @@ class OneSideRecoveryCheck(Check):
         min_repaired_rebate: float = -0.05,
         force: bool = False,
         less: bool = False,
+        current_position: bool = False,
     ) -> None:
         if not isinstance(less, bool):
             raise ValueError("one_side_recovery: less must be a boolean")
+        if not isinstance(current_position, bool):
+            raise ValueError("one_side_recovery: current_position must be a boolean")
         self._min_rate = float(min_rate)
         self._less = less
-        probe_min_rate = float("-inf") if less else self._min_rate
+        self._current_position = current_position
+        probe_min_rate = float("-inf") if less or current_position else self._min_rate
         self._one_side = OneSideRebateCheck(min_rate=probe_min_rate)
         self._recovery = MeanRebateRecoveryCheck(
             min_repaired_rebate=min_repaired_rebate,
@@ -45,13 +50,27 @@ class OneSideRecoveryCheck(Check):
         if not self._one_side.passes(probe_ctx):
             return False
         candidates = probe_ctx.scratch["candidates"]
-        if self._less:
+        if self._current_position:
+            recovery_ctx = replace(ctx, scratch={})
+            if not self._recovery.passes(recovery_ctx):
+                return False
+            current_roles = _current_position_roles(recovery_ctx)
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate["target_role"] in current_roles
+                and _rate_matches(candidate["rate"], self._min_rate, self._less)
+            ]
+            if not candidates:
+                return False
+            ctx.scratch.update(recovery_ctx.scratch)
+        elif self._less:
             candidates = [
                 candidate for candidate in candidates if candidate["rate"] < self._min_rate
             ]
             if not candidates:
                 return False
-        if not self._recovery.passes(ctx):
+        if not self._current_position and not self._recovery.passes(ctx):
             return False
 
         ctx.scratch["one_side_recovery"] = {
@@ -59,3 +78,16 @@ class OneSideRecoveryCheck(Check):
             "candidate_count": len(candidates),
         }
         return True
+
+
+def _current_position_roles(ctx: EvalContext) -> set[str]:
+    """Recovery 只为低于最大持仓量的 outcome 产腿,其补集就是最大持仓方向。"""
+    recovery_roles = {
+        str(leg.get("role") or "").lower()
+        for leg in ctx.scratch.get("legs", ())
+    }
+    return set(VALID_OUTCOMES) - recovery_roles
+
+
+def _rate_matches(rate: float, min_rate: float, less: bool) -> bool:
+    return rate < min_rate if less else rate >= min_rate
