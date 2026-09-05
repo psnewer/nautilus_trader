@@ -1,5 +1,7 @@
 """MeanRebateRecoveryCheck:缺口补齐 legs + 修复后 rebate 阈值。"""
 
+import asyncio
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -9,6 +11,7 @@ from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.risk.portfolio import OutcomeExposure
+from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -76,6 +79,7 @@ def test_recovery_adds_missing_outcome_to_max_actual_share():
         "prob": 0.50,
         "role": "no",
         "qty": 5.0,
+        "share_if_wins": 5.0,
         "claim": "no",
     }]
     assert ctx.scratch["mean_rebate_recovery"]["target_share"] == 5.0    # 补单目标位 = max 在场
@@ -230,6 +234,7 @@ def test_recovery_uses_oe_qty_for_gross_payout_gap():
     assert ok is True
     assert ctx.scratch["legs"][0]["instrument_id"] == "A.ORBITEXCH"
     assert ctx.scratch["legs"][0]["qty"] == 2.5
+    assert ctx.scratch["legs"][0]["share_if_wins"] == 5.0
 
 
 def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
@@ -253,6 +258,7 @@ def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
     assert ctx.scratch["legs"][0]["instrument_id"] == "A.SHARPEXCH"
     assert ctx.scratch["legs"][0]["venue"] == "SHARPEXCH"
     assert ctx.scratch["legs"][0]["qty"] == 2.5
+    assert ctx.scratch["legs"][0]["share_if_wins"] == 5.0
 
 
 def test_recovery_venue_select_true_picks_pm_over_better_odds_venue():
@@ -276,6 +282,10 @@ def test_recovery_venue_select_true_picks_pm_over_better_odds_venue():
     )
     assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(default_ctx) is True
     assert default_ctx.scratch["legs"][0]["instrument_id"] == "A.ORBITEXCH"
+    asyncio.run(VenueReplaceAction().execute(default_ctx))
+    assert default_ctx.scratch["legs"][0]["instrument_id"] == "A.POLYMARKET"
+    assert default_ctx.scratch["legs"][0]["qty"] == 5.0
+    assert default_ctx.scratch["legs"][0]["share_if_wins"] == 5.0
 
     # venue_select=True:只在 PM 里选,即使 OE 赔率更优也走 PM。
     pm_ctx = _ctx(
@@ -376,6 +386,7 @@ def test_recovery_supports_pm_no_long_position_in_yes_no_pair():
         "prob": 0.50,
         "role": "yes",
         "qty": 5.0,
+        "share_if_wins": 5.0,
         "claim": "yes",
     }]
 
@@ -463,6 +474,7 @@ def test_recovery_decimal_no_candidate_keeps_lay_execution_fields():
         "prob": 0.5,
         "role": "no",
         "qty": 2.5,
+        "share_if_wins": 5.0,
         "claim": "no",
         "lay_price": 2.0,
         "exec_instrument_id": "Y.ORBITEXCH",

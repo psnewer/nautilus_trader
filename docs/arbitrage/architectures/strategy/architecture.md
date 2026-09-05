@@ -715,7 +715,7 @@ refactor #356。
   补偿 Action 链；`place_bets` 生成 cancel plan，Evaluator 在两树规划结束后优先选择它，
   再重新读取并撤销该 pair 全部挂单。不创建 submit，不复用 Execution cancel-only。该 Check 的 `spread`
   同样是概率差，但与 `PlaceBetsAction.spread` 是两个独立参数。
-- `mean_rebate_recovery` 只负责判断并生成补缺口 legs:目标 `target_share = max(actual_share_by_outcome)`,只对 `missing_share > 0` 的 outcome 写 leg。existing position 通过 venues §4.1 的 claim/side 感知投影归属固定 `yes/no` outcome 并计算 share/return；候选从 live Cache 读取。decimal no 候选写 `claim=no/lay_price/exec_instrument_id`,最终由现有 `place_bets` 转 SELL@lay;PM no 候选仍 BUY NO token。补救 qty 继续经 `qty_from_share(venue, missing_share, price)` 推导。
+- `mean_rebate_recovery` 只负责判断并生成补缺口 legs:目标 `target_share = max(actual_share_by_outcome)`,只对 `missing_share > 0` 的 outcome 写 leg。existing position 通过 venues §4.1 的 claim/side 感知投影归属固定 `yes/no` outcome 并计算 share/return；候选从 live Cache 读取。decimal no 候选写 `claim=no/lay_price/exec_instrument_id`,最终由现有 `place_bets` 转 SELL@lay;PM no 候选仍 BUY NO token。补救 qty 继续经 `qty_from_share(venue, missing_share, price)` 推导，且 leg 必须携带规范规模 `share_if_wins=missing_share`，供 `venue_replace` 跨 venue 后按 PM 数量语义重新计算 `qty/cost`。
 - Recovery 依赖已有持仓的真实 `avg_px_open`。若 reconciliation 导入的外部持仓缺少真实成本(`avg_px_open<=0`),本轮 recovery 不触发;不使用当前盘口估算历史成本。PM 成本缺失应回到 PM adapter / trade history 归因路径解决。
 - Recovery 的 **`target_share`(补单目标位)** 与开仓 `net_profit` 投影都由本轮同一次 open-position
   读取计算，避免成交刚落仓时 Strategy 已看见 Position、Portfolio 聚合仍返回零敞口而误判“无需补偿”。

@@ -210,6 +210,7 @@ def test_live_case_no_filled_at_033_and_yes_ask_05714_prefers_recovery():
         "prob": 0.57142857,
         "role": "yes",
         "qty": 5.99,
+        "share_if_wins": 5.99,
         "claim": "yes",
     }]
     assert round(comp_ctx.scratch["mean_rebate_recovery"]["min_repaired_rebate"], 8) == 0.11808857

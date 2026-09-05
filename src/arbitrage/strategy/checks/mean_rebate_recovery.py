@@ -218,6 +218,7 @@ class MeanRebateRecoveryCheck(Check):
                 "prob": cand["prob"],
                 "role": role,
                 "qty": qty,
+                "share_if_wins": missing,
             }
             for key in ("claim", "lay_price", "exec_instrument_id"):
                 if key in cand:
