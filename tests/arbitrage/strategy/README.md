@@ -470,6 +470,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_score_selection.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
 
+## strategy-4.40：commission_gate PM 盘口概率和门控
+
+- `commission` 为必填有限数；commission 按 PM `yes/no` 两个 outcome 当前 best ask 隐含概率之和计算，
+  不使用 OE/SE 等其它 venue 报价。
+- 实际 commission 严格小于阈值时保持输入不变；等于或大于阈值时拦截下单。缺任一 PM outcome
+  或有效报价时 fail-closed。
+- 支持 `selected_candidate`、`candidates`、legs-only 三种输入；阻断已选 candidate 时同步清空
+  `selected_candidate["legs"]` 与 `scratch["legs"]`，候选池输入仅保留撤单 candidate。
+- 纯撤单输入 no-op，避免行情 commission 门控妨碍风险收尾。
+- **验收**：`test_action_commission_gate.py`；launcher 注册由
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
+
 ## 策略内组合场景
 
 目录约定:`tests/arbitrage/strategy/scenarios/<strategy_name>/`。这里放“单个策略内部”的组合场景测试:

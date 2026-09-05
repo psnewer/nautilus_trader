@@ -18,6 +18,7 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
@@ -69,6 +70,10 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
             "params": {"win_or_draw": True, "tie_break": True},
         }),
         ScoreSelectionAction,
+    )
+    assert isinstance(
+        build_action({"type": "commission_gate", "params": {"commission": 1.02}}),
+        CommissionGateAction,
     )
     with pytest.raises(StrategyConfigError, match="venue_select"):
         build_check({
