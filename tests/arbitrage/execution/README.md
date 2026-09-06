@@ -344,6 +344,17 @@
   FILLED；重复帧被 per-fill key 去重，不借缺均价 position report 补仓。
 - 验收:`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_canceled_order_books_late_fill_without_losing_terminal_state`。
 
+### execution-4.5.8e: settlement 缩仓继承原 strategy(#383)
+- 前置:NETTING instrument 存在单一 strategy 的本地 LONG/SHORT；venue position report 表明同方向
+  仓位减少或归零，典型来源为 PM merge/redeem/auto_redeem。
+- 期望:内部 reconciliation order 保留 `RECONCILIATION` tag 并继承原 `strategy_id`，inferred fill
+  减少或关闭原 Position，不产生 `EXTERNAL` 反向 Position；从 flat 补仓/同向增仓保持既有
+  EXTERNAL 语义。多个 strategy 同时持有时因归属不唯一而延后，不猜测分摊。
+- settlement 时序:只要本轮尝试过 merge 或 redeem，无论 tx result 成败，都在返回 reports 前同轮
+  重拉 `/positions`；realized PnL 仍由 `/closed-positions.realizedPnl` ledger 提供。
+- 验收:`tests/unit_tests/live/test_execution_recon.py::TestLiveExecutionReconciliation::test_netting_position_reduction_keeps_original_strategy` / `test_netting_position_reduction_defers_when_strategy_is_ambiguous`；merge/redeem 重拉由
+  `tests/arbitrage/execution/test_polymarket_client.py::test_settlement_attempt_refetches_positions_before_returning_reports` 覆盖。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);

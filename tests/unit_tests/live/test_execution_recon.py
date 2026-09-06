@@ -136,12 +136,79 @@ class TestLiveExecutionReconciliation:
             msgbus=self.msgbus,
             cache=self.cache,
             clock=self.clock,
+            oms_type=OmsType.NETTING,
         )
         self.portfolio.update_account(TestEventStubs.cash_account_state())
         self.exec_engine.register_client(self.client)
 
         # Prepare components
         self.cache.add_instrument(AUDUSD_SIM)
+
+    def test_netting_position_reduction_keeps_original_strategy(self):
+        self.exec_engine.generate_missing_orders = True
+        order = TestExecStubs.limit_order(
+            instrument=AUDUSD_SIM,
+            order_side=OrderSide.BUY,
+        )
+        position_id = PositionId(f"{AUDUSD_SIM.id}-{order.strategy_id}")
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=AUDUSD_SIM,
+            position_id=position_id,
+            last_qty=Quantity.from_int(100),
+            last_px=Price.from_str("1.00000"),
+        )
+        self.cache.add_position(Position(AUDUSD_SIM, fill), OmsType.NETTING)
+
+        report = PositionStatusReport(
+            account_id=self.account_id,
+            instrument_id=AUDUSD_SIM.id,
+            position_side=PositionSide.FLAT,
+            quantity=Quantity.zero(0),
+            report_id=UUID4(),
+            ts_last=self.clock.timestamp_ns(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        assert self.exec_engine._reconcile_position_report(report)
+
+        generated = [order for order in self.cache.orders() if order.tags == ["RECONCILIATION"]]
+        assert len(generated) == 1
+        assert generated[0].strategy_id == fill.strategy_id
+        assert self.cache.position(position_id).is_closed
+        assert not any(position.strategy_id == StrategyId("EXTERNAL") for position in self.cache.positions())
+
+    def test_netting_position_reduction_defers_when_strategy_is_ambiguous(self):
+        self.exec_engine.generate_missing_orders = True
+        for index, strategy_id in enumerate((StrategyId("S-001"), StrategyId("S-002")), start=1):
+            order = TestExecStubs.limit_order(
+                instrument=AUDUSD_SIM,
+                order_side=OrderSide.BUY,
+                strategy_id=strategy_id,
+                client_order_id=TestIdStubs.client_order_id(index),
+            )
+            fill = TestEventStubs.order_filled(
+                order,
+                instrument=AUDUSD_SIM,
+                position_id=PositionId(f"{AUDUSD_SIM.id}-{strategy_id}"),
+                last_qty=Quantity.from_int(50),
+                last_px=Price.from_str("1.00000"),
+            )
+            self.cache.add_position(Position(AUDUSD_SIM, fill), OmsType.NETTING)
+
+        report = PositionStatusReport(
+            account_id=self.account_id,
+            instrument_id=AUDUSD_SIM.id,
+            position_side=PositionSide.LONG,
+            quantity=Quantity.from_int(50),
+            report_id=UUID4(),
+            ts_last=self.clock.timestamp_ns(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        assert self.exec_engine._reconcile_position_report(report)
+        assert self.cache.orders() == []
+        assert len(self.cache.positions_open(instrument_id=AUDUSD_SIM.id)) == 2
 
     @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_rejected_order(self):
@@ -891,9 +958,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -949,9 +1016,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1007,9 +1074,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1065,9 +1132,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1127,9 +1194,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1189,9 +1256,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1248,9 +1315,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1340,9 +1407,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1413,9 +1480,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1470,9 +1537,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1532,9 +1599,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1613,9 +1680,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1684,9 +1751,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1751,9 +1818,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1819,9 +1886,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -1885,9 +1952,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -2321,9 +2388,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades, is_external))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -2435,9 +2502,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades, is_external))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -2515,9 +2582,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades, is_external))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -2571,9 +2638,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades, is_external))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 
@@ -2692,9 +2759,9 @@ class TestReconciliationEdgeCases:
         reconcile_calls = []
         original_reconcile = live_exec_engine._reconcile_order_report
 
-        def spy_reconcile(order_report, trades, is_external=True):
+        def spy_reconcile(order_report, trades, is_external=True, **kwargs):
             reconcile_calls.append((order_report, trades, is_external))
-            return original_reconcile(order_report, trades, is_external)
+            return original_reconcile(order_report, trades, is_external, **kwargs)
 
         live_exec_engine._reconcile_order_report = spy_reconcile
 

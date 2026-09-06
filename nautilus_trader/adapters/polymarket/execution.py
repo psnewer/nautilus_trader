@@ -1975,6 +1975,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
             else:
                 self._log.error(f"Unrecognized websocket message {msg}")
         except msgspec.ValidationError as e:
+            if self._handle_auto_redeem_user_ws_event(raw):
+                return
             if self._reject_unknown_user_ws_status(raw):
                 return
             self._log.exception(
@@ -1988,6 +1990,24 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 f"raw message: {raw.decode(errors='replace')}",
                 e,
             )
+
+    def _handle_auto_redeem_user_ws_event(self, raw: bytes) -> bool:
+        """识别非订单 auto_redeem 通知；账户和仓位真值仍交给周期对账。"""
+        try:
+            payload = msgspec.json.decode(raw)
+        except Exception:
+            return False
+        if not isinstance(payload, dict) or payload.get("event_type") != "auto_redeem":
+            return False
+
+        self._log.info(
+            "Polymarket auto redeem received: "
+            f"condition_id={payload.get('condition_id')}, "
+            f"amount={payload.get('amount')}, "
+            f"txn_hash={payload.get('txn_hash')}; "
+            "awaiting periodic account and position reconciliation",
+        )
+        return True
 
     def _reject_unknown_user_ws_status(self, raw: bytes) -> bool:
         """将 USER WS 枚举外状态映射为本地拒单；其它 schema 错误交回原异常路径。"""

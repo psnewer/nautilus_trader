@@ -124,8 +124,8 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._venue_liveness = venue_liveness
         self._settlement = settlement
         self._realized_pnl_ledger = realized_pnl_ledger
-        # #110/#283/#285:merge/redeem 由 NT 连续 position 对账驱动；尝试过 merge 后
-        # 同轮重拉 positions，避免交易结果不确定时向 NT 返回 merge 前的旧仓位。
+        # #110/#283/#285/#383:merge/redeem 由 NT 连续 position 对账驱动；任一结算尝试后
+        # 同轮重拉 positions，避免交易结果不确定时向 NT 返回结算前的旧仓位。
         self._settlement_inflight = False
 
     def _should_book_early_fill(self, venue_order_id) -> bool:
@@ -346,21 +346,21 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 self._log.warning(f"PM position reports query failed (raise): {e!r}")
             raise
         raw = list(getattr(self, "_last_raw_positions", []))
-        merge_refreshed = False
+        settlement_refreshed = False
         if self._settlement is not None and not self._settlement_inflight:
             self._settlement_inflight = True
             result = await self._run_settlement(raw)
-            if result.merges:
+            if result.merges or result.redeems:
                 try:
                     reports = await super().generate_position_status_reports(command)
                 except Exception as e:
                     if self._log is not None:
                         self._log.warning(
-                            f"PM post-merge position reports query failed (raise): {e!r}",
+                            f"PM post-settlement position reports query failed (raise): {e!r}",
                         )
                     raise
                 raw = list(getattr(self, "_last_raw_positions", []))
-                merge_refreshed = True
+                settlement_refreshed = True
 
         realized_snapshot = await self._load_realized_pnl_snapshot(raw)
         await self._refresh_account_state_after_position_reconcile()
@@ -369,7 +369,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         if self._log is not None:
             self._log.info(
                 f"PM position reconcile OK: {len(reports)} report(s), "
-                f"settlement {'merge-refreshed' if merge_refreshed else 'checked'} "
+                f"settlement {'refreshed' if settlement_refreshed else 'checked'} "
                 f"({len(raw)} raw positions)",
             )
         return self._guard_reconciliation_reports(

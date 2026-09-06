@@ -214,6 +214,13 @@ size，避免破坏 share/quote 口径。
 **验收**:`test_polymarket_unknown_user_ws_status_generates_order_rejected` /
 `test_polymarket_known_user_ws_status_is_not_reclassified` /
 `test_polymarket_ws_decoder_routes_validation_error_to_unknown_status_handler`。
+
+### pm-adapter-5.1g2:USER WS `auto_redeem` 非订单通知
+
+**输入**:`event_type=auto_redeem`,携带 `condition_id`、`amount` 和 `txn_hash`。
+**期望**:adapter 识别并记录通知,不进入 order/trade 严格 schema 异常日志,不伪造
+`OrderEvent` / `FillReport`;账户和仓位交由周期 reconciliation 更新。
+**验收**:`test_polymarket_client.py::test_polymarket_auto_redeem_user_ws_event_is_logged_without_order_event`。
 **验收**:`test_polymarket_external_taker_fill_bootstraps_order_before_fill` 锁定 report 顺序、方向、
 数量与成交价。
 
@@ -665,12 +672,14 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 
 ### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 
-**输入**:CLOB 返回任一正常撤单响应，再分别解析 `canceled[]` / `not_canceled`。
-**期望/验收**:adapter 把正常响应的统一 ACK 交给共用 cancel session；reason 文本不参与 session
-收口。`canceled[]` 包含目标订单时同时生成真实 `OrderCanceled`，不等待 USER WS。
+**输入**:CLOB 返回正常撤单响应（分别含 `canceled[]` / `not_canceled`），或撤单 IO 结果未知。
+**期望/验收**:adapter 把撤单 IO 完成信号交给共用 cancel session；该 ACK 只释放自定义 session，
+不表示订单已撤销，reason 文本不参与 session 收口。`canceled[]` 包含目标订单时同时生成真实
+`OrderCanceled`，不等待 USER WS。
 接线由 `test_polymarket_cancel_order_success_generates_canceled_event_and_ends_session` 和
 `test_polymarket_cancel_order_reject_generates_cancel_rejected_event` 验收；结果未知时结束 session
-但不生成拒绝/撤单终态，由 `test_polymarket_cancel_order_unknown_result_ends_session` 验收。
+但保持 `PENDING_CANCEL`、不生成拒绝/撤单终态，由
+`test_polymarket_cancel_order_unknown_result_ends_session` 验收。
 
 ### pm-adapter-data.subscription-hot-path：market 订阅 O(1) 判断（#366）
 

@@ -97,6 +97,8 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 **PM cancel 终态约束(#99/#113/#342,已落地,2026-08-16)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当 `canceled[]` 确实包含目标 venue order ID 时,adapter 立即经 `_generate_cancel_success_event` 生成 `OrderCanceled`,并 ACK/结束 cancel session,不再依赖可能缺失的 USER WS `CANCELLATION`。迟到的 USER WS cancellation 仍走同一 helper 并保持幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply REST 产生的 `OrderCanceled` 时,用有界 `_cancel_terminal_client_ids` 窗口按 `client_order_id` 跳过重复终态,避免向 NT 重放 `CANCELED -> CANCELED`。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(不能从该歧义文本判断撤单还是成交)。覆盖范围:单笔 `_cancel_order`、deferred cancel、batch/cancel-all 与 USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 
+**PM `auto_redeem` USER WS 通知(#382/#383,2026-09-06)**:`auto_redeem` 是结算通知,不是 order/trade 状态事件。adapter 在严格 order/trade schema 解码失败路径识别该类型,记录 `condition_id` / `amount` / `txn_hash` 后结束处理;不伪造缺少成交价的 `FillReport`。后续周期 position reconciliation 看到 venue 仓位减少时按 §4.6 的归属规则关闭原 strategy NETTING 仓位；realized PnL 仍以 `/closed-positions` 快照为权威。
+
 **PM cancel/match 竞态的迟到成交(#381,已落地,2026-09-06)**:真实 trade 的撮合时间可能早于
 撤单确认，但 `MATCHED/MINED/CONFIRMED` WS 消息晚于 `OrderCanceled` 才到。若该
 `(trade_id, venue_order_id)` 尚未处理，adapter 对 `CANCELED` 订单仍以 trade 携带的真实
@@ -316,10 +318,10 @@ cancel session，并通过仅供 adapter 内部使用的 command param 标记“
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 下轮按 live state 重新评估。
 - **撤单状态单一真理源(#343)**:标准 `Strategy.cancel_order` 已在命令发出前生成并发布 NT 原生 `OrderPendingCancel`;barrier/per-client cancel-only 因直接调用 client residual cancel 能力而绕过 Strategy,故由共用 `ArbExecutionSessionMixin._cancel_residual_orders` 在 venue IO 前补同一事件、更新 Cache 并发布 strategy order topic。已是 `PENDING_CANCEL` 的订单不重复发送 venue cancel,后续由 inflight-check 查询。adapter 只解析 venue 结果,不得自行置撤单意图。明确结果复用 NT FSM:`OrderCanceled → CANCELED`,`OrderCancelRejected → 撤单前状态`,`OrderFilled → PARTIALLY_FILLED/FILLED`;inflight 查询未知也生成 `OrderCancelRejected(reason=UNKNOWN)` 恢复撤单前 open 状态,使后续 cancel-only 可以重撤。session watchdog 只释放执行追踪,不修改订单状态。
-- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)，但不消费 submit 的 `enable_timeout`。adapter 收到一次**正常撤单响应**后调用 `_ack_cancel_session`，立即结束 cancel session；这只释放 barrier tracking，不生成或修改任何订单状态。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
+- cancel session 与 submit session 共用同一 `_active_sessions` / watchdog 出口(**#261:不再有 `PairInFlightGate` 记账**)，但不消费 submit 的 `enable_timeout`。adapter 结束一次撤单 IO 后可调用 `_ack_cancel_session`，立即结束 cancel session；这只是释放自定义 tracking，不代表 venue 已确认撤单，也不生成或修改任何订单状态。session 在飞期间 `_execution_active` 为真 → barrier 不放行新机会(synchronization §7.5)。
 - cancel 等待期间到达的成交事件只按正常 fill/order 流程处理，不代表撤单请求已有响应，也不结束 cancel session。订单状态与 session 生命周期正交：ACK 负责释放 session；随后 adapter 仍解析响应并由 USER WS / `CURRENT_BETS` / reconcile 更新真实状态。
 - venue 终态映射:
-  - PM:CLOB 返回正常撤单响应后先统一 ACK session，再解析 `canceled[]` / `not_canceled`。`canceled[]` 包含目标订单时生成 `OrderCanceled`；`not_canceled` 的 reason 只参与既有订单事件映射，不决定 session 是否结束。
+  - PM:CLOB 撤单调用完成后统一释放 cancel session，包括 RetryManager 返回 `response=None/result=False` 的传输未知结果；未知结果不生成订单事件，原 `PENDING_CANCEL` 仍由 NT inflight-check 查询和收口。拿到响应时再解析 `canceled[]` / `not_canceled`：`canceled[]` 包含目标订单才生成 `OrderCanceled`；`not_canceled` 的 reason 只参与既有订单事件映射，不决定 session 是否结束。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
   - OE `CancelAllOrders` 只调用 `/customer/api/cancelAllUnmatchedBets`；API 失败直接返回失败，不再点击页面 UI 兜底。旧 `take-at-market/modify-and-take` 页面能力已删除：它不在 NT 套利执行链路内，且不能用固定 sleep 代替真实成交确认。
 - session mixin 只维护 `_active_sessions` 与 tracking timeout(**#261**:`execution.*` 消息与 `PairInFlightGate` 记账均已删除)。`_execution_active` = `len(_active_sessions) > 0` 是 barrier 全局 ≤1 判定的派生源之一。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
@@ -369,8 +371,9 @@ def _on_session_timeout(self, event):
   `OpportunityMeta.enable_timeout` 冻结策略。缺失/`true` 时仍按上一条等待；显式 `false` 时：
   - submit 收到首次 `OrderAccepted` 后，先经 NT 标准管道上送事件并调用既有 accepted
     余额 hook（PM override 为 no-op；OE/SE 本地预扣），再调用 `_end_session`；
-  cancel 不消费该字段。PM/OE/SE 收到正常撤单响应后统一调用 `_ack_cancel_session` 并结束
-  cancel session；传输结果未知不 ACK。submit/cancel 两条路径都只取消 watchdog、释放
+  cancel 不消费该字段。PM/OE/SE 收到正常撤单响应后调用 `_ack_cancel_session` 并结束
+  cancel session；PM 的传输未知结果也释放自定义 cancel session，但保持订单 `PENDING_CANCEL`，
+  由 NT inflight-check 解析真实状态。submit/cancel 两条路径都只取消 watchdog、释放
   `_execution_active`，不把订单改成终态；后续 fill/cancellation/order 事件仍由
   ExecutionClient → ExecEngine 标准路径处理。
 - 全局唯一超时配置(per-venue 不分);cancel session 超时仅 log warning,不补撤、不重试。
@@ -680,9 +683,10 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 > **落地**:编排层 = `nautilus_trader/adapters/polymarket/settlement.py`(`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在同一 adapter 目录。
 
 - **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。该成功路径同时刷新 PM AccountState(`_update_account_state`),用于覆盖 accepted 本地预扣后的保守余额。
-- **position → settlement → position 时序(#283/#285)**:`generate_position_status_reports` 先由上游
+- **position → settlement → position 时序(#283/#285/#383)**:`generate_position_status_reports` 先由上游
   `_fetch_user_positions` 拉 `/positions`，把原始响应 stash 到 `_last_raw_positions` 供
-  settlement 判断。若本轮没有尝试 merge，沿用第一次 reports；若 `result.merges` 非空，
+  settlement 判断。若本轮没有尝试 merge/redeem，沿用第一次 reports；若 `result.merges` 或
+  `result.redeems` 非空，
   无论交易结果成功或失败，都在同一轮再调用上游 `generate_position_status_reports`，
   以第二次 `/positions` 生成最终 reports。
   第一次 reports 不返回给 NT，避免链上仓位已被 merge 后 Strategy 仍按旧 LONG 规划 SELL。
@@ -762,13 +766,20 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   `redeem_positions(condition, neg_risk)`。settlement 不计算链上 token amounts。
 - **链上 target 与 ABI(2026-07-16 修正)**:标准二元调用 `CtfCollateralAdapter(0xAdA100...)`,negRisk 调 `NegRiskCtfCollateralAdapter(0xadA200...)`。后者继承前者的外部 `mergePositions(address,bytes32,bytes32,uint256[],uint256)` / `redeemPositions(address,bytes32,bytes32,uint256[])` ABI，因此两类 target 使用相同 calldata 结构与 pUSD `0xC011...DFB` 参数，只切换 target。negRisk collateral adapter 在 `redeemPositions` 内自行读取调用者当前 YES/NO ERC-1155 余额，再调用旧 NegRiskAdapter；不得对 collateral adapter 使用旧 `redeemPositions(bytes32,uint256[])` ABI。adapter 授权(`CTF.setApprovalForAll(adapter,true)`)不在本轮自动处理,未授权时链上 tx 会 revert,可由页面授权。
 - **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size))，
-  不直接改变 `VenueExecutionLiveness`。但只要尝试过 merge，就必须重拉 positions；
+  不直接改变 `VenueExecutionLiveness`。但只要尝试过 merge/redeem，就必须重拉 positions；
   第二次 positions 查询失败按正常 position reconcile 失败向上抛，由上层 `mark_position_dead`。
 - **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态由每轮成功的 PM position reconciliation 调 `_update_account_state()` 刷新。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不在 settlement 完成后立即 `_update_account_state`,由下一轮 position reconciliation 覆盖。
-- merge 尝试后第二次 `/positions` 与随后 `/closed-positions` 在同轮分别刷新仓位和
+- merge/redeem 尝试后第二次 `/positions` 与随后 `/closed-positions` 在同轮分别刷新仓位和
   realized PnL。settlement 不发 synthetic fill、不直接改 NT Position cache 或 realized 账本。
+- **NETTING 归属(#383)**:position report 表明 venue 仓位在同方向减少（含归零）时，若该
+  instrument 的本地 open Position 只属于一个 strategy，内部 reconciliation 合成订单继承该
+  `strategy_id` 并保留 `RECONCILIATION` tag，使 inferred fill 减少/关闭原 Position，而不是建立
+  `EXTERNAL` 反向 Position。合成价只承担数量闭合，结算盈亏以同批
+  `/closed-positions.realizedPnl` ledger 为权威。若存在多个 strategy，数量归属不唯一，本轮
+  fail-closed 延后并报警，不生成 EXTERNAL offset；从 flat 补建 venue 仓位或同方向增仓仍保持
+  既有 EXTERNAL 语义。
 - **验收锚点(低噪声)**:override 每轮对账打一条 INFO
-  `PM position reconcile OK: N report(s), settlement checked|merge-refreshed (M raw positions)`
+  `PM position reconcile OK: N report(s), settlement checked|refreshed (M raw positions)`
   (生产约 5 分钟一条)，作对账与结算子系统心跳。
 - ⚠️ **验证边界**:2026-06-21 的 live 节点已验证 NT 连续 position 对账会周期触发
   override；#283 新增的 `positions → merge → positions → closed positions` 时序当前仅由离线

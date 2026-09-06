@@ -146,13 +146,21 @@ class _Log:
 class _TrackingLog(_Log):
     def __init__(self):
         self.debugs = []
+        self.infos = []
         self.warnings = []
+        self.exceptions = []
 
     def debug(self, *args, **_kwargs):
         self.debugs.append(args)
 
+    def info(self, *args, **_kwargs):
+        self.infos.append(args)
+
     def warning(self, *args, **_kwargs):
         self.warnings.append(args)
+
+    def exception(self, *args, **_kwargs):
+        self.exceptions.append(args)
 
 
 def _cancel_test_client(response):
@@ -441,11 +449,35 @@ def test_polymarket_known_user_ws_status_is_not_reclassified():
     assert PolymarketExecutionClient._reject_unknown_user_ws_status(client, raw) is False
 
 
+def test_polymarket_auto_redeem_user_ws_event_is_logged_without_order_event():
+    client = SimpleNamespace(
+        _config=SimpleNamespace(log_raw_ws_messages=False),
+        _decoder_user_msg=msgspec.json.Decoder(USER_WS_MESSAGE),
+        _log=_TrackingLog(),
+    )
+    client._handle_auto_redeem_user_ws_event = (
+        PolymarketExecutionClient._handle_auto_redeem_user_ws_event.__get__(client)
+    )
+    client._reject_unknown_user_ws_status = lambda _raw: False
+    raw = msgspec.json.encode({
+        "event_type": "auto_redeem",
+        "condition_id": "0xcondition",
+        "amount": "4.56",
+        "txn_hash": "0xtx",
+    })
+
+    PolymarketExecutionClient._handle_ws_message(client, raw)
+
+    assert any("auto redeem received" in args[0] for args in client._log.infos)
+    assert client._log.exceptions == []
+
+
 def test_polymarket_ws_decoder_routes_validation_error_to_unknown_status_handler():
     handled = []
     client = SimpleNamespace(
         _config=SimpleNamespace(log_raw_ws_messages=False),
         _decoder_user_msg=msgspec.json.Decoder(USER_WS_MESSAGE),
+        _handle_auto_redeem_user_ws_event=lambda _raw: False,
         _reject_unknown_user_ws_status=lambda raw: handled.append(raw) or True,
         _log=_TrackingLog(),
     )
@@ -1607,12 +1639,14 @@ def test_arb_generate_position_reports_settles_without_writing_liveness(monkeypa
     assert settlement_calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
 
 
-@pytest.mark.parametrize("merge_success", [True, False])
+@pytest.mark.parametrize("settlement_kind", ["merge", "redeem"])
+@pytest.mark.parametrize("settlement_success", [True, False])
 def test_settlement_attempt_refetches_positions_before_returning_reports(
     monkeypatch,
-    merge_success,
+    settlement_kind,
+    settlement_success,
 ):
-    """merge 一旦尝试，无论结果如何都重拉 positions，不能把旧 LONG 交给 NT。"""
+    """merge/redeem 一旦尝试，无论结果如何都重拉 positions，不能把旧仓位交给 NT。"""
     calls = []
     liveness = VenueExecutionLiveness()
     responses = [
@@ -1634,16 +1668,13 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
 
     class _Settlement:
         async def run(self, positions):
-            calls.append("merge")
-            return SettlementResult(
-                merges=[
-                    TxResult(
-                        success=merge_success,
-                        tx_hash="0xmerge" if merge_success else "",
-                        message="" if merge_success else "reverted",
-                    ),
-                ],
+            calls.append(settlement_kind)
+            tx = TxResult(
+                success=settlement_success,
+                tx_hash=f"0x{settlement_kind}" if settlement_success else "",
+                message="" if settlement_success else "reverted",
             )
+            return SettlementResult(**{f"{settlement_kind}s": [tx]})
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
@@ -1669,7 +1700,7 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
         assert [report.name for report in reports] == ["post-report"]
         assert not client._venue_liveness.position_alive(POLYMARKET)
         assert responses == []
-        assert calls == ["positions", "merge", "positions", "closed", "balance"]
+        assert calls == ["positions", settlement_kind, "positions", "closed", "balance"]
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
     _run(scenario())

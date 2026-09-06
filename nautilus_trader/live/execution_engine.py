@@ -2566,7 +2566,35 @@ class LiveExecutionEngine(ExecutionEngine):
             )
 
             if diff_report:
-                self._reconcile_order_report(diff_report, trades=[], is_external=False)
+                strategy_id = None
+                reduces_existing_position = (
+                    position_signed_decimal_qty != 0
+                    and abs(report.signed_decimal_qty) < abs(position_signed_decimal_qty)
+                    and (
+                        report.signed_decimal_qty == 0
+                        or (report.signed_decimal_qty > 0) == (position_signed_decimal_qty > 0)
+                    )
+                )
+                if reduces_existing_position:
+                    strategy_ids = {position.strategy_id for position in positions_open}
+                    if len(strategy_ids) != 1:
+                        self._log.warning(
+                            f"Cannot attribute position reduction for {report.instrument_id}: "
+                            f"found {len(strategy_ids)} open strategy positions; "
+                            "deferring reconciliation without generating an EXTERNAL offset",
+                        )
+                        return True
+                    strategy_id = next(iter(strategy_ids))
+
+                if strategy_id is None:
+                    self._reconcile_order_report(diff_report, trades=[], is_external=False)
+                else:
+                    self._reconcile_order_report(
+                        diff_report,
+                        trades=[],
+                        is_external=False,
+                        strategy_id_override=strategy_id,
+                    )
         elif quantities_match and report.avg_px_open is not None:
             if self._requires_avg_px_repair(positions_open, report):
                 position = positions_open[0]
@@ -2974,6 +3002,7 @@ class LiveExecutionEngine(ExecutionEngine):
         report: OrderStatusReport,
         trades: list[FillReport],
         is_external: bool = True,
+        strategy_id_override: StrategyId | None = None,
     ) -> bool:
         if self._is_shutting_down:
             return True  # Skip reconciliation during shutdown
@@ -3012,7 +3041,7 @@ class LiveExecutionEngine(ExecutionEngine):
             if report.account_id is None and reporting_client is not None:
                 report.account_id = reporting_client.account_id
 
-            order = self._generate_order(report, is_external)
+            order = self._generate_order(report, is_external, strategy_id_override)
 
             if order is None:
                 # External order dropped
@@ -3462,6 +3491,7 @@ class LiveExecutionEngine(ExecutionEngine):
         self,
         report: OrderStatusReport,
         is_external: bool = True,
+        strategy_id_override: StrategyId | None = None,
     ) -> Order | None:
         self._log.debug(f"Generating order {report.client_order_id!r}", color=LogColor.MAGENTA)
 
@@ -3495,9 +3525,13 @@ class LiveExecutionEngine(ExecutionEngine):
             0 if report.expire_time is None else dt_to_unix_nanos(report.expire_time)
         )
 
+        strategy_id = strategy_id_override
+        tags = ["RECONCILIATION"] if strategy_id_override is not None else None
+
         # Check if any strategy has claimed external orders for this instrument
         # This allows strategies to resume managing existing orders on restart
-        strategy_id = self.get_external_order_claim(report.instrument_id)
+        if strategy_id is None:
+            strategy_id = self.get_external_order_claim(report.instrument_id)
 
         if strategy_id is None:
             # All unclaimed reconciliation uses EXTERNAL strategy ID
@@ -3510,7 +3544,7 @@ class LiveExecutionEngine(ExecutionEngine):
             else:
                 # Internal position diff alignment (synthetic fill)
                 tags = ["RECONCILIATION"]
-        else:
+        elif strategy_id_override is None:
             # External order claimed by a strategy via external_order_claims config
             # This order will be managed by the claiming strategy
             tags = None

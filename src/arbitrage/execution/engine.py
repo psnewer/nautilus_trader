@@ -263,10 +263,21 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         method = getattr(liveness, f"mark_{kind}_{'alive' if alive else 'dead'}")
         method(client.venue)
 
-    def _reconcile_order_report(self, report, trades, is_external: bool = True):
+    def _reconcile_order_report(
+        self,
+        report,
+        trades,
+        is_external: bool = True,
+        strategy_id_override=None,
+    ):
         if not self._reconciliation_report_is_current(report):
             return False
-        return super()._reconcile_order_report(report, trades, is_external)
+        return super()._reconcile_order_report(
+            report,
+            trades,
+            is_external,
+            strategy_id_override,
+        )
 
     def _reconcile_position_report(self, report):
         if not self._reconciliation_report_is_current(report):
