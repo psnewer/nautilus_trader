@@ -247,10 +247,10 @@ class StrategyEvaluator(Strategy):
             self._initialize_pair_prices(data)
             self._ensure_obd_subscribed(data)
             self._ensure_sports_subscribed(data)
-        # 2. 路由评估(#250:sports 事件按 game_id 扇出全部注册 pair;其余单 pair 路由)
+        # 2. sports phase 只维护开赛价/生命周期；行情等其它事件进入机会评估路由。
         if isinstance(data, SportsGameUpdate):
             self._capture_start_prices(data)
-            self._route_eval_sports(data)
+            self._handle_sports_lifecycle(data)
             return
         if isinstance(data, MarketOrderBookDeltas):
             self._route_eval_market(data)
@@ -339,29 +339,19 @@ class StrategyEvaluator(Strategy):
             event_name=source,
         )
 
-    def _route_eval_sports(self, update: SportsGameUpdate) -> None:
-        """#250:sports 事件只负责唤醒+定位 —— `game_id` 反查全部已注册 pair,
-        按确定性顺序逐 pair 调度(各自受 PairInFlightGate 约束,无 event 级全局锁);
-        未注册 game no-op。评估时从 Store 读取当前状态,不直接信事件 payload。
-        ended:分发完毕后释放本场全部订阅(sports + 各 pair 腿 OBD)→ 归零回收。"""
+    def _handle_sports_lifecycle(self, update: SportsGameUpdate) -> None:
+        """phase 仅维护比赛生命周期，不触发机会评估；ended 负责退订与状态回收。"""
+        if not update.ended:
+            return
         pair_ids = (
             self._pair_registry.pair_ids_for_game(update.game_id)
             | self._price_pairs_by_game.get(int(update.game_id), set())
         )
-        if update.ended:
-            self._price_cleanup_pending.update(pair_ids)
+        self._price_cleanup_pending.update(pair_ids)
         for pair_id in sorted(pair_ids):
-            sport, competition = self._pair_scope(pair_id)
-            waiting = self._dispatch_eval(
-                pair_id,
-                sport,
-                competition,
-                event_name=type(update).__name__,
-            )
-            if update.ended and not waiting:
+            if self._eval_tasks_by_pair.get(pair_id, 0) <= 0:
                 self._delete_pair_price(pair_id)
-        if update.ended:
-            self._release_game_subscriptions(update.game_id)
+        self._release_game_subscriptions(update.game_id)
 
     def _ensure_sports_subscribed(self, mp: MatchedPair) -> None:
         """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态。

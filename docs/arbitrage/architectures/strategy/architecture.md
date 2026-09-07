@@ -9,7 +9,7 @@
 
 | 件 | 基类 / 角色 | 职责 |
 |---|---|---|
-| `StrategyEvaluator` | NT `Strategy` | 唯一运行时策略:订触发事件(`OrderBookDelta` / `MatchedPair` / PMS 比赛状态)→ 查 `StrategyRegistry` → 构造当前 `EvalContext` → 并行 evaluate arb+comp 树 → fire action；所有订单经原生 `submit_order` |
+| `StrategyEvaluator` | NT `Strategy` | 唯一运行时策略:订机会触发事件(`OrderBookDelta` / `MatchedPair`)→ 查 `StrategyRegistry` → 构造当前 `EvalContext` → 并行 evaluate arb+comp 树 → fire action；另消费 PMS phase 仅维护比赛状态、开赛价与 ended 回收，不触发机会评估；所有订单经原生 `submit_order` |
 | `StrategyRegistry` | 普通类 | 按 scope 索引策略;`get_for(pair_id) → Strategy or None`,按**挂载存在锁定**:具体比赛挂了就锁定本 scope,即使没命中也**不降级**(Q21-a) |
 | `Strategy` | 领域 dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }`；仅是配置树，不逐个注册为 NT Strategy |
 | `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: CheckExpr, actions: list[Action] }` |
@@ -35,9 +35,10 @@ flowchart TB
   subgraph EV[触发事件]
     OBK[OrderBookDelta]
     MP[MatchedPair]
-    EXT["PMS SportsGameUpdate"]
+    EXT["PMS phase<br/>状态/生命周期"]
   end
-  EV --> EVA[StrategyEvaluator<br/>NT Strategy]
+  OBK & MP --> EVA[StrategyEvaluator<br/>NT Strategy]
+  EXT -.不触发 evaluate.-> LIFE[开赛价采集 / ended 回收]
   EVA -->|查 pair_id| PR[(PairRegistry)]
   EVA -->|按 scope 优先级| SR[(StrategyRegistry)]
   SR -->|Strategy or None| EVA
@@ -205,7 +206,7 @@ class StrategyEvaluator(NTStrategy):
         # MatchedPair fire 后按 per-iid 订阅；概率校验通路按 matching 的 managed handoff 契约
         # 使用 managed=False，关闭校验时使用 managed=True 首次建立 book。
         # 只订 tradable_instrument_ids;PMSPORTS 等 non-tradable anchor 不订,旧 PM/OE 字段不作为 fallback。
-        # #250:SportsGameUpdate 按场经 NT subscribe_data 订阅,MatchedPair 时发起(§3.8.1)
+        # SportsGameUpdate phase 按场经 NT subscribe_data 订阅，只维护状态/生命周期(§3.8.1)
 
     def on_data(self, data):
         # 1. _extract_evaluation_target(data) → (pair_id, sport, competition);MatchedPair 直读,
@@ -333,7 +334,7 @@ instrument id 排序，缺 book 或单侧顶价时写 `None`。这里只记录�
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / NT per-(game,phase) `SportsGameUpdate` CustomData(#250/#322) | `submit_order`(经 Action;走 RiskEngine 标准管道)|
+| `StrategyEvaluator` | 机会触发:`OrderBookDeltas` / `MatchedPair`；状态通知:NT per-(game,phase) `SportsGameUpdate` CustomData | `submit_order`(经 Action;走 RiskEngine 标准管道)|
 | `Action` 类 | (无订阅) | `submit_order` / `cancel_order`(NT 标准 client 接口)|
 
 ### 3.7 StateQuery/Check/Action 类型注册 + JSON loader
@@ -493,7 +494,7 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 分配改为每个 outcome 都买到 `share`：各腿 `share_if_wins=share`、`cost=share×prob`；PM qty 等于
 share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 share 当 stake。
 
-#### 3.8.1 PMSPORTS 状态触发与 live 状态读取(#250/#266,已落地)
+#### 3.8.1 PMSPORTS phase 状态消费与 live 状态读取(#250/#266/#387,已落地)
 
 状态生产、订阅模型、Cache key、归零回收与错误边界的单一真理源在
 `architectures/data/architecture.md §3.4.1`;本节只定义 Strategy 消费契约。
@@ -504,18 +505,17 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
    `game_id_for_pair(pair_id)` 反查(matching 注册先于发布,同步时序安全),
    `subscribe_data(sports_data_type(gid, SPORTS_CHANNEL_PHASE), client_id=PMSPORTS)`；
    同时自记 `game→OBD 腿` 映射。当前 Strategy 只消费 phase/ended，不订阅 score；无 gid 的 pair 静默跳过。
-2. **`game_id` 是事件路由键**:一次 per-(game,phase) 事件按确定性顺序(`sorted`)对
-   `pair_ids_for_game(gid)` 的全部注册 pair 走 `_route_eval_sports` → `_dispatch_eval`;
-   未注册 game no-op。每个 pair 仍受既有 `PairInFlightGate` 约束,不引入 event 级全局锁。
-3. **事件 payload 只负责唤醒和定位**。PMS processor 已先写详细状态与聚合 phase；需要比赛
+2. **phase 不触发机会评估**:PRE/IN_PLAY/POST 通知均不得进入 `_dispatch_eval`，避免在盘口没有
+   新变化时复用旧 `trend_price` 生成订单。机会评估仍只由 OBD 价格变化与 MatchedPair 接线触发。
+3. **事件 payload 只负责状态与生命周期定位**。PMS processor 已先写详细状态与聚合 phase；需要比赛
    阶段的 `StateQuery` 经 `ctx.pair_registry` 定位 game_id，再从 `SportsPhaseStore` 查询当前
    `PRE/IN_PLAY/POST`。`SportsGameStateStore` 只保留 PMS 完整比分/period 等详细状态。
-4. **ended 释放**:ended 事件扇出分发完毕后,退订本场 sports 与该场各 pair 腿的 OBD
+4. **ended 释放**:ended 事件不评估策略，直接退订本场 sports 与该场各 pair 腿的 OBD
    (自记映射,不依赖 registry)→ 与 matching 侧退订汇合归零 → NT 收尾 + 内存回收
-   (Store 条目、managed book;见 data §3.4.1)。
-5. Strategy 不冻结 sports state。PMS phase update 仍由 per-(game,phase) topic 触发下一轮评估；
-   OE/SE `inPlay` 只更新 `SportsPhaseStore`，**不新增独立唤醒，也不绕过既有价格变化门控**。
-   后续正常 OBD/PMS 评估读取 Store 当前值。
+   (Store 条目、managed book;见 data §3.4.1)；若该 pair 已有评估 task，则沿用 pending-cleanup
+   在 task 完成后删除价格与 runtime 状态。
+5. Strategy 不冻结 sports state。PMS phase 与 OE/SE `inPlay` 都只更新状态，不绕过价格变化门控；
+   后续正常 OBD 评估从 Store 读取最新 phase/score。
 
 #### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-01)
 

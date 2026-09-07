@@ -965,7 +965,7 @@ def test_registered_executor_loop_used_without_running_loop():
 # 与焦点无关,不冲突。详见 synchronization §8.6 / refactor #108。
 
 
-# ── #250:PMSPORTS strategy channel 触发(game_id 扇出)─────────────────────
+# ── PMSPORTS phase 状态消费与生命周期回收───────────────────────────────
 def _sports_update(game_id=888, *, ts=1, live=True, ended=False):
     from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 
@@ -987,8 +987,8 @@ def _store_sports_update(actor, update):
     )
 
 
-def test_sports_update_fans_out_to_all_registered_pairs_for_game():
-    """strategy-4.sports.2:同 game 注册多 pair(3-way 场景)→ 一次 strategy 事件全部调度。"""
+def test_sports_update_does_not_trigger_evaluation():
+    """strategy-4.sports.2:phase 只更新状态，不触发同场 pair 的机会评估。"""
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
@@ -999,7 +999,7 @@ def test_sports_update_fans_out_to_all_registered_pairs_for_game():
     actor.on_data(_sports_update(888))
     _run(_drain(loop))
 
-    assert a1.calls == 1 and a2.calls == 1
+    assert a1.calls == 0 and a2.calls == 0
 
 
 def test_sports_update_unregistered_game_is_noop():
@@ -1009,8 +1009,8 @@ def test_sports_update_unregistered_game_is_noop():
     assert loop.tasks == []
 
 
-def test_sports_fanout_respects_pair_inflight_gate():
-    """strategy-4.sports.2 补:扇出各 pair 独立受 PairInFlightGate 约束,无 event 级全局锁。"""
+def test_sports_update_does_not_touch_pair_inflight_gate():
+    """strategy-4.sports.2 补:phase 不进入评估管道，也不占用或释放 pair gate。"""
     from src.arbitrage.common.pair_inflight import PairInFlightGate
 
     gate = PairInFlightGate()
@@ -1025,12 +1025,12 @@ def test_sports_fanout_respects_pair_inflight_gate():
     actor.on_data(_sports_update(888))
     _run(_drain(loop))
 
-    assert a1.calls == 0 and a2.calls == 1
+    assert a1.calls == 0 and a2.calls == 0
+    assert not gate.try_enter("m1")
 
 
-def test_matched_pair_subscribes_per_game_topic_and_routes_events():
-    """strategy-4.sports.1:MatchedPair 到达 → 按场订阅;per-game topic 发布经 NT
-    路由到 on_data 并触发评估;不再依赖裸 `data.SportsGameUpdate*`。"""
+def test_matched_pair_subscribes_per_game_topic_without_phase_evaluation():
+    """strategy-4.sports.1:MatchedPair 按场订阅 phase；topic 发布不触发机会评估。"""
     from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
     from nautilus_trader.adapters.polymarket.sports import sports_data_type
 
@@ -1051,7 +1051,7 @@ def test_matched_pair_subscribes_per_game_topic_and_routes_events():
     )
     _run(_drain(loop))
 
-    assert action.calls == calls_after_mp + 1      # sports 事件恰好触发一次评估
+    assert action.calls == calls_after_mp
 
 
 def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):
@@ -1068,16 +1068,19 @@ def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):
 
     actor.start()
     actor.on_data(mp)
+    _run(_drain(loop))
     assert 888 in actor._sports_subscribed
     assert actor._game_market_obd[888] == {
         ("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123"),
     }
     assert set(actor._market_obd_subscribed) == actor._game_market_obd[888]
     actor._runtime_store.update("head_rebate", "m1", {"standard": 0.2})
+    calls_before_ended = a1.calls
 
     actor.on_data(_sports_update(888, live=False, ended=True))
     _run(_drain(loop))
 
+    assert a1.calls == calls_before_ended
     assert 888 not in actor._sports_subscribed
     assert 888 not in actor._game_market_obd
     assert actor._market_obd_subscribed == {}
@@ -1236,7 +1239,7 @@ def test_ended_deletes_pair_prices_after_last_evaluation_finishes():
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=_RecordingAction("m1")))
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
-    _run(_drain(loop))
+    # MatchedPair 已创建一轮评估但尚未执行；ended 自身不新建评估，只把清理延后到既有 task 完成。
     assert actor._get_pair_price_store().get("match_X") is not None
 
     actor.on_data(_sports_update(888, live=False, ended=True))

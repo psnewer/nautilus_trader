@@ -47,7 +47,7 @@ class EvalContext:
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
     # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。
     strategy_defaults: dict = field(default_factory=dict)
-    # 本轮评估的触发事件名：OrderBookDeltas / MatchedPair / SportsGameUpdate 等。
+    # 本轮评估的触发事件名：OrderBookDeltas / MarketOrderBookDeltas / MatchedPair 等。
     # price_change_recovery 只认 instrument / market 级 OrderBookDeltas。
     event_name: str | None = None
     # 当前配置策略的稳定标识 + Strategy 组件拥有的跨轮变量 Store。

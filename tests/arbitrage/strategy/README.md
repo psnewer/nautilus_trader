@@ -681,23 +681,23 @@ candi_select -> place_bets(intent=recovery,market=true)`。
   产生补单。
 - target share 仍只取 open positions，不用 realized PnL 虚增 share。
 
-## #250/#322:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py`)
+## PMSPORTS phase 状态消费（#250/#322/#387，已落地，`test_evaluator.py`）
 
-> #322:strategy 只用 `ended` → 订 **`phase` 通道**(`sports_data_type(gid, SPORTS_CHANNEL_PHASE)`);
-> 下列"per-game topic"均指该场 `phase` 通道 topic。比分/钟表帧不再噪声唤醒评估。见 data §3.4.2。
+> Strategy 订 **`phase` 通道**(`sports_data_type(gid, SPORTS_CHANNEL_PHASE)`)以维护开赛价与 ended
+> 回收；phase 和比分/钟表帧均不触发机会评估。见 strategy §3.8.1、data §3.4.2。
 
-### strategy-4.sports.1:MatchedPair 按场订阅 + per-(game,phase) topic 触发评估
+### strategy-4.sports.1:MatchedPair 按场订阅 phase，但 phase 不触发评估
 
-**用例**:`test_matched_pair_subscribes_per_game_topic_and_routes_events`。
-**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场 `phase` 通道;该 topic 发布
-经 NT 路由到 `on_data` 并恰好触发一次评估。
+**用例**:`test_matched_pair_subscribes_per_game_topic_without_phase_evaluation`。
+**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场 `phase` 通道；该 topic 发布
+经 NT 路由到 `on_data`，但 Action 调用次数不增加。
 
-### strategy-4.sports.2:同 game 的全部 pair 均被触发
+### strategy-4.sports.2:phase 不扇出机会评估
 
-**用例**:`test_sports_update_fans_out_to_all_registered_pairs_for_game` /
-`test_sports_fanout_respects_pair_inflight_gate`。
-**期望/验收**:`pair_ids_for_game` 扇出全部注册 pair,各 pair 独立过 `PairInFlightGate`;
-不得沿用单值反查只触发第一个。
+**用例**:`test_sports_update_does_not_trigger_evaluation` /
+`test_sports_update_does_not_touch_pair_inflight_gate`。
+**期望/验收**:同 game 注册多个 pair 时，phase 不为任何 pair 创建评估 task，也不占用或释放
+`PairInFlightGate`。
 
 ### strategy-4.sports.3:未注册 game no-op
 
@@ -710,15 +710,16 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 **期望/验收**:Evaluator 把 Cache-backed `SportsGameStateStore` 注入 `EvalContext`；
 状态查询可按需读取，不派生 signal。
 
-### strategy-4.sports.5:SportsGameUpdate 只负责触发和定位
+### strategy-4.sports.5:SportsGameUpdate 只负责状态和生命周期定位
 
-**用例**:`test_sports_update_fans_out_to_all_registered_pairs_for_game`。
-**期望/验收**:事件到达前状态已写入 Store；Evaluator 不复制 sports 状态，也不保存暂态/持久态 signal。
+**用例**:`test_sports_update_does_not_trigger_evaluation`。
+**期望/验收**:事件到达前状态已写入 Store；Evaluator 不复制 sports 状态、不保存 signal，也不调用
+`_dispatch_eval`。
 
 ### strategy-4.sports.6:ended 释放本场全部订阅
 
 **用例**:`test_ended_releases_sports_and_obd_subscriptions`。
-**期望/验收**:ended 扇出分发完毕后,退订本场 sports 与自记的各 pair 腿 OBD;与 matching 侧
+**期望/验收**:ended 不触发评估，直接退订本场 sports 与自记的各 pair 腿 OBD；与 matching 侧
 退订汇合归零 → NT 收尾 + 内存回收(Store 条目、managed book)。
 
 ### strategy-4.sports.7:PM first/start/extreme price Cache
