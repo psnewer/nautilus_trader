@@ -17,14 +17,20 @@ class TrendGateAction(Action):
     """只保留相对 `PairPriceStore.trend_price` 朝指定方向变化的 outcome 腿。
 
     `up` 缺失或为 True 时保留 `current_best_ask > trend_price` 的 outcome；False 时保留
-    `current_best_ask < trend_price` 的 outcome。相等为 flat，不保留。基准或当前完整报价缺失时
+    `current_best_ask < trend_price` 的 outcome。`complement=True` 时拦截二元 outcome 同为 up
+    或同为 down；包含 flat 时不触发该互补门。相等为 flat，不保留。基准或当前完整报价缺失时
     fail-closed，全删腿。按 `selected_candidate`、`candidates`、legs-only 的顺序处理现有输出。
     """
 
-    def __init__(self, up: bool = True) -> None:
+    def __init__(self, up: bool = True, complement: bool = False) -> None:
         if not isinstance(up, bool):
             raise ValueError(f"trend_gate: up must be a boolean, got {up!r}")
+        if not isinstance(complement, bool):
+            raise ValueError(
+                f"trend_gate: complement must be a boolean, got {complement!r}",
+            )
         self._keep_up = up
+        self._require_complement = complement
 
     async def execute(self, ctx: EvalContext) -> None:
         target = "up" if self._keep_up else "down"
@@ -35,7 +41,13 @@ class TrendGateAction(Action):
             legs = selected.get("legs")
             if not isinstance(legs, list) or not legs:
                 return
-            kept = _filter_legs(ctx, legs, target, _directions(ctx))
+            kept = _filter_legs(
+                ctx,
+                legs,
+                target,
+                _directions(ctx),
+                self._require_complement,
+            )
             filtered = dict(selected)
             filtered["legs"] = kept
             ctx.scratch["selected_candidate"] = filtered
@@ -58,7 +70,13 @@ class TrendGateAction(Action):
                 legs = candidate.get("legs")
                 if not isinstance(legs, list) or not legs:
                     continue
-                kept = _filter_legs(ctx, legs, target, directions)
+                kept = _filter_legs(
+                    ctx,
+                    legs,
+                    target,
+                    directions,
+                    self._require_complement,
+                )
                 if not kept:
                     continue
                 filtered = dict(candidate)
@@ -70,7 +88,13 @@ class TrendGateAction(Action):
         legs = ctx.scratch.get("legs")
         if not isinstance(legs, list) or not legs:
             return
-        ctx.scratch["legs"] = _filter_legs(ctx, legs, target, _directions(ctx))
+        ctx.scratch["legs"] = _filter_legs(
+            ctx,
+            legs,
+            target,
+            _directions(ctx),
+            self._require_complement,
+        )
 
 
 def _filter_legs(
@@ -78,16 +102,28 @@ def _filter_legs(
     legs: list[dict],
     target: str,
     directions: dict[str, str],
+    require_complement: bool,
 ) -> list[dict]:
+    direction_values = tuple(directions.values())
+    same_non_flat_direction = (
+        len(direction_values) == 2
+        and direction_values[0] == direction_values[1]
+        and direction_values[0] in {"up", "down"}
+    )
+    complement_matches = (
+        not require_complement
+        or not same_non_flat_direction
+    )
     kept = []
     for leg in legs:
         outcome = _outcome(leg)
-        if directions.get(outcome) == target:
+        if complement_matches and directions.get(outcome) == target:
             kept.append(leg)
             continue
         _LOG.info(
             f"TrendGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-            f"outcome={outcome} direction={directions.get(outcome)} target={target}",
+            f"outcome={outcome} direction={directions.get(outcome)} target={target} "
+            f"complement={require_complement} complement_matches={complement_matches}",
         )
     return kept
 

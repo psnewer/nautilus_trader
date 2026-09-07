@@ -58,6 +58,8 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         self._arb_venue_liveness = None
         self._arb_command_groups: dict[tuple[str, str], _CommandGroupContext] = {}
         self._arb_position_reconciliation_snapshots = {}
+        self._arb_position_reconcile_clients = []
+        self._arb_startup_position_reconcile_clients = []
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
 
     def configure_arb(
@@ -168,6 +170,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     async def _query_position_status_reports(self):
         clients = list(self._clients.values())
         self._arb_position_reconciliation_snapshots = {}
+        self._arb_position_reconcile_clients = []
         batches = await asyncio.gather(
             *[
                 client.generate_position_status_reports(
@@ -195,6 +198,7 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 )
                 continue
             self._mark_reconciliation_liveness(client, "position", alive=True)
+            self._arb_position_reconcile_clients.append(client)
             # #318:逐 pair(报告与本地 position 并入同一 scope)判 position_digest(含 realized_pnl)。
             # 通过的 pair 纳入 venue_positions 并选择性更新其 offset;有 stale pair → venue 记 failed
             # (保守:跳过该 venue 的 cached-position flatten,免误平未验证的 stale pair;空批凭本地仓判)。
@@ -234,12 +238,45 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 venue_positions[report.instrument_id] = report
         return venue_positions, failed_venues
 
+    async def _check_positions_consistency(self) -> None:
+        self._arb_position_reconcile_clients = []
+        try:
+            await super()._check_positions_consistency()
+        finally:
+            await self._refresh_position_reconcile_account_states(
+                self._arb_position_reconcile_clients,
+            )
+
+    async def reconcile_execution_state(self, timeout_secs: float = 10.0) -> bool:
+        self._arb_startup_position_reconcile_clients = []
+        result = await super().reconcile_execution_state(timeout_secs)
+        # 上游 finally 已置 completion event；在下一次 await 前同步清回，确保等待方只在
+        # 仓位报告及其 inferred fill 应用、权威余额覆盖均完成后继续。
+        self._startup_reconciliation_event.clear()
+        try:
+            await self._refresh_position_reconcile_account_states(
+                self._arb_startup_position_reconcile_clients,
+            )
+        finally:
+            self._startup_reconciliation_event.set()
+        return result
+
+    @staticmethod
+    async def _refresh_position_reconcile_account_states(clients) -> None:
+        """在 NT 应用完 position reports 后，再以 venue 权威余额覆盖本地计算结果。"""
+        for client in clients:
+            refresh = getattr(client, "_refresh_account_state_after_position_reconcile", None)
+            if refresh is not None:
+                await refresh()
+
     def _reconcile_execution_mass_status(self, mass_status):
         # #318:启动 mass-status 同样 per-pair —— report 已由 `_guard_reconciliation_reports` 附上 snapshot,
         # super 逐 report 走 `_reconciliation_report_is_current`(按 pair 判),stale pair 的 report 被拦、
         # 通过的照常应用。offset 用预检出的通过 instrument 选择性更新。
         client = self._clients.get(mass_status.client_id)
         batches = getattr(mass_status, "_arb_reconciliation_batches", {})
+        if client is not None and "position" in batches:
+            self._arb_startup_position_reconcile_clients.append(client)
         for kind, batch in batches.items():
             payload = getattr(batch, "payload", None)
             deferred_instruments = (

@@ -298,17 +298,17 @@ FILLED，不重放 cancel；重复 trade 不再生成任何事件。
 ### pm-adapter-5.account.1: 余额刷新触发(Q17)
 
 **前置**: PM ExecutionClient 启动
-**输入**: 分别触发 (a) `_connect()`;(b) 显式 `QueryAccount`; (c) PM `generate_position_status_reports(...)` 成功返回 reports。
-**期望**: 三种情形各调一次 `_update_account_state` → 单次 `get_balance_allowance` → `generate_account_state` 写 cache;请求失败立即抛给调用方,不在余额方法内部重试;实时 `CONFIRMED` trade 只产 fill,不刷新余额。
+**输入**: 分别触发 (a) `_connect()`;(b) 显式 `QueryAccount`; (c) PM position reports 由 ExecutionEngine 应用完成。
+**期望**: 前两种情形直接调用 `_update_account_state`；position reconciliation 则先应用 reports/inferred fill，再调用一次 `_update_account_state` → 单次 `get_balance_allowance` → `generate_account_state` 写 cache。余额方法内部不重试；对账后的余额失败只 warning；实时 `CONFIRMED` trade 只产 fill,不刷新余额。
 **验收**:
 - 上游 `execution.py` 内**无 `set_timer` 私有余额轮询**;周期刷新复用 NT 原生 position reconciliation。
 - NT 无默认 `QueryAccount` 周期发送(全库仅反序列化处实例化)
-- PM position reconciliation 成功后会刷新余额,用于覆盖 accepted 本地预扣后的保守 cache `free`。
-- position reports 成功但余额刷新失败时,只 warning;reports 原样返回,`pm_position_alive` 保持 true。
+- `generate_position_status_reports` 本身不刷新余额，避免权威值随后又被 inferred fill 覆盖；启动、周期及迟到成交定向 reconciliation 都在 reports 应用后刷新。
+- PM position reconciliation 应用后会刷新余额,用于覆盖计算型 cache `free`；余额刷新失败时只 warning,不回滚 reports，`pm_position_alive` 保持 true。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_fill_waits_for_confirmed_status` 覆盖实时 trade: `MATCHED` 不产 NT fill,`CONFIRMED` 才按成交量产 fill。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_settles_without_writing_liveness` 覆盖 position reports 成功后余额刷新且 adapter 不写 liveness。
-- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile` 覆盖余额刷新失败不影响 position reconcile。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_position_reconcile_does_not_refresh_balance_before_reports_are_applied` 覆盖 adapter 生成 reports 时不提前刷新余额。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_position_reconcile_balance_refresh_failure_is_swallowed` 覆盖对账后的余额刷新失败不影响 position reconcile。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_balance_query_failure_is_not_retried` 覆盖余额请求失败只调用一次 CLOB client。
 
 ### pm-adapter-5.account.2: free=total 陷阱已由 accepted 本地预扣替代(Q17 修订已落地)
@@ -332,10 +332,10 @@ FILLED，不重放 cancel；重复 trade 不再生成任何事件。
 **前置**: PM adapter 启动,健康检查周期 = 配置默认值。
 **输入**: 等到下一个周期 tick 自然触发
 **期望**:
-- 拉一次持仓 + 挂单(REST / Data API;**不拉余额**,Q17)
+- 分别拉持仓与挂单(REST / Data API)；order reconcile 不拉余额，position reports 应用完成后另拉一次权威余额(Q17/#385)
 - 持仓差异 → `generate_position_status_report(report)` → ExecutionEngine.reconcile → `cache.update_position` + `Portfolio.update_position` endpoint + `events.position.{strategy_id}` topic
 - 挂单差异 → `generate_order_status_report(report)` → 同上 (orders 通道)
-- 余额**不在此拉**(完全靠上游事件,见 pm-adapter-5.account.1)
+- 余额不在 adapter 生成 reports 期间拉；由 ExecutionEngine 应用 position reports 后触发(见 pm-adapter-5.account.1)
 - 拉取成功后 PM 对应 liveness 维度置 alive(见 pm-adapter-5.3c)
 **验收**:
 - Portfolio.unrealized_pnl / margins_init 与 venue 真实状态一致
@@ -370,7 +370,7 @@ FILLED，不重放 cancel；重复 trade 不再生成任何事件。
   让同批 report 自我失效；单份 report 与空 batch 派生的 flat report 均在最终 NT reconcile 入口复核。
   验收：`test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch`、
   `test_position_reconcile_defers_realized_when_state_changes_during_closed_fetch`、
-  `test_position_reconcile_returns_stale_guard_when_state_changes_during_balance_refresh`、
+  `test_position_reconcile_does_not_refresh_balance_before_reports_are_applied`、
   `test_arb_generate_order_reports_returns_stale_guard_when_local_state_changes`，以及
   `test_engine_barrier.py::test_stale_{order_report_batch,position_report_batch,mass_status}_*`。
 - merge 成功不另算 condition PnL、不生成 synthetic `OrderFilled`；真实账户样本确认 closed

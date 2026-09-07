@@ -566,14 +566,14 @@ def _adjust_share_by_liquidity(self, ctx, best) -> Decimal | None: ...  # 深度
 
 | Venue | 维护方式 |
 |---|---|
-| PM | **事件驱动**(上游 `execution.py:287 _update_account_state` 已实现)—— **连接时** + **链上成交确认时**(`POLYMARKET_FINALIZED_TRADE_STATUSES`)自动刷;**上游无周期 timer、NT 也无默认 QueryAccount 轮询、健康检查也不拉余额**(Q17,完全靠事件);可用余额由 `_check_balance` 自扣在途挂单(§5.6) |
+| PM | 主动查询:连接、显式 `QueryAccount`，以及 NT position reconciliation 应用 reports/inferred fill 后刷新；`CONFIRMED` 只产 fill，不拉余额；无私有余额 timer(#110/#254/#385)。 |
 | OE | **被动** —— WS 帧解析(自写) |
 
 **Step 5 启动时还需展开**:
 - ~~OE WS 订单事件订阅是否已实现~~ ✅ 已审计(2026-05-21):**功能性 stub** —— `websocket_handler` 有 'orders' 帧分发 + callback 注册管道,但 `message_parser.parse_order_message` 是 `# TODO return None`、`data.py:_on_order_update` 只 `log.debug`。**Step 5 必须实写**:解析订单帧 → `generate_order_*` 回写 NT
 - ~~OE WS 余额帧解析路径~~ ✅ 已审计(2026-05-21):现代码**没抓** WS 余额帧(WS 只订 prices/orders 两类),余额走 `scraper.get_balance()` 页面 DOM 抓取。**用户确认 OE 站点 WS 确有余额帧(已含挂单占用)**,只是现代码没订。**Step 5 必须**:加第三类 WS 帧捕获 account/balance → `generate_account_state`(对齐 §5.5/§5.6 "被动 WS" 目标 + Q17 "OE 信 WS 不再减")
 - PM `bug_polymarket_order_version_mismatch` 用上游版本验证是否消失
-- ~~PM `_update_account_state` 触发频率~~ ✅ 已锁定(Q17):事件驱动(连接 + 链上成交确认),无周期 timer,健康检查不拉
+- ~~PM `_update_account_state` 触发频率~~ ✅ 已锁定(Q17，后经 #110/#254/#385 修订):连接、显式 `QueryAccount`、position reconciliation 应用完成后；无私有余额 timer，`CONFIRMED` 不拉余额
 - StrategyId / OrderId / 命名一致性
 
 **📍 落地索引(Step 5 实施清单 —— 横切结论单一真理源在 §6.x,本步只需逐项落地)**:
@@ -1767,6 +1767,8 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-07 (#386) | **`trend_gate` 增加可选二元互补门 `complement`。** 用户需要排除两个 outcome 同为 up 或同为 down 的行情，并校正了初版布尔 XOR 会误伤 down/flat 的语义。定夺：参数缺失/`false` 完全保持逐 outcome 独立过滤；显式 `true` 时，完整二元趋势向量同为 up 或同为 down 才使当前 candidate/legs 全删，包含 flat 时互补门不拦截，之后仍由 `up` 参数筛腿。该门不恢复旧跨 venue momentum 一致性，也不要求严格一 up 一 down。现行设计见 strategy §3.8/§3.8.3，测试见 strategy README `strategy-4.trend.4`。**Strategy 全量 450 例离线通过，live-unvalidated。** |
+| 2026-09-07 (#385) | **PM position reconciliation 改为先应用 inferred 仓位修复、最后覆盖权威余额。** 远端 auto_redeem 样本中，CLOB 权威余额已是 `182.022984`，但旧时序在 reports 返回前先写入该值，随后 settlement 缩仓合成 `SELL 5.05 @ 0.77` 又按 NT 计算型账户规则加回 `3.8885`，使本轮最终余额暂时膨胀为 `185.911484`，直到下个周期才纠正。定夺：PM adapter 生成 position reports 时不刷新余额；启动 mass-status 与周期 position reconcile 均由 `ArbLiveExecutionEngine` 在成功取得 position batch 且全部 reports/inferred fill 应用后刷新，迟到成交定向 reconcile 也保持同序；启动 completion event 在刷新完成后才最终置位。余额失败只 warning，不回滚仓位修复或改变 position liveness。现行设计见 execution §4.5/§4.6，测试见 execution README `execution-4.5.8f` 与 PM adapter README `pm-adapter-5.account.1`。**离线已验证，live-unvalidated。** |
 | 2026-09-06 (#384) | **澄清 PM 撤单未知结果 ACK 只释放自定义 session。** #309 以“正常响应”描述 cancel session ACK，但后续代码已让 `_cancel_order` / `_execute_deferred_cancel` 在 RetryManager 返回 `response=None/result=False` 时同样调用 `_ack_normal_cancel_response`。核实确认该 helper 不生成 `OrderCanceled`、不修改 `PENDING_CANCEL`、也不关闭 NT inflight-check；保留它可避免结果未知时无意义占用 pair tracking 至 watchdog。定夺：两处调用保留；将 ACK 语义明确为“结束项目 cancel session”，订单真实状态仍由 NT QueryOrder/inflight-check 收口。现行设计见 execution §4.1/§4.2，测试见 PM adapter README `pm-adapter-exec.cancel.ack-policy`。**既有代码已覆盖，文档已校准。** |
 | 2026-09-06 (#383) | **PM settlement 后的 NETTING 缩仓归回原 strategy。** #110/#283 的 merge/redeem 已完成链上 IO、仓位重拉与 realized ledger，但通用 position reconciliation 把差额订单固定归给 `EXTERNAL`；venue 归零时因此留下原 strategy LONG 与 EXTERNAL SHORT，净额虽为零但 Position 生命周期错误。定夺：同方向缩仓且本地只有一个 strategy 时，RECONCILIATION 合成单继承原 `strategy_id`，直接减少/关闭原 Position；多 strategy 归属不唯一时延后，不生成 EXTERNAL offset；增仓维持既有 EXTERNAL 语义。merge 与 redeem 任一尝试均同轮重拉 `/positions`，结算 PnL 仍以 `/closed-positions.realizedPnl` ledger 为权威。现行设计见 execution §4.6，测试见 execution README `execution-4.5.8e`。**离线已验证，live-unvalidated。** |
 | 2026-09-06 (#382) | **PM USER WS 接受 `auto_redeem` 非订单通知。** 远端实盘收到结算通知时，严格的 order/trade union decoder 因未知 `event_type` 抛 `ValidationError` 并打印 traceback。定夺：仅在严格解码失败路径识别 `auto_redeem`，记录 `condition_id`、`amount`、`txn_hash` 后结束处理；不扩展订单状态枚举，不伪造缺少成交价的 `FillReport`，账户与仓位继续由既有周期 reconciliation 获取权威真值。现行设计见 execution §3.1，测试见 PM adapter README `pm-adapter-5.1g2`。**离线已验证，live-unvalidated。** |

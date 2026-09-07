@@ -57,12 +57,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  PMev["PM:连接 + 显式 QueryAccount + position reconcile 成功"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
+  PMev["PM:连接 + 显式 QueryAccount + position reconcile 应用完成"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
   OEws["OE:WS 余额帧(已含挂单占用)"] -->|generate_account_state| C
   ACCEPT["OrderAccepted<br/>本地预扣(仅 OE/SE,#254)"] -->|generate_account_state| C
   C --> RISK["RiskEngine._check_balance 读 live"]
 ```
-> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后各发一次余额请求,失败不在调用内重试;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣(**仅 OE/SE;PM 关闭,#254 见 §4.5**);RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
+> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询时直接请求；position reconciliation 则在 reports/inferred fill 应用后请求，失败不在调用内重试;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣(**仅 OE/SE;PM 关闭,#254 见 §4.5**);RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
 SE 登录提交表单后，在同一个 deadline 内等待顶层 customer URL 或 customer iframe，
 总预算统一取 `venues.sharpexch.page_load_timeout_sec`，不会先后各等待一轮；任一信号到达即继续。
@@ -656,7 +656,7 @@ reconciliation price 后，才生成合成 `OrderStatusReport` 并进入 order/f
 
 | Venue | 方式 | 触发 |
 |---|---|---|
-| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 显式 `QueryAccount` + PM position reconciliation 成功后**,每次单次请求、失败即返回调用方;**CONFIRMED trade 不拉** |
+| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 显式 `QueryAccount` + PM position reconciliation 应用后**,每次单次请求、失败即返回调用方;**CONFIRMED trade 不拉** |
 | OE | WS 余额帧(已含挂单占用)→ `generate_account_state` | 被动 reactive(Step 5 实写第三类 WS 帧捕获) |
 | SE | HTTP profile/balance response → `generate_account_state` | 被动 reactive(response listener 捕获 profile/balance);WS `BALANCE` 不作为余额真值 |
 
@@ -682,7 +682,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 ```
 > **落地**:编排层 = `nautilus_trader/adapters/polymarket/settlement.py`(`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在同一 adapter 目录。
 
-- **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。该成功路径同时刷新 PM AccountState(`_update_account_state`),用于覆盖 accepted 本地预扣后的保守余额。
+- **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。`generate_position_status_reports` 只生成权威仓位报告，不在返回前刷新余额；`ArbLiveExecutionEngine` 应用完全部报告及其 inferred fill 后，才调用 PM `_refresh_account_state_after_position_reconcile()`，让 `get_balance_allowance` 权威值覆盖 inferred BUY/SELL 对计算型 CASH 的临时增减。该顺序覆盖启动 mass-status、周期 `_check_positions_consistency` 与迟到成交触发的定向 `_reconcile_position_now`；启动 completion event 也在余额刷新完成后才最终置位。仅成功取得 position batch 的 client 参与刷新，余额失败只 warning，不回滚已经完成的仓位对账。
 - **position → settlement → position 时序(#283/#285/#383)**:`generate_position_status_reports` 先由上游
   `_fetch_user_positions` 拉 `/positions`，把原始响应 stash 到 `_last_raw_positions` 供
   settlement 判断。若本轮没有尝试 merge/redeem，沿用第一次 reports；若 `result.merges` 或
@@ -742,14 +742,15 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   position 批通过后 PM 才提交 realized,并立即**重取应用阶段 fresh 摘要**附到通过的 report(供 NT 逐 report 应用前复核);
   同步步骤之间无 `await`。**liveness 与应用资格正交**:远端查询成功即 `mark_*_alive`,即便随后某 pair 因本地变化被丢也不回写 dead。
 
-  账户余额不参与摘要:它是独立权威刷新;但余额请求发生在 PM batch 返回前,其等待期间发生的 order/position/realized
-  变化仍会使对应 pair 在应用前失效。
+  账户余额不参与摘要:它是仓位报告应用后的独立权威刷新，不影响该 batch 的乐观并发判定；这样 settlement
+  缩仓生成的 inferred SELL 即使先按成交价把本金加回计算型 CASH，随后也会被同轮 PM 权威余额覆盖，不会成为
+  本轮对账结束后的最终余额。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **路由约束(#276)**:结算 Relayer SDK(`py_builder_relayer_client`,requests)经 `configure_relayer_http_transport(polymarket_proxy_url)` 换显式路由 Session(`trust_env=False`),`PolymarketContractService.initialize` 内配置;与 PM 其余出口同路由,未配置=直连。
 - **liveness**:最终要返回的 position reports 拉成功 → 正常返回；第一次或 merge
   后第二次 REST 拉取失败/超时 → **`raise`**(#259)。启动/周期 reconciliation 上层分别据此
   `mark_position_alive/dead`。position reports
-  成功但随后余额刷新失败时，只 warning，不改变 position liveness、不丢弃 reports。
+  成功但应用后的余额刷新失败时，只 warning，不改变 position liveness、不回滚已应用 reports。
 - **结算 await + single-flight(#283)**:position report 协程必须等待 settlement 返回，才能判断
   是否需要第二次 `/positions`；不再 `create_task` fire-and-forget。链上同步 SDK 调用仍必须在
   `contract.py` 经 `loop.run_in_executor(None, ...)` 丢线程池，因此等待 settlement 只挂起当前

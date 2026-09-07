@@ -355,6 +355,12 @@
 - 验收:`tests/unit_tests/live/test_execution_recon.py::TestLiveExecutionReconciliation::test_netting_position_reduction_keeps_original_strategy` / `test_netting_position_reduction_defers_when_strategy_is_ambiguous`；merge/redeem 重拉由
   `tests/arbitrage/execution/test_polymarket_client.py::test_settlement_attempt_refetches_positions_before_returning_reports` 覆盖。
 
+### execution-4.5.8f: inferred 仓位修复后再覆盖 PM 权威余额(#385)
+- 前置:PM 计算型 CASH 已有一份权威余额；position reconciliation 因 merge/redeem/auto_redeem 或迟到成交发现仓位差异，需要合成 inferred BUY/SELL。
+- 输入:分别走启动 mass-status、周期 `_check_positions_consistency` 与迟到成交定向 `_reconcile_position_now`。
+- 期望:`PositionStatusReport` 及其 inferred fill 先完整应用；随后才调用 PM `get_balance_allowance` 并用 `AccountState` 覆盖 CASH。inferred SELL 临时加回的本金不得成为本轮对账完成后的最终余额；启动 completion event 在余额覆盖完成后才最终置位。仅成功取得 position batch 的 client 刷新余额；余额请求失败只 warning，不回滚仓位修复，也不改变 position liveness。
+- 验收:`tests/arbitrage/execution/test_engine_barrier.py::test_periodic_position_reconcile_refreshes_authoritative_balance_last`、`test_startup_reconcile_refreshes_authoritative_balance_last`；定向路径由 `tests/arbitrage/execution/test_polymarket_client.py::test_on_drop_position_reconcile_refreshes_balance_after_report_application` 覆盖。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);

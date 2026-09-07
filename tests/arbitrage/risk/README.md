@@ -18,7 +18,7 @@ Risk 层在 NT `submit_order` 管道上**透明拦截**,Strategy **不引用** R
 
 ```
 ExecutionClient (维护账户)
-├── PM: 连接/显式 QueryAccount + accepted 本地预扣 → generate_account_state → Cache
+├── PM: 连接/显式 QueryAccount + position reconcile 应用后 → generate_account_state → Cache
 └── OE/SE: 余额真值帧/response + accepted 本地预扣 → generate_account_state → Cache
                 ↓
         ArbitrageLiveRiskEngine._check_order  ← 同步读 Cache 做余额检查
@@ -93,9 +93,9 @@ ExecutionClient (维护账户)
 
 ### risk-6.5: PM ExecutionClient 事件驱动维护账户状态
 - 前置: PolymarketExecutionClient 启动
-- 输入: 触发任一上游事件(连接时 / `CONFIRMED` 成交确认 `POLYMARKET_FINALIZED_TRADE_STATUSES`)
+- 输入:连接、显式 `QueryAccount`，或 position reconciliation 完成 reports/inferred fill 应用
 - 期望: cache.account_state(POLYMARKET) 自动更新
-- 验收: 路径完全在 ExecutionClient 内,无独立监控 Actor;**上游无周期 timer、NT 无默认 QueryAccount 轮询、健康检查也不拉余额**(Q17,完全靠事件)
+- 验收:无独立监控 Actor、上游无私有余额 timer、NT 无默认 `QueryAccount` 轮询；周期复用 NT position reconciliation，并在 inferred fill 应用后才以 PM 权威余额覆盖 cache。`CONFIRMED` 只产 fill，不主动拉余额。时序验收见 execution README `execution-4.5.8f`。
 
 ### risk-6.6: OE ExecutionClient 被动维护账户状态(WS)
 - 前置: OrbitExchExecutionClient 启动,WS 已连接

@@ -92,6 +92,59 @@ def test_outcomes_are_compared_independently_without_complement_direction_requir
     ]
 
 
+def test_complement_true_drops_all_when_both_outcomes_are_up():
+    ctx = _ctx(
+        books={
+            "Y.POLYMARKET": {"ask": 0.47},
+            "N.POLYMARKET": {"ask": 0.59},
+            "Y.ORBITEXCH": {"ask": 0.46},
+            "N.ORBITEXCH": {"ask": 0.58},
+        },
+        baseline={"yes": 0.45, "no": 0.57},
+    )
+    _install(ctx)
+
+    _run(TrendGateAction(complement=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_complement_true_keeps_target_when_exactly_one_outcome_matches():
+    ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
+    _install(ctx)
+
+    _run(TrendGateAction(complement=True).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_complement_true_drops_all_when_both_outcomes_are_down():
+    ctx = _ctx(baseline={"yes": 0.50, "no": 0.60})
+    _install(ctx)
+
+    _run(TrendGateAction(up=False, complement=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_complement_true_allows_down_and_flat_then_keeps_down():
+    ctx = _ctx(baseline={"yes": 0.50, "no": 0.56})
+    _install(ctx)
+
+    _run(TrendGateAction(up=False, complement=True).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_complement_true_applies_to_down_target():
+    ctx = _ctx(baseline={"yes": 0.45, "no": 0.57})
+    _install(ctx)
+
+    _run(TrendGateAction(up=False, complement=True).execute(ctx))
+
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["N.POLYMARKET"]
+
+
 def test_flat_outcome_is_dropped():
     ctx = _ctx(baseline={"yes": 0.46, "no": 0.57})
     _install(ctx)
@@ -260,3 +313,8 @@ def test_skips_cancel_pair_candidate():
 def test_invalid_up_param_raises():
     with pytest.raises(ValueError, match="up must be a boolean"):
         TrendGateAction(up="false")
+
+
+def test_invalid_complement_param_raises():
+    with pytest.raises(ValueError, match="complement must be a boolean"):
+        TrendGateAction(complement="true")

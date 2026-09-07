@@ -763,6 +763,7 @@ def test_mass_status_delegates_to_super_with_per_pair_guard(monkeypatch):
 
     assert result is True
     assert parent_calls == [True]
+    assert ctx.engine._arb_startup_position_reconcile_clients == [ctx.client]
 
 
 def test_valid_position_report_batch_commits_deferred_payload():
@@ -963,3 +964,46 @@ def test_flat_position_report_inherits_empty_batch_snapshot(monkeypatch):
     assert report._arb_reconciliation_snapshot is snapshot
     assert ctx.engine._reconcile_position_report(report) is False
     assert parent_calls == []
+
+
+def test_periodic_position_reconcile_refreshes_authoritative_balance_last(monkeypatch):
+    ctx = _Ctx()
+    events = []
+
+    async def refresh_balance():
+        events.append("balance_refreshed")
+
+    async def fake_check(engine):
+        events.append("position_applied")
+        engine._arb_position_reconcile_clients = [ctx.client]
+
+    ctx.client._refresh_account_state_after_position_reconcile = refresh_balance
+    monkeypatch.setattr(LiveExecutionEngine, "_check_positions_consistency", fake_check)
+
+    ctx.loop.run_until_complete(ctx.engine._check_positions_consistency())
+
+    assert events == ["position_applied", "balance_refreshed"]
+
+
+def test_startup_reconcile_refreshes_authoritative_balance_last(monkeypatch):
+    ctx = _Ctx()
+    events = []
+
+    async def refresh_balance():
+        assert not ctx.engine._startup_reconciliation_event.is_set()
+        events.append("balance_refreshed")
+
+    async def fake_reconcile(engine, _timeout_secs=10.0):
+        events.append("position_applied")
+        engine._arb_startup_position_reconcile_clients = [ctx.client]
+        engine._startup_reconciliation_event.set()
+        return True
+
+    ctx.client._refresh_account_state_after_position_reconcile = refresh_balance
+    monkeypatch.setattr(LiveExecutionEngine, "reconcile_execution_state", fake_reconcile)
+
+    result = ctx.loop.run_until_complete(ctx.engine.reconcile_execution_state())
+
+    assert result is True
+    assert events == ["position_applied", "balance_refreshed"]
+    assert ctx.engine._startup_reconciliation_event.is_set()

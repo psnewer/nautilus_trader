@@ -1634,7 +1634,7 @@ def test_arb_generate_position_reports_settles_without_writing_liveness(monkeypa
 
     _run(scenario())
 
-    assert balance_calls == ["balance_refresh"]
+    assert balance_calls == []
     assert len(position_calls) == 1
     assert settlement_calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
 
@@ -1700,37 +1700,21 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
         assert [report.name for report in reports] == ["post-report"]
         assert not client._venue_liveness.position_alive(POLYMARKET)
         assert responses == []
-        assert calls == ["positions", settlement_kind, "positions", "closed", "balance"]
+        assert calls == ["positions", settlement_kind, "positions", "closed"]
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
     _run(scenario())
 
 
-def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile(monkeypatch):
-    async def fake_super(self, command):
-        self._last_raw_positions = []
-        return [SimpleNamespace(name="report")]
-
+def test_position_reconcile_balance_refresh_failure_is_swallowed():
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
-        client._venue_liveness = VenueExecutionLiveness()
-        client._settlement = None
-        client._settlement_inflight = False
-        client._loop = asyncio.get_running_loop()
-        client._realized_pnl_ledger = None
-        _stable_reconciliation_state(client)
 
         async def fail_balance():
             raise RuntimeError("balance unavailable")
 
         client._update_account_state = fail_balance
-
-        reports = await client.generate_position_status_reports(SimpleNamespace())
-
-        assert [report.name for report in reports] == ["report"]
-        assert not client._venue_liveness.position_alive(POLYMARKET)
-
-    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+        await client._refresh_account_state_after_position_reconcile()
 
     _run(scenario())
 
@@ -1824,10 +1808,11 @@ def test_position_reconcile_defers_realized_when_state_changes_during_closed_fet
     _run(scenario())
 
 
-def test_position_reconcile_returns_stale_guard_when_state_changes_during_balance_refresh(
+def test_position_reconcile_does_not_refresh_balance_before_reports_are_applied(
     monkeypatch,
 ):
     state = {"version": 0}
+    refresh_calls = []
 
     async def fake_super(self, command):
         self._last_raw_positions = []
@@ -1843,17 +1828,39 @@ def test_position_reconcile_returns_stale_guard_when_state_changes_during_balanc
         _stable_reconciliation_state(client, state)
 
         async def refresh_balance():
-            state["version"] += 1
+            refresh_calls.append(True)
 
         client._refresh_account_state_after_position_reconcile = refresh_balance
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
 
         assert client._venue_liveness.position_alive(POLYMARKET)
-        assert not reports.snapshot.is_current_for_instruments(client, [])
+        assert reports.snapshot.is_current_for_instruments(client, [])
+        assert refresh_calls == []
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
     _run(scenario())
+
+
+def test_on_drop_position_reconcile_refreshes_balance_after_report_application(monkeypatch):
+    events = []
+
+    async def fake_reconcile(_self, _instrument_id):
+        events.append("position_applied")
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+
+        async def refresh_balance():
+            events.append("balance_refreshed")
+
+        client._refresh_account_state_after_position_reconcile = refresh_balance
+        await client._reconcile_position_now(InstrumentId.from_str("0xc-1.POLYMARKET"))
+
+    monkeypatch.setattr(PolymarketExecutionClient, "_reconcile_position_now", fake_reconcile)
+    _run(scenario())
+
+    assert events == ["position_applied", "balance_refreshed"]
 
 
 def test_arb_generate_fill_reports_returns_empty_without_trades_api(monkeypatch):

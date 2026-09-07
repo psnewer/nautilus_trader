@@ -363,7 +363,6 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 settlement_refreshed = True
 
         realized_snapshot = await self._load_realized_pnl_snapshot(raw)
-        await self._refresh_account_state_after_position_reconcile()
         # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + 结算结果。
         # 守卫 `_log`:离线单测经 `__new__` 绕过 NT init,`_log` 未初始化为 None;生产恒已注入。
         if self._log is not None:
@@ -378,6 +377,11 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             snapshot,
             payload=realized_snapshot,
         )
+
+    async def _reconcile_position_now(self, instrument_id: InstrumentId) -> None:
+        """迟到成交的定向仓位修复完成后，再用 PM 权威余额覆盖 inferred fill。"""
+        await super()._reconcile_position_now(instrument_id)
+        await self._refresh_account_state_after_position_reconcile()
 
     def apply_reconciliation_batch(self, kind: str, batch, applied_instruments=None) -> None:
         if kind == "position":
@@ -472,7 +476,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         return []
 
     async def _refresh_account_state_after_position_reconcile(self) -> None:
-        """PM position reconciliation 成功后刷新账户可用余额。
+        """PM position reconciliation 应用后刷新账户可用余额。
 
         余额刷新失败不改变 position liveness:position reports 已成功,余额下轮再试。
         """
