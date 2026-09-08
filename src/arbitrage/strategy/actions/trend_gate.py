@@ -18,19 +18,30 @@ class TrendGateAction(Action):
 
     `up` 缺失或为 True 时保留 `current_best_ask > trend_price` 的 outcome；False 时保留
     `current_best_ask < trend_price` 的 outcome。`complement=True` 时拦截二元 outcome 同为 up
-    或同为 down；包含 flat 时不触发该互补门。相等为 flat，不保留。基准或当前完整报价缺失时
-    fail-closed，全删腿。按 `selected_candidate`、`candidates`、legs-only 的顺序处理现有输出。
+    或同为 down。`enable_flat` 缺失或为 True 时，flat 可在其余 outcome 都是同一非 flat
+    方向时视为该方向的反面；False 时任一 outcome 为 flat 都会拦截整组腿。基准或当前完整报价
+    缺失时 fail-closed，全删腿。按 `selected_candidate`、`candidates`、legs-only 的顺序处理现有输出。
     """
 
-    def __init__(self, up: bool = True, complement: bool = False) -> None:
+    def __init__(
+        self,
+        up: bool = True,
+        complement: bool = False,
+        enable_flat: bool = True,
+    ) -> None:
         if not isinstance(up, bool):
             raise ValueError(f"trend_gate: up must be a boolean, got {up!r}")
         if not isinstance(complement, bool):
             raise ValueError(
                 f"trend_gate: complement must be a boolean, got {complement!r}",
             )
+        if not isinstance(enable_flat, bool):
+            raise ValueError(
+                f"trend_gate: enable_flat must be a boolean, got {enable_flat!r}",
+            )
         self._keep_up = up
         self._require_complement = complement
+        self._enable_flat = enable_flat
 
     async def execute(self, ctx: EvalContext) -> None:
         target = "up" if self._keep_up else "down"
@@ -47,6 +58,7 @@ class TrendGateAction(Action):
                 target,
                 _directions(ctx),
                 self._require_complement,
+                self._enable_flat,
             )
             filtered = dict(selected)
             filtered["legs"] = kept
@@ -76,6 +88,7 @@ class TrendGateAction(Action):
                     target,
                     directions,
                     self._require_complement,
+                    self._enable_flat,
                 )
                 if not kept:
                     continue
@@ -94,6 +107,7 @@ class TrendGateAction(Action):
             target,
             _directions(ctx),
             self._require_complement,
+            self._enable_flat,
         )
 
 
@@ -103,13 +117,21 @@ def _filter_legs(
     target: str,
     directions: dict[str, str],
     require_complement: bool,
+    enable_flat: bool,
 ) -> list[dict]:
-    direction_values = tuple(directions.values())
+    has_flat = "flat" in directions.values()
+    effective_directions = (
+        _directions_with_flat_opposites(directions)
+        if enable_flat
+        else directions
+    )
+    direction_values = tuple(effective_directions.values())
     same_non_flat_direction = (
         len(direction_values) == 2
         and direction_values[0] == direction_values[1]
         and direction_values[0] in {"up", "down"}
     )
+    flat_matches = enable_flat or not has_flat
     complement_matches = (
         not require_complement
         or not same_non_flat_direction
@@ -117,15 +139,39 @@ def _filter_legs(
     kept = []
     for leg in legs:
         outcome = _outcome(leg)
-        if complement_matches and directions.get(outcome) == target:
+        if (
+            flat_matches
+            and complement_matches
+            and effective_directions.get(outcome) == target
+        ):
             kept.append(leg)
             continue
         _LOG.info(
             f"TrendGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-            f"outcome={outcome} direction={directions.get(outcome)} target={target} "
-            f"complement={require_complement} complement_matches={complement_matches}",
+            f"outcome={outcome} direction={directions.get(outcome)} "
+            f"effective_direction={effective_directions.get(outcome)} target={target} "
+            f"complement={require_complement} complement_matches={complement_matches} "
+            f"enable_flat={enable_flat} flat_matches={flat_matches}",
         )
     return kept
+
+
+def _directions_with_flat_opposites(directions: dict[str, str]) -> dict[str, str]:
+    """其余 outcome 趋势一致时，将 flat 推断为对手盘方向的反面。"""
+    result = dict(directions)
+    for outcome, direction in directions.items():
+        if direction != "flat":
+            continue
+        opposing_directions = {
+            value
+            for other_outcome, value in directions.items()
+            if other_outcome != outcome
+        }
+        if opposing_directions == {"up"}:
+            result[outcome] = "down"
+        elif opposing_directions == {"down"}:
+            result[outcome] = "up"
+    return result
 
 
 def _directions(ctx: EvalContext) -> dict[str, str]:

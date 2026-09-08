@@ -7,6 +7,7 @@ import pytest
 from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
+from src.arbitrage.strategy.actions.trend_gate import _directions_with_flat_opposites
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -145,13 +146,31 @@ def test_complement_true_applies_to_down_target():
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["N.POLYMARKET"]
 
 
-def test_flat_outcome_is_dropped():
+def test_flat_outcome_is_inferred_as_opposite_by_default():
     ctx = _ctx(baseline={"yes": 0.46, "no": 0.57})
     _install(ctx)
 
     _run(TrendGateAction().execute(ctx))
 
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["Y.POLYMARKET"]
+
+
+def test_enable_flat_false_drops_all_when_any_outcome_is_flat():
+    ctx = _ctx(baseline={"yes": 0.50, "no": 0.56})
+    _install(ctx)
+
+    _run(TrendGateAction(up=False, enable_flat=False).execute(ctx))
+
     assert ctx.scratch["legs"] == []
+
+
+def test_multi_outcome_flat_is_inferred_only_when_all_opponents_agree():
+    assert _directions_with_flat_opposites(
+        {"home": "flat", "draw": "down", "away": "down"},
+    ) == {"home": "up", "draw": "down", "away": "down"}
+    assert _directions_with_flat_opposites(
+        {"home": "flat", "draw": "up", "away": "down"},
+    ) == {"home": "flat", "draw": "up", "away": "down"}
 
 
 @pytest.mark.parametrize("baseline", [None, {}])
@@ -318,3 +337,8 @@ def test_invalid_up_param_raises():
 def test_invalid_complement_param_raises():
     with pytest.raises(ValueError, match="complement must be a boolean"):
         TrendGateAction(complement="true")
+
+
+def test_invalid_enable_flat_param_raises():
+    with pytest.raises(ValueError, match="enable_flat must be a boolean"):
+        TrendGateAction(enable_flat="false")

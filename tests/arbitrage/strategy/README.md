@@ -440,15 +440,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.trend.4: trend_gate Action
 - Action 从 live `PairPriceStore` 读取基准，从 live Cache 重算当前跨 venue 最优概率，不使用评估快照。
 - 默认/`up=true` 保留 `current > baseline` 的 outcome；`up=false` 保留 `current < baseline` 的 outcome。
-- 相等为 flat；`complement` 缺失/`false` 时两个 outcome 独立比较，不要求互补方向，也不要求各 venue 各自同向。
-- `complement=true` 时，完整二元 outcome 同为 up 或同为 down 均全删；任一 outcome 为 flat 时
-  互补门不拦截，随后仍按 `up` 参数筛腿。因此 down/flat 可继续保留 down，up/flat 可继续保留 up。
+- 相等为 flat；`enable_flat` 缺失/`true` 时，某个 flat outcome 仅在其余所有 outcome 都是同一个
+  非 flat 方向时推断为其反面。覆盖二元 flat/down → up/down，以及多 outcome 对手方向一致才推断、
+  方向混合或仍含 flat 时不推断。
+- `enable_flat=false` 时，完整趋势向量只要有任一 flat 就全删；非 boolean 构造即 `ValueError`。
+- `complement` 缺失/`false` 时 outcome 独立比较；`complement=true` 时，在 flat 推断完成后，完整二元
+  outcome 同为 up 或同为 down 均全删，其余情况再按 `up` 参数筛腿。
 - 基准为空、当前向量不完整或 outcome 不匹配时 fail-closed 全删；无 candidate/legs 输入与撤单 candidate 保持 no-op。
 - mean/recovery 只写 `scratch["legs"]`、没有 selected candidate 时，`trend_gate` 直接过滤并回写
   legs-only 输出，不要求为此插入 `candi_select`，也不构造伪 candidate。
 - `candidates` 尚未选择时，逐 candidate 过滤腿并保留元数据；全空 candidate 淘汰，撤单 candidate
   原样保留。支持 `trend_gate -> candi_select`，并分别覆盖默认 up 与 `up=false`。
-- `up/complement` 非 boolean 构造即 `ValueError`；旧 `trend/steps` 参数已删除。
+- `up/complement/enable_flat` 非 boolean 构造即 `ValueError`；旧 `trend/steps` 参数已删除。
 
 ## strategy-4.39：score_selection 比分方向过滤（#368）
 
