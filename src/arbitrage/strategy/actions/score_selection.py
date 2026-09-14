@@ -12,29 +12,27 @@ from src.arbitrage.strategy.condition import EvalContext
 
 _LOG = logging.getLogger(__name__)
 _SCORE_PART = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\s*\((\d+)\s*-\s*(\d+)\))?\s*$")
+_VALID_STANDINGS = frozenset({"win", "draw", "lose"})
 
 
 class ScoreSelectionAction(Action):
-    """按比分领先关系保留 BUY/SELL 腿。
+    """按订单押注方向当前的比赛状态保留 BUY/SELL 腿。
 
-    `win_or_draw=None` 时完全放通。显式启用后，True 保留非落后方 BUY 与落后方
-    SELL；False 保留落后方 BUY 与非落后方 SELL。比分或主客方映射未知时 fail-closed。
+    `standing=None` 时完全放通；显式配置时接受以 ``|`` 分隔的 ``win/draw/lose``
+    组合。SELL 的 win/lose 与标的参赛方相反，draw 不变。比分或主客方映射未知时
+    fail-closed。
     """
 
-    def __init__(self, win_or_draw: bool | None = None, tie_break: bool = False) -> None:
-        if win_or_draw is not None and not isinstance(win_or_draw, bool):
-            raise ValueError(
-                f"score_selection: win_or_draw must be a boolean, got {win_or_draw!r}",
-            )
+    def __init__(self, standing: str | None = None, tie_break: bool = False) -> None:
         if not isinstance(tie_break, bool):
             raise ValueError(
                 f"score_selection: tie_break must be a boolean, got {tie_break!r}",
             )
-        self._win_or_draw = win_or_draw
+        self._standings = _parse_standings(standing)
         self._tie_break = tie_break
 
     async def execute(self, ctx: EvalContext) -> None:
-        if self._win_or_draw is None:
+        if self._standings is None:
             return
         selected = ctx.scratch.get("selected_candidate")
         if isinstance(selected, dict):
@@ -104,14 +102,14 @@ class ScoreSelectionAction(Action):
             side_role = _side_role(ctx, leg, pair_roles)
             standing = standings.get(side_role)
             side = str(leg.get("side") or "BUY").upper()
-            keep = _should_keep(side, standing, self._win_or_draw)
+            keep = _should_keep(side, standing, self._standings)
             if keep:
                 kept.append(leg)
                 continue
             _LOG.info(
                 f"ScoreSelection: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
                 f"side={side} side_role={side_role} standing={standing} "
-                f"win_or_draw={self._win_or_draw} tie_break={self._tie_break}",
+                f"allowed_standings={sorted(self._standings)} tie_break={self._tie_break}",
             )
         return kept
 
@@ -130,10 +128,10 @@ def _standings(ctx: EvalContext, *, tie_break: bool) -> dict[str, str]:
     if comparison is None:
         return {}
     if comparison > 0:
-        return {"home": "non_trailing", "away": "trailing"}
+        return {"home": "win", "away": "lose"}
     if comparison < 0:
-        return {"home": "trailing", "away": "non_trailing"}
-    return {"home": "non_trailing", "away": "non_trailing"}
+        return {"home": "lose", "away": "win"}
+    return {"home": "draw", "away": "draw"}
 
 
 def _compare_score(score: str, *, tie_break: bool = False) -> int | None:
@@ -200,13 +198,37 @@ def _side_role(ctx: EvalContext, leg: dict, pair_roles: set[str]) -> str | None:
     return None
 
 
-def _should_keep(side: str, standing: str | None, win_or_draw: bool) -> bool:
+def _should_keep(
+    side: str,
+    standing: str | None,
+    allowed_standings: frozenset[str],
+) -> bool:
     if standing is None or side not in {"BUY", "SELL"}:
         return False
-    non_trailing = standing == "non_trailing"
-    return (side == "BUY" and non_trailing == win_or_draw) or (
-        side == "SELL" and non_trailing != win_or_draw
-    )
+    order_standing = standing
+    if side == "SELL":
+        order_standing = {"win": "lose", "draw": "draw", "lose": "win"}[standing]
+    return order_standing in allowed_standings
+
+
+def _parse_standings(value: str | None) -> frozenset[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            f"score_selection: standing must be a string, got {value!r}",
+        )
+    parts = [part.strip().lower() for part in value.split("|")]
+    if not parts or any(not part for part in parts):
+        raise ValueError(
+            "score_selection: standing must contain win, draw, or lose separated by '|'",
+        )
+    invalid = set(parts) - _VALID_STANDINGS
+    if invalid:
+        raise ValueError(
+            f"score_selection: invalid standing values {sorted(invalid)!r}",
+        )
+    return frozenset(parts)
 
 
 def _optional_int(value: str | None) -> int | None:

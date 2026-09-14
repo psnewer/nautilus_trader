@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
@@ -34,6 +35,8 @@ from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import AndCheckExpr
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import Condition
+from src.arbitrage.strategy.execution_plan import ExecutionPlan
+from src.arbitrage.strategy.execution_plan import PreparedOrder
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
 
@@ -124,6 +127,37 @@ class _CaptureEventNameAction(Action):
     async def execute(self, ctx):
         self.calls += 1
         self.value = ctx.event_name
+
+
+class _CaptureOrderTriggerAction(Action):
+    def __init__(self):
+        self.calls = 0
+        self.event_name = None
+        self.event = None
+        self.order = None
+
+    async def execute(self, ctx):
+        self.calls += 1
+        self.event_name = ctx.event_name
+        self.event = ctx.trigger_event
+        self.order = ctx.trigger_order
+
+
+class _SetSubmitPlanAction(Action):
+    async def execute(self, ctx):
+        ctx.scratch["execution_plan"] = ExecutionPlan.submit(
+            ctx.pair_id,
+            [PreparedOrder(
+                spec={
+                    "instrument_id": "H.POLYMARKET",
+                    "side": "SELL",
+                    "qty": 1.0,
+                    "price": 0.5,
+                },
+                venue="POLYMARKET",
+                role="yes",
+            )],
+        )
 
 
 class _CaptureScratchLegsAction(Action):
@@ -498,6 +532,125 @@ def test_no_strategy_mounted_no_op():
     _run(_drain(loop))
     assert arb_action.calls == 0
     assert loop.tasks == []                # 没创建 evaluate task
+
+
+# ── 订单成交终态触发树 ─────────────────────────────────────────────
+def _terminal_event(client_order_id="O-1"):
+    return SimpleNamespace(client_order_id=client_order_id)
+
+
+def _terminal_order(*, status, filled_qty, client_order_id="O-1"):
+    return SimpleNamespace(
+        client_order_id=client_order_id,
+        instrument_id=InstrumentId.from_str("H.POLYMARKET"),
+        status=status,
+        filled_qty=filled_qty,
+        tags=[],
+    )
+
+
+def test_order_filled_callback_only_dispatches_full_fill():
+    full = _terminal_order(status=OrderStatus.FILLED, filled_qty=5.0)
+    partial = _terminal_order(status=OrderStatus.PARTIALLY_FILLED, filled_qty=2.0)
+    dispatched = MagicMock()
+    fake = SimpleNamespace(
+        cache=SimpleNamespace(order=lambda coid: full),
+        _dispatch_order_filled_tree=dispatched,
+    )
+
+    event = _terminal_event()
+    StrategyEvaluator.on_order_filled(fake, event)
+    fake.cache = SimpleNamespace(order=lambda coid: partial)
+    StrategyEvaluator.on_order_filled(fake, event)
+
+    dispatched.assert_called_once_with(full, event)
+
+
+def test_canceled_or_expired_dispatches_only_when_order_has_a_fill():
+    dispatched = MagicMock()
+    order = _terminal_order(status=OrderStatus.CANCELED, filled_qty=0.0)
+    fake = SimpleNamespace(
+        cache=SimpleNamespace(order=lambda coid: order),
+        _filled_qty=StrategyEvaluator._filled_qty,
+        _dispatch_order_filled_tree=dispatched,
+        _dispatch_partially_filled_terminal=lambda event: (
+            StrategyEvaluator._dispatch_partially_filled_terminal(fake, event)
+        ),
+    )
+    event = _terminal_event()
+
+    StrategyEvaluator.on_order_canceled(fake, event)
+    StrategyEvaluator.on_order_expired(fake, event)
+    assert dispatched.call_count == 0
+
+    order.filled_qty = 1.25
+    StrategyEvaluator.on_order_canceled(fake, event)
+    StrategyEvaluator.on_order_expired(fake, event)
+    assert dispatched.call_count == 2
+
+
+def test_order_filled_tree_runs_directly_and_exposes_terminal_context():
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    gate = PairInFlightGate()
+    assert gate.try_enter("match_X") is True
+    actor, _, pair_reg, strat_reg, loop, active_flag = _harness(
+        execution_active=True,
+        pair_inflight=gate,
+    )
+    pair_reg.register("match_X", ["H.POLYMARKET"])
+    action = _CaptureOrderTriggerAction()
+    strategy = _strategy(False, False)
+    strategy.order_filled_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_StubCheck(True)),
+        actions=[action],
+    )
+    strat_reg.register_pair("match_X", strategy)
+    event = _terminal_event()
+    order = _terminal_order(status=OrderStatus.FILLED, filled_qty=5.0)
+
+    assert actor._dispatch_order_filled_tree(order, event) is True
+    assert actor._dispatch_order_filled_tree(order, event) is False
+    _run(_drain(loop))
+
+    assert active_flag["v"] is True
+    assert gate.is_in_flight("match_X") is True
+    assert action.calls == 1
+    assert action.event_name == "SimpleNamespace"
+    assert action.event is event
+    assert action.order is order
+
+
+def test_order_filled_tree_plan_uses_standard_dispatch_exit():
+    actor, _, pair_reg, strat_reg, loop, _ = _harness()
+    pair_reg.register("match_X", ["H.POLYMARKET"])
+    submitted = []
+
+    async def submitter(spec):
+        submitted.append(spec)
+
+    actor._make_submitter = lambda: submitter
+    strategy = _strategy(False, False)
+    strategy.order_filled_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        checktion=AndCheckExpr(_StubCheck(True)),
+        actions=[_SetSubmitPlanAction()],
+    )
+    strat_reg.register_pair("match_X", strategy)
+
+    actor._dispatch_order_filled_tree(
+        _terminal_order(status=OrderStatus.FILLED, filled_qty=5.0),
+        _terminal_event(),
+    )
+    _run(_drain(loop))
+
+    assert submitted == [{
+        "instrument_id": "H.POLYMARKET",
+        "side": "SELL",
+        "qty": 1.0,
+        "price": 0.5,
+    }]
 
 
 # ── eval.3: Q19 让路 — execution_active True → 跳过整轮 ──────────

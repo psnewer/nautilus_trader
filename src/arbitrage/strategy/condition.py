@@ -50,6 +50,9 @@ class EvalContext:
     # 本轮评估的触发事件名：OrderBookDeltas / MarketOrderBookDeltas / MatchedPair 等。
     # price_change_recovery 只认 instrument / market 级 OrderBookDeltas。
     event_name: str | None = None
+    # 非行情触发树可读取原始触发事件及其终态订单；普通行情评估均为 None。
+    trigger_event: object | None = None
+    trigger_order: object | None = None
     # 当前配置策略的稳定标识 + Strategy 组件拥有的跨轮变量 Store。
     # head/reverse self_hits 命中时按 (strategy_id, pair_id) 更新 standard。
     strategy_id: str | None = None

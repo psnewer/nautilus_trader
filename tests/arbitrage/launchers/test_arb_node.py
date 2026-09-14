@@ -68,7 +68,7 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
     assert isinstance(
         build_action({
             "type": "score_selection",
-            "params": {"win_or_draw": True, "tie_break": True},
+            "params": {"standing": "win|draw", "tie_break": True},
         }),
         ScoreSelectionAction,
     )

@@ -291,6 +291,30 @@ def test_strategy_missing_compensation_uses_noop_never_hit():
     assert res.hit is False
 
 
+def test_strategy_order_filled_tree_is_optional_and_parsed_when_present():
+    absent = strategy_from_json(
+        "without_filled",
+        {"arbitrage_tree": {"checktion": {}}},
+        scope_key="sport:Tennis",
+    )
+    present = strategy_from_json(
+        "with_filled",
+        {
+            "arbitrage_tree": {"checktion": {}},
+            "order_filled_tree": {
+                "checktion": {"type": "pass"},
+                "actions": [{"type": "noop", "params": {"label": "filled"}}],
+            },
+        },
+        scope_key="sport:Tennis",
+    )
+
+    assert absent.order_filled_tree is None
+    result = evaluate_tree(present.order_filled_tree, _ctx())
+    assert result.hit is True
+    assert result.pending_actions[0].label == "filled"
+
+
 def test_strategy_missing_arbitrage_raises():
     with pytest.raises(StrategyConfigError, match="missing arbitrage_tree"):
         strategy_from_json("s3", {}, scope_key="sport:Tennis")
@@ -327,6 +351,27 @@ def test_registry_binds_sport_competition_pair():
     assert reg.get_for("other_pair", "OtherComp", "Tennis").metadata["id"] == "s_sport"
     # 全无挂载 → None
     assert reg.get_for("p", "c", "Basketball") is None
+
+
+def test_config_schema_and_dispatcher_preserve_order_filled_tree():
+    cfg = _cfg(
+        strategies={
+            "s": {
+                "arbitrage_tree": {"checktion": {}},
+                "order_filled_tree": {
+                    "checktion": {"type": "pass"},
+                    "actions": [{"type": "noop", "params": {"label": "terminal"}}],
+                },
+            },
+        },
+        bindings=[{"scope": "sport:Tennis", "strategy_id": "s"}],
+    )
+
+    strategy = to_strategy_registry(cfg).get_for("p", "ATP", "Tennis")
+    result = evaluate_tree(strategy.order_filled_tree, _ctx())
+
+    assert result.hit is True
+    assert result.pending_actions[0].label == "terminal"
 
 
 def test_registry_pair_id_alias_kind():

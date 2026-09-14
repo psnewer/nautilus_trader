@@ -148,13 +148,14 @@ class VenuesConfig(ConfigStruct):
 
 
 class StrategyJsonConfig(ConfigStruct):
-    """单条 strategy 的 JSON 配置(Condition 树 + 可选补救树)。
+    """单条 strategy 的 JSON 配置(Condition 树 + 可选补救/成交终态树)。
 
-    `arbitrage_tree` / `compensation_tree` 用 `dict | None`(loader 递归解析,见 slice 5)。
+    各树用 `dict | None`(loader 递归解析,见 slice 5)。
     """
 
     arbitrage_tree: dict | None = None
     compensation_tree: dict | None = None
+    order_filled_tree: dict | None = None
     description: str = ""
 
 

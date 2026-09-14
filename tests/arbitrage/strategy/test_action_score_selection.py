@@ -53,10 +53,10 @@ def _ctx(score="6-4, 2-3", *, constraints=None):
     return ctx
 
 
-def test_true_keeps_non_trailing_buy_and_trailing_sell():
+def test_win_draw_combination_keeps_winning_exposure():
     ctx = _ctx()  # 主方已赢一盘，即使当前盘 2-3，比赛级仍非落后
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
@@ -77,7 +77,7 @@ def test_cache_lookup_converts_registry_strings_to_instrument_ids():
 
     ctx.cache.instrument = strict_instrument
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert seen
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == [
@@ -86,10 +86,10 @@ def test_cache_lookup_converts_registry_strings_to_instrument_ids():
     ]
 
 
-def test_false_keeps_trailing_buy_and_non_trailing_sell():
+def test_lose_keeps_losing_exposure():
     ctx = _ctx()
 
-    _run(ScoreSelectionAction(win_or_draw=False).execute(ctx))
+    _run(ScoreSelectionAction(standing="lose").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
@@ -97,21 +97,47 @@ def test_false_keeps_trailing_buy_and_non_trailing_sell():
     ]
 
 
-def test_draw_treats_both_sides_as_non_trailing():
+def test_draw_keeps_both_sides_and_both_order_directions():
     ctx = _ctx("3-3")
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
         ("A.POLYMARKET", "BUY"),
+        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("standing", "expected"),
+    [
+        ("win", [("H.POLYMARKET", "BUY"), ("A.POLYMARKET", "SELL")]),
+        ("lose", [("A.POLYMARKET", "BUY"), ("H.POLYMARKET", "SELL")]),
+        (
+            " win | lose ",
+            [
+                ("H.POLYMARKET", "BUY"),
+                ("A.POLYMARKET", "BUY"),
+                ("H.POLYMARKET", "SELL"),
+                ("A.POLYMARKET", "SELL"),
+            ],
+        ),
+    ],
+)
+def test_standing_accepts_single_values_and_combinations(standing, expected):
+    ctx = _ctx()
+
+    _run(ScoreSelectionAction(standing=standing).execute(ctx))
+
+    assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == expected
 
 
 @pytest.mark.parametrize("tie_break", [False, None])
 def test_tie_break_disabled_cannot_classify_six_all(tie_break):
     ctx = _ctx("6-6(3-4)")
-    params = {"win_or_draw": True}
+    params = {"standing": "win|draw"}
     if tie_break is not None:
         params["tie_break"] = tie_break
 
@@ -123,7 +149,7 @@ def test_tie_break_disabled_cannot_classify_six_all(tie_break):
 def test_tie_break_enabled_uses_tie_break_points():
     ctx = _ctx("6-6(3-4)")
 
-    _run(ScoreSelectionAction(win_or_draw=True, tie_break=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw", tie_break=True).execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
@@ -134,11 +160,13 @@ def test_tie_break_enabled_uses_tie_break_points():
 def test_tie_break_enabled_treats_bare_six_all_as_zero_all():
     ctx = _ctx("6-6")
 
-    _run(ScoreSelectionAction(win_or_draw=True, tie_break=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw", tie_break=True).execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
         ("A.POLYMARKET", "BUY"),
+        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
     ]
 
 
@@ -174,7 +202,7 @@ def test_filters_each_candidate_before_candidate_selection():
         },
     ]
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert len(ctx.scratch["candidates"]) == 1
     candidate = ctx.scratch["candidates"][0]
@@ -188,7 +216,7 @@ def test_filters_legs_without_selected_candidate():
     ctx = _ctx()
     ctx.scratch.pop("selected_candidate")
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
@@ -203,7 +231,7 @@ def test_candidate_pool_preserves_cancel_candidate():
     candidate = {"candidate_id": "cancel", "cancel_pair_orders": True, "legs": []}
     ctx.scratch["candidates"] = [candidate]
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert ctx.scratch["candidates"] == [candidate]
 
@@ -242,7 +270,7 @@ def test_score_before_candi_ignores_minimum_failure_on_dropped_leg():
         },
     ]
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
     _run(CandiSelectAction().execute(ctx))
 
     assert ctx.scratch["selected_candidate"]["candidate_id"] == "mixed"
@@ -253,7 +281,7 @@ def test_score_before_candi_ignores_minimum_failure_on_dropped_leg():
 def test_configured_action_drops_all_when_score_is_unknown(score):
     ctx = _ctx(score)
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert ctx.scratch["legs"] == []
 
@@ -272,7 +300,7 @@ def test_split_market_no_claim_is_not_misclassified_as_the_named_side():
     ctx.scratch["selected_candidate"] = {"legs": legs}
     ctx.scratch["legs"] = legs
 
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["HY.POLYMARKET"]
 
@@ -307,17 +335,21 @@ def test_compare_score_uses_tie_break_when_enabled(score, expected):
 def test_noop_without_selected_candidate_and_for_cancel_candidate():
     ctx = _ctx()
     ctx.scratch.clear()
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
     assert ctx.scratch == {}
 
     candidate = {"cancel_pair_orders": True, "legs": []}
     ctx.scratch["selected_candidate"] = candidate
-    _run(ScoreSelectionAction(win_or_draw=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
     assert ctx.scratch["selected_candidate"] is candidate
 
 
 def test_invalid_param_raises():
-    with pytest.raises(ValueError, match="win_or_draw must be a boolean"):
-        ScoreSelectionAction(win_or_draw="true")
+    with pytest.raises(ValueError, match="standing must be a string"):
+        ScoreSelectionAction(standing=True)
+    with pytest.raises(ValueError, match="invalid standing values"):
+        ScoreSelectionAction(standing="ahead")
+    with pytest.raises(ValueError, match="must contain win, draw, or lose"):
+        ScoreSelectionAction(standing="win||lose")
     with pytest.raises(ValueError, match="tie_break must be a boolean"):
         ScoreSelectionAction(tie_break="false")

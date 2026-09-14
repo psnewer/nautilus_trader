@@ -30,6 +30,10 @@ from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
+from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.events import OrderCanceled
+from nautilus_trader.model.events import OrderExpired
+from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
@@ -46,6 +50,7 @@ from src.arbitrage.common.market_books import unsubscribe_market_book
 from src.arbitrage.common.opportunity import CancelOpportunityMeta
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
+from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.pair_prices import PairPriceStore
@@ -216,6 +221,8 @@ class StrategyEvaluator(Strategy):
         # 仅用于区分真实顶价变化与纯深度帧，不向策略暴露趋势结果。
         self._last_best_ask: dict[str, float] = {}
         self._eval_tasks_by_pair: dict[str, int] = {}
+        self._order_filled_tasks_by_pair: dict[str, int] = {}
+        self._order_filled_triggered: dict[str, set[str]] = {}
         self._runtime_store = StrategyRuntimeStore()
 
     # ── 生命周期 ─────────────────────────────────────────────────────
@@ -271,6 +278,66 @@ class StrategyEvaluator(Strategy):
         if not price_changed and not self._arbitrage_params.evaluate_on_depth_change:
             return
         self._route_eval(deltas, event_name="OrderBookDeltas")
+
+    def on_order_filled(self, event: OrderFilled) -> None:
+        """完整成交进入可配置终态树；部分成交等待后续终态。"""
+        order = self.cache.order(event.client_order_id)
+        if order is None or order.status != OrderStatus.FILLED:
+            return
+        self._dispatch_order_filled_tree(order, event)
+
+    def on_order_canceled(self, event: OrderCanceled) -> None:
+        """部分成交后撤单时，以最终累计成交仓位触发成交终态树。"""
+        self._dispatch_partially_filled_terminal(event)
+
+    def on_order_expired(self, event: OrderExpired) -> None:
+        """部分成交后过期与撤单使用同一终态语义。"""
+        self._dispatch_partially_filled_terminal(event)
+
+    def _dispatch_partially_filled_terminal(self, event) -> None:
+        order = self.cache.order(event.client_order_id)
+        if order is None or self._filled_qty(order) <= 0:
+            return
+        self._dispatch_order_filled_tree(order, event)
+
+    @staticmethod
+    def _filled_qty(order) -> float:
+        value = getattr(order, "filled_qty", None)
+        if value is None:
+            return 0.0
+        converter = getattr(value, "as_double", None)
+        try:
+            return float(converter() if callable(converter) else value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _dispatch_order_filled_tree(self, order, event) -> bool:
+        """直接调度订单成交终态树，不使用行情评估的 pair 门控或执行让路。"""
+        order_key = str(order.client_order_id)
+        meta = meta_from_order(order)
+        pair_id = meta.pair_id if meta is not None else self._pair_registry.get(order.instrument_id)
+        if pair_id is None:
+            return False
+        triggered = self._order_filled_triggered.get(pair_id)
+        if triggered is not None and order_key in triggered:
+            return False
+        sport, competition = self._pair_scope(pair_id)
+        strategy = self._strategy_registry.get_for(pair_id, competition, sport)
+        if strategy is None or strategy.order_filled_tree is None:
+            return False
+
+        coro = self._evaluate_order_filled_tree(strategy, pair_id, order, event)
+        try:
+            task = self._create_task(coro)
+        except Exception:
+            coro.close()
+            raise
+        self._order_filled_triggered.setdefault(pair_id, set()).add(order_key)
+        self._order_filled_tasks_by_pair[pair_id] = (
+            self._order_filled_tasks_by_pair.get(pair_id, 0) + 1
+        )
+        task.add_done_callback(partial(self._on_order_filled_eval_done, pair_id))
+        return True
 
     def _update_pair_prices_from_market(self, batch: MarketOrderBookDeltas) -> None:
         """高优先级同步 handler：在 Strategy 路由前更新完整 pair 价格内存。"""
@@ -349,7 +416,7 @@ class StrategyEvaluator(Strategy):
         )
         self._price_cleanup_pending.update(pair_ids)
         for pair_id in sorted(pair_ids):
-            if self._eval_tasks_by_pair.get(pair_id, 0) <= 0:
+            if not self._has_eval_task(pair_id):
                 self._delete_pair_price(pair_id)
         self._release_game_subscriptions(update.game_id)
 
@@ -493,8 +560,29 @@ class StrategyEvaluator(Strategy):
             self._eval_tasks_by_pair[pair_id] = remaining
         else:
             self._eval_tasks_by_pair.pop(pair_id, None)
-            if pair_id in self._price_cleanup_pending:
-                self._delete_pair_price(pair_id)
+            self._cleanup_pair_price_if_ready(pair_id)
+
+    def _on_order_filled_eval_done(self, pair_id: str, task) -> None:
+        """成交终态树 task 收口；只记录异常和维护生命周期，不释放行情 pair 闸。"""
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            self._log.error(f"Order-filled tree evaluate failed: pair_id={pair_id}\n{tb}")
+        remaining = self._order_filled_tasks_by_pair.get(pair_id, 0) - 1
+        if remaining > 0:
+            self._order_filled_tasks_by_pair[pair_id] = remaining
+        else:
+            self._order_filled_tasks_by_pair.pop(pair_id, None)
+            self._cleanup_pair_price_if_ready(pair_id)
+
+    def _has_eval_task(self, pair_id: str) -> bool:
+        return (
+            self._eval_tasks_by_pair.get(pair_id, 0) > 0
+            or self._order_filled_tasks_by_pair.get(pair_id, 0) > 0
+        )
+
+    def _cleanup_pair_price_if_ready(self, pair_id: str) -> None:
+        if pair_id in self._price_cleanup_pending and not self._has_eval_task(pair_id):
+            self._delete_pair_price(pair_id)
 
     def _initialize_pair_prices(self, mp: MatchedPair) -> None:
         game_id = self._pair_registry.game_id_for_pair(mp.pair_id)
@@ -613,6 +701,7 @@ class StrategyEvaluator(Strategy):
 
     def _delete_pair_price(self, pair_id: str) -> None:
         self._price_cleanup_pending.discard(pair_id)
+        self._order_filled_triggered.pop(pair_id, None)
         self._runtime_store.delete_pair_from_all_strategies(pair_id)
         store = self._get_pair_price_store()
         if store is not None:
@@ -743,6 +832,41 @@ class StrategyEvaluator(Strategy):
             pair_order_canceler=base_ctx["pair_order_canceler"],
             log=self._log,
             source=source,
+        )
+
+    async def _evaluate_order_filled_tree(self, strategy, pair_id: str, order, event) -> None:
+        """基于已写入 Cache 的订单/仓位终态执行独立树，并沿用标准执行计划出口。"""
+        instrument_ids = self._pair_registry.instrument_ids_for_pair(pair_id)
+        submitter = self._make_submitter()
+        pair_order_canceler = self._make_pair_order_canceler()
+        ctx = EvalContext(
+            pair_id=pair_id,
+            cache=self.cache,
+            pair_registry=self._pair_registry,
+            sports_store=self._get_sports_store(),
+            phase_store=self._get_phase_store(),
+            positions_digest=pair_positions_digest(self.cache, instrument_ids),
+            submitter=submitter,
+            pair_order_canceler=pair_order_canceler,
+            portfolio=self._portfolio,
+            strategy_defaults=self._strategy_defaults(),
+            event_name=type(event).__name__,
+            trigger_event=event,
+            trigger_order=order,
+            strategy_id=str(strategy.metadata.get("id") or strategy.scope_key),
+            runtime_store=self._runtime_store,
+        )
+        result = await self._aevaluate(strategy.order_filled_tree, ctx)
+        await self._prepare_actions(result, ctx)
+        plan = ctx.scratch.get("execution_plan")
+        if plan is None:
+            return
+        await dispatch_execution_plan(
+            plan,
+            submitter=submitter,
+            pair_order_canceler=pair_order_canceler,
+            log=self._log,
+            source="order_filled",
         )
 
     async def _prepare_actions(self, result, ctx) -> None:

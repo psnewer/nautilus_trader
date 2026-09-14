@@ -18,11 +18,12 @@ from src.arbitrage.strategy.condition import Condition
 
 @dataclass
 class Strategy:
-    """策略 = 套利树 + 补救树(各一棵 condition 嵌套树),evaluator 并行求值。"""
+    """策略 = 行情套利/补救树 + 可选订单成交终态树。"""
 
     scope_key: str                                  # "pair_id:X" / "comp:EPL" / "sport:Soccer";编码见 ScopeKey 约定
     arbitrage_tree: Condition
     compensation_tree: Condition
+    order_filled_tree: Condition | None = None
     metadata: dict = field(default_factory=dict)    # 可选:策略名、描述、参数
 
 

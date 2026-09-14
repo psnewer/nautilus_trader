@@ -255,7 +255,8 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
           },
           "actions": [{"type": "place_bet", "params": {}}]
         },
-        "compensation_tree": null
+        "compensation_tree": null,
+        "order_filled_tree": null
       }
     },
     "bindings": [{"scope": "competition:ATP", "strategy_id": "tennis_mean_rebate"}]
@@ -518,9 +519,14 @@ def condition_from_json(spec: dict | None) -> Condition | None:
 
 ```python
 def strategy_from_json(strategy_id: str, spec: dict, scope: str) -> Strategy:
-    """spec.arbitrage_tree → Condition;spec.compensation_tree → Condition | None;
+    """spec.arbitrage_tree → Condition;spec.compensation_tree → Condition;
+       spec.order_filled_tree → Condition | None;
        组合成 Strategy(scope_key=scope, ...)。"""
 ```
+
+`StrategyJsonConfig.order_filled_tree` 缺失或为 `null` 时不启用订单终态触发；存在时与另外两棵树
+使用完全相同的 `Condition / Check / Action` JSON 语法。运行语义与回调边界由
+`architectures/strategy/architecture.md §3.4.1` 定义，本配置章只定义 schema 与装配。
 
 ### 7.5 dispatcher 串起 strategies + bindings
 

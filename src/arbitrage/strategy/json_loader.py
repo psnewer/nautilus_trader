@@ -8,12 +8,13 @@ Strategy JSON loader(slice 5,Q25)—— JSON 描述 → Q21 in-memory 对象。
   bool_expr_from_json(spec)    → BoolExpr             递归 {AND/OR/NOT/StateQuery}
   check_expr_from_json(spec)   → CheckExpr            递归 {AND/OR/NOT/Check}
   condition_from_json(spec)    → Condition            递归 sub_conditions
-  strategy_from_json(...)      → Strategy             arbitrage_tree + compensation_tree
+  strategy_from_json(...)      → Strategy             arbitrage/compensation/order_filled trees
   build_strategy_registry(cfg) → StrategyRegistry     消费 ArbConfig.strategy.{strategies, bindings}
 
 关键缺值处理(Q21 必填字段):
 - `self_hits` 缺 / None → `AndExpr()`(空 AND = 真值兜底,让 sub_conditions/checktion 决定 hit)
 - `compensation_tree` 缺 / None → 永 False no-op Condition(`OrExpr()` 空 OR = False)
+- `order_filled_tree` 缺 / None → 禁用订单成交终态触发
 """
 
 from __future__ import annotations
@@ -167,19 +168,22 @@ def condition_from_json(spec) -> Condition:
 
 
 def strategy_from_json(strategy_id: str, spec, scope_key: str) -> Strategy:
-    """装配 Strategy(scope_key + arbitrage_tree + compensation_tree)。
+    """装配 Strategy(scope_key + 三类可配置树)。
 
     `compensation_tree` 缺 → 永 False no-op Condition(不 fire 任何补救 Action)。
+    `order_filled_tree` 缺 → None(不订阅后的订单终态回调中 no-op)。
     `spec` 接受 dict 或 `StrategyJsonConfig`(msgspec Struct;取 attr)。
     """
     if hasattr(spec, "arbitrage_tree"):
         # msgspec StrategyJsonConfig
         arb_spec = spec.arbitrage_tree
         comp_spec = spec.compensation_tree
+        filled_spec = getattr(spec, "order_filled_tree", None)
         description = getattr(spec, "description", "")
     elif isinstance(spec, dict):
         arb_spec = spec.get("arbitrage_tree")
         comp_spec = spec.get("compensation_tree")
+        filled_spec = spec.get("order_filled_tree")
         description = spec.get("description", "")
     else:
         raise StrategyConfigError(f"strategy '{strategy_id}' spec invalid: {spec!r}")
@@ -193,6 +197,7 @@ def strategy_from_json(strategy_id: str, spec, scope_key: str) -> Strategy:
     compensation_tree = (
         condition_from_json(comp_spec) if comp_spec is not None else _NOOP_COMPENSATION_TREE
     )
+    order_filled_tree = condition_from_json(filled_spec) if filled_spec is not None else None
 
     metadata = {"id": strategy_id}
     if description:
@@ -202,6 +207,7 @@ def strategy_from_json(strategy_id: str, spec, scope_key: str) -> Strategy:
         scope_key=scope_key,
         arbitrage_tree=arbitrage_tree,
         compensation_tree=compensation_tree,
+        order_filled_tree=order_filled_tree,
         metadata=metadata,
     )
 

@@ -406,7 +406,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.pre_rebate.6: 赛中 one-side 顺势非落后腿（#370/#375）
 - 明确 `IN_PLAY`、跨 venue one-side 机会命中，`one_side=false` 使 yes/no 两腿都先规划为
   `arbitrage.share`；`PRE/UNKNOWN/POST` 均不进入本分支。
-- `venue_replace -> share_limit -> trend_gate(up=true) -> score_selection(win_or_draw=true) -> candi_select`：
+- `venue_replace -> share_limit -> trend_gate(up=true) -> score_selection(standing="win|draw") -> candi_select`：
   两个语义门先逐 candidate 取“趋势 up 且比分非落后”的腿交集并删除空 candidate，`candi_select`
   再只对幸存腿做最小下注门控与候选选择。验收需证明被趋势或比分删除的低额腿不会误杀同
   candidate 中的合格腿，以及单腿 candidate 可被 `candi_select` 接受。
@@ -459,15 +459,17 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   淘汰空 candidate、保留元数据和撤单 candidate，不提前选择。
 - PairRegistry 返回的字符串 instrument ID 必须先转换为 `InstrumentId` 再查询严格的 NT Cache；
   使用拒绝字符串参数的 Cache stub 验证真实边界，不允许宽松测试替身掩盖类型错误。
-- `win_or_draw` 缺失时 Action 完全 no-op，不读取比分、不改 selected candidate。
-- `win_or_draw=true` 时，主/客方领先关系分别覆盖：非落后方 BUY 保留、落后方 SELL
-  保留；`false` 时反向保留落后方 BUY、非落后方 SELL。
-- 平分时两方均按非落后处理；多盘比分按已完成盘胜数优先、当前盘次之，覆盖当前盘暂时
+- `standing` 缺失时 Action 完全 no-op，不读取比分、不改 selected candidate；显式配置接受
+  `win/draw/lose` 的单值或 `|` 组合（如 `win|draw`、`win|lose`、`win|draw|lose`），忽略大小写及
+  分隔符两侧空白。
+- 状态描述订单押注方向：BUY 使用标的参赛方状态；SELL 反转 `win/lose`、保留 `draw`，因此领先方
+  BUY 与落后方 SELL 都属于 `win`，落后方 BUY 与领先方 SELL 都属于 `lose`。
+- 平分时两方 BUY/SELL 都属于 `draw`；多盘比分按已完成盘胜数优先、当前盘次之，覆盖当前盘暂时
   落后但比赛级仍领先，以及抢七括号比分。
 - 缺 game_id、Sports Store/比分、坏比分格式、未知订单 side 或无法确定 home/away 的腿
   fail-closed；3-way role pair 的 `claim=no` 不误映射成相反参赛方。
-- 无 `selected_candidate/candidates/legs` 输入时 no-op；撤单 candidate 原样保留；非法非 boolean
-  参数构造失败。
+- 无 `selected_candidate/candidates/legs` 输入时 no-op；撤单 candidate 原样保留；`standing` 非字符串、
+  含空段或未知值，以及 `tie_break` 非 boolean 时构造失败。
 - `tie_break` 缺失/`false` 时，当前盘一到 `6-6`（包括 `6-6(x-y)`）即判为抢七态，
   但不比较抢七小分，因此本轮无法判定并 fail-closed；不能把它降级成普通平分。
 - `tie_break=true` 时使用括号内抢七小分；裸 `6-6` 表示已进入抢七但尚为 `0-0`，双方
@@ -612,6 +614,24 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 - **.4a**(`test_arb_and_comp_evaluation_scratch_is_isolated`):两树 scratch 不共享，禁止跨树
   candidate 注入；补偿计划不得继承套利参数
 - **.5**:补偿树没有生成有效 plan 时，同轮可回退并分发套利 plan
+
+### strategy-4.framework.order-terminal.{1-5}:订单成交终态触发树
+
+- **.1**：strategy JSON 缺少 `order_filled_tree` 时字段为 `None`、回调 no-op；存在时按普通
+  Condition 树完成解析。
+- **.2**：`on_order_filled` 只在 Cache Order 已为 `FILLED` 时调度；部分成交不提前触发。
+- **.3**：`on_order_canceled` / `on_order_expired` 仅在累计 `filled_qty > 0` 时调度同一棵树，
+  零成交终态不触发。
+- **.4**：同一 pair 生命周期内，同一订单终态只调度一次（ended 时回收去重集合）；终态树不受行情 `_pair_inflight` 与
+  `is_pair_executing` 门控，并可从 EvalContext 读取 `event_name/trigger_event/trigger_order`。
+- **.5**：终态树生成的 submit/cancel `ExecutionPlan` 必须经统一 dispatcher，继续进入原生
+  Strategy、Risk、grouped barrier 与 ExecutionClient，不允许 Action 旁路执行。
+
+**验收**：`test_json_loader.py::test_strategy_order_filled_tree_is_optional_and_parsed_when_present`；
+`test_evaluator.py` 中 `test_order_filled_callback_only_dispatches_full_fill`、
+`test_canceled_or_expired_dispatches_only_when_order_has_a_fill`、
+`test_order_filled_tree_runs_directly_and_exposes_terminal_context`、
+`test_order_filled_tree_plan_uses_standard_dispatch_exit`。
 
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
 - **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_dispatch_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次。**#260 起断言 gate 已释放**(该用例的 `_RecordingAction` 不提交任何订单 → 所有权未交出);旧断言是「fire 后仍 in-flight」,那正是泄漏本身 —— action 空转也永久占闸,该 pair 再不被评估。
