@@ -474,6 +474,7 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
 | `TrendGateAction(up=True, complement=False, enable_flat=True)` | `src/arbitrage/strategy/actions/trend_gate.py` | 读取 live `PairPriceStore.trend_price` 与当前各 outcome 跨 venue 最低 best-ask 隐含概率，逐 outcome 直接比较：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat。`up` 缺失/`True` 留 up，`False` 留 down。`enable_flat` 缺失/`True` 时，某个 flat outcome 仅在其余所有 outcome 均为同一个非 flat 方向时推断成该方向的反面；二元 flat/down 因而视为 up/down，多 outcome 的对手方向不一致或仍含 flat 时不推断。显式 `False` 时只要完整趋势向量含 flat 就全删。`complement` 缺失/`False` 时各 outcome 独立过滤；显式 `True` 时，完整二元 outcome 的有效方向同为 up 或同为 down 会使本轮全删。它不恢复相邻帧 momentum、各 venue 同向或要求严格一 up 一 down，也无 `steps/trend` 参数。输入按 `selected_candidate` → `candidates` → legs-only 处理：已选 candidate 同步回写其 legs 与 `scratch["legs"]`；未选择的候选池逐 candidate 过滤 legs、淘汰空 candidate，并保留 rate 等元数据，供后续 `candi_select` 对过滤结果做门控与选择；mean/recovery 的 legs-only 则直接回写 `scratch["legs"]`，不凭空构造 candidate。基准、当前完整向量或 outcome 缺失时 fail-closed 全删。撤单 candidate 不处理。详见 §3.8.3 |
 | `ScoreSelectionAction(standing=None, tie_break=False)` | `src/arbitrage/strategy/actions/score_selection.py` | 输入按 `selected_candidate` → `candidates` → legs-only 处理：已选 candidate 同步回写其 legs 与 `scratch["legs"]`；未选择的候选池逐 candidate 过滤 legs、淘汰空 candidate 并保留元数据；裸 legs 直接回写，不构造 candidate。`standing` 缺失时严格 no-op；显式配置时是以 `|` 分隔的 `win/draw/lose` 集合，例如 `win|draw`、`lose`、`win|draw|lose`，分隔符两侧空白与大小写不影响语义。状态描述订单押注方向：BUY 沿用标的参赛方状态，SELL 反转 win/lose、draw 不变，所以落后方 SELL 属于 win。Action 经 `PairRegistry.game_id_for_pair` 从 `SportsGameStateStore` 读取最新比分；逗号分隔的多盘比分先比较已完成盘胜数，盘数相同再比较当前盘。当前盘到 `6-6` 即进入抢七：`tie_break` 缺失/`False` 时不使用可能跳帧的抢七小分，整次判定不可用并 fail-closed；显式 `True` 时读取 `6-6(x-y)` 的括号小分，裸 `6-6` 视为抢七刚开始的 `0-0`。腿的实际参赛方从 live instrument `selection_role=home/away` 映射；PairRegistry 的字符串 ID 在进入 NT Cache 边界前统一转换为 `InstrumentId`。2-way pair 可直接映射，3-way 拆分 pair 的 `claim=no` 是复合结果，不能冒充相反一方，故无法确定的腿与缺比分/坏格式一起 fail-closed 删除。`standing` 非字符串、空段或未知值以及非 boolean `tie_break` 均 fail-fast；撤单 candidate 原样保留。**离线已验证，live-unvalidated（2026-09-14）** |
+| `CurrentSetGameSelectionAction(standing=None)` | `src/arbitrage/strategy/actions/current_set_game_selection.py` | 注册名 `current_set_game_selection`，放在 `actions` 中。沿用 `score_selection` 的 standing 组合、BUY/SELL 方向映射、`selected_candidate`/候选池/legs-only 三形态筛腿及撤单候选放通。仅比较最新一盘的局数，不看已完成盘胜数或 `6-6(x-y)` 的抢七小分，因此 `6-6` 与 `6-6(x-y)` 都按 draw。`standing` 缺失时严格 no-op；显式配置但比分/映射不可判定时 fail-closed 删除腿。**离线已验证，live-unvalidated（2026-09-17）** |
 | `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追概率下行腿(#341/#361):读 `PairPriceStore.up_price/down_price` 与当前完整 PM best ask 向量。某 outcome 从历史最高价下跌比例 `(up-now)/up >= move_threshold` 时买它自身；从历史最低价上涨比例 `(now-down)/down >= move_threshold` 时买其互补 outcome。多信号同时命中取变化比例最大者，等于阈值命中；写单条 PM `BUY` leg(`qty=qty_from_share(PM, share, now)`)。当前向量和极值采样均必须满足 commission 闭区间 `[0.98,1.02]`；缺极值/完整腿、区间不通过、基准价非正或无变化达阈均 False。赛前/赛中门由 self_hits `in_game` 负责(§3.10) |
 | `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent="arbitrage", spread=None, enable_timeout=None, market=None, limit=None, post_only=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。旧交叉门代码保留为注释，供后续恢复。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 取 `min(当前价, live best bid)`，SELL 取 `max(当前价, live best ask)`。`post_only=true` 写入 submit spec，由 submitter 构造 NT post-only GTC `LimitOrder`；缺失或 `false` 构造普通限价单。PM 最终透传见 execution §3.6。`market=true` 只写订单 metadata，最终市价转换同见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变 |
 
@@ -509,8 +510,8 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 `candi_select` 对缺 `candidates` 键的 scratch 把 `legs` 包成单 candidate 走同一路径。
 
 需要把执行 venue 强制定向到 PM、且在最小下注门控前先按语义收窄腿时，套利链显式使用
-`venue_replace -> share_limit -> trend_gate/score_selection -> candi_select -> place_bets`。
-`trend_gate` 与 `score_selection` 都可逐个过滤尚未选择的 candidates；`candi_select` 因而只校验
+`venue_replace -> share_limit -> trend_gate/score_selection/current_set_game_selection -> candi_select -> place_bets`。
+这些筛选 Action 都可逐个过滤尚未选择的 candidates；`candi_select` 因而只校验
 最终可能执行的腿，避免将随后会删除的腿纳入整 candidate 最小下注门控。`candi_select` 之后仍可
 组合只处理已选 candidate 的 `dash_gate`(开赛价断层过滤,读 `PairPriceStore.start_price`)。
 **#329(2026-08-09)起
@@ -810,6 +811,7 @@ condition (`pre_game` / `in_game`)分赛前/赛中:
           {"type": "share_limit"},
           {"type": "trend_gate", "params": {"up": true}},
           {"type": "score_selection", "params": {"standing": "win|draw"}},
+          {"type": "current_set_game_selection", "params": {"standing": "win"}},
           {"type": "candi_select"},
           {"type": "place_bets", "params": {"limit": true, "post_only": true}}
         ] },
@@ -843,8 +845,9 @@ condition (`pre_game` / `in_game`)分赛前/赛中:
   (先补救再谈新腿)；赛中若 B3/撤单补偿与 B4 同轮命中，仍先执行补偿，不新增顺势仓位。
 - **B4 action 交集过滤**:`one_side=false` 先让 yes/no 候选腿各以 `arbitrage.share`
   规划；`venue_replace(pm_price=false)` 先将执行腿定向 PM，`share_limit` 按最终 venue 缩量；
-  `trend_gate(up=true)` 与 `score_selection(standing="win|draw")` 依次在候选池内删除非 up outcome 和
-  比分落后方 BUY（或保留落后方 SELL），再由 `candi_select` 仅对交集中的幸存腿执行最小下注
+  `trend_gate(up=true)`、`score_selection(standing="win|draw")` 与
+  `current_set_game_selection(standing="win")` 依次在候选池内筛出趋势 up、比赛级非落后且当前盘局分领先的押注方向，
+  再由 `candi_select` 仅对交集中的幸存腿执行最小下注
   门控并选出单一 candidate。因此被任一语义门删除的腿都不会误杀整 candidate。比分未知、抢七
   `6-6` 且未启用 `tie_break`、趋势基准不完整时均 fail-closed 不下单。
 - **`pre_move` 依赖有效极值向量(#341)**:`up_price/down_price` 由 §3.8.2 每个 PM OBD 在评估前更新，

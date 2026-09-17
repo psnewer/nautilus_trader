@@ -406,8 +406,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.pre_rebate.6: 赛中 one-side 顺势非落后腿（#370/#375）
 - 明确 `IN_PLAY`、跨 venue one-side 机会命中，`one_side=false` 使 yes/no 两腿都先规划为
   `arbitrage.share`；`PRE/UNKNOWN/POST` 均不进入本分支。
-- `venue_replace -> share_limit -> trend_gate(up=true) -> score_selection(standing="win|draw") -> candi_select`：
-  两个语义门先逐 candidate 取“趋势 up 且比分非落后”的腿交集并删除空 candidate，`candi_select`
+- `venue_replace -> share_limit -> trend_gate(up=true) -> score_selection(standing="win|draw") -> current_set_game_selection(standing="win") -> candi_select`：
+  三个语义门先逐 candidate 取“趋势 up、比赛级非落后且当前盘局分领先”的腿交集并删除空 candidate，`candi_select`
   再只对幸存腿做最小下注门控与候选选择。验收需证明被趋势或比分删除的低额腿不会误杀同
   candidate 中的合格腿，以及单腿 candidate 可被 `candi_select` 接受。
 - 比分平局时双方均属非落后，仍由 trend_gate 选出 up 腿；比分/映射未知、趋势基准缺失，或
@@ -476,6 +476,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   仍是非落后。覆盖抢七领先/落后、裸 6-6、默认关闭和参数类型错误。
 - **验收**：`test_action_score_selection.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
+
+## strategy-4.current-set-game-selection：当前盘局分筛选
+
+- `current_set_game_selection` 注册为 Action，沿用 `score_selection` 的 `win|draw|lose` 组合、
+  BUY/SELL 押注方向语义和 `selected_candidate`/候选池/legs-only 输入；参数缺失时 no-op。
+- `6-4, 2-3` 只按当前盘 `2-3` 判断，主方 BUY 属于 lose、客方 BUY 属于 win；
+  不让已完成盘 `6-4` 覆盖当前局数。
+- `6-6(3-4)` 与裸 `6-6` 均按 draw，抢七小分不参与；比分缺失或坏格式 fail-closed。
+- 逐 candidate 筛腿、淘汰空 candidate，撤单候选保留；比分/映射无效时 fail-closed，
+  非法 standing 构造失败。
+- **验收**：`test_action_current_set_game_selection.py` 与
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`。
 
 ## strategy-4.40：commission_gate PM 盘口概率和门控
 

@@ -53,7 +53,7 @@ class ScoreSelectionAction(Action):
             if not isinstance(candidates, list):
                 ctx.scratch["candidates"] = []
                 return
-            standings = _standings(ctx, tie_break=self._tie_break)
+            standings = self._get_standings(ctx)
             pair_roles = _pair_roles(ctx)
             filtered_candidates = []
             for candidate in candidates:
@@ -92,10 +92,7 @@ class ScoreSelectionAction(Action):
         standings: dict[str, str] | None = None,
         pair_roles: set[str] | None = None,
     ) -> list[dict]:
-        standings = standings if standings is not None else _standings(
-            ctx,
-            tie_break=self._tie_break,
-        )
+        standings = standings if standings is not None else self._get_standings(ctx)
         pair_roles = pair_roles if pair_roles is not None else _pair_roles(ctx)
         kept = []
         for leg in legs:
@@ -112,6 +109,9 @@ class ScoreSelectionAction(Action):
                 f"allowed_standings={sorted(self._standings)} tie_break={self._tie_break}",
             )
         return kept
+
+    def _get_standings(self, ctx: EvalContext) -> dict[str, str]:
+        return _standings(ctx, tie_break=self._tie_break)
 
 
 def _standings(ctx: EvalContext, *, tie_break: bool) -> dict[str, str]:
