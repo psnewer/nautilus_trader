@@ -501,15 +501,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_commission_gate.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
 
-## strategy-4.41：price_gate 计划腿价格门控
+## strategy-4.41：price_gate 计划腿概率门控
 
-- `price` 必填且有限。默认逐腿拦截 `leg.price < price`；`below=true` 时逐腿拦截
-  `leg.price > price`；等于阈值放通。缺价格或价格非有限时删除该腿。
+- `price` 必填且有限。逐腿优先读取标准化 `leg.prob`；缺失时按 venue odds model 将
+  原生 `leg.price` 转为隐含概率（PM 原样，OE/SE decimal odds 做 claim-aware 换算）。默认拦截
+  概率 `< price`；`below=true` 时拦截概率 `> price`；等于阈值放通。概率缺失、非法或不在
+  `[0,1]` 时删除该腿。
 - 支持裸 `legs`、`selected_candidate`、候选池三种输入；候选元数据与撤单 candidate
   保留，已选 candidate 的 legs 与 scratch legs 同步。
 - `pre_rebate` 赛前套利支配置 `price=0.5`，置于 `share_limit` 与 `place_bets` 之间，比较的是
-  `pre_move` 报价腿价格，而不是 `place_bets(limit=true)` 改写后的最终挂单价。
-- **验收**：`test_action_price_gate.py` 覆盖边界、双方向、缺价和三类输入；
+  `pre_move` 报价腿概率，而不是 `place_bets(limit=true)` 改写后的最终挂单价。
+- **验收**：`test_action_price_gate.py` 覆盖 PM probability price、OE decimal yes/no 换算、
+  `prob` 优先级、边界、双方向、非法概率和三类输入；
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`
   覆盖注册；配置验收确认 `pre_game` 支链顺序为 `share_limit -> price_gate(0.5) -> place_bets`。
 

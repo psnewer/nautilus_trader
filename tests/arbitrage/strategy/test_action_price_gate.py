@@ -1,4 +1,4 @@
-"""PriceGateAction 按执行腿价格逐腿过滤。"""
+"""PriceGateAction 按执行腿统一隐含概率逐腿过滤。"""
 
 import asyncio
 
@@ -18,7 +18,11 @@ def _ctx():
 
 def test_default_blocks_only_prices_below_threshold():
     ctx = _ctx()
-    legs = [{"price": 0.39}, {"price": 0.40}, {"price": 0.41}]
+    legs = [
+        {"venue": "POLYMARKET", "price": 0.39},
+        {"venue": "POLYMARKET", "price": 0.40},
+        {"venue": "POLYMARKET", "price": 0.41},
+    ]
     ctx.scratch["legs"] = legs
 
     _run(ctx)
@@ -28,7 +32,11 @@ def test_default_blocks_only_prices_below_threshold():
 
 def test_below_blocks_only_prices_above_threshold():
     ctx = _ctx()
-    legs = [{"price": 0.39}, {"price": 0.40}, {"price": 0.41}]
+    legs = [
+        {"venue": "POLYMARKET", "price": 0.39},
+        {"venue": "POLYMARKET", "price": 0.40},
+        {"venue": "POLYMARKET", "price": 0.41},
+    ]
     ctx.scratch["legs"] = legs
 
     _run(ctx, below=True)
@@ -36,20 +44,50 @@ def test_below_blocks_only_prices_above_threshold():
     assert ctx.scratch["legs"] == legs[:2]
 
 
-def test_missing_or_invalid_leg_price_fails_closed():
+def test_missing_or_invalid_leg_probability_fails_closed():
     ctx = _ctx()
-    ctx.scratch["legs"] = [{}, {"price": "bad"}, {"price": float("nan")}, {"price": 0.40}]
+    valid = {"venue": "POLYMARKET", "price": 0.40}
+    ctx.scratch["legs"] = [
+        {},
+        {"venue": "POLYMARKET", "price": "bad"},
+        {"venue": "POLYMARKET", "price": float("nan")},
+        valid,
+    ]
 
     _run(ctx)
 
-    assert ctx.scratch["legs"] == [{"price": 0.40}]
+    assert ctx.scratch["legs"] == [valid]
+
+
+def test_decimal_price_is_converted_to_probability():
+    ctx = _ctx()
+    yes = {"venue": "ORBITEXCH", "role": "yes", "price": 2.0}
+    no = {"venue": "ORBITEXCH", "role": "no", "price": 1.25}
+    ctx.scratch["legs"] = [yes, no]
+
+    _run(ctx, price=0.50)
+
+    assert ctx.scratch["legs"] == [yes]
+
+
+def test_committed_probability_takes_precedence_over_native_price():
+    ctx = _ctx()
+    leg = {"venue": "ORBITEXCH", "role": "yes", "price": 1.42, "prob": 0.70}
+    ctx.scratch["legs"] = [leg]
+
+    _run(ctx, price=0.59, below=True)
+
+    assert ctx.scratch["legs"] == []
 
 
 def test_selected_candidate_updates_legs_and_keeps_metadata():
     ctx = _ctx()
     ctx.scratch["selected_candidate"] = {
         "candidate_id": "chosen",
-        "legs": [{"price": 0.39}, {"price": 0.40}],
+        "legs": [
+            {"venue": "POLYMARKET", "price": 0.39},
+            {"venue": "POLYMARKET", "price": 0.40},
+        ],
     }
     ctx.scratch["legs"] = list(ctx.scratch["selected_candidate"]["legs"])
 
@@ -57,24 +95,36 @@ def test_selected_candidate_updates_legs_and_keeps_metadata():
 
     assert ctx.scratch["selected_candidate"] == {
         "candidate_id": "chosen",
-        "legs": [{"price": 0.40}],
+        "legs": [{"venue": "POLYMARKET", "price": 0.40}],
     }
-    assert ctx.scratch["legs"] == [{"price": 0.40}]
+    assert ctx.scratch["legs"] == [{"venue": "POLYMARKET", "price": 0.40}]
 
 
 def test_candidate_pool_filters_legs_and_preserves_cancel():
     ctx = _ctx()
     cancel = {"cancel_pair_orders": True, "legs": []}
     ctx.scratch["candidates"] = [
-        {"candidate_id": "drop", "legs": [{"price": 0.39}]},
-        {"candidate_id": "keep", "legs": [{"price": 0.39}, {"price": 0.40}]},
+        {
+            "candidate_id": "drop",
+            "legs": [{"venue": "POLYMARKET", "price": 0.39}],
+        },
+        {
+            "candidate_id": "keep",
+            "legs": [
+                {"venue": "POLYMARKET", "price": 0.39},
+                {"venue": "POLYMARKET", "price": 0.40},
+            ],
+        },
         cancel,
     ]
 
     _run(ctx)
 
     assert ctx.scratch["candidates"] == [
-        {"candidate_id": "keep", "legs": [{"price": 0.40}]},
+        {
+            "candidate_id": "keep",
+            "legs": [{"venue": "POLYMARKET", "price": 0.40}],
+        },
         cancel,
     ]
 

@@ -1,10 +1,11 @@
-"""PriceGateAction —— 按执行腿的价格筛选下单腿。"""
+"""PriceGateAction —— 按执行腿的统一隐含概率筛选下单腿。"""
 
 from __future__ import annotations
 
 import logging
 import math
 
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -13,7 +14,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class PriceGateAction(Action):
-    """默认删除价格低于阈值的腿；below=True 时删除高于阈值的腿。"""
+    """默认删除概率低于阈值的腿；below=True 时删除高于阈值的腿。"""
 
     def __init__(self, price: float, below: bool = False) -> None:
         try:
@@ -72,17 +73,42 @@ class PriceGateAction(Action):
     def _filter_legs(self, ctx: EvalContext, legs: list[dict]) -> list[dict]:
         kept = []
         for leg in legs:
-            try:
-                price = float(leg.get("price"))
-            except (TypeError, ValueError):
-                price = float("nan")
-            if math.isfinite(price) and (
-                price >= self._price if not self._below else price <= self._price
+            probability = _leg_probability(leg)
+            if probability is not None and (
+                probability >= self._price
+                if not self._below
+                else probability <= self._price
             ):
                 kept.append(leg)
                 continue
             _LOG.info(
                 f"PriceGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-                f"price={leg.get('price')} threshold={self._price} below={self._below}",
+                f"prob={probability} raw_prob={leg.get('prob')} price={leg.get('price')} "
+                f"venue={leg.get('venue')} threshold={self._price} below={self._below}",
             )
         return kept
+
+
+def _leg_probability(leg: dict) -> float | None:
+    raw_probability = leg.get("prob")
+    if raw_probability is not None:
+        return _valid_probability(raw_probability)
+
+    venue = str(leg.get("venue") or "").upper()
+    claim = str(leg.get("claim") or leg.get("role") or "yes").lower()
+    try:
+        price = float(leg.get("price"))
+        probability = probability_from_price(venue, price, claim)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    return _valid_probability(probability)
+
+
+def _valid_probability(value) -> float | None:
+    try:
+        probability = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+        return None
+    return probability
