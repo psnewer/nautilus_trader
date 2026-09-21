@@ -7,6 +7,8 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
 - candidate 数组:读取 `ctx.scratch["candidates"]`,对每个 candidate 独立计算 scale,
   输出调整后的 candidate 数组,供后续 `CandiSelectAction` 选择。
 
+可选 `current_position_gate=True` 时,先按 Portfolio 跨 venue 聚合的当前持仓 outcome 筛腿。
+
 复用原公式,按 Venue Registry odds_model 分支:
   - probability venue: remaining = max - current[role]（单腿独立检查）
   - decimal odds venue: remaining = max - merged[role]（merge后一边为0）
@@ -27,12 +29,22 @@ _LOG = logging.getLogger(__name__)
 
 
 class ShareLimitModification(Action):
-    """按 share limit 直接调整 legs 或 candidates。"""
+    """按当前仓位 outcome 过滤,并按 share limit 调整 legs 或 candidates。"""
 
-    def __init__(self, max_leg_share: float | None = None) -> None:
+    def __init__(
+        self,
+        max_leg_share: float | None = None,
+        current_position_gate: bool = False,
+    ) -> None:
+        if not isinstance(current_position_gate, bool):
+            raise ValueError("share_limit: current_position_gate must be a boolean")
         self._max_leg_share = float(max_leg_share) if max_leg_share is not None else None
+        self._current_position_gate = current_position_gate
 
     async def execute(self, ctx: EvalContext) -> None:
+        if self._current_position_gate and not self._apply_current_position_gate(ctx):
+            return
+
         max_leg_share = self._configured_max_leg_share(ctx)
         if max_leg_share is None:
             return
@@ -99,6 +111,82 @@ class ShareLimitModification(Action):
             f"ShareLimitModification: pair={ctx.pair_id} scale={scale:.4f} "
             f"adjusted_share={ctx.scratch['adjusted_share']:.4f}"
         )
+
+    def _apply_current_position_gate(self, ctx: EvalContext) -> bool:
+        portfolio = ctx.portfolio
+        if portfolio is None:
+            _LOG.warning(
+                f"ShareLimitModification[current_position_gate]: pair={ctx.pair_id} "
+                "no portfolio, clear output",
+            )
+            self._clear_output(ctx)
+            return False
+
+        try:
+            shares = portfolio.outcome_shares(ctx.pair_id, None)
+            current_outcomes = {
+                str(outcome).lower()
+                for outcome, share in shares.items()
+                if float(share) > 0.0
+            }
+        except (AttributeError, TypeError, ValueError, PositionOutcomeInvariantError) as exc:
+            _LOG.error(
+                f"ShareLimitModification[current_position_gate]: pair={ctx.pair_id} "
+                f"cannot read current positions: {exc}",
+            )
+            self._clear_output(ctx)
+            return False
+
+        if not current_outcomes:
+            return True
+
+        if "candidates" in ctx.scratch:
+            candidates = ctx.scratch.get("candidates")
+            if not isinstance(candidates, list):
+                _LOG.warning(
+                    f"ShareLimitModification[current_position_gate]: pair={ctx.pair_id} "
+                    "candidates is not list, clear candidates",
+                )
+                ctx.scratch["candidates"] = []
+                return False
+
+            filtered_candidates = []
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                legs = self._filter_current_outcome_legs(
+                    candidate.get("legs") or [],
+                    current_outcomes,
+                )
+                if not legs:
+                    continue
+                filtered = dict(candidate)
+                filtered["legs"] = legs
+                filtered_candidates.append(filtered)
+            ctx.scratch["candidates"] = filtered_candidates
+            return True
+
+        legs = ctx.scratch.get("legs") or []
+        ctx.scratch["legs"] = self._filter_current_outcome_legs(legs, current_outcomes)
+        return True
+
+    def _filter_current_outcome_legs(
+        self,
+        legs: list[dict],
+        current_outcomes: set[str],
+    ) -> list[dict]:
+        return [
+            leg
+            for leg in legs
+            if str(leg.get("claim") or leg.get("role") or "").lower() in current_outcomes
+        ]
+
+    @staticmethod
+    def _clear_output(ctx: EvalContext) -> None:
+        if "candidates" in ctx.scratch:
+            ctx.scratch["candidates"] = []
+        else:
+            ctx.scratch["legs"] = []
 
     def _adjust_candidates(self, ctx: EvalContext) -> bool:
         if "candidates" not in ctx.scratch:

@@ -81,10 +81,12 @@ from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
+from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
+from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.check_action_registry import register_state_query
@@ -135,8 +137,10 @@ def register_builtin_checks_and_actions() -> None:
     register_state_query("reverse", ReverseQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
+    register_action("venue_select", VenueSelectAction)
     register_action("candi_select", CandiSelectAction)
     register_action("commission_gate", CommissionGateAction)
+    register_action("price_gate", PriceGateAction)
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)

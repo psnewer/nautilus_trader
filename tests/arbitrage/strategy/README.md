@@ -181,7 +181,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx)，并保留 `share_if_wins=missing` 供后续 `venue_replace` 重算 PM 数量 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
-- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
+- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变,**定价由 `pm_price` 决定**(#330):`test_default_uses_pm_live_price` 默认/不设 → 用 PM 实时 ask(0.55、cost=share×PM 价);`test_pm_price_false_keeps_original_order_prob` `pm_price=False` → 保留原 order prob(0.50、cost=share×原 prob);`test_invalid_pm_price_param_raises` 非法值 ValueError。PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;已有 PM 腿不变,缺 PM 对应报价时 fail-closed,撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到 PM venue
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
@@ -500,6 +500,28 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 纯撤单输入 no-op，避免行情 commission 门控妨碍风险收尾。
 - **验收**：`test_action_commission_gate.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
+
+## strategy-4.41：price_gate 计划腿价格门控
+
+- `price` 必填且有限。默认逐腿拦截 `leg.price < price`；`below=true` 时逐腿拦截
+  `leg.price > price`；等于阈值放通。缺价格或价格非有限时删除该腿。
+- 支持裸 `legs`、`selected_candidate`、候选池三种输入；候选元数据与撤单 candidate
+  保留，已选 candidate 的 legs 与 scratch legs 同步。
+- `pre_rebate` 赛前套利支配置 `price=0.5`，置于 `share_limit` 与 `place_bets` 之间，比较的是
+  `pre_move` 报价腿价格，而不是 `place_bets(limit=true)` 改写后的最终挂单价。
+- **验收**：`test_action_price_gate.py` 覆盖边界、双方向、缺价和三类输入；
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`
+  覆盖注册；配置验收确认 `pre_game` 支链顺序为 `share_limit -> price_gate(0.5) -> place_bets`。
+
+## strategy-4.42：venue_select 执行 venue 过滤
+
+- `pm` 缺失或为 `true` 时只保留 PM 腿；显式为 `false` 时删除 PM 腿并保留其它 venue；
+  参数非 boolean 时配置构建 fail-fast。
+- 支持裸 `legs`、`selected_candidate`、候选池三种输入；候选元数据和撤单 candidate 保留，
+  候选过滤为空时删除该 candidate，已选 candidate 与 scratch legs 同步。
+- **验收**：`test_action_venue_select.py` 覆盖默认值、反向过滤、三种输入和参数校验；
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`
+  覆盖 launcher 注册。
 
 ## 策略内组合场景
 

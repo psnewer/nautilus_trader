@@ -29,6 +29,13 @@ class _Portfolio:
             return self._se
         return {}
 
+    def outcome_shares(self, pair_id, account_id):
+        outcomes = set(self._pm) | set(self._oe) | set(self._se)
+        return {
+            outcome: sum(shares.get(outcome, 0.0) for shares in (self._pm, self._oe, self._se))
+            for outcome in outcomes
+        }
+
 
 class _RecordingPortfolio(_Portfolio):
     def __init__(self, shares=None):
@@ -203,3 +210,114 @@ def test_share_limit_param_max_leg_share_overrides_strategy_default():
 
     assert ctx.scratch["share_limit_scale"] == 0.4
     assert ctx.scratch["legs"][0]["qty"] == 20.0
+
+
+def test_current_position_gate_defaults_to_disabled():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"yes": 20.0}))
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "no", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["no"]
+
+
+def test_current_position_gate_false_keeps_existing_behavior():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"yes": 20.0}))
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "no", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(
+        ShareLimitModification(
+            max_leg_share=100.0,
+            current_position_gate=False,
+        ).execute(ctx),
+    )
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["no"]
+
+
+def test_current_position_gate_keeps_only_legs_matching_existing_outcome():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(oe={"yes": 20.0, "no": 0.0}))
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.6, "share_if_wins": 10.0},
+        {"venue": "POLYMARKET", "role": "no", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(
+        ShareLimitModification(
+            max_leg_share=100.0,
+            current_position_gate=True,
+        ).execute(ctx),
+    )
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_position_gate_does_not_filter_when_there_is_no_position():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"yes": 0.0, "no": 0.0}))
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.6, "share_if_wins": 10.0},
+        {"venue": "POLYMARKET", "role": "no", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_position_gate=True).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes", "no"]
+
+
+def test_current_position_gate_keeps_both_outcomes_when_both_are_held():
+    ctx = EvalContext(
+        pair_id="p",
+        portfolio=_Portfolio(pm={"yes": 20.0}, oe={"no": 15.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.6, "share_if_wins": 10.0},
+        {"venue": "POLYMARKET", "role": "no", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_position_gate=True).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes", "no"]
+
+
+def test_current_position_gate_filters_candidate_legs_and_drops_empty_candidates():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"yes": 20.0, "no": 0.0}))
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "mixed",
+            "rate": 0.1,
+            "legs": [
+                {"venue": "POLYMARKET", "role": "yes", "qty": 10.0, "share_if_wins": 10.0},
+                {"venue": "POLYMARKET", "role": "no", "qty": 10.0, "share_if_wins": 10.0},
+            ],
+        },
+        {
+            "candidate_id": "opposite-only",
+            "legs": [
+                {"venue": "POLYMARKET", "role": "no", "qty": 10.0, "share_if_wins": 10.0},
+            ],
+        },
+    ]
+
+    _run(
+        ShareLimitModification(
+            max_leg_share=100.0,
+            current_position_gate=True,
+        ).execute(ctx),
+    )
+
+    assert [candidate["candidate_id"] for candidate in ctx.scratch["candidates"]] == ["mixed"]
+    assert ctx.scratch["candidates"][0]["rate"] == 0.1
+    assert [leg["role"] for leg in ctx.scratch["candidates"][0]["legs"]] == ["yes"]
+
+
+def test_current_position_gate_requires_boolean_param():
+    try:
+        ShareLimitModification(current_position_gate="true")
+    except ValueError as exc:
+        assert "current_position_gate must be a boolean" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

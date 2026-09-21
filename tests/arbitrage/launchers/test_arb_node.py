@@ -20,7 +20,9 @@ from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
+from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
 from src.arbitrage.strategy.check_action_registry import build_check
@@ -80,6 +82,15 @@ def test_register_builtin_checks_and_actions_registers_position_mode_queries():
     assert isinstance(
         build_action({"type": "commission_gate", "params": {"commission": 1.02}}),
         CommissionGateAction,
+    )
+    assert isinstance(
+        build_action({"type": "price_gate", "params": {"price": 0.40}}),
+        PriceGateAction,
+    )
+    assert isinstance(build_action({"type": "venue_select"}), VenueSelectAction)
+    assert isinstance(
+        build_action({"type": "venue_select", "params": {"pm": False}}),
+        VenueSelectAction,
     )
     with pytest.raises(StrategyConfigError, match="venue_select"):
         build_check({
