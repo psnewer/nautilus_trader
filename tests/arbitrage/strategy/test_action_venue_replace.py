@@ -139,6 +139,77 @@ def test_invalid_pm_price_param_raises():
         VenueReplaceAction(pm_price="yes")
 
 
+def test_invalid_convert_param_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="convert must be a boolean"):
+        VenueReplaceAction(convert="true")
+
+
+def test_convert_target_pm_leg_uses_opposite_pm_live_price():
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == [{
+        "instrument_id": "N.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "price": 0.55,
+        "prob": 0.55,
+        "role": "no",
+        "claim": "no",
+        "qty": 80.0,
+        "share_if_wins": 80.0,
+        "cost": 44.0,
+    }]
+
+
+def test_convert_target_pm_leg_ignores_pm_price_false_and_uses_opposite_live_price():
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(pm_price=False, convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
+    assert ctx.scratch["legs"][0]["prob"] == 0.55
+    assert ctx.scratch["legs"][0]["qty"] == 80.0
+    assert ctx.scratch["legs"][0]["cost"] == 44.0
+
+
+def test_convert_does_not_flip_external_leg_before_replacement():
+    ctx = _ctx()
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+    assert ctx.scratch["legs"][0]["claim"] == "yes"
+
+
+def test_convert_target_pm_leg_without_opposite_quote_is_dropped():
+    ctx = live_context(
+        books={"Y.POLYMARKET": _book(0.40)},
+        infos={"Y.POLYMARKET": {"claim": "yes"}},
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
 def test_legs_only_replaces_every_external_leg():
     ctx = _ctx()
     ctx.scratch["legs"] = [

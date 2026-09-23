@@ -8,6 +8,7 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
   输出调整后的 candidate 数组,供后续 `CandiSelectAction` 选择。
 
 可选 `current_position_gate=True` 时,先按 Portfolio 跨 venue 聚合的当前持仓 outcome 筛腿。
+可选 `current_order_gate=True` 时,只要当前 pair 存在任意 open order 就清空输出。
 
 复用原公式,按 Venue Registry odds_model 分支:
   - probability venue: remaining = max - current[role]（单腿独立检查）
@@ -21,6 +22,7 @@ from copy import deepcopy
 
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import is_decimal_odds_venue
+from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -35,13 +37,19 @@ class ShareLimitModification(Action):
         self,
         max_leg_share: float | None = None,
         current_position_gate: bool = False,
+        current_order_gate: bool = False,
     ) -> None:
         if not isinstance(current_position_gate, bool):
             raise ValueError("share_limit: current_position_gate must be a boolean")
+        if not isinstance(current_order_gate, bool):
+            raise ValueError("share_limit: current_order_gate must be a boolean")
         self._max_leg_share = float(max_leg_share) if max_leg_share is not None else None
         self._current_position_gate = current_position_gate
+        self._current_order_gate = current_order_gate
 
     async def execute(self, ctx: EvalContext) -> None:
+        if self._current_order_gate and not self._apply_current_order_gate(ctx):
+            return
         if self._current_position_gate and not self._apply_current_position_gate(ctx):
             return
 
@@ -111,6 +119,41 @@ class ShareLimitModification(Action):
             f"ShareLimitModification: pair={ctx.pair_id} scale={scale:.4f} "
             f"adjusted_share={ctx.scratch['adjusted_share']:.4f}"
         )
+
+    def _apply_current_order_gate(self, ctx: EvalContext) -> bool:
+        if ctx.cache is None or ctx.pair_registry is None:
+            _LOG.warning(
+                f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
+                "missing cache/pair_registry, clear output",
+            )
+            self._clear_all_outputs(ctx)
+            return False
+
+        try:
+            for instrument_id in pair_instrument_ids(ctx):
+                if ctx.cache.orders_open(instrument_id=instrument_id):
+                    _LOG.info(
+                        f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
+                        f"open order exists on instrument={instrument_id}, clear output",
+                    )
+                    self._clear_all_outputs(ctx)
+                    return False
+        except (AttributeError, TypeError, ValueError) as exc:
+            _LOG.error(
+                f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
+                f"cannot read open orders: {exc}",
+            )
+            self._clear_all_outputs(ctx)
+            return False
+        return True
+
+    @staticmethod
+    def _clear_all_outputs(ctx: EvalContext) -> None:
+        ctx.scratch["legs"] = []
+        if "candidates" in ctx.scratch:
+            ctx.scratch["candidates"] = []
+        if "selected_candidate" in ctx.scratch:
+            ctx.scratch["selected_candidate"] = {}
 
     def _apply_current_position_gate(self, ctx: EvalContext) -> bool:
         portfolio = ctx.portfolio

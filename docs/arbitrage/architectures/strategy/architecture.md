@@ -467,8 +467,8 @@ Evaluator 拥有单一 Store，并把配置策略的 `metadata.id`（缺失时�
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False, force=False, pnl=True)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1。**`force`(#326)**:缺省 `False` 保持 #262 双向率门(当前率 < 阈值才补、补后率 ≥阈值才算有用);`True` 时**旁路这两道率门**,只要存在缺口 outcome 就无条件补到 `target_share`(供 pre_rebate 开赛兜底强平衡,见 §3.10)。仅设很低的 `min_repaired_rebate` **不能**达到强补效果——#262 前置门 `current >= 阈值` 反而会拦住。**`pnl`(#327)**:缺省 `True` 保持 #321(补后率分子含 realizedPNL);`False` 时经 `outcome_exposures(..., include_realized_pnl=False)` 取基线,**当前率/补后率均不含 realized**,只按当轮开仓投影判率(供 pre_rebate 循环开平防即买即卖,见 §3.10;不影响 `target_share`/denom)。 |
 | `PriceChangeRecoveryCheck()` | `src/arbitrage/strategy/checks/price_change_recovery.py` | 本轮由 OBD 唤醒且该 pair 当前至少有一张 open order 时，写 `cancel_pair_orders` 并生成整组撤单 plan。Check 接受现行 `MarketOrderBookDeltas` 与兼容 `OrderBookDeltas` 两种 `event_name`，不读取/比较 momentum；价格帧过滤由 Evaluator 入口的 `arbitrage.evaluate_on_depth_change` 统一负责。默认 `false` 时能进入 Check 的 OBD 已是真实顶价变化；显式 `true` 时纯深度 OBD 也会进入并触发撤单。MatchedPair/sports 等其它 `event_name` 不命中。无参数 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，逐单直接读取其自身 instrument 的 live OrderBook：BUY 取 best bid，SELL 取 best ask；订单价与盘口价均换算到该 instrument 的同一概率口径后计算严格 `< spread` 的概率差。它不按 outcome exposure 改写 side/instrument，因此能覆盖 `place_bets` 根据 PM 互斥库存动态生成的 SELL。命中时写标准 `legs + cancel_pair_orders`，随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
-| `ShareLimitModification(max_leg_share=None, current_position_gate=False)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。`current_position_gate` 缺失/`False` 时完全不参与筛腿；显式 `True` 时先经 Portfolio 跨 venue 聚合当前持仓 outcome：无仓位不筛，单 outcome 仓只保留同 outcome 腿，双 outcome 仓保留两边；candidate 内逐腿过滤并删除空 candidate。读取持仓失败时 fail-closed。该门独立于 `max_leg_share`，即使未配置最大额度仍生效。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate。`current_position_gate` 必须为 boolean |
-| `VenueReplaceAction(pm_price=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。**定价由 `pm_price` 决定**(#330):不存在或 `True`(默认)→ 用 **PM 报价腿概率**(= PM best_ask 隐含概率,PM 实时价);存在且 `False` → 沿用**原 order 隐含概率** `prob`(两 venue 共享 outcome 概率,不看 PM 实时价、也不用原 decimal 赔率)。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。`pm_price=True` 缺 PM 报价 → 告警回退 0;`pm_price=False` 裸腿无 `prob` → 回退 PM 报价概率并告警。已有 PM 腿原样保留;缺 PM 对应报价或缺 share 时 fail-closed。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue 持仓计算 |
+| `ShareLimitModification(max_leg_share=None, current_position_gate=False, current_order_gate=False)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时只按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 probability venue 或 decimal odds venue 的 remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。`current_order_gate` 缺失/`False` 时完全不读取订单；显式 `True` 时最先经 PairRegistry 枚举该 pair 全部 instrument，并从 live Cache 查询 open orders，只要任一 instrument 存在任意 venue/outcome/side 的 open order，就清空 `legs/candidates/selected_candidate` 并停止本 Action；缺 Cache/PairRegistry 或读取异常同样 fail-closed。无挂单才继续持仓门与额度缩放。`current_position_gate` 缺失/`False` 时完全不参与筛腿；显式 `True` 时经 Portfolio 跨 venue 聚合当前持仓 outcome：无仓位不筛，单 outcome 仓只保留同 outcome 腿，双 outcome 仓保留两边；candidate 内逐腿过滤并删除空 candidate。读取持仓失败时 fail-closed。两个 gate 均独立于 `max_leg_share`，即使未配置最大额度仍生效。venue 类别经 Venue Registry `is_decimal_odds_venue` 判断,不维护 OE/SE 集合。`max_leg_share` 未显式配置时读 Web 默认;Action 不接收 `share` 参数,leg/candidate 缺 `qty/share_if_wins` 时清空 legs 或丢弃该 candidate。`current_position_gate/current_order_gate` 均必须为 boolean |
+| `VenueReplaceAction(pm_price=None, convert=False)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：对本树 `legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的每条非 PM 腿，按同一 pair、同一 canonical outcome(`yes/no`)读取 PM 报价腿作为路由目标(`instrument_id/venue/side/claim/role`)并替换,decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。`convert` 缺失/`False` 时已有 PM 腿原样保留；显式 `True` 时，仅对已经是目标 PM venue 的输入腿执行 `yes↔no`，改用对手 PM token，非 PM 输入仍替换到同 outcome。**`pm_price` 只控制非 PM 输入腿的定价**(#330/#395):不存在或 `True`(默认)→ 用目标 PM 报价腿概率(= PM best_ask 隐含概率,PM 实时价)；存在且 `False` → 沿用原 order 隐含概率 `prob`。输入本来就是 PM 时 `pm_price` 不起作用：`convert=False` 原样保留，`convert=True` 始终使用对手 PM token 的实时 ask，不存在 `1-original prob` 分支。PM 为 probability venue,`price=prob=` 所选价、`qty=share`(不随价缩放)、`cost=share×prob`;每腿 `share_if_wins` 不变。PM 实时报价缺失时该目标腿不可用；非 PM 输入且 `pm_price=False` 的裸腿无 `prob` 时回退目标 PM 报价概率并告警。缺目标/对手 PM 报价或缺 share 时 fail-closed。`pm_price/convert` 均须为 boolean。撤单计划不替换。推荐放在 `share_limit` 前，使额度按最终 PM venue/outcome 持仓计算 |
 | `VenueSelectAction(pm=True)` | `src/arbitrage/strategy/actions/venue_select.py` | 按执行腿的 `venue` 逐腿过滤。`pm` 缺失或 `True` 时只保留 PM 腿；显式 `False` 时删除 PM 腿、保留其它 venue。支持 `selected_candidate`、`candidates`、legs-only 三种输入；候选池中的空 candidate 删除，元数据与撤单 candidate 保留，已选 candidate 同步更新 `selected_candidate["legs"]` 与 `scratch["legs"]`。`pm` 必须为 boolean。 |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `CommissionGateAction(commission)` | `src/arbitrage/strategy/actions/commission_gate.py` | 按 PM 二元盘口 commission 门控下单：commission 定义为当前 PM `yes/no` 两个 best-ask 隐含概率之和。实际值 `< commission` 时原样放通，`>= commission` 时清空本树下单腿；缺任一 PM outcome 或有效概率时 fail-closed。支持 `selected_candidate`、`candidates`、legs-only 三种输入，候选池中撤单 candidate 原样保留，纯撤单输入 no-op。`commission` 必填且必须为有限数；非 PM 报价不参与计算。 |
@@ -555,7 +555,7 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 5. Strategy 不冻结 sports state。PMS phase 与 OE/SE `inPlay` 都只更新状态，不绕过价格变化门控；
    后续正常 OBD 评估从 Store 读取最新 phase/score。
 
-#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-01)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-23)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
 `first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
@@ -580,9 +580,12 @@ OE/SE `inPlay=false` 可在 PMS 赛前帧缺失时提供明确 PRE；`inPlay=tru
 
 **start_price**：有效 phase 为 IN_PLAY 时采集；PMS phase 消息按 game 扇出全部 pair，OE/SE
 确认 IN_PLAY 后则在后续正常 OBD 价格内存回调中幂等尝试，且不强制触发策略评估。
-**仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且所有 start values 仍为默认 `0.6` 时，
+**仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且 `start_price` 仍为空时，
 读取当时 Cache 中完整 PM best ask 向量并整组首次写入，不执行概率和校验。phase 时缺完整
-PM 盘口则保留默认值，后续 OBD 不补写。
+PM 盘口则保持空值，后续 OBD 不补写。`start_price` 不提供默认兜底；DashGate 等消费者在其
+为空时按缺数据处理，不得把占位价格用于策略判断。完整性校验使用独立的 `outcomes` 清单，
+不再借用 `start_price` 的键集合。`capture_start` 首次写入成功后打印一次 INFO：
+`Start price captured: pair=... game=... source=... prices=...`；重复尝试或缺少前置条件不打印。
 
 **up_price/down_price(#341)**：每个 PM OBD 回调在路由评估前，读取该 pair 各 outcome 唯一且
 完整的 PM best ask 概率向量；仅当概率和位于 pre_move commission 闭区间 `[0.98,1.02]` 才采样。
@@ -685,7 +688,8 @@ refactor #356。
   限价、不改变既定 qty。调整后优先使用 instrument
   `min_price/max_price`；PM 未显式给边界时按 `[price_increment, 1-price_increment]`，
   decimal venue 未显式给边界时按 `[1.01, 1000]` 裁剪。`price_overrides` 先于 spread；
-  资金需求按 spread 后的计划价格计算。decimal 分段赔率量化属于 Execution adapter 的最终
+  资金需求按 spread 后的计划价格计算。若同时配置 `limit=true`，先按盘口完成 limit 定价及
+  最终执行 instrument 重定价，再对每个最终 draft 应用 spread。decimal 分段赔率量化属于 Execution adapter 的最终
   payload 边界，不在 Action 重复执行。若本 Action 显式 `market=true`，Execution adapter 的最终
   市价转换可覆盖该限价；Action 仍保留原计划价格。
 - Action ACK 收口参数(#298/#300):`enable_timeout` 必须是 JSON boolean；对 submit，缺失/`true` 保持
@@ -703,7 +707,8 @@ refactor #356。
   `max(当前价, best ask)`；PM 库存转换仍先用互补参考价与 best bid 判断是否值得转换，
   生成的 SELL 子单随后与其自身 instrument 的 best ask 取较高者，故该模式不承诺立即成交。
   Cache 盘口统一存 outcome 概率，因此 Action 按 instrument
-  `quote_claim` 经 Venue Registry 反算 PM/decimal venue 原生订单价。`limit=true` 不应用 `spread`；
+  `quote_claim` 经 Venue Registry 反算 PM/decimal venue 原生订单价。若配置 `spread`，在上述
+  limit 定价完成后继续应用；
   `price_overrides` 若存在则构成“当前价”参与上述 min/max。显式 qty 保持不变，未给 qty 时按最终限价计算 share 对应
   数量。任一最终订单缺所需盘口侧、instrument 或价格非法时整次 opportunity fail-closed。
   `market=true` 的既有 adapter 最终转换语义不变。

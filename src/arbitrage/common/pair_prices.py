@@ -6,12 +6,12 @@ import json
 from dataclasses import dataclass
 
 
-DEFAULT_START_PRICE = 0.6
 _STORE_KEY_PREFIX = "arb:pair_price:"
 
 
 @dataclass(frozen=True, slots=True)
 class PairPriceState:
+    outcomes: tuple[str, ...]
     first_price: dict[str, float]
     start_price: dict[str, float]
     up_price: dict[str, float]
@@ -34,9 +34,30 @@ class PairPriceStore:
         if not raw:
             return None
         values = json.loads(raw.decode("utf-8"))
+        legacy_start_price = {str(k): float(v) for k, v in values.get("start_price", {}).items()}
+        outcomes = tuple(
+            values.get("outcomes")
+            or dict.fromkeys(
+                (
+                    *legacy_start_price,
+                    *values.get("first_price", {}),
+                    *values.get("up_price", {}),
+                    *values.get("down_price", {}),
+                    *values.get("trend_price", {}),
+                )
+            )
+        )
+        # 旧 schema 用全 0.6 向量表示“未采集”;读取时迁移为空值。
+        if (
+            "outcomes" not in values
+            and legacy_start_price
+            and all(value == 0.6 for value in legacy_start_price.values())
+        ):
+            legacy_start_price = {}
         return PairPriceState(
+            outcomes=tuple(str(value) for value in outcomes),
             first_price={str(k): float(v) for k, v in values["first_price"].items()},
-            start_price={str(k): float(v) for k, v in values["start_price"].items()},
+            start_price=legacy_start_price,
             up_price={str(k): float(v) for k, v in values.get("up_price", {}).items()},
             down_price={str(k): float(v) for k, v in values.get("down_price", {}).items()},
             trend_price={str(k): float(v) for k, v in values.get("trend_price", {}).items()},
@@ -46,14 +67,13 @@ class PairPriceStore:
         existing = self.get(pair_id)
         if existing is not None:
             return existing
-        normalized = tuple(dict.fromkeys(
-            str(value).strip().lower()
-            for value in outcomes
-            if str(value).strip()
-        ))
+        normalized = tuple(
+            dict.fromkeys(str(value).strip().lower() for value in outcomes if str(value).strip())
+        )
         state = PairPriceState(
+            outcomes=normalized,
             first_price={},
-            start_price=dict.fromkeys(normalized, DEFAULT_START_PRICE),
+            start_price={},
             up_price={},
             down_price={},
             trend_price={},
@@ -63,77 +83,94 @@ class PairPriceStore:
 
     def capture_first(self, pair_id: str, prices: dict[str, float]) -> bool:
         state = self.get(pair_id)
-        if state is None or state.first_price or set(prices) != set(state.start_price):
+        if state is None or state.first_price or set(prices) != set(state.outcomes):
             return False
-        self._put(pair_id, PairPriceState(
-            first_price=dict(prices),
-            start_price=state.start_price,
-            up_price=state.up_price,
-            down_price=state.down_price,
-            trend_price=state.trend_price,
-        ))
+        self._put(
+            pair_id,
+            PairPriceState(
+                outcomes=state.outcomes,
+                first_price=dict(prices),
+                start_price=state.start_price,
+                up_price=state.up_price,
+                down_price=state.down_price,
+                trend_price=state.trend_price,
+            ),
+        )
         return True
 
     def capture_start(self, pair_id: str, prices: dict[str, float]) -> bool:
         state = self.get(pair_id)
-        if state is None or not state.start_price or set(prices) != set(state.start_price):
+        if state is None or state.start_price or set(prices) != set(state.outcomes):
             return False
-        if any(value != DEFAULT_START_PRICE for value in state.start_price.values()):
-            return False
-        self._put(pair_id, PairPriceState(
-            first_price=state.first_price,
-            start_price=dict(prices),
-            up_price=state.up_price,
-            down_price=state.down_price,
-            trend_price=state.trend_price,
-        ))
+        self._put(
+            pair_id,
+            PairPriceState(
+                outcomes=state.outcomes,
+                first_price=state.first_price,
+                start_price=dict(prices),
+                up_price=state.up_price,
+                down_price=state.down_price,
+                trend_price=state.trend_price,
+            ),
+        )
         return True
 
     def update_extremes(self, pair_id: str, prices: dict[str, float]) -> bool:
         """用一个完整同刻价格向量更新各 outcome 的历史最高/最低价。"""
         state = self.get(pair_id)
-        if state is None or set(prices) != set(state.start_price):
+        if state is None or set(prices) != set(state.outcomes):
             return False
         up_price = {
             outcome: max(float(prices[outcome]), state.up_price.get(outcome, float("-inf")))
-            for outcome in state.start_price
+            for outcome in state.outcomes
         }
         down_price = {
             outcome: min(float(prices[outcome]), state.down_price.get(outcome, float("inf")))
-            for outcome in state.start_price
+            for outcome in state.outcomes
         }
-        self._put(pair_id, PairPriceState(
-            first_price=state.first_price,
-            start_price=state.start_price,
-            up_price=up_price,
-            down_price=down_price,
-            trend_price=state.trend_price,
-        ))
+        self._put(
+            pair_id,
+            PairPriceState(
+                outcomes=state.outcomes,
+                first_price=state.first_price,
+                start_price=state.start_price,
+                up_price=up_price,
+                down_price=down_price,
+                trend_price=state.trend_price,
+            ),
+        )
         return True
 
     def update_trend(self, pair_id: str, prices: dict[str, float]) -> bool:
         """用一个完整同刻的最优概率向量替换趋势基准。"""
         state = self.get(pair_id)
-        if state is None or set(prices) != set(state.start_price):
+        if state is None or set(prices) != set(state.outcomes):
             return False
-        self._put(pair_id, PairPriceState(
-            first_price=state.first_price,
-            start_price=state.start_price,
-            up_price=state.up_price,
-            down_price=state.down_price,
-            trend_price={outcome: float(prices[outcome]) for outcome in state.start_price},
-        ))
+        self._put(
+            pair_id,
+            PairPriceState(
+                outcomes=state.outcomes,
+                first_price=state.first_price,
+                start_price=state.start_price,
+                up_price=state.up_price,
+                down_price=state.down_price,
+                trend_price={outcome: float(prices[outcome]) for outcome in state.outcomes},
+            ),
+        )
         return True
 
     def delete(self, pair_id: str) -> None:
         self._cache.delete(self._key(pair_id))
 
     def _put(self, pair_id: str, state: PairPriceState) -> None:
-        raw = json.dumps({
-            "first_price": state.first_price,
-            "start_price": state.start_price,
-            "up_price": state.up_price,
-            "down_price": state.down_price,
-            "trend_price": state.trend_price,
-        }).encode("utf-8")
+        raw = json.dumps(
+            {
+                "outcomes": state.outcomes,
+                "first_price": state.first_price,
+                "start_price": state.start_price,
+                "up_price": state.up_price,
+                "down_price": state.down_price,
+                "trend_price": state.trend_price,
+            }
+        ).encode("utf-8")
         self._cache.add(self._key(pair_id), raw)

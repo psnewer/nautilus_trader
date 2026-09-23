@@ -1,4 +1,4 @@
-"""VenueReplaceAction —— 将执行腿替换为同 outcome 的 Polymarket 腿。"""
+"""VenueReplaceAction —— 将执行腿替换为 Polymarket 腿。"""
 
 from __future__ import annotations
 
@@ -27,14 +27,19 @@ class VenueReplaceAction(Action):
     `pm_price`(默认真)决定替换后 PM 腿的下单价:
       - **不存在 / True**:用 PM 报价腿自身概率(= PM best_ask 隐含概率,PM 实时价);
       - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
+    `convert=true` 时,已经是 PM 的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
+    `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
     PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
     """
 
-    def __init__(self, pm_price: bool | None = None) -> None:
+    def __init__(self, pm_price: bool | None = None, convert: bool | None = None) -> None:
         if pm_price is not None and not isinstance(pm_price, bool):
             raise ValueError("pm_price must be a boolean")
+        if convert is not None and not isinstance(convert, bool):
+            raise ValueError("convert must be a boolean")
         # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
         self._use_pm_price = pm_price is None or pm_price
+        self._convert = bool(convert)
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.scratch.get("cancel_pair_orders"):
@@ -46,7 +51,13 @@ class VenueReplaceAction(Action):
         if isinstance(selected, dict):
             if selected.get("cancel_pair_orders"):
                 return
-            replaced = _replace_candidate(selected, pm_legs, ctx.pair_id, self._use_pm_price)
+            replaced = _replace_candidate(
+                selected,
+                pm_legs,
+                ctx.pair_id,
+                self._use_pm_price,
+                self._convert,
+            )
             if replaced is None:
                 ctx.scratch["selected_candidate"] = {}
                 ctx.scratch["legs"] = []
@@ -65,7 +76,13 @@ class VenueReplaceAction(Action):
             for candidate in candidates:
                 if not isinstance(candidate, dict):
                     continue
-                replaced = _replace_candidate(candidate, pm_legs, ctx.pair_id, self._use_pm_price)
+                replaced = _replace_candidate(
+                    candidate,
+                    pm_legs,
+                    ctx.pair_id,
+                    self._use_pm_price,
+                    self._convert,
+                )
                 if replaced is not None:
                     replaced_candidates.append(replaced)
             ctx.scratch["candidates"] = replaced_candidates
@@ -74,7 +91,13 @@ class VenueReplaceAction(Action):
         legs = ctx.scratch.get("legs")
         if not legs:
             return
-        replaced = _replace_legs(legs, pm_legs, ctx.pair_id, self._use_pm_price)
+        replaced = _replace_legs(
+            legs,
+            pm_legs,
+            ctx.pair_id,
+            self._use_pm_price,
+            self._convert,
+        )
         ctx.scratch["legs"] = replaced or []
 
 
@@ -95,10 +118,17 @@ def _replace_candidate(
     pm_legs: dict[str, dict],
     pair_id: str,
     use_pm_price: bool,
+    convert: bool,
 ) -> dict | None:
     if candidate.get("cancel_pair_orders"):
         return deepcopy(candidate)
-    replaced_legs = _replace_legs(candidate.get("legs") or [], pm_legs, pair_id, use_pm_price)
+    replaced_legs = _replace_legs(
+        candidate.get("legs") or [],
+        pm_legs,
+        pair_id,
+        use_pm_price,
+        convert,
+    )
     if replaced_legs is None:
         return None
     replaced = deepcopy(candidate)
@@ -111,17 +141,20 @@ def _replace_legs(
     pm_legs: dict[str, dict],
     pair_id: str,
     use_pm_price: bool,
+    convert: bool,
 ) -> list[dict] | None:
     if not legs:
         return None
     result = []
     for leg in legs:
         venue = str(leg.get("venue", "")).upper()
-        if venue == POLYMARKET:
+        convert_target_leg = convert and venue == POLYMARKET
+        if venue == POLYMARKET and not convert_target_leg:
             result.append(deepcopy(leg))
             continue
 
-        outcome = str(leg.get("claim") or leg.get("role") or "").lower()
+        source_outcome = str(leg.get("claim") or leg.get("role") or "").lower()
+        outcome = _opposite_outcome(source_outcome) if convert_target_leg else source_outcome
         share = _share_if_wins(leg)
         pm_leg = pm_legs.get(outcome)
         if outcome not in VALID_OUTCOMES or share is None or share <= 0 or pm_leg is None:
@@ -134,7 +167,7 @@ def _replace_legs(
         replacement = deepcopy(pm_leg)
         # use_pm_price=True(默认):用 PM 报价腿概率(PM 实时 ask);False:用原腿共享 `prob`。
         # PM 是 probability venue,price 即概率;qty=share(不缩放),cost=share×prob。
-        prob = _order_prob(leg, pm_leg, pair_id, use_pm_price)
+        prob = _order_prob(leg, pm_leg, pair_id, use_pm_price or convert_target_leg)
         qty = qty_from_share(POLYMARKET, share, prob)
         replacement["price"] = prob
         replacement["prob"] = prob
@@ -143,6 +176,10 @@ def _replace_legs(
         replacement["cost"] = leg_economics(POLYMARKET, prob, qty).loss_if_loses
         result.append(replacement)
     return result
+
+
+def _opposite_outcome(outcome: str) -> str:
+    return "no" if outcome == "yes" else "yes" if outcome == "no" else ""
 
 
 def _share_if_wins(leg: dict) -> float | None:
@@ -167,7 +204,12 @@ def _pm_quote_prob(pm_leg: dict) -> float | None:
     return _positive_float(pm_leg.get("prob")) or _positive_float(pm_leg.get("price"))
 
 
-def _order_prob(leg: dict, pm_leg: dict, pair_id: str, use_pm_price: bool) -> float:
+def _order_prob(
+    leg: dict,
+    pm_leg: dict,
+    pair_id: str,
+    use_pm_price: bool,
+) -> float:
     """PM 下单价的隐含概率。
 
     use_pm_price=True(默认):用 PM 报价腿概率(PM 实时 ask);缺报价时告警回退 0。

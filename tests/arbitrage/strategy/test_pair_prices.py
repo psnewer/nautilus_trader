@@ -22,8 +22,9 @@ class _Cache:
 def test_initialize_is_idempotent_and_capture_fields_only_once():
     store = PairPriceStore(_Cache())
     state = store.initialize("p", ["yes", "no"])
+    assert state.outcomes == ("yes", "no")
     assert state.first_price == {}
-    assert state.start_price == {"yes": 0.6, "no": 0.6}
+    assert state.start_price == {}
     assert state.up_price == {}
     assert state.down_price == {}
     assert state.trend_price == {}
@@ -61,7 +62,7 @@ def test_update_trend_replaces_complete_outcome_vector():
     assert store.get("p").trend_price == {"yes": 0.45, "no": 0.57}
 
 
-def test_old_schema_reads_with_empty_extremes_and_trend():
+def test_old_schema_reads_with_empty_extremes_trend_and_default_start_price():
     cache = _Cache()
     cache.add(
         "arb:pair_price:p",
@@ -69,6 +70,8 @@ def test_old_schema_reads_with_empty_extremes_and_trend():
     )
 
     state = PairPriceStore(cache).get("p")
+    assert state.outcomes == ("yes",)
+    assert state.start_price == {}
     assert state.up_price == {}
     assert state.down_price == {}
     assert state.trend_price == {}

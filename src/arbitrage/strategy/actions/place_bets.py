@@ -17,7 +17,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - post_only=true 写入 submit spec，由 submitter 构造 NT post-only GTC LimitOrder；缺失或 false
     保持普通限价单。
   - limit=true 时最终 BUY 取当前价与 live best bid 的较低者，SELL 取当前价与 live best ask
-    的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。该模式不应用 spread。
+    的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。若同时配置 spread，先应用
+    limit，再对最终 draft 应用 spread。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -142,11 +143,9 @@ class PlaceBetsAction(Action):
             spread = 0.0 if self._limit else self._spread
             drafts.extend(_expand_probability_inventory(draft, leg, ctx, spread))
 
-        if self._limit:
-            if not _apply_book_limit_to_drafts(drafts, ctx):
-                return
-        else:
-            _apply_spread_to_drafts(drafts, self._spread, ctx)
+        if self._limit and not _apply_book_limit_to_drafts(drafts, ctx):
+            return
+        _apply_spread_to_drafts(drafts, self._spread, ctx)
 
         expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
         required_by_venue = _required_balance_by_venue(drafts)

@@ -361,6 +361,11 @@
 - 期望:`PositionStatusReport` 及其 inferred fill 先完整应用；随后才调用 PM `get_balance_allowance` 并用 `AccountState` 覆盖 CASH。inferred SELL 临时加回的本金不得成为本轮对账完成后的最终余额；启动 completion event 在余额覆盖完成后才最终置位。仅成功取得 position batch 的 client 刷新余额；余额请求失败只 warning，不回滚仓位修复，也不改变 position liveness。
 - 验收:`tests/arbitrage/execution/test_engine_barrier.py::test_periodic_position_reconcile_refreshes_authoritative_balance_last`、`test_startup_reconcile_refreshes_authoritative_balance_last`；定向路径由 `tests/arbitrage/execution/test_polymarket_client.py::test_on_drop_position_reconcile_refreshes_balance_after_report_application` 覆盖。
 
+### execution-4.5.8g: 新成交后的一个 position 对账周期内延后差异修复(#393)
+- 前置:本地刚应用真实成交，venue position 快照尚未追上；连续 position 对账周期由 `position_check_interval_secs` 配置。
+- 期望:launcher 将 `position_check_threshold_ms` 固定派生为 `position_check_interval_secs × 1000`；最近仓位活动不足一个完整周期时，NT 只保留差异并跳过 inferred 修复。
+- 验收:`tests/arbitrage/launchers/test_arb_node.py::test_position_check_threshold_tracks_position_check_interval`。
+
 ### execution-4.5.9: 全 venue reconcile 应用前乐观并发校验(#308;#318 per-pair)
 - 前置:PM/OE/SE report 请求发出前按 **instrument 分格**记录本账户 order/position 摘要
   (`{instrument → digest}`)。**#318**:order 摘要只含 order、position 摘要只含 position(含 realized_pnl);

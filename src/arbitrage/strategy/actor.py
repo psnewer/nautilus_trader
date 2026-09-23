@@ -613,7 +613,7 @@ class StrategyEvaluator(Strategy):
         state = store.get(pair_id) if store is not None else None
         if state is None or state.first_price:
             return
-        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+        prices = self._pm_ask_prices(pair_id, state.outcomes)
         if prices is None or not 0.95 <= sum(prices.values()) <= 1.05:
             return
         store.capture_first(pair_id, prices)
@@ -630,7 +630,7 @@ class StrategyEvaluator(Strategy):
         state = store.get(pair_id) if store is not None else None
         if state is None:
             return
-        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
+        prices = self._pm_ask_prices(pair_id, state.outcomes)
         if prices is None or not 0.98 <= sum(prices.values()) <= 1.02:
             return
         store.update_extremes(pair_id, prices)
@@ -646,7 +646,7 @@ class StrategyEvaluator(Strategy):
         if state is None:
             return
         prices = best_probabilities_by_outcome(self.cache, self._pair_registry, pair_id)
-        if prices is None or set(prices) != set(state.start_price):
+        if prices is None or set(prices) != set(state.outcomes):
             return
         total = sum(prices.values())
         if 1.0 < total < 1.05:
@@ -671,9 +671,12 @@ class StrategyEvaluator(Strategy):
         # 仅已见证赛前盘口的 pair 才采 start_price；OE/SE 确认 IN_PLAY 后也沿用同一护栏。
         if state is None or not state.first_price:
             return
-        prices = self._pm_ask_prices(pair_id, tuple(state.start_price))
-        if prices is not None:
-            store.capture_start(pair_id, prices)
+        prices = self._pm_ask_prices(pair_id, state.outcomes)
+        if prices is not None and store.capture_start(pair_id, prices):
+            self._log.info(
+                f"Start price captured: pair={pair_id} game={game_id} "
+                f"source={phase_state.source} prices={prices}",
+            )
 
     def _pm_ask_prices(self, pair_id: str, outcomes: tuple[str, ...]) -> dict[str, float] | None:
         expected = set(outcomes)

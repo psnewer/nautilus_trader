@@ -1272,7 +1272,7 @@ def test_first_price_captures_when_sports_state_confirmed_pre():
 
     state = actor._get_pair_price_store().get("match_X")
     assert state.first_price == {"yes": 0.44, "no": 0.56}
-    assert state.start_price == {"yes": 0.6, "no": 0.6}
+    assert state.start_price == {}
 
 
 def test_first_price_does_not_capture_when_sports_state_unknown():
@@ -1350,7 +1350,7 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
 
 
 def test_start_price_not_captured_without_witnessed_first_price():
-    # late-join 护栏:没采到 first_price → 收到 live phase 也不采 start_price,保持默认。
+    # late-join 护栏:没采到 first_price → 收到 live phase 也不采 start_price,保持为空。
     # 本用例不发送明确 PRE 状态，因此没有见证 first_price。
     actor, _, pair_reg, _, loop, _ = _harness()
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.8, no_ask=0.7)
@@ -1362,7 +1362,7 @@ def test_start_price_not_captured_without_witnessed_first_price():
 
     state = actor._get_pair_price_store().get("match_X")
     assert state.first_price == {}
-    assert state.start_price == {"yes": 0.6, "no": 0.6}
+    assert state.start_price == {}
 
 
 def test_start_price_captures_in_play_after_explicit_pre_first_price_witnessed():

@@ -84,7 +84,7 @@ Strategy 记录与 Execution 重算的执行状态基线是 `pair_positions_dige
   `pair_ids_for_game`,防止同场的 3-way pair 只触发排序后的第一个。
 - MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。
 
-### 3.1 PairPriceStore(已落地,#323/#341/#356)
+### 3.1 PairPriceStore(已落地,#323/#341/#356,as-of 2026-09-23)
 
 `src/arbitrage/common/pair_prices.py` 在 NT Cache 通用对象区保存 market-level pair 的参考价格，
 key 为 `arb:pair_price:{pair_id}`。采集时机和盘口完整性规则归 Strategy
@@ -92,8 +92,9 @@ key 为 `arb:pair_price:{pair_id}`。采集时机和盘口完整性规则归 Str
 
 | 字段 / API | 语义 |
 |---|---|
+| `outcomes` | pair 的完整 outcome 清单；初始化后不可变，供各价格向量做完整性校验 |
 | `first_price` | outcome → PM best ask 概率；初始化为空字典，首次完整写入后不可覆盖 |
-| `start_price` | outcome → PM best ask 概率；初始化时每个 outcome 为 `0.6`，首次完整写入后不可覆盖 |
+| `start_price` | outcome → PM best ask 概率；初始化为空字典，首次完整写入后不可覆盖；空字典就是“未采集”，不提供默认价格 |
 | `up_price` | outcome → 满足 commission 区间的历史最高 PM best ask 概率；首个有效向量初始化，后续逐 outcome 取 `max` |
 | `down_price` | outcome → 满足 commission 区间的历史最低 PM best ask 概率；首个有效向量初始化，后续逐 outcome 取 `min` |
 | `trend_price` | outcome → 最近一次满足 `1 < Σ各 outcome 跨 venue 最优 best-ask 概率 < 1.05` 的完整基准向量；初始化为空，不进入 EvalContext 快照 |
@@ -103,9 +104,10 @@ key 为 `arb:pair_price:{pair_id}`。采集时机和盘口完整性规则归 Str
 | `update_trend` | 接收完整同刻价格向量并原子替换 `trend_price`；最优价选择与 commission 区间校验由 Strategy 采集方拥有 |
 | `delete(pair_id)` | Strategy 在比赛 ended 的最后一轮评估完成后删除记录 |
 
-Store 不保存独立的 captured 标志：`first_price` 是否为空、`start_price` 是否仍全部为默认值、
+Store 不保存独立的 captured 标志：`first_price/start_price` 是否为空、
 `up_price/down_price/trend_price` 是否为空就是各自的写入/可读判据。读取旧 schema 时缺失的极值或趋势
-字段按空字典兼容，等下一个有效向量自然初始化。所有 compare-and-write 均在 Strategy Actor 同一同步
+字段按空字典兼容；旧 schema 的全 `0.6` start 向量迁移为空字典，outcome 清单从旧价格字段恢复。
+所有 compare-and-write 均按独立 `outcomes` 校验完整向量，并在 Strategy Actor 同一同步
 回调内完成，中间没有 `await`。
 
 ### 3.2 MarketBookSubscription(#357)

@@ -192,6 +192,8 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             # #110:开连续 position 对账(全局)—— 周期调 venue `generate_position_status_reports`:
             # PM 据此跑 merge/redeem(fire-and-forget),OE 据此刷 venue_position_alive(WS 新鲜则不 reload)。
             position_check_interval_secs=cfg.execution.position_check_interval_secs,
+            # 新成交后的一个完整 position 对账周期内忽略仓位差异,等待 venue 仓位快照追上。
+            position_check_threshold_ms=round(cfg.execution.position_check_interval_secs * 1_000),
         ),
         data_clients=data_clients,
         exec_clients=exec_clients,

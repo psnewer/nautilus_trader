@@ -1,10 +1,12 @@
 """ShareLimitModification:单一 legs + candidate 数组直接缩放。"""
 
 import asyncio
+from types import SimpleNamespace
 
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.condition import EvalContext
+from tests.arbitrage.strategy._live_state import live_context
 
 
 def _run(coro):
@@ -112,7 +114,6 @@ def test_candidates_are_individually_share_limited_and_output_as_array():
             ],
         },
     ]
-
     _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
 
     adjusted = ctx.scratch["candidates"]
@@ -319,5 +320,118 @@ def test_current_position_gate_requires_boolean_param():
         ShareLimitModification(current_position_gate="true")
     except ValueError as exc:
         assert "current_position_gate must be a boolean" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_current_order_gate_defaults_to_disabled():
+    order = SimpleNamespace(instrument_id="N.ORBITEXCH")
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET", "N.ORBITEXCH"],
+        orders=[order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_order_gate_blocks_all_legs_for_any_pair_open_order():
+    order = SimpleNamespace(instrument_id="N.ORBITEXCH")
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET", "N.ORBITEXCH"],
+        orders=[order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_current_order_gate_blocks_all_candidates_before_outcome_filtering():
+    order = SimpleNamespace(instrument_id="Y.POLYMARKET")
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET", "N.POLYMARKET"],
+        orders=[order],
+        portfolio=_Portfolio(pm={"yes": 20.0}),
+    )
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": "opposite",
+            "legs": [
+                {"venue": "POLYMARKET", "role": "no", "qty": 10.0, "share_if_wins": 10.0},
+            ],
+        },
+    ]
+    ctx.scratch["selected_candidate"] = dict(ctx.scratch["candidates"][0])
+    ctx.scratch["legs"] = list(ctx.scratch["candidates"][0]["legs"])
+
+    _run(
+        ShareLimitModification(
+            current_position_gate=True,
+            current_order_gate=True,
+        ).execute(ctx),
+    )
+
+    assert ctx.scratch["candidates"] == []
+    assert ctx.scratch["selected_candidate"] == {}
+    assert ctx.scratch["legs"] == []
+
+
+def test_current_order_gate_allows_when_pair_has_no_open_order():
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_order_gate_ignores_open_order_outside_pair():
+    outside_order = SimpleNamespace(instrument_id="X.ORBITEXCH")
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[outside_order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_order_gate_missing_live_state_fails_closed():
+    ctx = EvalContext(pair_id="p")
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_current_order_gate_requires_boolean_param():
+    try:
+        ShareLimitModification(current_order_gate="true")
+    except ValueError as exc:
+        assert "current_order_gate must be a boolean" in str(exc)
     else:
         raise AssertionError("expected ValueError")

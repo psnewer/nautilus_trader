@@ -1048,13 +1048,13 @@ def test_limit_absent_or_false_keeps_existing_price(limit):
 @pytest.mark.parametrize(
     ("side", "current_price", "book", "expected"),
     [
-        ("BUY", 0.40, {"bid": 0.38, "ask": 0.42}, 0.38),
-        ("BUY", 0.35, {"bid": 0.38, "ask": 0.42}, 0.35),
-        ("SELL", 0.60, {"bid": 0.58, "ask": 0.62}, 0.62),
-        ("SELL", 0.65, {"bid": 0.58, "ask": 0.62}, 0.65),
+        ("BUY", 0.40, {"bid": 0.38, "ask": 0.42}, 0.35),
+        ("BUY", 0.35, {"bid": 0.38, "ask": 0.42}, 0.32),
+        ("SELL", 0.60, {"bid": 0.58, "ask": 0.62}, 0.65),
+        ("SELL", 0.65, {"bid": 0.58, "ask": 0.62}, 0.68),
     ],
 )
-def test_limit_true_chooses_more_conservative_current_or_book_price(
+def test_limit_true_applies_spread_after_conservative_book_price(
     side,
     current_price,
     book,
@@ -1082,7 +1082,8 @@ def test_limit_true_chooses_more_conservative_current_or_book_price(
 
     _prepare_and_dispatch(PlaceBetsAction(limit=True, spread=0.03), ctx)
 
-    assert [(spec["side"], spec["price"]) for spec in calls] == [(side, expected)]
+    assert calls[0]["side"] == side
+    assert calls[0]["price"] == pytest.approx(expected)
 
 
 def test_limit_true_converts_probability_book_price_for_decimal_venue():

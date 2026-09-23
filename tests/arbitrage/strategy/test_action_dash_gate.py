@@ -59,8 +59,8 @@ def test_drops_only_buy_leg_strictly_below_half_corresponding_start_price():
     assert ctx.scratch["selected_candidate"]["legs"] == ctx.scratch["legs"]
 
 
-def test_uses_default_start_price_and_keeps_uncomparable_legs():
-    ctx = _context()  # yes/no 默认 0.6,过滤阈值为 0.3
+def test_missing_start_price_keeps_all_legs():
+    ctx = _context()
     candidate = {
         "candidate_id": "chosen",
         "legs": [
@@ -74,7 +74,7 @@ def test_uses_default_start_price_and_keeps_uncomparable_legs():
 
     _run(DashGateAction().execute(ctx))
 
-    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["NO_PROB", "NO_OUTCOME"]
+    assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == ["LOW", "NO_PROB", "NO_OUTCOME"]
 
 
 def test_noop_without_selected_candidate_or_pair_price_state():

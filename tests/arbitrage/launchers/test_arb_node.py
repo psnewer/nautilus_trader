@@ -119,11 +119,20 @@ def test_build_trading_node_config_has_pm_oe_data_exec_clients():
     assert nc.exec_engine.reconciliation is True
     assert nc.exec_engine.open_check_interval_secs == 300.0  # #111:连续 order 对账恢复 order liveness
     assert nc.exec_engine.position_check_interval_secs == 300.0  # #110:连续 position 对账驱动 PM merge/redeem + position liveness
+    assert nc.exec_engine.position_check_threshold_ms == 300_000
     assert nc.exec_engine.inflight_check_interval_ms == 2_000
     assert nc.exec_engine.inflight_check_threshold_ms == 10_000  # #378:异常 ACK 等待 10s 后进入定向查询
     assert nc.exec_engine.inflight_check_retries == 1
     assert nc.exec_engine.reconciliation_startup_delay_secs == 0.0
     assert nc.timeout_connection == 180.0
+
+
+def test_position_check_threshold_tracks_position_check_interval():
+    cfg = _cfg(execution={"position_check_interval_secs": 45.5})
+
+    nc = arb_node.build_trading_node_config(cfg)
+
+    assert nc.exec_engine.position_check_threshold_ms == 45_500
 
 
 def test_build_trading_node_config_includes_credentials_from_cfg():
