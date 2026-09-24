@@ -49,6 +49,7 @@ def test_default_empty_json(cfg_path):
     assert cfg.venues.orbitexch.headless is True
     assert cfg.venues.sharpexch.enabled is False
     assert cfg.venues.sharpexch.base_url == "https://portal.sharpxch.com"
+    assert cfg.matching.competition_group_by_sport == {}
     assert cfg.debug is None
 
 
@@ -77,6 +78,7 @@ def test_full_json_parses(cfg_path):
         },
         "matching": {
             "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
+            "competition_group_by_sport": {"Tennis": "Tennis"},
         },
         "arbitrage": {
             "share": 50.0,
@@ -102,6 +104,7 @@ def test_full_json_parses(cfg_path):
     assert cfg.discovery.sharpexch.sports[0].competitions == ["Men's Wimbledon 2026"]
     assert cfg.venues.sharpexch.enabled is True
     assert cfg.matching.competition_aliases["atp"] == "ATP"
+    assert cfg.matching.competition_group_by_sport == {"Tennis": "Tennis"}
     assert cfg.arbitrage.share == 50.0
     assert cfg.arbitrage.fx == 1.5
     assert cfg.arbitrage.max_leg_share == 75.0

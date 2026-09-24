@@ -86,6 +86,12 @@ class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
                 POLYMARKET,
                 {},
             ),
+            competition_group_by_sport=ctx_map_get(
+                ctx,
+                "competition_group_by_sport_by_venue",
+                POLYMARKET,
+                {},
+            ),
             # Gamma discovery 与 PM 主链同路由(venues.polymarket.proxy_url 经 dispatcher 传入)
             http_client=HttpClient(
                 timeout_secs=30,

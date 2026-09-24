@@ -139,15 +139,9 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
         se_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", SHARPEXCH)
         if se_discovery_cfg is not None:
             sport_configs = list(getattr(se_discovery_cfg, "sports", []) or [])
-            target_competitions = [
-                comp
-                for sport in sport_configs
-                for comp in getattr(sport, "competitions", []) or []
-            ]
             discovery = SharpExchDiscoveryClient(
                 base_url=config.base_url,
                 json_fetcher_session=_se_browser_json_fetcher_session(browser_manager, config),
-                target_competitions=target_competitions,
             )
             provider = SharpExchInstrumentProvider(
                 discovery=discovery,
@@ -156,6 +150,9 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
                 ),
                 competition_aliases=dict(
                     ctx_map_get(ctx, "competition_aliases_by_venue", SHARPEXCH, {}),
+                ),
+                competition_group_by_sport=dict(
+                    ctx_map_get(ctx, "competition_group_by_sport_by_venue", SHARPEXCH, {}),
                 ),
                 sport_configs=sport_configs,
                 fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,

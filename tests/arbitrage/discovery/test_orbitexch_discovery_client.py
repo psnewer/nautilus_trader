@@ -190,6 +190,33 @@ def test_discovery_client_with_json_fetcher():
     assert events[0].sport == "Tennis"
 
 
+def test_discovery_client_filters_each_sport_independently():
+    """空 competitions 的 Tennis 全量与 Soccer 精确过滤互不污染。"""
+    async def mock_fetcher(request: OrbitExchSportDetailsRequest) -> dict:
+        payload = _sample_payload()
+        market = payload["marketCatalogueList"]["content"][0]
+        if request.body["id"] == "1":
+            payload["sportInfo"] = {"id": "1", "name": "Soccer"}
+            market["eventType"] = {"id": "1", "name": "Soccer"}
+            market["competition"] = {"id": "200", "name": "EPL"}
+        return payload
+
+    async def run():
+        from types import SimpleNamespace
+
+        client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
+        return await client.discover_events([
+            SimpleNamespace(sport="Tennis", competitions=[]),
+            SimpleNamespace(sport="Soccer", competitions=["EPL"]),
+        ])
+
+    events = asyncio.run(run())
+    assert [(event.sport, event.competition) for event in events] == [
+        ("Tennis", "ATP"),
+        ("Soccer", "EPL"),
+    ]
+
+
 def test_discovery_client_no_provider_returns_empty():
     """无 provider 和 fetcher 时返回空列表。"""
     async def run():

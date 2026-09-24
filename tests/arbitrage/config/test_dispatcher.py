@@ -497,7 +497,8 @@ def test_arb_context_init_kwargs_includes_se_discovery_when_venue_enabled():
 def test_arb_context_init_kwargs_includes_aliases():
     cfg = _cfg(matching={"sport_aliases": {"soccer": "Soccer"},
                          "competition_aliases": {"atp": "ATP",
-                                                  "Men's Roland Garros 2026": "ATP"}})
+                                                  "Men's Roland Garros 2026": "ATP"},
+                         "competition_group_by_sport": {"Tennis": "Tennis"}})
     kw = to_arb_context_init_kwargs(cfg)
     assert kw["sport_aliases_by_venue"] == {
         "POLYMARKET": {"soccer": "Soccer"},
@@ -505,6 +506,10 @@ def test_arb_context_init_kwargs_includes_aliases():
     }
     assert kw["competition_aliases_by_venue"]["POLYMARKET"]["atp"] == "ATP"
     assert kw["competition_aliases_by_venue"]["ORBITEXCH"]["Men's Roland Garros 2026"] == "ATP"
+    assert kw["competition_group_by_sport_by_venue"] == {
+        "POLYMARKET": {"Tennis": "Tennis"},
+        "ORBITEXCH": {"Tennis": "Tennis"},
+    }
 
 
 # ── PMSPORTS 发现目标 + competition→sport map ──────────────────

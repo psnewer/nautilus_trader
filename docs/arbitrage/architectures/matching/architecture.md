@@ -196,6 +196,8 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 ### 4.2 跨 venue 匹配(平移自旧 `MatchEngine.match_events`)
 
 1. 按 `(sport, competition)` 分组(完全相等)
+   - 两字段已由各 Provider 统一规范化；sport 级粗分组的配置与优先级归 discovery 组件定义，
+     见 `../discovery/architecture.md §3.2`。Matching 不读取 aliases，也不二次改写。
 2. 组内计算所有 anchor×tradable 候选的 home/away/total confidence(`get_similar` 命中 token 数 / 两侧较长 token 数)
 3. 按 `(total_confidence,total_matched_chars)` 降序贪心分配;每个 anchor/tradable 事件最多被匹配一次
 4. `home_confidence > 0 and away_confidence > 0 and total_confidence > 0` 过滤;`competition_max_matches[comp]` 限制单联赛上限

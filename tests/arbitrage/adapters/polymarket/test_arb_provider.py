@@ -4,8 +4,11 @@
 是离线纯逻辑,可单测;完整 load_all_async(真 gamma API + httpx)经 /live-test 验。
 """
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.polymarket.arb_provider import ArbPolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
 from nautilus_trader.adapters.polymarket.arb_provider import _role_and_claim_for_token
@@ -194,6 +197,36 @@ def test_unknown_suffix_skipped():
 
 def test_empty_ticker_returns_empty():
     assert _role(market_slug="x", event_ticker="", outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
+
+
+def test_load_all_async_applies_sport_competition_group():
+    provider = object.__new__(ArbPolymarketInstrumentProvider)
+    provider._http_client = object()
+    provider._log = MagicMock()
+
+    async def fetch_json(_client, _url):
+        return [{"sport": "atp", "series": "10365", "ordering": "home"}]
+
+    captured = []
+
+    async def load_series(_client, series_id, competition, sport, ordering):
+        captured.append((series_id, competition, sport, ordering))
+        return 0
+
+    provider._fetch_json = fetch_json
+    provider._load_series = load_series
+    bootstrap.prepare_arb_context(
+        target_competitions_by_data_source={"PMSPORTS": ["atp"]},
+        competition_to_sport_by_data_source={"PMSPORTS": {"atp": "Tennis"}},
+        competition_aliases_by_venue={"POLYMARKET": {"atp": "ATP"}},
+        competition_group_by_sport_by_venue={"POLYMARKET": {"Tennis": "Tennis"}},
+    )
+    try:
+        asyncio.run(provider.load_all_async())
+    finally:
+        bootstrap.reset_arb_context()
+
+    assert captured == [("10365", "Tennis", "Tennis", "home")]
 
 
 # ─── _load_moneyline_market: PM matching info + game_id 写入 ──────────────

@@ -80,6 +80,7 @@ def test_data_factory_constructs_provider_when_discovery_config_present(monkeypa
         discovery_config_by_venue={SHARPEXCH: se_venue},
         sport_aliases_by_venue={SHARPEXCH: {"Tennis": "Tennis"}},
         competition_aliases_by_venue={SHARPEXCH: {"Men's Wimbledon 2026": "ATP"}},
+        competition_group_by_sport_by_venue={SHARPEXCH: {"Tennis": "Tennis"}},
         arbitrage_params=ArbitrageParams(fx=1.25),
     )
     cfg = SharpExchDataClientConfig(username="u", password="p")
@@ -89,13 +90,13 @@ def test_data_factory_constructs_provider_when_discovery_config_present(monkeypa
     discovery.assert_called_once_with(
         base_url=cfg.base_url,
         json_fetcher_session=ANY,
-        target_competitions=["Men's Wimbledon 2026"],
     )
     provider.assert_called_once()
     _, kwargs = provider.call_args
     assert kwargs["discovery"] is discovery.return_value
     assert kwargs["sport_aliases"] == {"Tennis": "Tennis"}
     assert kwargs["competition_aliases"] == {"Men's Wimbledon 2026": "ATP"}
+    assert kwargs["competition_group_by_sport"] == {"Tennis": "Tennis"}
     assert kwargs["sport_configs"] == se_venue.sports
     assert kwargs["fx"] == 1.25
     assert bootstrap.get_arb_context().instrument_provider_by_venue[SHARPEXCH] is provider.return_value

@@ -90,12 +90,14 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
         target_competitions: list | tuple | None = None,
         competition_to_sport: dict | None = None,
         competition_aliases: dict | None = None,
+        competition_group_by_sport: dict | None = None,
         http_client: HttpClient | None = None,
     ) -> None:
         super().__init__(config=config)
         self._target_competitions = {str(c).lower() for c in (target_competitions or [])}
         self._competition_to_sport = dict(competition_to_sport or {})
         self._competition_aliases = dict(competition_aliases or {})
+        self._competition_group_by_sport = dict(competition_group_by_sport or {})
         # Gamma discovery 与 PM 主链共用路由:factory 注入带 proxy_url 的 NT HttpClient
         self._http_client = http_client or HttpClient(timeout_secs=30)
 
@@ -113,9 +115,12 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
             if comp_raw.lower() not in self._target_competitions or not series_id:
                 continue
             sport = self._competition_to_sport.get(comp_raw.lower(), comp_raw)
-            competition = self._competition_aliases.get(
-                comp_raw,
-                self._competition_aliases.get(comp_raw.lower(), comp_raw),
+            competition = self._competition_group_by_sport.get(
+                sport,
+                self._competition_aliases.get(
+                    comp_raw,
+                    self._competition_aliases.get(comp_raw.lower(), comp_raw),
+                ),
             )
             count += await self._load_series(client, str(series_id), competition, sport)
         self._log.info(f"PMSPORTS discovery: loaded {count} anchor instrument(s)")

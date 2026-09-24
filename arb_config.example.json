@@ -41,6 +41,7 @@
       "wimbledon": "ATP",
       "Men's Wimbledon 2026": "ATP"
     },
+    "competition_group_by_sport": {},
     "competition_max_matches": {
       "ATP": 1
     }

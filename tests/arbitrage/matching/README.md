@@ -20,6 +20,8 @@
 ## 锁定决定
 
 - **Q9**: PM `BinaryOption` + OE/SE `BettingInstrument` 异构,通过 `instrument.info` dict matching key 归一(`sport` / `competition` / `home_team` / `away_team` / `selection_role`);`start_ts` 不参与 matching。
+  - `competition_group_by_sport` 由 Provider 在 discovery 边界应用；Matching 仍只验证
+    `(sport, competition)` 完全相等，不读取或重复应用 alias 配置。
 - **venue 解析**:`events_from_instruments` 先经 `venue_id_from_instrument_id()` 解析真实 venue id,再兼容测试 fixture 的 `instrument.id.venue`;不从 `instrument.info["venue"]` 兜底,缺 venue 直接跳过。
 - **触发**: #59 后由 NT clock timer 周期读 cache,不再订 `InstrumentsRefreshed`
 - **tradable venues**:dispatcher 当前输出 PMSPORTS anchor + `tradable_venues=enabled_tradable_venue_ids(cfg)`;`MarketMatchingConfig` 旧 `pm_venue` / `external_venues` / `oe_venue` 输入字段已删除。

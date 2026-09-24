@@ -152,6 +152,30 @@ def test_discovery_client_uses_injected_json_fetcher_and_config_competitions():
     assert calls[0].body["id"] == "2"
 
 
+def test_discovery_client_filters_each_sport_independently():
+    async def _fetch(request):
+        if request.body["id"] == "2":
+            return _payload_with_market("1.tennis")
+        payload = _payload_with_market("1.soccer", competition="EPL")
+        market = payload["marketCatalogueList"]["content"][0]
+        payload["sportInfo"] = {"id": "1", "name": "Soccer"}
+        market["eventType"] = {"id": "1", "name": "Soccer"}
+        return payload
+
+    async def _run():
+        client = SharpExchDiscoveryClient(base_url="https://portal.sharpxch.com", json_fetcher=_fetch)
+        return await client.discover_events([
+            SimpleNamespace(sport="Tennis", competitions=[]),
+            SimpleNamespace(sport="Soccer", competitions=["EPL"]),
+        ])
+
+    events = asyncio.run(_run())
+    assert [(event.sport, event.competition) for event in events] == [
+        ("Tennis", "Men's Wimbledon 2026"),
+        ("Soccer", "EPL"),
+    ]
+
+
 def test_discovery_client_keeps_one_fetcher_session_for_all_sports():
     calls = []
 

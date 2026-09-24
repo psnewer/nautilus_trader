@@ -72,6 +72,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         *,
         sport_aliases: dict[str, str] | None = None,        # slice 7A:写 info 时规范化
         competition_aliases: dict[str, str] | None = None,
+        competition_group_by_sport: dict[str, str] | None = None,
     ) -> None: ...
 ```
 
@@ -79,7 +80,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 | info key | 来源 |
 |---|---|
 | `sport` | `sport_aliases.get(event.sport, event.sport)` —— **slice 7A 规范化**(`"soccer"` → `"Soccer"`)|
-| `competition` | `competition_aliases.get(event.competition, event.competition)` —— **slice 7A 规范化**(`"Men's Roland Garros 2026"` → `"ATP"`,#46) |
+| `competition` | 先查 `competition_group_by_sport[规范化 sport]`；未命中再查 `competition_aliases[event.competition]`，最后原值透传。前者用于把同 sport 的不同原始联赛统一为一个 matching 分组 |
 | `home_team` | `event.home_team` |
 | `away_team` | `event.away_team` |
 | `selection_role` | `"home"` / `"draw"` / `"away"`(由本腿对应的 selection_id 决定) |
@@ -92,6 +93,18 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > 但旧 Provider 不查 aliases。slice 7A 加 `sport_aliases` / `competition_aliases` 构造参,
 > launcher 经 `ArbContext.sport_aliases_by_venue["ORBITEXCH"]` /
 > `competition_aliases_by_venue["ORBITEXCH"]` 注入(由 `ArbConfig.matching` 派生)。
+
+**sport 全量发现与统一分组(2026-09-24，已落地、离线已验证)**：
+
+- OE/SE 的 `SportFilter.competitions` 省略或为空时，`sport/details` 只按 sport 请求并接受该
+  sport 下全部 Match Odds；非空时仍按当前 sport 自己的 competition 列表精确过滤。
+- OE/SE factory 不再把多个 sport 的 competitions 扁平为一个全局过滤集合，避免
+  `Tennis=[]` 与 `Soccer=["EPL"]` 混用时 Tennis 被 EPL 错误过滤。
+- PM/PMSPORTS/OE/SE Provider 都消费 `competition_group_by_sport`，归一优先级为
+  sport 强制分组 > 精确 `competition_aliases` > 原始 competition。该配置缺省为空，现有配置
+  行为不变；PMSPORTS 即使 PM trading venue 关闭，也会收到 POLYMARKET namespace 的分组配置。
+- 分组只覆盖 `instrument.info["competition"]`；OE/SE `BettingInstrument.competition_name`
+  继续保留 venue 原始名称，competition 页订阅与执行 IO 不受影响。
 
 **OE competition 页懒加载处理(2026-06-29)**:`OrbitExchScraper` discovery 浏览器独立于 Data/Exec 登录浏览器,仍需在 `add_init_script`
 中注入与赔率页一致的可见性欺骗:固定 `document.hidden=false` / `visibilityState="visible"` / `hasFocus()=true`,
@@ -128,7 +141,9 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 >   - 2-way(`slug == ticker`):按 **competition `ordering`** 选 role 映射,再统一 home=`claim=yes`、away=`claim=no`。**不赌 outcomes 固定顺序**。
 >   - 3-way binary(`slug == ticker-{abbr}`):仅 `Yes` token;`abbr` 取自 `teams.abbreviation`;`-{home_abbr}`→home / `-{away_abbr}`→away / `-draw`→draw;其它(`No` token / 未知后缀)→ 跳过。
 > - **sport**:`ArbContext.competition_to_sport_by_data_source["PMSPORTS"]` 查表(config 派生)。
-> - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。
+> - **competition**:写 `info` 时先按 `competition_group_by_sport` 强制分组，未命中再经
+>   `competition_aliases_by_venue["POLYMARKET"]` 精确标准化；matching `(sport,competition)`
+>   分组键由同一 Provider 契约保证跨 venue 对齐。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断，当前由 `/events/keyset?series_id=` 游标分页取全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。

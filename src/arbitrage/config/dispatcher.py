@@ -24,6 +24,7 @@ from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.config import SharpExchExecClientConfig
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import SPORTS_CLIENT
 from src.arbitrage.common.venues import descriptor_for
@@ -259,7 +260,9 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
     tradable_venues = enabled_tradable_venue_ids(cfg)
     sport_aliases = dict(cfg.matching.sport_aliases)
     competition_aliases = dict(cfg.matching.competition_aliases)
+    competition_group_by_sport = dict(cfg.matching.competition_group_by_sport)
     discovery_by_venue = _discovery_config_by_enabled_venue(cfg)
+    competition_group_venues = list(dict.fromkeys([*tradable_venues, POLYMARKET]))
     data_source_competitions = {SPORTS_CLIENT: to_sports_status_target_competitions(cfg)}
     data_source_comp_to_sport = {SPORTS_CLIENT: to_sports_status_competition_to_sport(cfg)}
     return {
@@ -275,6 +278,10 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
         "competition_aliases_by_venue": {
             venue: competition_aliases
             for venue in tradable_venues
+        },
+        "competition_group_by_sport_by_venue": {
+            venue: competition_group_by_sport
+            for venue in competition_group_venues
         },
         "target_competitions_by_data_source": data_source_competitions,
         "competition_to_sport_by_data_source": data_source_comp_to_sport,

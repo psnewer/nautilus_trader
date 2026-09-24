@@ -106,6 +106,29 @@ def test_sports_provider_builds_non_tradable_anchor_instrument():
     assert inst.info["away_team"] == "Felix Gill"
 
 
+def test_sports_provider_applies_sport_competition_group():
+    provider = PolymarketSportsInstrumentProvider(
+        target_competitions=["atp"],
+        competition_to_sport={"atp": "Tennis"},
+        competition_aliases={"atp": "ATP"},
+        competition_group_by_sport={"Tennis": "Tennis"},
+    )
+    async def fetch_json(*_):
+        return [{"sport": "atp", "series": "10365"}]
+
+    provider._fetch_json = fetch_json
+    captured = []
+
+    async def load_series(_client, series_id, competition, sport):
+        captured.append((series_id, competition, sport))
+        return 0
+
+    provider._load_series = load_series
+    asyncio.run(provider.load_all_async())
+
+    assert captured == [("10365", "Tennis", "Tennis")]
+
+
 def _sports_client(loop, *, proxy_url=None):
     clock = TestClock()
     return PolymarketSportsDataClient(
@@ -449,6 +472,7 @@ def test_sports_factory_uses_data_source_context(monkeypatch):
         target_competitions_by_data_source={SPORTS_CLIENT: ["atp"]},
         competition_to_sport_by_data_source={SPORTS_CLIENT: {"atp": "Tennis"}},
         competition_aliases_by_venue={POLYMARKET: {"atp": "ATP"}},
+        competition_group_by_sport_by_venue={POLYMARKET: {"Tennis": "Tennis"}},
     )
 
     pm_factories.PolymarketSportsLiveDataClientFactory.create(
@@ -465,6 +489,7 @@ def test_sports_factory_uses_data_source_context(monkeypatch):
     assert provider._target_competitions == {"atp"}
     assert provider._competition_to_sport == {"atp": "Tennis"}
     assert provider._competition_aliases == {"atp": "ATP"}
+    assert provider._competition_group_by_sport == {"Tennis": "Tennis"}
 
 
 def test_engine_zero_count_unsubscribe_reclaims_store():

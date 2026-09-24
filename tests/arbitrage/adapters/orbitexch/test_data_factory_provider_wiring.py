@@ -120,23 +120,25 @@ def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatc
         discovery_config_by_venue={ORBITEXCH: oe_venue},
         sport_aliases_by_venue={ORBITEXCH: {"Tennis": "Tennis"}},
         competition_aliases_by_venue={ORBITEXCH: {"Men's Roland Garros 2026": "ATP"}},
+        competition_group_by_sport_by_venue={ORBITEXCH: {"Tennis": "Tennis"}},
         arbitrage_params=ArbitrageParams(fx=1.25),
     )
 
     oe_factories.OrbitExchLiveDataClientFactory.create(**_args())
 
-    # discovery 类被构造(base_url + json_fetcher + target_competitions)
+    # competition 过滤由每个 SportConfig 自己携带,不构造跨 sport 的全局过滤器。
     discovery_class.assert_called_once()
     _, discovery_kwargs = discovery_class.call_args
     assert "base_url" in discovery_kwargs
     assert "json_fetcher" in discovery_kwargs
-    assert discovery_kwargs["target_competitions"] == ["Men's Roland Garros 2026"]
+    assert "target_competitions" not in discovery_kwargs
 
     # 真 Provider 类被构造(discovery + aliases 传入)
     prov_class.assert_called_once()
     _, prov_kwargs = prov_class.call_args
     assert prov_kwargs["sport_aliases"] == {"Tennis": "Tennis"}
     assert prov_kwargs["competition_aliases"] == {"Men's Roland Garros 2026": "ATP"}
+    assert prov_kwargs["competition_group_by_sport"] == {"Tennis": "Tennis"}
     assert prov_kwargs["fx"] == 1.25
 
 

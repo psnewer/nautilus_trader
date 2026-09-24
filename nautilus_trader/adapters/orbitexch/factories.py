@@ -114,15 +114,9 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         oe_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", ORBITEXCH)
         if oe_discovery_cfg is not None:
             sport_configs = list(getattr(oe_discovery_cfg, "sports", []) or [])
-            target_competitions = [
-                comp
-                for sport in sport_configs
-                for comp in getattr(sport, "competitions", []) or []
-            ]
             discovery = OrbitExchDiscoveryClient(
                 base_url=config.base_url,
                 json_fetcher=_oe_browser_json_fetcher(browser_manager, config),
-                target_competitions=target_competitions,
             )
             provider = OrbitExchInstrumentProvider(
                 discovery=discovery,
@@ -131,6 +125,9 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
                 ),
                 competition_aliases=dict(
                     ctx_map_get(ctx, "competition_aliases_by_venue", ORBITEXCH, {}),
+                ),
+                competition_group_by_sport=dict(
+                    ctx_map_get(ctx, "competition_group_by_sport_by_venue", ORBITEXCH, {}),
                 ),
                 sport_configs=sport_configs,
                 fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,

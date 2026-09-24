@@ -68,7 +68,7 @@ class VenueDiscoveryConfig(Struct, kw_only=True):
 
 class SportFilter(Struct, kw_only=True):
     sport:        str                        # "Tennis" / "Soccer" / ...
-    competitions: list[str]                  # ["atp"] / ["Men's Wimbledon 2026"] / ...
+    competitions: list[str] = []             # OE/SE 为空=该 sport 全量;非空=精确过滤
 
 
 class DataSourcesConfig(Struct, kw_only=True):
@@ -85,6 +85,7 @@ class SportsStatusDataSourceConfig(Struct, kw_only=True):
 class MatchingConfig(Struct, kw_only=True):
     sport_aliases:          dict[str, str] = {}     # {"soccer": "Soccer"}
     competition_aliases:    dict[str, str] = {}     # {"atp": "ATP", "Men's Wimbledon 2026": "ATP"}
+    competition_group_by_sport: dict[str, str] = {} # {"Tennis": "Tennis"};按 sport 强制统一 matching 分组
     competition_max_matches: dict[str, int] = {}    # {"ATP": 1}
 
 
@@ -230,6 +231,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
   },
   "matching": {
     "competition_aliases": {"atp": "ATP", "Men's Wimbledon 2026": "ATP"},
+    "competition_group_by_sport": {},
     "competition_max_matches": {"ATP": 1}
   },
   "venues": {
@@ -264,6 +266,23 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
   "debug": {"enabled": false}
 }
 ```
+
+`competition_group_by_sport` 是可选的粗粒度 matching 分组，默认 `{}`，因此旧配置完全保持
+现有行为。Provider 先应用 `sport_aliases`，再按以下优先级生成
+`instrument.info["competition"]`：
+
+1. `competition_group_by_sport[规范化 sport]`；
+2. `competition_aliases[原始 competition]`；
+3. 原始 competition。
+
+例如 OE/SE 配置 `{"sport":"Tennis"}` 且 matching 配置
+`"competition_group_by_sport":{"Tennis":"Tennis"}` 时，会发现该 sport 下全部 Match Odds，
+并把 PM/PMSPORTS/OE/SE 的 Tennis matching key 统一为 `Tennis`。原始联赛名仍保留在 venue
+instrument 的原生字段中，不参与该分组覆盖。
+
+启用该字段后，`competition_max_matches` 和 `strategy.bindings` 中的
+`competition:<name>` 都应使用最终分组名（例如 `Tennis`）；仍写 `ATP` / `WTA` 时不会命中
+已被归入 `Tennis` 的 pair。也可以继续使用 `sport:Tennis` strategy binding。
 
 ---
 

@@ -170,6 +170,17 @@ def test_build_legs_applies_competition_alias():
     assert leg.info["competition"] == "English Premier League"
 
 
+def test_build_legs_sport_group_overrides_competition_alias():
+    """sport 级分组命中时覆盖精确 competition alias。"""
+    prov = OrbitExchInstrumentProvider(
+        _mock_discovery(),
+        competition_aliases={"EPL": "English Premier League"},
+        competition_group_by_sport={"Soccer": "Football"},
+    )
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.info["competition"] == "Football"
+
+
 def test_build_legs_alias_miss_uses_raw():
     """无 alias 命中 → info 用原 sport/competition 字符串。"""
     prov = OrbitExchInstrumentProvider(

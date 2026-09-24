@@ -214,6 +214,12 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 {},
             ),
         )
+        comp_groups = dict(
+            (getattr(ctx, "competition_group_by_sport_by_venue", None) or {}).get(
+                POLYMARKET,
+                {},
+            ),
+        )
         if not target_comps:
             self._log.info("PM discovery: no target competitions configured → load 0")
             return
@@ -229,7 +235,10 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 continue
             sport = comp_to_sport.get(comp_raw.lower(), comp_raw)
             # 写 info 用 aliased competition(matching 分组键);raw 只用于 /sports 比对 + sport 查表
-            competition = comp_aliases.get(comp_raw, comp_aliases.get(comp_raw.lower(), comp_raw))
+            competition = comp_groups.get(
+                sport,
+                comp_aliases.get(comp_raw, comp_aliases.get(comp_raw.lower(), comp_raw)),
+            )
             # ordering:competition 特异(ATP=home / MLB=away),决定 2-way outcomes 映射
             ordering = str(comp_info.get("ordering") or "home")
             count += await self._load_series(

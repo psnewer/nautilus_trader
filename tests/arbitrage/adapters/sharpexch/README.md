@@ -279,3 +279,13 @@ market `_subscribe` 建立 `binary_market_id → instrument members`，最终 `_
 `subscribed_custom_data()`。`test_market_subscription_records_source_market_game_id` 验证索引写入；
 `test_on_price_frame_publishes_one_market_batch_for_all_runners` 以失败桩锁定热路径不扫描；
 断线 CLEAR 用例锁定同一索引仍只清当前页已订阅成员。
+
+## #397：SE sport 全量 discovery 与 competition 分组
+
+**前置**：`Tennis.competitions=[]`、`Soccer.competitions=["EPL"]`，可选配置
+`competition_group_by_sport.Tennis=Tennis`。**步骤**：factory 构造 discovery/provider 并在同一
+fetch session 内分别请求两个 sport。**期望**：各 sport 只使用自身 competition filter；Tennis
+全量、Soccer 仅 EPL；sport 分组优先于精确 alias。**验收**：
+`test_discovery_client.py::test_discovery_client_filters_each_sport_independently`、
+`test_provider.py::test_build_legs_sport_group_overrides_competition_alias`、
+`test_factories.py::test_data_factory_constructs_provider_when_discovery_config_present`。

@@ -40,6 +40,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         *,
         sport_aliases: dict[str, str] | None = None,
         competition_aliases: dict[str, str] | None = None,
+        competition_group_by_sport: dict[str, str] | None = None,
         sport_configs: Iterable | None = None,
         fx: float = 1.0,
     ) -> None:
@@ -47,6 +48,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         self._discovery = discovery
         self._sport_aliases = sport_aliases or {}
         self._competition_aliases = competition_aliases or {}
+        self._competition_group_by_sport = competition_group_by_sport or {}
         self._sport_configs = list(sport_configs or [])
         self._fx = float(fx) if fx > 0 else 1.0
 
@@ -65,9 +67,14 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         selection 的 lay 投影(行情/身份载体,下单经 `exec_instrument_id` 重定向回 yes
         instrument 的 SELL,保证 venue 对账 LAY=SHORT 落在真 selection 上)。2-way 不变。
         """
+        sport = self._sport_aliases.get(event.sport, event.sport)
+        competition = self._competition_group_by_sport.get(
+            sport,
+            self._competition_aliases.get(event.competition, event.competition),
+        )
         info_base = {
-            "sport": self._sport_aliases.get(event.sport, event.sport),
-            "competition": self._competition_aliases.get(event.competition, event.competition),
+            "sport": sport,
+            "competition": competition,
             "home_team": event.home_team,
             "away_team": event.away_team,
         }

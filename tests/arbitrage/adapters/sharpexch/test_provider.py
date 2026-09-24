@@ -106,6 +106,16 @@ def test_build_legs_applies_aliases():
     assert leg.info["competition"] == "ATP"
 
 
+def test_build_legs_sport_group_overrides_competition_alias():
+    provider = SharpExchInstrumentProvider(
+        SimpleNamespace(),
+        competition_aliases={"Men's Wimbledon 2026": "ATP"},
+        competition_group_by_sport={"Tennis": "Tennis"},
+    )
+    leg = next(iter(provider._build_legs(_event())))
+    assert leg.info["competition"] == "Tennis"
+
+
 def test_load_all_async_invokes_discovery_and_adds_instruments():
     discovery = SimpleNamespace()
     discovery.discover_events = AsyncMock(return_value=[_event()])

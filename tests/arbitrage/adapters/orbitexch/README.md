@@ -605,3 +605,13 @@ market `_subscribe` 建立 `binary_market_id → instrument members`，最终 `_
 `subscribed_custom_data()`。`test_market_subscription_records_source_market_game_id` 验证索引写入；
 `test_on_price_frame_publishes_one_market_batch_for_all_runners` 以失败桩锁定热路径不扫描；
 断线 CLEAR 用例锁定同一索引仍只清当前页已订阅成员。
+
+## #397：OE sport 全量 discovery 与 competition 分组
+
+**前置**：`Tennis.competitions=[]`、`Soccer.competitions=["EPL"]`，可选配置
+`competition_group_by_sport.Tennis=Tennis`。**步骤**：factory 构造 discovery/provider 并分别请求
+两个 sport。**期望**：不创建跨 sport 的全局 competition filter；Tennis 接受全部 Match Odds，
+Soccer 仅接受 EPL；sport 分组优先于精确 competition alias。**验收**：
+`test_orbitexch_discovery_client.py::test_discovery_client_filters_each_sport_independently`、
+`test_orbitexch_provider.py::test_build_legs_sport_group_overrides_competition_alias`、
+`test_data_factory_provider_wiring.py::test_factory_constructs_real_provider_when_scraper_config_present`。

@@ -34,6 +34,7 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         *,
         sport_aliases: dict[str, str] | None = None,
         competition_aliases: dict[str, str] | None = None,
+        competition_group_by_sport: dict[str, str] | None = None,
         sport_configs: Iterable | None = None,
         fx: float = 1.0,
     ) -> None:
@@ -41,6 +42,7 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         self._discovery = discovery
         self._sport_aliases = sport_aliases or {}
         self._competition_aliases = competition_aliases or {}
+        self._competition_group_by_sport = competition_group_by_sport or {}
         self._sport_configs = list(sport_configs or [])
         self._fx = float(fx) if fx > 0 else 1.0
 
@@ -54,9 +56,14 @@ class SharpExchInstrumentProvider(InstrumentProvider):
     def _build_legs(self, event: SharpExchMarketEvent) -> Iterable[BettingInstrument]:
         """#228:3-way(runners 含 draw)每 selection 产 yes + 合成 no 两条腿(no 是同
         selection 的 lay 投影,下单经 `exec_instrument_id` 重定向回 yes instrument);2-way 不变。"""
+        sport = self._sport_aliases.get(event.sport, event.sport)
+        competition = self._competition_group_by_sport.get(
+            sport,
+            self._competition_aliases.get(event.competition, event.competition),
+        )
         info_base = {
-            "sport": self._sport_aliases.get(event.sport, event.sport),
-            "competition": self._competition_aliases.get(event.competition, event.competition),
+            "sport": sport,
+            "competition": competition,
             "home_team": event.home_team,
             "away_team": event.away_team,
         }

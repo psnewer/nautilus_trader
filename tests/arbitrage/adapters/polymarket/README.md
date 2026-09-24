@@ -687,3 +687,11 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 **期望/验收**：DataClient 直接查询 `_market_order_book_members` 并发布 market frame；即使
 `subscribed_custom_data()` 被替换为失败桩，行情路径也不得调用。由
 `test_quotes_publish_one_market_batch_for_all_changed_assets` 覆盖。
+
+### pm-adapter-discovery.competition-group：sport 级 matching 分组（#397）
+
+**前置**：PMSPORTS/PM 目标含 `atp`，`competition_aliases.atp=ATP`，并配置
+`competition_group_by_sport.Tennis=Tennis`。**输入**：Provider 发现 ATP series。
+**期望**：PM tradable 与 PMSPORTS anchor 都把 `info.competition` 写为 `Tennis`；缺省分组配置
+时仍走原精确 alias。**验收**：`test_arb_provider.py::test_load_all_async_applies_sport_competition_group`
+与 `test_sports.py::test_sports_provider_applies_sport_competition_group`。

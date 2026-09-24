@@ -60,6 +60,7 @@ class ArbContext:
     discovery_config_by_venue: dict = field(default_factory=dict)
     sport_aliases_by_venue: dict = field(default_factory=dict)
     competition_aliases_by_venue: dict = field(default_factory=dict)
+    competition_group_by_sport_by_venue: dict = field(default_factory=dict)
     instrument_provider_by_venue: dict = field(default_factory=dict)
     browser_manager_by_venue: dict = field(default_factory=dict)
     browser_lock_by_venue: dict = field(default_factory=dict)
