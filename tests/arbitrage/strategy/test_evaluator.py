@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.enums import OrderStatus
@@ -1365,9 +1367,9 @@ def test_start_price_not_captured_without_witnessed_first_price():
     assert state.start_price == {}
 
 
-def test_start_price_captures_in_play_after_explicit_pre_first_price_witnessed():
-    # happy-path:明确 PRE 时采 first_price → live phase 把当时完整 PM 盘口整组写成
-    # start_price(不做概率和校验)。
+def test_start_price_retries_after_dirty_live_snapshot_until_clean_obd():
+    # 明确 PRE 时采 first_price；首个 live 快照不干净时保持为空，后续 PM OBD
+    # 带来 [0.98,1.02] 内完整向量后再首次写入。
     from tests.arbitrage.matching.test_actor import _add_order_book
 
     actor, _, pair_reg, _, loop, _ = _harness()
@@ -1377,15 +1379,44 @@ def test_start_price_captures_in_play_after_explicit_pre_first_price_witnessed()
     _run(_drain(loop))
     assert actor._get_pair_price_store().get("match_X").first_price == {"yes": 0.44, "no": 0.56}
 
-    _add_order_book(actor.cache, yes.id, 0.8)          # 开赛前后盘口移动
+    _add_order_book(actor.cache, yes.id, 0.8)
     _add_order_book(actor.cache, no.id, 0.7)
     update = _sports_update(888, live=True, ended=False)
     _store_sports_update(actor, update)
     actor.on_data(update)
     _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {}
+
+    _add_order_book(actor.cache, yes.id, 0.48)
+    _add_order_book(actor.cache, no.id, 0.50)
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
 
     state = actor._get_pair_price_store().get("match_X")
-    assert state.start_price == {"yes": 0.8, "no": 0.7}
+    assert state.start_price == {"yes": 0.48, "no": 0.50}
+
+
+@pytest.mark.parametrize(("yes_ask", "no_ask"), [(0.48, 0.50), (0.51, 0.51)])
+def test_start_price_accepts_clean_sum_boundaries(yes_ask, no_ask):
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    from tests.arbitrage.matching.test_actor import _add_order_book
+
+    _add_order_book(actor.cache, yes.id, yes_ask)
+    _add_order_book(actor.cache, no.id, no_ask)
+    update = _sports_update(888, live=True, ended=False)
+    _store_sports_update(actor, update)
+    actor.on_data(update)
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": yes_ask,
+        "no": no_ask,
+    }
 
 
 def test_ended_deletes_pair_prices_after_last_evaluation_finishes():

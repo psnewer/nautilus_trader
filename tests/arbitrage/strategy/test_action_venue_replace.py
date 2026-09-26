@@ -3,6 +3,9 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
 from tests.arbitrage.strategy._live_state import live_context
@@ -15,9 +18,10 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def _book(ask):
+def _book(ask, bid=None):
     book = MagicMock()
     book.best_ask_price.return_value = ask
+    book.best_bid_price.return_value = bid
     return book
 
 
@@ -76,6 +80,23 @@ def _mixed_candidate():
             },
         ],
     }
+
+
+def _dynamic_ctx(*, yes_ask, no_ask, yes_bid, no_bid, start_yes, start_no):
+    ctx = live_context(
+        books={
+            "Y.POLYMARKET": _book(yes_ask, yes_bid),
+            "N.POLYMARKET": _book(no_ask, no_bid),
+        },
+        infos={
+            "Y.POLYMARKET": {"claim": "yes"},
+            "N.POLYMARKET": {"claim": "no"},
+        },
+    )
+    store = PairPriceStore(ctx.cache)
+    store.initialize(ctx.pair_id, ("yes", "no"))
+    store.capture_start(ctx.pair_id, {"yes": start_yes, "no": start_no})
+    return ctx
 
 
 def test_pm_price_false_keeps_original_order_prob():
@@ -140,10 +161,14 @@ def test_invalid_pm_price_param_raises():
 
 
 def test_invalid_convert_param_raises():
-    import pytest
-
     with pytest.raises(ValueError, match="convert must be a boolean"):
         VenueReplaceAction(convert="true")
+
+
+@pytest.mark.parametrize("name", ["deviate_convert", "attitude"])
+def test_invalid_dynamic_convert_param_raises(name):
+    with pytest.raises(ValueError, match=f"{name} must be a boolean"):
+        VenueReplaceAction(**{name: "true"})
 
 
 def test_convert_target_pm_leg_uses_opposite_pm_live_price():
@@ -179,6 +204,125 @@ def test_convert_target_pm_leg_ignores_pm_price_false_and_uses_opposite_live_pri
     assert ctx.scratch["legs"][0]["prob"] == 0.55
     assert ctx.scratch["legs"][0]["qty"] == 80.0
     assert ctx.scratch["legs"][0]["cost"] == 44.0
+
+
+def test_convert_takes_priority_over_dynamic_commission_gate():
+    ctx = _dynamic_ctx(
+        yes_ask=0.40,
+        no_ask=0.65,
+        yes_bid=0.39,
+        no_bid=0.64,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True, attitude=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.65
+
+
+@pytest.mark.parametrize(
+    ("yes_ask", "no_ask"),
+    [(0.40, 0.58), (0.44, 0.58)],
+)
+def test_attitude_converts_on_bid_at_or_below_start_with_clean_commission_boundaries(
+    yes_ask,
+    no_ask,
+):
+    ctx = _dynamic_ctx(
+        yes_ask=yes_ask,
+        no_ask=no_ask,
+        yes_bid=0.40,
+        no_bid=0.57,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(attitude=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == no_ask
+
+
+@pytest.mark.parametrize("yes_bid", [0.48, 0.52])
+def test_deviate_convert_includes_1_2_and_1_3_boundaries(yes_bid):
+    ctx = _dynamic_ctx(
+        yes_ask=yes_bid + 0.01,
+        no_ask=0.99 - yes_bid,
+        yes_bid=yes_bid,
+        no_bid=0.98 - yes_bid,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(deviate_convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == pytest.approx(0.99 - yes_bid)
+
+
+def test_dynamic_convert_does_not_trigger_outside_ranges():
+    ctx = _dynamic_ctx(
+        yes_ask=0.48,
+        no_ask=0.52,
+        yes_bid=0.47,
+        no_bid=0.51,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(attitude=True, deviate_convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+def test_dynamic_convert_requires_clean_pm_ask_commission():
+    ctx = _dynamic_ctx(
+        yes_ask=0.40,
+        no_ask=0.65,
+        yes_bid=0.39,
+        no_bid=0.64,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(attitude=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+def test_dynamic_convert_can_flip_external_leg_when_convert_does_not_apply():
+    ctx = _dynamic_ctx(
+        yes_ask=0.41,
+        no_ask=0.59,
+        yes_bid=0.40,
+        no_bid=0.58,
+        start_yes=0.40,
+        start_no=0.60,
+    )
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(convert=True, attitude=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.59
 
 
 def test_convert_does_not_flip_external_leg_before_replacement():

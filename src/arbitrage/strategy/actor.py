@@ -672,7 +672,9 @@ class StrategyEvaluator(Strategy):
         if state is None or not state.first_price:
             return
         prices = self._pm_ask_prices(pair_id, state.outcomes)
-        if prices is not None and store.capture_start(pair_id, prices):
+        if prices is None or not 0.98 <= sum(prices.values()) <= 1.02:
+            return
+        if store.capture_start(pair_id, prices):
             self._log.info(
                 f"Start price captured: pair={pair_id} game={game_id} "
                 f"source={phase_state.source} prices={prices}",
