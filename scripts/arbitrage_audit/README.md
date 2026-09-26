@@ -10,6 +10,7 @@
 - `add_opposite_pm_profit.py`：生成对手 PM 腿利润测算页。
 - `scan_final_scores.py`：补充最终比分。
 - `append_five_trade_rows_20260924.py`：2026-09-24 五笔成交追加操作的可复现快照。
+- `append_harold_mayot_20260926.py`：把 Harold Mayot 54c 订单及“比分门控后 convert 反转”的诊断结论追加到比分报表。
 - `audit_nohup_orders.py`：以 `OrderInitialized` 为下单时间锚点，从 `nohup.out` 重建全部订单、下单比分、start price、venue 变化和未成交单最接近限价的 OBD。
 - `write_order_audit_sheet.py`：把上述 JSON 写入既有工作簿的“下单汇总/下单明细”页，并移除曾按成交时间错误追加的五行。
 

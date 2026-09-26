@@ -738,6 +738,17 @@ class PolymarketDataClient(LiveMarketDataClient):
             )
             if not deltas:
                 return
+        for item in deltas:
+            book = OrderBook(item.instrument_id, book_type=BookType.L2_MBP)
+            book.apply_deltas(item)
+            bid_price = book.best_bid_price()
+            ask_price = book.best_ask_price()
+            if bid_price is not None and ask_price is not None and bid_price >= ask_price:
+                self._log.warning(
+                    f"Dropping non-positive-spread PM market frame: market_id={market_id}, "
+                    f"instrument_id={item.instrument_id}, bid={bid_price}, ask={ask_price}",
+                )
+                return
         batch = MarketOrderBookDeltas(
             venue=self.venue,
             market_id=market_id,

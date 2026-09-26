@@ -19,7 +19,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 |---|---|
 | `test_arb_provider.py` / `test_gamma_keyset.py` | **#55/#57/#289** series-based 发现：前者覆盖 teams/title/role 纯映射；后者覆盖 `/events/keyset` 多页聚合、旧 limit/offset 清理、游标传递、非法 schema 与重复 cursor fail-closed |
 | `test_sports.py` | **#60/#127/#273** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`)：解析、状态管线、per-game 订阅、NT 原生 `WebSocketClient` 接线与 app-level pong。Sports WS 显式复用 PM proxy，初连后台重试、连接后由 NT client 断线重连；协议层 ping/pong 由 NT client 处理。**映射键 `game_id`** == gamma `event["gameId"]`；eviction 由 `ended` 驱动(matching,见 matching README) |
-| `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
+| `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点；market frame 交叉校验 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 | `test_execution_ack.py` | **#256 起** PM ack 只来自 WS(不再回执即 ack):14 tests —— `_mark_accepted_emitted` 去重(首次 True / 重复 False / 有界挤出最老)、HTTP 回执成功只索引 `venue_order_id`(`_post_signed_order`/`_process_batch_response` 均不 `generate_order_accepted`)、失败只 reject、WS `PLACEMENT` 对 SUBMITTED 单 ack / 已 ack 则幂等跳过、**order 消息 `UPDATE`/`CANCELLATION` 到达同样 ack**(`CANCELLATION` 先补 ack 再走既有撤单终态)、WS trade 消息 MATCHED/MINED/CONFIRMED 任一先到达即 ack(taker 单无 PLACEMENT,靠这条证明已被接收)、PLACEMENT 与 trade 消息共用去重表不重复 ack、CONFIRMED 补 ack 之余仍正常生成 fill。见 execution architecture §3.1 #256(#253 已失效)。|
 | `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译；`minimum_order_size` 映射到两侧通用 `min_quantity`，BUY-only 1 USD 映射到 `info.min_buy_notional` |
@@ -123,6 +123,16 @@ per-instrument OBD。
 后只 flush 一帧最新状态；退订后的迟到 completion 不复活旧帧，断线 CLEAR 不被后续 snapshot
 覆盖。**验收**：`test_market_frame_waits_for_processed_before_flushing_pending`，以及
 `tests/unit_tests/live/test_market_frame.py` 的合流/barrier/退订/拒绝用例。
+
+### pm-adapter-2.7: PM market frame 交叉校验（#400）
+
+**前置**：PM local book 为 `bid=0.41, ask=0.43`，market 已 bootstrap。
+**输入/期望**：单条 WS 消息最终形成 `0.41/0.36` 时，整条 market frame 不发布；
+后续消息修复成 `0.34/0.36` 后正常发布。若同一 WS 消息内先形成中间交叉、随后又
+修复成 `0.34/0.36`，必须等整条消息处理完再校验并正常发布。`bid==ask` 同样不发布。
+**验收**：`test_crossed_market_frame_is_suppressed_until_later_frame_repairs_book`、
+`test_market_frame_validation_runs_after_all_changes_in_ws_message`、
+`test_locked_market_frame_is_suppressed`。
 
 ### pm-adapter-5.1: 上游 ExecutionClient 下单 + 事件回写
 

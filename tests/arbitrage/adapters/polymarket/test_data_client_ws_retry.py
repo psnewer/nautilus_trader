@@ -30,7 +30,6 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BinaryOption
-from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
@@ -111,6 +110,48 @@ def _deltas(instrument: BinaryOption) -> OrderBookDeltas:
                 instrument_id=instrument.id,
                 action=BookAction.ADD,
                 order=order,
+                flags=RecordFlag.F_LAST,
+                sequence=0,
+                ts_event=0,
+                ts_init=0,
+            ),
+        ],
+    )
+
+
+def _two_sided_snapshot(
+    instrument: BinaryOption,
+    *,
+    bid: str,
+    ask: str,
+) -> OrderBookDeltas:
+    return OrderBookDeltas(
+        instrument.id,
+        [
+            OrderBookDelta.clear(instrument.id, 0, 0, 0),
+            OrderBookDelta(
+                instrument_id=instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    OrderSide.BUY,
+                    Price.from_str(bid),
+                    Quantity.from_int(10),
+                    0,
+                ),
+                flags=0,
+                sequence=0,
+                ts_event=0,
+                ts_init=0,
+            ),
+            OrderBookDelta(
+                instrument_id=instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    OrderSide.SELL,
+                    Price.from_str(ask),
+                    Quantity.from_int(10),
+                    0,
+                ),
                 flags=RecordFlag.F_LAST,
                 sequence=0,
                 ts_event=0,
@@ -203,6 +244,122 @@ def test_quotes_publish_one_market_batch_for_all_changed_assets() -> None:
         assert isinstance(captured[0], CustomData)
         assert isinstance(captured[0].data, OrderBookFrameDeltas)
         assert captured[0].data.markets[0].instrument_ids == (yes.id, no.id)
+    finally:
+        loop.close()
+
+
+def test_crossed_market_frame_is_suppressed_until_later_frame_repairs_book() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        instrument = _instrument()
+        c._cache.add_instrument(instrument)
+        c._handle_deltas(
+            instrument,
+            _two_sided_snapshot(instrument, bid="0.41", ask="0.43"),
+        )
+
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (instrument.id,)
+        c._market_books_bootstrapped.add(market_id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xTOKEN", "0.36", PolymarketOrderSide.SELL, "10", "h1"),
+            ],
+            timestamp="1000",
+        ))
+        assert captured == []
+
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xTOKEN", "0.41", PolymarketOrderSide.BUY, "0", "h2"),
+                PolymarketQuote("0xTOKEN", "0.34", PolymarketOrderSide.BUY, "10", "h3"),
+            ],
+            timestamp="1001",
+        ))
+
+        assert len(captured) == 1
+        repaired = OrderBook(instrument.id, BookType.L2_MBP)
+        repaired.apply_deltas(captured[0].data.markets[0].deltas[0])
+        assert float(repaired.best_bid_price()) == 0.34
+        assert float(repaired.best_ask_price()) == 0.36
+    finally:
+        loop.close()
+
+
+def test_locked_market_frame_is_suppressed() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        instrument = _instrument()
+        c._cache.add_instrument(instrument)
+        c._handle_deltas(
+            instrument,
+            _two_sided_snapshot(instrument, bid="0.40", ask="0.42"),
+        )
+
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (instrument.id,)
+        c._market_books_bootstrapped.add(market_id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xTOKEN", "0.42", PolymarketOrderSide.BUY, "10", "h1"),
+            ],
+            timestamp="1000",
+        ))
+
+        assert captured == []
+    finally:
+        loop.close()
+
+
+def test_market_frame_validation_runs_after_all_changes_in_ws_message() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        c = _client(loop)
+        instrument = _instrument()
+        c._cache.add_instrument(instrument)
+        c._handle_deltas(
+            instrument,
+            _two_sided_snapshot(instrument, bid="0.41", ask="0.43"),
+        )
+
+        market_id = "0xCONDITION"
+        data_type = market_order_book_data_type(Venue("POLYMARKET"), market_id)
+        c._add_subscription(data_type)
+        c._market_order_book_members[market_id] = (instrument.id,)
+        c._market_books_bootstrapped.add(market_id)
+        captured = []
+        c._handle_data = captured.append  # type: ignore[method-assign]
+
+        c._handle_quotes(PolymarketQuotes(
+            market=market_id,
+            price_changes=[
+                PolymarketQuote("0xTOKEN", "0.36", PolymarketOrderSide.SELL, "10", "h1"),
+                PolymarketQuote("0xTOKEN", "0.41", PolymarketOrderSide.BUY, "0", "h2"),
+                PolymarketQuote("0xTOKEN", "0.34", PolymarketOrderSide.BUY, "10", "h3"),
+            ],
+            timestamp="1000",
+        ))
+
+        assert len(captured) == 1
+        final_book = OrderBook(instrument.id, BookType.L2_MBP)
+        final_book.apply_deltas(captured[0].data.markets[0].deltas[0])
+        assert float(final_book.best_bid_price()) == 0.34
+        assert float(final_book.best_ask_price()) == 0.36
     finally:
         loop.close()
 

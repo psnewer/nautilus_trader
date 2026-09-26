@@ -98,6 +98,19 @@ runner 全深度快照；runner 双边无档时仍发单独 CLEAR，防止 DataE
 `_cross-cutting/order-book-frame.md §3.2`。本机制不扫描或丢弃 DataEngine `data_queue`，也不
 修改 `ThrottledEnqueuer` 的公平性与调度。
 
+### 2.4 PM market frame 交叉校验（#400）
+
+一条 PM `price_change` WS 消息可能包含同一 condition 下多个 token、多个档位的变化。
+DataClient 必须先处理完整条消息并更新 local book，再由 `_publish_market_deltas` 把本帧
+涉及的各 instrument 重建为完整 `CLEAR + ADD` snapshot。只有此时才校验每个 snapshot
+的最终 `best_bid/best_ask`：若任一个满足 `best_bid >= best_ask`，整条 market frame
+直接丢弃，不进入 DataEngine Cache，也不发布给 Strategy；即 crossed 与 locked book
+都不允许。
+
+校验不能下沉到单条 level delta，否则同一 WS 消息内“先更新 ask、后更新 bid”的正常
+原子修正会被误判。交叉帧虽不发布，其增量仍已进入 PM local book；后续 WS 消息修复
+盘口后，既有完整 snapshot 重建路径会发布修复后的状态。
+
 ---
 
 ## 3. 接口
