@@ -176,6 +176,7 @@ def _context(*, store, shares, unrealized=None, positions=None):
     )
     price_store = PairPriceStore(ctx.cache)
     price_store.initialize(_PAIR_ID, ["yes", "no"])
+    price_store.capture_start(_PAIR_ID, {"yes": 0.45, "no": 0.55})
     price_store.update_trend(_PAIR_ID, {"yes": 0.39, "no": 0.62})
     return ctx
 

@@ -32,7 +32,8 @@ class VenueReplaceAction(Action):
       - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
     `convert=true` 时,已经是 PM 的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
     `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
-    `convert` 未命中时,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
+    `convert` 未命中时先要求 pair 的全部 outcome 均存在 start_price,任一缺失则整组候选 fail-closed;
+    有 start_price 后,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
     `deviate_convert=true` 可在 bid 位于 `[1.2xstart_price,1.3xstart_price]` 时反转;
     两者均仅在完整 PM ask 向量概率和位于 `[0.98,1.02]` 时生效。
     PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
@@ -162,9 +163,10 @@ def _dynamic_inputs(
     deviate_convert: bool,
     attitude: bool,
 ) -> tuple[dict[str, float], dict[str, float]]:
+    start_prices = _start_prices(ctx)
     if not deviate_convert and not attitude:
-        return {}, {}
-    return _polymarket_bids_by_outcome(ctx, pm_legs), _start_prices(ctx)
+        return {}, start_prices
+    return _polymarket_bids_by_outcome(ctx, pm_legs), start_prices
 
 
 def _start_prices(ctx: EvalContext) -> dict[str, float]:
@@ -250,6 +252,22 @@ def _replace_legs(
 ) -> list[dict] | None:
     if not legs:
         return None
+    requires_start_price = any(
+        not (convert and str(leg.get("venue", "")).upper() == POLYMARKET)
+        for leg in legs
+    )
+    missing_start_outcomes = [
+        outcome
+        for outcome in VALID_OUTCOMES
+        if _positive_float(start_prices.get(outcome)) is None
+    ]
+    if requires_start_price and missing_start_outcomes:
+        _LOG.info(
+            f"VenueReplace: pair={pair_id} missing pair start_price "
+            f"outcomes={missing_start_outcomes}, drop group",
+        )
+        return None
+
     result = []
     for leg in legs:
         venue = str(leg.get("venue", "")).upper()
@@ -306,10 +324,12 @@ def _should_dynamic_convert(
     asks = [_pm_quote_prob(pm_legs.get(role, {})) for role in VALID_OUTCOMES]
     if any(value is None for value in asks) or not 0.98 <= sum(asks) <= 1.02:
         return False
-    bid = _positive_float(pm_bids.get(outcome))
-    start = _positive_float(start_prices.get(outcome))
-    if bid is None or start is None:
+    if outcome not in VALID_OUTCOMES:
         return False
+    bid = _positive_float(pm_bids.get(outcome))
+    if bid is None:
+        return False
+    start = float(start_prices[outcome])
     if attitude and bid <= start:
         return True
     return deviate_convert and 1.2 * start <= bid <= 1.3 * start

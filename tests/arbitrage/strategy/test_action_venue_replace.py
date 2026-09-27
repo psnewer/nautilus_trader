@@ -25,8 +25,8 @@ def _book(ask, bid=None):
     return book
 
 
-def _ctx():
-    return live_context(
+def _ctx(*, with_start=True):
+    ctx = live_context(
         books={
             "Y.POLYMARKET": _book(0.40),
             "N.POLYMARKET": _book(0.55),
@@ -44,6 +44,11 @@ def _ctx():
             },
         },
     )
+    if with_start:
+        store = PairPriceStore(ctx.cache)
+        store.initialize(ctx.pair_id, ("yes", "no"))
+        store.capture_start(ctx.pair_id, {"yes": 0.40, "no": 0.60})
+    return ctx
 
 
 def _mixed_candidate():
@@ -169,6 +174,61 @@ def test_invalid_convert_param_raises():
 def test_invalid_dynamic_convert_param_raises(name):
     with pytest.raises(ValueError, match=f"{name} must be a boolean"):
         VenueReplaceAction(**{name: "true"})
+
+
+def test_missing_start_price_blocks_default_replacement_and_drops_group():
+    ctx = _ctx(with_start=False)
+    _, candidate = _mixed_candidate()
+    ctx.scratch["candidates"] = [candidate]
+
+    _run(VenueReplaceAction().execute(ctx))
+
+    assert ctx.scratch["candidates"] == []
+
+
+def test_any_missing_pair_start_price_blocks_even_when_source_outcome_has_start():
+    ctx = _ctx(with_start=False)
+    store = PairPriceStore(ctx.cache)
+    store.initialize(ctx.pair_id, ("yes", "no"))
+    store.capture_start(ctx.pair_id, {"yes": 0.40})
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction().execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+@pytest.mark.parametrize("params", [{"attitude": True}, {"deviate_convert": True}])
+def test_missing_start_price_blocks_dynamic_rules_and_drops_group(params):
+    ctx = _ctx(with_start=False)
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(**params).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_convert_still_takes_priority_when_start_price_is_missing():
+    ctx = _ctx(with_start=False)
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True, attitude=True, deviate_convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
 
 
 def test_convert_target_pm_leg_uses_opposite_pm_live_price():

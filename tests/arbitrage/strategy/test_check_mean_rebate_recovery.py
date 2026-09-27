@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import InstrumentId
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
@@ -280,6 +281,9 @@ def test_recovery_venue_select_true_picks_pm_over_better_odds_venue():
         infos=infos,
         positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
     )
+    price_store = PairPriceStore(default_ctx.cache)
+    price_store.initialize(default_ctx.pair_id, ("yes", "no"))
+    price_store.capture_start(default_ctx.pair_id, {"yes": 0.50, "no": 0.50})
     assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(default_ctx) is True
     assert default_ctx.scratch["legs"][0]["instrument_id"] == "A.ORBITEXCH"
     asyncio.run(VenueReplaceAction().execute(default_ctx))

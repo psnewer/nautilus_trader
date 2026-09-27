@@ -270,6 +270,7 @@ def main() -> None:
         start = last_before(starts[pair], order["ts"])
 
         native_venue = None
+        native_role = None
         if prep and trigger:
             candidates = candidate_matches(trigger_books, prep["rate"])
             recent_drops = [
@@ -281,9 +282,9 @@ def main() -> None:
             for candidate in candidates:
                 remaining = [leg for leg in candidate["legs"] if leg not in recent_drops]
                 if len(remaining) == 1:
-                    native_candidates.add(remaining[0][0])
+                    native_candidates.add(remaining[0])
             if len(native_candidates) == 1:
-                native_venue = next(iter(native_candidates))
+                native_venue, native_role = next(iter(native_candidates))
             else:
                 role_venues = {
                     venue
@@ -360,6 +361,7 @@ def main() -> None:
             "start_no": start["no"] if start else None,
             "start来源": start["source"] if start else None,
             "原生腿venue": native_venue,
+            "venue_replace前方向": native_role,
             "触发venue": ",".join(changed_venues) or None,
             **dict(zip(
                 [f"变化前_{venue}_{role.upper()}" for venue in ("PM", "OE", "SE") for role in ROLES],
