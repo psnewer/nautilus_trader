@@ -789,7 +789,7 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 
 **用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
 `test_extreme_prices_update_without_first_price_and_require_clean_sum`、
-`test_start_price_not_captured_without_witnessed_first_price`、
+`test_start_price_captures_without_witnessed_first_price`、
 `test_start_price_retries_after_dirty_live_snapshot_until_clean_obd`、
 `test_start_price_accepts_clean_sum_boundaries`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
@@ -800,9 +800,9 @@ candi_select -> place_bets(intent=recovery,market=true)`。
   内才首次写 first price；Store 无记录(UNKNOWN)、明确 IN_PLAY/POST、非 PM OBD 与不干净向量不写；
 - 每个 PM OBD 在评估前仅用概率和位于 `[0.98,1.02]` 的干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
-- IN_PLAY phase **仅当该 pair 已在明确 PRE 下采到 `first_price`**，且完整 PM ask 向量概率和
-  位于闭区间 `[0.98,1.02]` 时才首次写 start price；phase 切换瞬间不合格则保持为空，后续正常
-  OBD 继续幂等重试直到首次合格；没有赛前见证则始终为空，见决策 #367；成功写入时打印一次含
+- IN_PLAY phase 不要求已有 `first_price`；完整 PM ask 向量概率和位于闭区间 `[0.98,1.02]`
+  时首次写 start price；phase 切换瞬间不合格则保持为空，后续正常 OBD 继续幂等重试直到首次
+  合格；成功写入时打印一次含
   `pair/game/source/prices` 的 `Start price captured` INFO，重复尝试不打印；
 - ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
   game 索引。
@@ -869,7 +869,7 @@ apply-before-publish 及 single-flight 完成协议由 unit/adapters 测试覆�
 **前置**：PairRegistry 可由 pair 取得 `game_id`，PMS/OE/SE 任一来源已推进
 `SportsPhaseStore`。**期望**：`in_game`、first_price 门控和 start_price 采集读取统一
 PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 phase 变化本身不绕过
-价格变化门控。后续正常 OBD 可幂等采 start_price，仍要求 first_price 已存在。
+价格变化门控。后续正常 OBD 可幂等采 start_price，不要求 first_price 已存在。
 **验收**：`test_query_in_game.py`、`test_evaluator.py` 的 first/start price 用例，以及
 `tests/arbitrage/common/test_sports_phase.py`。
 

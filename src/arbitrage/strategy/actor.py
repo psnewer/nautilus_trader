@@ -668,8 +668,7 @@ class StrategyEvaluator(Strategy):
             return
         store = self._get_pair_price_store()
         state = store.get(pair_id) if store is not None else None
-        # 仅已见证赛前盘口的 pair 才采 start_price；OE/SE 确认 IN_PLAY 后也沿用同一护栏。
-        if state is None or not state.first_price:
+        if state is None:
             return
         prices = self._pm_ask_prices(pair_id, state.outcomes)
         if prices is None or not 0.98 <= sum(prices.values()) <= 1.02:

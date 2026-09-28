@@ -555,7 +555,7 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 5. Strategy 不冻结 sports state。PMS phase 与 OE/SE `inPlay` 都只更新状态，不绕过价格变化门控；
    后续正常 OBD 评估从 Store 读取最新 phase/score。
 
-#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-23)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367/#403,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-28)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
 `first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
@@ -580,8 +580,8 @@ OE/SE `inPlay=false` 可在 PMS 赛前帧缺失时提供明确 PRE；`inPlay=tru
 
 **start_price**：有效 phase 为 IN_PLAY 时采集；PMS phase 消息按 game 扇出全部 pair，OE/SE
 确认 IN_PLAY 后则在后续正常 OBD 价格内存回调中幂等尝试，且不强制触发策略评估。
-**仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）**且 `start_price` 仍为空时，
-读取当时 Cache 中完整 PM best ask 向量；仅当概率和位于闭区间 `[0.98,1.02]` 时整组首次写入。
+`start_price` 不再要求该 pair 已采到 `first_price`；只要 `start_price` 仍为空，便读取当时 Cache 中
+完整 PM best ask 向量，仅当概率和位于闭区间 `[0.98,1.02]` 时整组首次写入。
 phase 切换时缺完整 PM 盘口或区间不通过则保持空值；有效 phase 仍为 IN_PLAY 时，后续正常 OBD
 继续幂等重试，直到首次取得合格向量，成功后不再覆盖。`start_price` 不提供默认兜底；DashGate 等消费者在其
 为空时按缺数据处理，不得把占位价格用于策略判断。完整性校验使用独立的 `outcomes` 清单，
@@ -594,9 +594,9 @@ phase 切换时缺完整 PM 盘口或区间不通过则保持空值；有效 pha
 `down=min(down,now)`。本采集不依赖 Sports Store/`first_price`：`pre_move` 由 `pre_game`
 限定下单阶段，极值内存只负责忠实记录有效行情。OE/SE OBD 不更新该字段。
 
-**`first_price` 前置**：start price 仍只在 `first_price` 非空时采集，避免没有任何先行 PM OBD
-见证就把首个 live 帧盘口直接当作开赛价。仅明确 PRE 时的干净赛前 PM OBD 可以构成该见证；
-明确 live/ended 后到达的 OBD 仍不能补写 first price。
+`first_price` 与 `start_price` 独立采集：前者仍只由明确 PRE 时的干净赛前 PM OBD 首次写入；
+后者只依赖明确 IN_PLAY 与干净完整的 PM ask 向量。明确 live/ended 后到达的 OBD 仍不能补写
+first price，但缺少 first price 不再阻止 start price。
 
 **释放**：ended 到达后仍先调度该场最后一次策略评估，并立即沿用 §3.8.1 释放 sports/OBD
 订阅；价格记录进入 pending cleanup。Evaluator 按 pair 统计已排程 task，最后一个 task 的
