@@ -309,8 +309,8 @@ def test_attitude_converts_on_bid_at_or_below_start_with_clean_commission_bounda
     assert ctx.scratch["legs"][0]["price"] == no_ask
 
 
-@pytest.mark.parametrize("yes_bid", [0.48, 0.52])
-def test_deviate_convert_includes_1_2_and_1_3_boundaries(yes_bid):
+@pytest.mark.parametrize("yes_bid", [0.48, 0.52, 0.60])
+def test_deviate_convert_triggers_at_1_2_and_has_no_upper_bound(yes_bid):
     ctx = _dynamic_ctx(
         yes_ask=yes_bid + 0.01,
         no_ask=0.99 - yes_bid,

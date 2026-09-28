@@ -34,7 +34,7 @@ class VenueReplaceAction(Action):
     `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
     `convert` 未命中时先要求 pair 的全部 outcome 均存在 start_price,任一缺失则整组候选 fail-closed;
     有 start_price 后,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
-    `deviate_convert=true` 可在 bid 位于 `[1.2xstart_price,1.3xstart_price]` 时反转;
+    `deviate_convert=true` 可在 bid >= `1.2xstart_price` 时反转;
     两者均仅在完整 PM ask 向量概率和位于 `[0.98,1.02]` 时生效。
     PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
     """
@@ -332,7 +332,7 @@ def _should_dynamic_convert(
     start = float(start_prices[outcome])
     if attitude and bid <= start:
         return True
-    return deviate_convert and 1.2 * start <= bid <= 1.3 * start
+    return deviate_convert and bid >= 1.2 * start
 
 
 def _opposite_outcome(outcome: str) -> str:

@@ -163,7 +163,7 @@ def main() -> None:
         else:
             start_value = float(start_price)
             bid_value = float(current_bid)
-            flip = bid_value <= start_value or 1.2 * start_value <= bid_value <= 1.3 * start_value
+            flip = bid_value <= start_value or bid_value >= 1.2 * start_value
             action = "买对手盘" if flip else "买原方向"
 
         buy_role = ("no" if role == "yes" else "yes") if flip else role
