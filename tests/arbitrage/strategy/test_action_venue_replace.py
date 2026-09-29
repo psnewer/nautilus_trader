@@ -176,20 +176,35 @@ def test_invalid_dynamic_convert_param_raises(name):
         VenueReplaceAction(**{name: "true"})
 
 
-def test_missing_start_price_blocks_default_replacement_and_drops_group():
+def test_missing_start_price_allows_default_replacement():
     ctx = _ctx(with_start=False)
     _, candidate = _mixed_candidate()
     ctx.scratch["candidates"] = [candidate]
 
     _run(VenueReplaceAction().execute(ctx))
 
-    assert ctx.scratch["candidates"] == []
+    assert [leg["instrument_id"] for leg in ctx.scratch["candidates"][0]["legs"]] == [
+        "Y.POLYMARKET",
+        "N.POLYMARKET",
+    ]
 
 
-def test_any_missing_pair_start_price_blocks_even_when_source_outcome_has_start():
-    ctx = _ctx(with_start=False)
+def test_dynamic_convert_uses_source_outcome_start_without_requiring_complete_pair_start():
+    ctx = live_context(
+        books={
+            "Y.POLYMARKET": _book(0.40, 0.40),
+            "N.POLYMARKET": _book(0.60, 0.59),
+            "Y.ORBITEXCH": _book(0.35),
+        },
+        infos={
+            "Y.POLYMARKET": {"claim": "yes"},
+            "N.POLYMARKET": {"claim": "no"},
+            "Y.ORBITEXCH": {"claim": "yes"},
+        },
+    )
     store = PairPriceStore(ctx.cache)
-    store.initialize(ctx.pair_id, ("yes", "no"))
+    # 模拟旧 Cache 中仅当前 outcome 有 start；动态判断不再要求 pair 两侧都存在。
+    store.initialize(ctx.pair_id, ("yes",))
     store.capture_start(ctx.pair_id, {"yes": 0.40})
     ctx.scratch["legs"] = [{
         "instrument_id": "Y.ORBITEXCH",
@@ -199,13 +214,13 @@ def test_any_missing_pair_start_price_blocks_even_when_source_outcome_has_start(
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction().execute(ctx))
+    _run(VenueReplaceAction(attitude=True).execute(ctx))
 
-    assert ctx.scratch["legs"] == []
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
 
 
 @pytest.mark.parametrize("params", [{"attitude": True}, {"deviate_convert": True}])
-def test_missing_start_price_blocks_dynamic_rules_and_drops_group(params):
+def test_missing_start_price_skips_dynamic_rule_and_keeps_default_replacement(params):
     ctx = _ctx(with_start=False)
     ctx.scratch["legs"] = [{
         "instrument_id": "Y.ORBITEXCH",
@@ -217,7 +232,7 @@ def test_missing_start_price_blocks_dynamic_rules_and_drops_group(params):
 
     _run(VenueReplaceAction(**params).execute(ctx))
 
-    assert ctx.scratch["legs"] == []
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
 
 
 def test_convert_still_takes_priority_when_start_price_is_missing():

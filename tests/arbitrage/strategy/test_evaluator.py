@@ -1351,8 +1351,9 @@ def test_extreme_prices_update_without_first_price_and_require_clean_sum():
     assert state.down_price == {"yes": 0.44, "no": 0.3}
 
 
-def test_start_price_captures_without_witnessed_first_price():
-    # start_price 只依赖 IN_PLAY 与干净 PM 向量，不要求先见证赛前 first_price。
+def test_start_price_not_captured_without_witnessed_first_price():
+    # late-join 护栏:没采到 first_price → 收到 live phase 也不采 start_price,保持为空。
+    # 本用例不发送明确 PRE 状态，因此没有见证 first_price。
     actor, _, pair_reg, _, loop, _ = _harness()
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.48, no_ask=0.50)
 
@@ -1363,7 +1364,7 @@ def test_start_price_captures_without_witnessed_first_price():
 
     state = actor._get_pair_price_store().get("match_X")
     assert state.first_price == {}
-    assert state.start_price == {"yes": 0.48, "no": 0.50}
+    assert state.start_price == {}
 
 
 def test_start_price_retries_after_dirty_live_snapshot_until_clean_obd():

@@ -182,7 +182,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx)，并保留 `share_if_wins=missing` 供后续 `venue_replace` 重算 PM 数量 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_order_gate` 默认关闭，开启后只要 pair 任一 instrument 有任意 open order 就在持仓门/缩量前清空 `legs/candidates/selected_candidate`，不区分 venue/outcome/side，缺 live Cache/PairRegistry 时 fail-closed，并覆盖无挂单放行及非法参数；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
-- ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变。`pm_price` 只控制未反转的非 PM 输入腿：默认/`True` 用 PM 实时 ask，`False` 保留原 order prob。逐腿先执行 `convert`：仅原生 PM 腿直接反转，命中后不再检查 start 或动态条件；整组只要存在未命中 convert 的腿，就要求 pair 的全部 outcome `start_price` 完整有效，任一侧为空便整组 fail-closed，默认替换、`attitude`、`deviate_convert` 和下单均不执行。pair start 完整后，`attitude=True` 以原 outcome PM bid 命中 `bid<=start_price`，`deviate_convert=True` 命中 `bid>=1.2×start_price` 且不设上限，任一命中反转到对手 token；动态反转共同要求完整 PM ask commission 位于 `[0.98,1.02]`。覆盖 pair start 全空或仅一侧为空的整组拦截、convert 无 start 仍优先、commission 两个边界、bid/start 的 1.2 边界、超过旧 1.3 上限仍触发、低于区间不触发、非 PM 输入在 `convert` 未命中后可动态反转、四参数非法值。任何反转始终使用对手 PM 实时 ask并忽略 `pm_price`；PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到最终 PM venue/outcome
+- ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变。`pm_price` 只控制未反转的非 PM 输入腿：默认/`True` 用 PM 实时 ask，`False` 保留原 order prob。逐腿先执行 `convert`：仅原生 PM 腿直接反转，命中后不再检查 start 或动态条件。未命中时，`attitude=True` 以原 outcome PM bid 命中 `bid<=start_price`，`deviate_convert=True` 命中 `bid>=1.2×start_price` 且不设上限，任一命中反转到对手 token；动态反转共同要求当前 outcome 有有效 start、完整 PM ask commission 位于 `[0.98,1.02]`。缺当前 outcome start 只跳过动态反转，不要求 pair start 完整，也不拦截原生 PM 保持或非 PM 默认同方向替换。覆盖无 start 默认替换、仅当前 outcome 有 start 可动态反转、convert 无 start 仍优先、commission 两个边界、bid/start 的 1.2 边界、超过旧 1.3 上限仍触发、低于区间不触发、非 PM 输入在 `convert` 未命中后可动态反转、四参数非法值。任何反转始终使用对手 PM 实时 ask并忽略 `pm_price`；PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到最终 PM venue/outcome
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
 - ✅ `test_action_dash_gate.py`:`candi_select` 后按对应 `start_price` 的 50% 严格过滤 BUY 腿；覆盖低于删除、等于保留、SELL 保留、`claim/role` outcome 映射、缺 start price/概率/outcome/state 不误删，以及 candidate 元数据与两份 legs 视图同步
@@ -789,7 +789,7 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 
 **用例**:`test_pair_prices.py`、`test_evaluator.py::test_first_price_*`、
 `test_extreme_prices_update_without_first_price_and_require_clean_sum`、
-`test_start_price_captures_without_witnessed_first_price`、
+`test_start_price_not_captured_without_witnessed_first_price`、
 `test_start_price_retries_after_dirty_live_snapshot_until_clean_obd`、
 `test_start_price_accepts_clean_sum_boundaries`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
@@ -800,9 +800,9 @@ candi_select -> place_bets(intent=recovery,market=true)`。
   内才首次写 first price；Store 无记录(UNKNOWN)、明确 IN_PLAY/POST、非 PM OBD 与不干净向量不写；
 - 每个 PM OBD 在评估前仅用概率和位于 `[0.98,1.02]` 的干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
-- IN_PLAY phase 不要求已有 `first_price`；完整 PM ask 向量概率和位于闭区间 `[0.98,1.02]`
-  时首次写 start price；phase 切换瞬间不合格则保持为空，后续正常 OBD 继续幂等重试直到首次
-  合格；成功写入时打印一次含
+- IN_PLAY phase 仅当该 pair 已在明确 PRE 下采到 `first_price`，且完整 PM ask 向量概率和位于
+  闭区间 `[0.98,1.02]` 时首次写 start price；phase 切换瞬间不合格则保持为空，后续正常 OBD
+  继续幂等重试直到首次合格；没有赛前见证则始终为空；成功写入时打印一次含
   `pair/game/source/prices` 的 `Start price captured` INFO，重复尝试不打印；
 - ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
   game 索引。
@@ -869,7 +869,7 @@ apply-before-publish 及 single-flight 完成协议由 unit/adapters 测试覆�
 **前置**：PairRegistry 可由 pair 取得 `game_id`，PMS/OE/SE 任一来源已推进
 `SportsPhaseStore`。**期望**：`in_game`、first_price 门控和 start_price 采集读取统一
 PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 phase 变化本身不绕过
-价格变化门控。后续正常 OBD 可幂等采 start_price，不要求 first_price 已存在。
+价格变化门控。后续正常 OBD 可幂等采 start_price，仍要求 first_price 已存在。
 **验收**：`test_query_in_game.py`、`test_evaluator.py` 的 first/start price 用例，以及
 `tests/arbitrage/common/test_sports_phase.py`。
 
