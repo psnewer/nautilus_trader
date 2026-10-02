@@ -1,4 +1,4 @@
-"""把单份 nohup.out 的成交订单按统一 bid/start 规则写入 Excel。"""
+"""把单份 nohup.out 的全部下单按 venue_replace 优先级写入 Excel。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ SHEET_NAME = "nohup成交_统一规则"
 WINNER_OVERRIDES = {
     "Tennis|Julia Grabher|Oksana Selekhmeteva": "no",
 }
+SCORE_TAIL_OVERRIDES = {
+    "Tennis|Luis Miguel|Facundo Mena": "Luis Guto Miguel|Facundo Mena",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +34,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("audit_json", type=Path)
     parser.add_argument("nohup", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="保留目标 sheet 的历史订单；同一 client_order_id 以本次审计结果更新",
+    )
     return parser.parse_args()
 
 
@@ -120,28 +128,38 @@ def tennis_winner(score: str | None) -> tuple[str | None, int, int]:
 def main() -> None:
     args = parse_args()
     audit = json.loads(args.audit_json.read_text(encoding="utf-8"))
-    source_rows = [row for row in audit["rows"] if row["状态"] in {"已成交", "部分成交"}]
+    source_rows = audit["rows"]
     snapshots, scores = read_log(args.nohup)
 
     headers = [
         "下单时间(北京时间)", "首次成交时间(北京时间)", "client_order_id", "比赛", "订单状态",
-        "规则输入方向(venue_replace前)", "下单时比分", "下单时盘/局", "start_price",
+        "规则输入方向(venue_replace前)", "下单时盘/局", "start_price",
         "start_yes+start_no", "commission区间合格",
         "current_PM_bid(规则判断价)", "current_PM_ask(参考)", "bid/start", "策略动作",
         "规则买入方向", "规则买入价(PM ask)", "实际成交方向", "实际成交价", "成交数量",
-        "日志末比分", "日志末状态", "最终输赢", "本金", "毛利润", "手续费", "净利润",
+        "下单时比分", "首次成交时比分", "日志末比分", "日志末状态", "最终输赢",
+        "本金", "毛利润", "手续费", "净利润",
     ]
     rows = []
     for source in source_rows:
         pair = f"{source['赛事']}|{source['选手1']}|{source['选手2']}"
-        tail = f"{source['选手1']}|{source['选手2']}"
+        tail = SCORE_TAIL_OVERRIDES.get(
+            pair,
+            f"{source['选手1']}|{source['选手2']}",
+        )
         order_time = parse_beijing(source["下单时间(北京时间)"])
         if order_time is None:
             continue
         order_time_utc = order_time.astimezone(timezone.utc)
         snapshot = prior(snapshots[pair], order_time_utc)
         quotes = quote_map(snapshot["books"]) if snapshot else {}
-        role = str(source.get("venue_replace前方向") or source["下单方向"]).lower()
+        actual_role = str(source["下单方向"]).lower()
+        native_venue = str(source.get("原生腿venue") or "").upper()
+        role = str(source.get("venue_replace前方向") or "").lower()
+        if role not in {"yes", "no"}:
+            role = "no" if actual_role == "yes" else "yes"
+            if native_venue != "POLYMARKET":
+                role = actual_role
         role_quote = quotes.get(role, {})
         current_bid = role_quote.get("bid")
         current_ask = role_quote.get("ask")
@@ -151,7 +169,11 @@ def main() -> None:
             start_sum = float(source["start_yes"]) + float(source["start_no"])
         commission_ok = start_sum is not None and 0.98 <= start_sum <= 1.02
 
-        if start_price is None:
+        explicit_convert = native_venue == "POLYMARKET" and actual_role != role
+        if explicit_convert:
+            flip = True
+            action = "venue_replace convert反买"
+        elif start_price is None:
             flip = False
             action = "买原方向（缺少start_price，规则不触发）"
         elif not commission_ok:
@@ -179,19 +201,30 @@ def main() -> None:
         winner_role = WINNER_OVERRIDES.get(pair, winner_role)
         won = winner_role == buy_role if winner_role else None
         quantity = float(source["已成交量"])
-        principal = quantity * float(buy_price) if buy_price is not None else None
-        gross = quantity * ((1.0 if won else 0.0) - float(buy_price)) if won is not None and buy_price is not None else None
+        has_fill = quantity > 0
+        fill_time = parse_beijing(source["首次成交时间(北京时间)"])
+        fill_score = (
+            prior(scores[tail], fill_time.astimezone(timezone.utc))
+            if fill_time else None
+        )
+        principal = quantity * float(buy_price) if has_fill and buy_price is not None else None
+        gross = quantity * ((1.0 if won else 0.0) - float(buy_price)) if has_fill and won is not None and buy_price is not None else None
         commission = quantity * float(buy_price) * (1.0 - float(buy_price)) * 0.05 if gross is not None else None
 
         rows.append([
             order_time.replace(tzinfo=None),
-            parse_beijing(source["首次成交时间(北京时间)"]).replace(tzinfo=None),
+            fill_time.replace(tzinfo=None) if fill_time else None,
             source["client_order_id"], f"{source['选手1']} vs {source['选手2']}", source["状态"],
-            role, source["下单比分"], source["盘/局"], start_price, start_sum,
+            role, source["盘/局"], start_price, start_sum,
             "是" if commission_ok else "否（缺值）" if start_sum is None else "否",
             current_bid, current_ask,
             float(current_bid) / float(start_price) if current_bid is not None and start_price not in {None, 0} else None,
-            action, buy_role, buy_price, source["下单方向"], source["成交均价"], quantity,
+            action, buy_role, buy_price,
+            actual_role if has_fill else None,
+            source["成交均价"] if has_fill else None,
+            quantity if has_fill else None,
+            source["下单比分"],
+            fill_score["score"] if fill_score else None,
             latest_score["score"] if latest_score else None,
             latest_score["status"] if latest_score else None,
             "赢" if won else "输" if won is not None else "未出",
@@ -199,6 +232,29 @@ def main() -> None:
         ])
 
     workbook = load_workbook(args.workbook)
+    previous_count = 0
+    if args.append and SHEET_NAME in workbook.sheetnames:
+        old_sheet = workbook[SHEET_NAME]
+        old_headers = [cell.value for cell in old_sheet[1]]
+        missing_headers = set(headers) - set(old_headers)
+        if set(old_headers) - set(headers) or missing_headers not in (set(), {"首次成交时比分"}):
+            raise ValueError(f"{SHEET_NAME} 表头与当前脚本不一致，拒绝追加")
+        old_rows = [
+            row
+            for row in old_sheet.iter_rows(min_row=2, values_only=True)
+            if row[2] and row[3] != "合计"
+        ]
+        previous_rows = [
+            [dict(zip(old_headers, row)).get(header) for header in headers]
+            for row in old_rows
+        ]
+        previous_count = len(previous_rows)
+        fresh_by_id = {row[2]: row for row in rows}
+        merged_rows = []
+        for row in previous_rows:
+            merged_rows.append(fresh_by_id.pop(row[2], row))
+        merged_rows.extend(fresh_by_id.values())
+        rows = merged_rows
     if SHEET_NAME in workbook.sheetnames:
         del workbook[SHEET_NAME]
     sheet = workbook.create_sheet(SHEET_NAME, 0)
@@ -207,9 +263,9 @@ def main() -> None:
         sheet.append(row)
     total_row = sheet.max_row + 1
     sheet.cell(total_row, 4, "合计")
-    sheet.cell(total_row, 15, f"反买{sum(row[14] == '买对手盘' for row in rows)}笔")
-    sheet.cell(total_row, 23, f"{sum(row[22] == '赢' for row in rows)}赢/{sum(row[22] == '输' for row in rows)}输/{sum(row[22] == '未出' for row in rows)}未出")
-    for column in (24, 25, 26, 27):
+    sheet.cell(total_row, 15, f"反买{sum(row[14] in {'买对手盘', 'venue_replace convert反买'} for row in rows)}笔")
+    sheet.cell(total_row, 24, f"{sum(row[23] == '赢' for row in rows)}赢/{sum(row[23] == '输' for row in rows)}输/{sum(row[23] == '未出' for row in rows)}未出")
+    for column in (25, 26, 27, 28):
         letter = get_column_letter(column)
         sheet.cell(total_row, column, f"=SUM({letter}2:{letter}{total_row - 1})")
 
@@ -224,17 +280,23 @@ def main() -> None:
     for row_number in range(2, total_row):
         sheet.cell(row_number, 1).number_format = "yyyy-mm-dd hh:mm:ss.000"
         sheet.cell(row_number, 2).number_format = "yyyy-mm-dd hh:mm:ss.000"
-        for column in list(range(9, 15)) + list(range(17, 21)) + list(range(24, 28)):
+        for column in list(range(9, 15)) + list(range(17, 21)) + list(range(25, 29)):
             sheet.cell(row_number, column).number_format = "0.0000"
-    for column in range(24, 28):
+    for column in range(25, 29):
         sheet.cell(total_row, column).number_format = "0.0000"
-    widths = [23, 23, 17, 43, 13, 24, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 14, 12, 13, 13, 13, 13]
+    widths = [23, 23, 17, 43, 13, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 24, 24, 14, 12, 13, 13, 13, 13]
     for index, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:AA{max(1, total_row - 1)}"
+    sheet.auto_filter.ref = f"A1:AB{max(1, total_row - 1)}"
     workbook.save(args.output)
-    print(json.dumps({"filled_orders": len(rows), "sheet": SHEET_NAME, "output": str(args.output)}, ensure_ascii=False))
+    print(json.dumps({
+        "orders": len(rows),
+        "previous_orders": previous_count,
+        "audit_orders": len(source_rows),
+        "sheet": SHEET_NAME,
+        "output": str(args.output),
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":

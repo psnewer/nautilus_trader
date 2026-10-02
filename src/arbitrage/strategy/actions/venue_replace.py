@@ -7,9 +7,11 @@ from copy import deepcopy
 
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.pair_prices import PairPriceStore
+from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import qty_from_share
+from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Action
@@ -30,7 +32,9 @@ class VenueReplaceAction(Action):
     `pm_price`(默认真)决定替换后 PM 腿的下单价:
       - **不存在 / True**:用 PM 报价腿自身概率(= PM best_ask 隐含概率,PM 实时价);
       - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
-    `convert=true` 时,已经是 PM 的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
+    `tier_convert=true` 且 OE 原始 competition 属于 Challenger/WTA 时优先改为对手 outcome,
+    并直接使用对手 PM 实时价;命中后不再检查其它转换条件。`convert=true` 时,已经是 PM
+    的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
     `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
     `convert` 未命中时,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
     `deviate_convert=true` 可在 bid >= `1.2xstart_price` 时反转;
@@ -45,11 +49,14 @@ class VenueReplaceAction(Action):
         convert: bool | None = None,
         deviate_convert: bool | None = None,
         attitude: bool | None = None,
+        tier_convert: bool | None = None,
     ) -> None:
         if pm_price is not None and not isinstance(pm_price, bool):
             raise ValueError("pm_price must be a boolean")
         if convert is not None and not isinstance(convert, bool):
             raise ValueError("convert must be a boolean")
+        if tier_convert is not None and not isinstance(tier_convert, bool):
+            raise ValueError("tier_convert must be a boolean")
         if deviate_convert is not None and not isinstance(deviate_convert, bool):
             raise ValueError("deviate_convert must be a boolean")
         if attitude is not None and not isinstance(attitude, bool):
@@ -57,6 +64,7 @@ class VenueReplaceAction(Action):
         # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
         self._use_pm_price = pm_price is None or pm_price
         self._convert = bool(convert)
+        self._tier_convert = bool(tier_convert)
         self._deviate_convert = bool(deviate_convert)
         self._attitude = bool(attitude)
 
@@ -65,11 +73,24 @@ class VenueReplaceAction(Action):
             return
 
         pm_legs = _polymarket_legs_by_outcome(ctx)
-        pm_bids, start_prices = _dynamic_inputs(
-            ctx,
-            pm_legs,
-            self._deviate_convert,
-            self._attitude,
+        lower_tier_competition = (
+            _lower_tier_oe_competition(ctx) if self._tier_convert else None
+        )
+        tier_convert = lower_tier_competition is not None
+        if tier_convert:
+            _LOG.info(
+                f"VenueReplace: pair={ctx.pair_id} tier_convert hit "
+                f"oe_competition={lower_tier_competition!r}",
+            )
+        pm_bids, start_prices = (
+            ({}, {})
+            if tier_convert
+            else _dynamic_inputs(
+                ctx,
+                pm_legs,
+                self._deviate_convert,
+                self._attitude,
+            )
         )
 
         selected = ctx.scratch.get("selected_candidate")
@@ -82,6 +103,7 @@ class VenueReplaceAction(Action):
                 ctx.pair_id,
                 self._use_pm_price,
                 self._convert,
+                tier_convert,
                 self._deviate_convert,
                 self._attitude,
                 pm_bids,
@@ -102,6 +124,7 @@ class VenueReplaceAction(Action):
                 ctx.pair_id,
                 self._use_pm_price,
                 self._convert,
+                tier_convert,
                 self._deviate_convert,
                 self._attitude,
                 pm_bids,
@@ -118,6 +141,7 @@ class VenueReplaceAction(Action):
             ctx.pair_id,
             self._use_pm_price,
             self._convert,
+            tier_convert,
             self._deviate_convert,
             self._attitude,
             pm_bids,
@@ -136,6 +160,24 @@ def _polymarket_legs_by_outcome(ctx: EvalContext) -> dict[str, dict]:
                 key=lambda leg: (float(leg["prob"]), str(leg["instrument_id"])),
             )
     return result
+
+
+def _lower_tier_oe_competition(ctx: EvalContext) -> str | None:
+    """从 pair 的 OE BettingInstrument 读取 venue 原始 competition。"""
+    if ctx.cache is None or ctx.pair_registry is None:
+        return None
+    for value in sorted(ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id), key=str):
+        if venue_id_from_instrument_id(value) != ORBITEXCH:
+            continue
+        instrument_id = (
+            value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
+        )
+        instrument = ctx.cache.instrument(instrument_id)
+        competition = str(getattr(instrument, "competition_name", "") or "").strip()
+        normalized = competition.upper()
+        if "CHALLENGER" in normalized or "WTA" in normalized:
+            return competition
+    return None
 
 
 def _polymarket_bids_by_outcome(
@@ -179,6 +221,7 @@ def _replace_candidate(
     pair_id: str,
     use_pm_price: bool,
     convert: bool,
+    tier_convert: bool,
     deviate_convert: bool,
     attitude: bool,
     pm_bids: dict[str, float],
@@ -192,6 +235,7 @@ def _replace_candidate(
         pair_id,
         use_pm_price,
         convert,
+        tier_convert,
         deviate_convert,
         attitude,
         pm_bids,
@@ -210,6 +254,7 @@ def _replace_candidates(
     pair_id: str,
     use_pm_price: bool,
     convert: bool,
+    tier_convert: bool,
     deviate_convert: bool,
     attitude: bool,
     pm_bids: dict[str, float],
@@ -228,6 +273,7 @@ def _replace_candidates(
             pair_id,
             use_pm_price,
             convert,
+            tier_convert,
             deviate_convert,
             attitude,
             pm_bids,
@@ -244,6 +290,7 @@ def _replace_legs(
     pair_id: str,
     use_pm_price: bool,
     convert: bool,
+    tier_convert: bool,
     deviate_convert: bool,
     attitude: bool,
     pm_bids: dict[str, float],
@@ -254,17 +301,21 @@ def _replace_legs(
     result = []
     for leg in legs:
         venue = str(leg.get("venue", "")).upper()
-        convert_target_leg = convert and venue == POLYMARKET
+        convert_target_leg = not tier_convert and convert and venue == POLYMARKET
         source_outcome = str(leg.get("claim") or leg.get("role") or "").lower()
-        dynamic_convert = not convert_target_leg and _should_dynamic_convert(
-            source_outcome,
-            pm_legs,
-            pm_bids,
-            start_prices,
-            deviate_convert=deviate_convert,
-            attitude=attitude,
+        dynamic_convert = (
+            not tier_convert
+            and not convert_target_leg
+            and _should_dynamic_convert(
+                source_outcome,
+                pm_legs,
+                pm_bids,
+                start_prices,
+                deviate_convert=deviate_convert,
+                attitude=attitude,
+            )
         )
-        flip_target = convert_target_leg or dynamic_convert
+        flip_target = tier_convert or convert_target_leg or dynamic_convert
         if venue == POLYMARKET and not flip_target:
             result.append(deepcopy(leg))
             continue

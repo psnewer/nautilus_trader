@@ -170,10 +170,83 @@ def test_invalid_convert_param_raises():
         VenueReplaceAction(convert="true")
 
 
-@pytest.mark.parametrize("name", ["deviate_convert", "attitude"])
+@pytest.mark.parametrize("name", ["tier_convert", "deviate_convert", "attitude"])
 def test_invalid_dynamic_convert_param_raises(name):
     with pytest.raises(ValueError, match=f"{name} must be a boolean"):
         VenueReplaceAction(**{name: "true"})
+
+
+@pytest.mark.parametrize(
+    "competition",
+    ["ATP Challenger Porto 2", "WTA 125K Bari", "WTA Beijing"],
+)
+def test_tier_convert_uses_oe_raw_competition_and_flips_external_leg(competition):
+    ctx = _ctx()
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = competition
+    ctx.cache.instrument("Y.ORBITEXCH").info["competition"] = "Tennis"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert=True, convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
+
+
+def test_tier_convert_does_not_use_grouped_info_competition():
+    ctx = _ctx()
+    ctx.cache.instrument("Y.ORBITEXCH").info["competition"] = "WTA 125K Bari"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+
+
+def test_tier_convert_non_lower_tier_keeps_existing_behavior():
+    ctx = _ctx()
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Masters 1000 Shanghai"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert=True, convert=True).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+
+
+def test_tier_convert_has_priority_and_flips_native_pm_only_once():
+    ctx = _ctx(with_start=False)
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(
+        VenueReplaceAction(
+            tier_convert=True,
+            convert=True,
+            attitude=True,
+            deviate_convert=True,
+        ).execute(ctx),
+    )
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
 
 
 def test_missing_start_price_allows_default_replacement():
