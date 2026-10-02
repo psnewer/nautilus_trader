@@ -139,6 +139,8 @@ def main() -> None:
         "规则买入方向", "规则买入价(PM ask)", "实际成交方向", "实际成交价", "成交数量",
         "下单时比分", "首次成交时比分", "日志末比分", "日志末状态", "最终输赢",
         "本金", "毛利润", "手续费", "净利润",
+        "OrderInitialized最终方向", "最终方向start_price", "最终方向PM_bid(下单时)",
+        "最终方向PM_ask(下单时)", "规则方向数据源", "原始下单数量",
     ]
     rows = []
     for source in source_rows:
@@ -188,8 +190,11 @@ def main() -> None:
             flip = bid_value <= start_value or bid_value >= 1.2 * start_value
             action = "买对手盘" if flip else "买原方向"
 
-        buy_role = ("no" if role == "yes" else "yes") if flip else role
-        buy_price = quotes.get(buy_role, {}).get("ask")
+        # 实际报表以 OrderInitialized 的最终方向为准；策略推演只用于解释动作。
+        buy_role = actual_role
+        buy_quote = quotes.get(buy_role, {})
+        buy_price = buy_quote.get("ask")
+        buy_start_price = source.get(f"start_{buy_role}")
         latest_score = scores[tail][-1] if scores[tail] else None
         winner_role, left_wins, right_wins = tennis_winner(latest_score["score"] if latest_score else None)
         terminal = latest_score is not None and (
@@ -229,6 +234,8 @@ def main() -> None:
             latest_score["status"] if latest_score else None,
             "赢" if won else "输" if won is not None else "未出",
             principal, gross, commission, gross - commission if gross is not None else None,
+            buy_role, buy_start_price, buy_quote.get("bid"), buy_price,
+            "OrderInitialized + 下单前最近PM帧", source["下单数量"],
         ])
 
     workbook = load_workbook(args.workbook)
@@ -263,7 +270,7 @@ def main() -> None:
         sheet.append(row)
     total_row = sheet.max_row + 1
     sheet.cell(total_row, 4, "合计")
-    sheet.cell(total_row, 15, f"反买{sum(row[14] in {'买对手盘', 'venue_replace convert反买'} for row in rows)}笔")
+    sheet.cell(total_row, 15, f"反买{sum(row[13] in {'买对手盘', 'venue_replace convert反买'} for row in rows)}笔")
     sheet.cell(total_row, 24, f"{sum(row[23] == '赢' for row in rows)}赢/{sum(row[23] == '输' for row in rows)}输/{sum(row[23] == '未出' for row in rows)}未出")
     for column in (25, 26, 27, 28):
         letter = get_column_letter(column)
@@ -284,7 +291,7 @@ def main() -> None:
             sheet.cell(row_number, column).number_format = "0.0000"
     for column in range(25, 29):
         sheet.cell(total_row, column).number_format = "0.0000"
-    widths = [23, 23, 17, 43, 13, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 24, 24, 14, 12, 13, 13, 13, 13]
+    widths = [23, 23, 17, 43, 13, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 24, 24, 14, 12, 13, 13, 13, 13, 24, 20, 24, 24, 34, 16]
     for index, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A2"

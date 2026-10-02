@@ -178,7 +178,13 @@ def test_invalid_dynamic_convert_param_raises(name):
 
 @pytest.mark.parametrize(
     "competition",
-    ["ATP Challenger Porto 2", "WTA 125K Bari", "WTA Beijing"],
+    [
+        "ATP Challenger Porto 2",
+        "WTA 125K Bari",
+        "WTA Beijing",
+        "UTR Pro Tennis Series",
+        "ITF M25 Monastir",
+    ],
 )
 def test_tier_convert_uses_oe_raw_competition_and_flips_external_leg(competition):
     ctx = _ctx()

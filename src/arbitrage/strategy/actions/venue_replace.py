@@ -19,6 +19,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 _LOG = logging.getLogger(__name__)
+_LOWER_TIER_COMPETITION_MARKERS = ("CHALLENGER", "WTA", "UTR", "ITF")
 
 
 class VenueReplaceAction(Action):
@@ -32,8 +33,8 @@ class VenueReplaceAction(Action):
     `pm_price`(默认真)决定替换后 PM 腿的下单价:
       - **不存在 / True**:用 PM 报价腿自身概率(= PM best_ask 隐含概率,PM 实时价);
       - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
-    `tier_convert=true` 且 OE 原始 competition 属于 Challenger/WTA 时优先改为对手 outcome,
-    并直接使用对手 PM 实时价;命中后不再检查其它转换条件。`convert=true` 时,已经是 PM
+    `tier_convert=true` 且 OE 原始 competition 属于 Challenger/WTA/UTR/ITF 时优先改为
+    对手 outcome,并直接使用对手 PM 实时价;命中后不再检查其它转换条件。`convert=true` 时,已经是 PM
     的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
     `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
     `convert` 未命中时,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
@@ -175,7 +176,7 @@ def _lower_tier_oe_competition(ctx: EvalContext) -> str | None:
         instrument = ctx.cache.instrument(instrument_id)
         competition = str(getattr(instrument, "competition_name", "") or "").strip()
         normalized = competition.upper()
-        if "CHALLENGER" in normalized or "WTA" in normalized:
+        if any(marker in normalized for marker in _LOWER_TIER_COMPETITION_MARKERS):
             return competition
     return None
 
