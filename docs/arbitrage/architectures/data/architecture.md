@@ -433,10 +433,13 @@ OE/SE 的有效已订阅 price snapshot 仍按既有路径重建 OrderBook；它
 都逐条落 Cache。
 
 Matching/Strategy 的 market 订阅以可选 params 携带 `game_id`，DataClient 建立
-`source_market_id → game_id`。解析器仍区分 `inPlay` 缺失与明确 false；聚合层对 OE 增量帧增加
-单次初始化规则：已确认 routing 与 `game_id`、但该 game 尚无 phase 时，缺失 `inPlay` 的首个有效
-价格帧视作 false 并初始化 PRE，已有任意 phase 后的缺失字段不更新状态。OE 明确 false 同样只初始化
-PRE，true 推进 IN_PLAY；SE 缺失字段仍不更新。状态写到 common `SportsPhaseStore`，不写可变
+`source_market_id → game_id`。OE competition 页会为整项赛事推送完整 snapshot，可能早于其中某个
+pair 完成 Matching/订阅；DataClient 对未路由 market 只暂存其中明确的 `inPlay` 及原始时间（上限
+10,000 条）；更准确的暂存边界是“尚无 `game_id`”，即使单 instrument runner routing 已先建立也不能
+丢失 phase 证据。待 `source_market_id → game_id` 建立时回放并移除。当前订阅本身也必须先完成 market
+members、全部 runner routing、game 路由与 conflater 激活，再执行开页 IO，关闭同一竞态窗口。
+解析器继续区分 `inPlay` 缺失与明确 false：缺失字段不缓存、不更新，明确 false 只初始化 PRE，true
+推进 IN_PLAY；OE/SE 的 phase 含义一致。状态写到 common `SportsPhaseStore`，不写可变
 `instrument.info`，也不伪造缺少比分字段的 `SportsGameUpdate`。OE/SE 不推断 POST；PMS
 `ended=True` 是唯一 POST 来源。完整聚合不变量见 `_cross-cutting/sports-event-anchor.md`。
 

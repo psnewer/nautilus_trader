@@ -592,19 +592,24 @@ pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
 ## #365：OE inPlay 写入统一 phase
 
 已订阅 source market 的订阅 params 提供 `game_id`；DataClient 保存路由并在有效 price frame 中
-把明确 `inPlay` 写入 `SportsPhaseStore`。OE 增量帧缺字段且该 game 尚无 phase 时，以首个已路由
-价格帧初始化 PRE；已有 PRE/IN_PLAY/POST 时缺字段不更新，且不恢复
-`instrument.info["in_play"]`。phase 写入不新增评估事件，OrderBook frame 路径保持不变。
-**验收**：`test_market_subscription_records_source_market_game_id`、
+把明确 `inPlay` 写入 `SportsPhaseStore`。competition 页先于某个 pair Matching 推来的未路由完整
+首帧，其明确 `inPlay` 会被有界暂存；单 instrument runner routing 已存在但 `game_id` 尚未建立时也
+执行同一暂存。订阅建立 `game_id` 后立即回放；订阅自身也先注册全部内存路由，
+再执行开页 IO。缺字段始终不缓存、不更新 phase，且不恢复 `instrument.info["in_play"]`。phase 写入
+不新增评估事件，OrderBook frame 路径保持不变。**验收**：
+`test_market_subscription_routes_initial_inplay_frame_after_state_is_ready`、
+`test_market_subscription_replays_unrouted_initial_inplay_observation`、
+`test_price_frame_with_runner_routing_but_without_game_id_caches_inplay`、
 `test_on_price_frame_updates_phase_without_instrument_info_mutation`、
-`test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing`、
+`test_on_price_frame_missing_inplay_does_not_create_phase`、
 `test_on_price_frame_missing_inplay_does_not_change_existing_phase`。
 
 ## #366：OE market 订阅热路径不扫描完整集合
 
 market `_subscribe` 建立 `binary_market_id → instrument members`，最终 `_unsubscribe` 删除；
 普通 runner 组帧及断线 CLEAR 只做 O(1) market/member 查询，不调用会排序完整集合的
-`subscribed_custom_data()`。`test_market_subscription_records_source_market_game_id` 验证索引写入；
+`subscribed_custom_data()`。`test_market_subscription_routes_initial_inplay_frame_after_state_is_ready`
+验证索引写入与开页前路由顺序；
 `test_on_price_frame_publishes_one_market_batch_for_all_runners` 以失败桩锁定热路径不扫描；
 断线 CLEAR 用例锁定同一索引仍只清当前页已订阅成员。
 

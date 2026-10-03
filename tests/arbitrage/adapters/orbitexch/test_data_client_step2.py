@@ -209,11 +209,54 @@ def test_register_routing_reads_market_and_selection_from_instrument():
     assert c._market_to_instruments["1-123"]["42"] == [(inst.id, "yes")]
 
 
-def test_market_subscription_records_source_market_game_id():
+def test_market_subscription_routes_initial_inplay_frame_after_state_is_ready():
     from tests.arbitrage.risk._factories import oe_instrument
     c = _client()
     inst = oe_instrument("EPL", "home", selection_id=42)
     c._cache.add_instrument(inst)
+    c._handle_data = lambda _data: None
+
+    async def page_emits_initial_frame(_instrument_id):
+        # page.goto 期间 prices WS 就会回调；此时 game 路由必须已经存在。
+        c._on_price_frame({
+            "id": inst.market_id,
+            "rc": [{"id": 42, "bdatb": [], "bdatl": []}],
+            "marketDefinition": {"inPlay": False},
+        })
+
+    c._ensure_competition_page = page_emits_initial_frame
+    command = SimpleNamespace(
+        data_type=market_order_book_data_type(Venue("ORBITEXCH"), inst.info["binary_market_id"]),
+        params={
+            "source_market_id": inst.market_id,
+            "instrument_ids": (inst.id,),
+            "game_id": 77,
+        },
+    )
+    c._loop.run_until_complete(c._subscribe(command))
+
+    assert c._market_to_game_id[inst.market_id] == 77
+    assert c._phase_store.get(77).phase == PHASE_PRE
+    assert c._market_order_book_members[inst.info["binary_market_id"]] == {inst.id}
+
+    c._loop.run_until_complete(c._unsubscribe(command))
+    assert inst.info["binary_market_id"] not in c._market_order_book_members
+
+
+def test_market_subscription_replays_unrouted_initial_inplay_observation():
+    """同 competition 的完整首帧早于 pair Matching 时，订阅后仍能建立 phase。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+
+    c._on_price_frame({
+        "id": inst.market_id,
+        "rc": [{"id": 42, "bdatb": [], "bdatl": []}],
+        "marketDefinition": {"inPlay": False},
+    })
+    assert c._phase_store.get(77) is None
+    assert inst.market_id in c._pending_in_play
 
     async def no_page(_instrument_id):
         return None
@@ -229,11 +272,26 @@ def test_market_subscription_records_source_market_game_id():
     )
     c._loop.run_until_complete(c._subscribe(command))
 
-    assert c._market_to_game_id[inst.market_id] == 77
-    assert c._market_order_book_members[inst.info["binary_market_id"]] == {inst.id}
+    assert c._phase_store.get(77).phase == PHASE_PRE
+    assert inst.market_id not in c._pending_in_play
 
-    c._loop.run_until_complete(c._unsubscribe(command))
-    assert inst.info["binary_market_id"] not in c._market_order_book_members
+
+def test_price_frame_with_runner_routing_but_without_game_id_caches_inplay():
+    """单 instrument 路由已存在时，仍须等 game 路由后再消费明确 phase 证据。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+    c._register_instrument_routing(inst.id)
+    c._handle_data = lambda _data: None
+
+    c._on_price_frame({
+        "id": inst.market_id,
+        "rc": [{"id": 42, "bdatb": [], "bdatl": []}],
+        "marketDefinition": {"inPlay": False},
+    })
+
+    assert c._pending_in_play[inst.market_id][0] is False
 
 
 def test_register_synthetic_no_routing_uses_real_venue_selection_id():
@@ -312,7 +370,7 @@ def test_on_price_frame_updates_phase_without_instrument_info_mutation():
     assert "in_play" not in inst.info
 
 
-def test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing():
+def test_on_price_frame_missing_inplay_does_not_create_phase():
     from tests.arbitrage.risk._factories import oe_instrument
     c = _client()
     inst = oe_instrument("EPL", "home", selection_id=42)
@@ -323,7 +381,7 @@ def test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing():
 
     c._on_price_frame({"id": inst.market_id, "rc": [{"id": 42}], "marketDefinition": {}})
 
-    assert c._phase_store.get(77).phase == PHASE_PRE
+    assert c._phase_store.get(77) is None
 
 
 def test_on_price_frame_missing_inplay_does_not_change_existing_phase():

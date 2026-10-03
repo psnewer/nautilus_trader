@@ -183,9 +183,9 @@ def test_invalid_tier_convert_param_raises(value):
 
 
 @pytest.mark.parametrize("value", [True, "invalid", float("nan"), float("inf")])
-def test_invalid_post_ignore_param_raises(value):
-    with pytest.raises(ValueError, match="post_ignore must be a finite number"):
-        VenueReplaceAction(post_ignore=value)
+def test_invalid_tier_ignore_param_raises(value):
+    with pytest.raises(ValueError, match="tier_ignore must be a finite number"):
+        VenueReplaceAction(tier_ignore=value)
 
 
 @pytest.mark.parametrize(
@@ -287,9 +287,11 @@ def test_tier_convert_post_flips_after_default_replacement():
 
 @pytest.mark.parametrize(
     ("start_yes", "expected_instrument"),
-    [(0.29, "Y.POLYMARKET"), (0.30, "N.POLYMARKET"), (None, "N.POLYMARKET")],
+    [(0.29, "Y.POLYMARKET"), (0.30, "N.POLYMARKET"), (None, "Y.POLYMARKET")],
 )
-def test_post_ignore_uses_original_start_with_strict_lower_bound(
+@pytest.mark.parametrize("tier_convert", ["pre", "post"])
+def test_tier_ignore_uses_original_start_with_strict_lower_bound(
+    tier_convert,
     start_yes,
     expected_instrument,
 ):
@@ -307,12 +309,12 @@ def test_post_ignore_uses_original_start_with_strict_lower_bound(
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction(tier_convert="post", post_ignore=0.30).execute(ctx))
+    _run(VenueReplaceAction(tier_convert=tier_convert, tier_ignore=0.30).execute(ctx))
 
     assert ctx.scratch["legs"][0]["instrument_id"] == expected_instrument
 
 
-def test_post_ignore_does_not_affect_pre_mode():
+def test_tier_ignore_pre_miss_continues_default_replacement():
     ctx = _ctx(with_start=False)
     store = PairPriceStore(ctx.cache)
     store.initialize(ctx.pair_id, ("yes", "no"))
@@ -326,9 +328,9 @@ def test_post_ignore_does_not_affect_pre_mode():
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction(tier_convert="pre", post_ignore=0.30).execute(ctx))
+    _run(VenueReplaceAction(tier_convert="pre", tier_ignore=0.30).execute(ctx))
 
-    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
 
 
 def test_tier_convert_post_flips_after_convert():
@@ -344,7 +346,7 @@ def test_tier_convert_post_flips_after_convert():
     assert ctx.scratch["legs"][0]["price"] == 0.40
 
 
-def test_post_ignore_preserves_convert_result_when_original_start_is_lower():
+def test_tier_ignore_post_miss_preserves_convert_result():
     ctx = _ctx(with_start=False)
     store = PairPriceStore(ctx.cache)
     store.initialize(ctx.pair_id, ("yes", "no"))
@@ -356,7 +358,7 @@ def test_post_ignore_preserves_convert_result_when_original_start_is_lower():
     _run(
         VenueReplaceAction(
             tier_convert="post",
-            post_ignore=0.30,
+            tier_ignore=0.30,
             convert=True,
         ).execute(ctx),
     )

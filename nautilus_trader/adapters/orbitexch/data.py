@@ -56,6 +56,8 @@ ORBITEXCH = "ORBITEXCH"
 _COMP_RELOAD_COOLDOWN_SECS = 5.0
 # #109:开页失败 → 延迟重试间隔(事件驱动 connect-retry,对齐 PM `_delayed_connect`)。
 _COMP_REOPEN_RETRY_SECS = 5.0
+# competition 页会推送尚未完成 Matching 的市场；只暂存其明确 phase 证据，限制长期内存占用。
+_MAX_PENDING_IN_PLAY_OBSERVATIONS = 10_000
 
 
 def oe_runner_to_book_deltas(
@@ -271,6 +273,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # 二元 market 级自定义盘口订阅的 O(1) 真值,行情热路径不得调用会排序的 subscribed_custom_data()。
         self._market_order_book_members: dict[str, set[InstrumentId]] = {}
         self._market_to_game_id: dict[str, int] = {}
+        self._pending_in_play: dict[str, tuple[bool, int]] = {}
         self._phase_store = SportsPhaseStore(cache)
         self._market_frame_conflater = MarketFrameConflater(
             self.venue,
@@ -386,10 +389,17 @@ class OrbitExchDataClient(LiveMarketDataClient):
         self._market_order_book_members[binary_market_id] = set(instrument_ids)
         for instrument_id in instrument_ids:
             self._register_instrument_routing(instrument_id)
-            await self._ensure_competition_page(instrument_id)
         if game_id is not None:
             self._market_to_game_id[source_market_id] = game_id
+            pending = self._pending_in_play.pop(source_market_id, None)
+            if pending is not None:
+                self._observe_in_play(source_market_id, game_id, *pending)
         self._market_frame_conflater.activate(source_market_id)
+        # competition 页导航会立即建立 prices WS 并同步回调首帧。所有内存路由必须先就绪，
+        # 否则带 marketDefinition.inPlay 的完整首帧会因缺 game_id 被丢弃，后续省略该字段的
+        # 增量帧无法再补建 PRE；同页其余 selection 的首帧也会因路由尚未注册而丢失。
+        for instrument_id in instrument_ids:
+            await self._ensure_competition_page(instrument_id)
 
     async def _unsubscribe(self, command) -> None:
         if command.data_type.type is not MarketOrderBookDeltas:
@@ -662,42 +672,43 @@ class OrbitExchDataClient(LiveMarketDataClient):
             )
 
     # ── WS 帧回调 → OrderBookDeltas → DataEngine ─────────────────────
+    def _observe_in_play(self, market_id: str, game_id: int, in_play: bool, ts: int) -> None:
+        changed = self._phase_store.observe_in_play(
+            game_id,
+            in_play,
+            source=f"{ORBITEXCH}:{market_id}",
+            ts_event=ts,
+        )
+        if changed:
+            self._log.info(
+                f"Sports phase updated: game={game_id} "
+                f"phase={'IN_PLAY' if in_play else 'PRE'} source={ORBITEXCH}:{market_id}",
+            )
+
     def _on_price_frame(self, message) -> None:
         parsed = self._parser.parse_price_message(message)
         if not parsed:
             return
         market_id = str(parsed.get("market_id", ""))
+        ts = self._clock.timestamp_ns()
+        in_play = parsed.get("in_play")
+        game_id = self._market_to_game_id.get(market_id)
+        if game_id is None and in_play is not None:
+            # competition 页覆盖整项赛事；完整首帧可能早于 Matching 建立 game 路由。
+            self._pending_in_play[market_id] = (bool(in_play), ts)
+            if len(self._pending_in_play) > _MAX_PENDING_IN_PLAY_OBSERVATIONS:
+                self._pending_in_play.pop(next(iter(self._pending_in_play)))
         routing = self._market_to_instruments.get(market_id)
         if not routing:
-            return  # 未订阅此 market,丢弃
+            return
         self._price_frames_seen += 1
         if self._price_frames_seen == 1:
             self._log.info(
                 f"OE price frame routed: market_id={market_id}, runners={len(parsed.get('runners', []))}, "
                 f"subscribed_selections={len(routing)}",
             )
-        ts = self._clock.timestamp_ns()
-        in_play = parsed.get("in_play")
-        game_id = self._market_to_game_id.get(market_id)
-        if (
-            game_id is not None
-            and in_play is None
-            and self._phase_store.get(game_id) is None
-        ):
-            # OE 增量价格帧常省略 marketDefinition.inPlay；首次已路由行情视作赛前见证。
-            in_play = False
         if game_id is not None and in_play is not None:
-            changed = self._phase_store.observe_in_play(
-                game_id,
-                bool(in_play),
-                source=f"{ORBITEXCH}:{market_id}",
-                ts_event=ts,
-            )
-            if changed:
-                self._log.info(
-                    f"Sports phase updated: game={game_id} "
-                    f"phase={'IN_PLAY' if in_play else 'PRE'} source={ORBITEXCH}:{market_id}",
-                )
+            self._observe_in_play(market_id, game_id, bool(in_play), ts)
         # #109:WS 存活由 handler 内部封装(心跳超时 + close → on_disconnect),此处不写任何存活锚。
         # phase 写入独立的 SportsPhaseStore；instrument.info 仍保持不可变。
         market_deltas: dict[str, list[OrderBookDeltas]] = {}
