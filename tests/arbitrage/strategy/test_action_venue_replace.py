@@ -170,10 +170,22 @@ def test_invalid_convert_param_raises():
         VenueReplaceAction(convert="true")
 
 
-@pytest.mark.parametrize("name", ["tier_convert", "deviate_convert", "attitude"])
+@pytest.mark.parametrize("name", ["deviate_convert", "attitude"])
 def test_invalid_dynamic_convert_param_raises(name):
     with pytest.raises(ValueError, match=f"{name} must be a boolean"):
         VenueReplaceAction(**{name: "true"})
+
+
+@pytest.mark.parametrize("value", [True, False, "true", "invalid"])
+def test_invalid_tier_convert_param_raises(value):
+    with pytest.raises(ValueError, match="tier_convert must be 'pre' or 'post'"):
+        VenueReplaceAction(tier_convert=value)
+
+
+@pytest.mark.parametrize("value", [True, "invalid", float("nan"), float("inf")])
+def test_invalid_post_ignore_param_raises(value):
+    with pytest.raises(ValueError, match="post_ignore must be a finite number"):
+        VenueReplaceAction(post_ignore=value)
 
 
 @pytest.mark.parametrize(
@@ -186,7 +198,7 @@ def test_invalid_dynamic_convert_param_raises(name):
         "ITF M25 Monastir",
     ],
 )
-def test_tier_convert_uses_oe_raw_competition_and_flips_external_leg(competition):
+def test_tier_convert_pre_uses_oe_raw_competition_and_flips_external_leg(competition):
     ctx = _ctx()
     ctx.cache.instrument("Y.ORBITEXCH").competition_name = competition
     ctx.cache.instrument("Y.ORBITEXCH").info["competition"] = "Tennis"
@@ -198,7 +210,7 @@ def test_tier_convert_uses_oe_raw_competition_and_flips_external_leg(competition
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction(tier_convert=True, convert=True).execute(ctx))
+    _run(VenueReplaceAction(tier_convert="pre", convert=True).execute(ctx))
 
     assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
     assert ctx.scratch["legs"][0]["price"] == 0.55
@@ -215,12 +227,13 @@ def test_tier_convert_does_not_use_grouped_info_competition():
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction(tier_convert=True).execute(ctx))
+    _run(VenueReplaceAction(tier_convert="pre").execute(ctx))
 
     assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
 
 
-def test_tier_convert_non_lower_tier_keeps_existing_behavior():
+@pytest.mark.parametrize("tier_convert", ["pre", "post"])
+def test_tier_convert_non_lower_tier_keeps_existing_behavior(tier_convert):
     ctx = _ctx()
     ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Masters 1000 Shanghai"
     ctx.scratch["legs"] = [{
@@ -231,7 +244,7 @@ def test_tier_convert_non_lower_tier_keeps_existing_behavior():
         "share_if_wins": 75.0,
     }]
 
-    _run(VenueReplaceAction(tier_convert=True, convert=True).execute(ctx))
+    _run(VenueReplaceAction(tier_convert=tier_convert, convert=True).execute(ctx))
 
     assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
 
@@ -244,7 +257,7 @@ def test_tier_convert_has_priority_and_flips_native_pm_only_once():
 
     _run(
         VenueReplaceAction(
-            tier_convert=True,
+            tier_convert="pre",
             convert=True,
             attitude=True,
             deviate_convert=True,
@@ -253,6 +266,135 @@ def test_tier_convert_has_priority_and_flips_native_pm_only_once():
 
     assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
     assert ctx.scratch["legs"][0]["price"] == 0.55
+
+
+def test_tier_convert_post_flips_after_default_replacement():
+    ctx = _ctx()
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Challenger Porto 2"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert="post").execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
+
+
+@pytest.mark.parametrize(
+    ("start_yes", "expected_instrument"),
+    [(0.29, "Y.POLYMARKET"), (0.30, "N.POLYMARKET"), (None, "N.POLYMARKET")],
+)
+def test_post_ignore_uses_original_start_with_strict_lower_bound(
+    start_yes,
+    expected_instrument,
+):
+    ctx = _ctx(with_start=False)
+    if start_yes is not None:
+        store = PairPriceStore(ctx.cache)
+        store.initialize(ctx.pair_id, ("yes", "no"))
+        store.capture_start(ctx.pair_id, {"yes": start_yes, "no": 0.70})
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Challenger Porto 2"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert="post", post_ignore=0.30).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == expected_instrument
+
+
+def test_post_ignore_does_not_affect_pre_mode():
+    ctx = _ctx(with_start=False)
+    store = PairPriceStore(ctx.cache)
+    store.initialize(ctx.pair_id, ("yes", "no"))
+    store.capture_start(ctx.pair_id, {"yes": 0.20, "no": 0.80})
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert="pre", post_ignore=0.30).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+
+
+def test_tier_convert_post_flips_after_convert():
+    ctx = _ctx(with_start=False)
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(tier_convert="post", convert=True).execute(ctx))
+
+    # convert 先把 YES 反转为 NO,post 再把最终腿反转回 YES。
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.40
+
+
+def test_post_ignore_preserves_convert_result_when_original_start_is_lower():
+    ctx = _ctx(with_start=False)
+    store = PairPriceStore(ctx.cache)
+    store.initialize(ctx.pair_id, ("yes", "no"))
+    store.capture_start(ctx.pair_id, {"yes": 0.20, "no": 0.80})
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(
+        VenueReplaceAction(
+            tier_convert="post",
+            post_ignore=0.30,
+            convert=True,
+        ).execute(ctx),
+    )
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.55
+
+
+def test_tier_convert_post_flips_after_dynamic_convert():
+    ctx = live_context(
+        books={
+            "Y.POLYMARKET": _book(0.41, 0.40),
+            "N.POLYMARKET": _book(0.59, 0.58),
+            "Y.ORBITEXCH": _book(0.35),
+        },
+        infos={
+            "Y.POLYMARKET": {"claim": "yes"},
+            "N.POLYMARKET": {"claim": "no"},
+            "Y.ORBITEXCH": {"claim": "yes"},
+        },
+    )
+    store = PairPriceStore(ctx.cache)
+    store.initialize(ctx.pair_id, ("yes", "no"))
+    store.capture_start(ctx.pair_id, {"yes": 0.40, "no": 0.60})
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ITF M25 Monastir"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert="post", attitude=True).execute(ctx))
+
+    # attitude 先 YES -> NO,post 再 NO -> YES,价格取最终 YES 实时 ask。
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+    assert ctx.scratch["legs"][0]["price"] == 0.41
 
 
 def test_missing_start_price_allows_default_replacement():
