@@ -33,6 +33,7 @@ from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
@@ -311,7 +312,7 @@ def test_on_price_frame_updates_phase_without_instrument_info_mutation():
     assert "in_play" not in inst.info
 
 
-def test_on_price_frame_missing_inplay_does_not_create_phase():
+def test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing():
     from tests.arbitrage.risk._factories import oe_instrument
     c = _client()
     inst = oe_instrument("EPL", "home", selection_id=42)
@@ -322,7 +323,22 @@ def test_on_price_frame_missing_inplay_does_not_create_phase():
 
     c._on_price_frame({"id": inst.market_id, "rc": [{"id": 42}], "marketDefinition": {}})
 
-    assert c._phase_store.get(77) is None
+    assert c._phase_store.get(77).phase == PHASE_PRE
+
+
+def test_on_price_frame_missing_inplay_does_not_change_existing_phase():
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(inst)
+    c._register_instrument_routing(inst.id)
+    c._market_to_game_id[inst.market_id] = 77
+    c._handle_data = lambda _data: None
+    c._phase_store.observe_in_play(77, True, source="test", ts_event=1)
+
+    c._on_price_frame({"id": inst.market_id, "rc": [{"id": 42}], "marketDefinition": {}})
+
+    assert c._phase_store.get(77).phase == PHASE_IN_PLAY
 
 
 def test_on_price_frame_publishes_one_market_batch_for_all_runners():

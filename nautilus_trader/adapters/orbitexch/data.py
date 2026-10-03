@@ -679,6 +679,13 @@ class OrbitExchDataClient(LiveMarketDataClient):
         ts = self._clock.timestamp_ns()
         in_play = parsed.get("in_play")
         game_id = self._market_to_game_id.get(market_id)
+        if (
+            game_id is not None
+            and in_play is None
+            and self._phase_store.get(game_id) is None
+        ):
+            # OE 增量价格帧常省略 marketDefinition.inPlay；首次已路由行情视作赛前见证。
+            in_play = False
         if game_id is not None and in_play is not None:
             changed = self._phase_store.observe_in_play(
                 game_id,

@@ -592,11 +592,13 @@ pending、发布 `OrderBookFrameProcessed` 后 flush；共享状态机见
 ## #365：OE inPlay 写入统一 phase
 
 已订阅 source market 的订阅 params 提供 `game_id`；DataClient 保存路由并在有效 price frame 中
-把明确 `inPlay` 写入 `SportsPhaseStore`。缺字段不更新，且不恢复
+把明确 `inPlay` 写入 `SportsPhaseStore`。OE 增量帧缺字段且该 game 尚无 phase 时，以首个已路由
+价格帧初始化 PRE；已有 PRE/IN_PLAY/POST 时缺字段不更新，且不恢复
 `instrument.info["in_play"]`。phase 写入不新增评估事件，OrderBook frame 路径保持不变。
 **验收**：`test_market_subscription_records_source_market_game_id`、
 `test_on_price_frame_updates_phase_without_instrument_info_mutation`、
-`test_on_price_frame_missing_inplay_does_not_create_phase`。
+`test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing`、
+`test_on_price_frame_missing_inplay_does_not_change_existing_phase`。
 
 ## #366：OE market 订阅热路径不扫描完整集合
 

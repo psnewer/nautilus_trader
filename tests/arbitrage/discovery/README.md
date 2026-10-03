@@ -358,3 +358,11 @@ README #359、PM adapter `pm-adapter-data.disconnect-clear` 及对应 DataClient
 CLEAR。**期望**：adapter 自有 `binary_market_id → members` 与首订/最终退订同生命周期；行情
 处理只做 O(1) membership 查询，不复制或排序 NT 的完整 custom subscription 集合。
 **验收**：三家 adapter README #366 及对应 DataClient tests。
+
+### discovery-2.3：OE 缺 `inPlay` 首帧初始化 PRE（#409）
+
+**前置**：OE source market 已路由到 `game_id`。**输入**：统一 phase 尚无记录，收到缺少
+`marketDefinition.inPlay` 的有效 OE 价格帧。**期望**：仅首次按 `False` 初始化 PRE，使赛前 PM
+行情可形成 `first_price`；已有 PRE/IN_PLAY/POST 后的缺字段帧不更新 phase，明确 true 仍推进
+IN_PLAY，SE 行为不变。**验收**：OE adapter README #365 及
+`test_data_client_step2.py::{test_on_price_frame_missing_inplay_initializes_pre_when_phase_missing,test_on_price_frame_missing_inplay_does_not_change_existing_phase}`。

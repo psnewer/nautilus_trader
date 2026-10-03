@@ -1767,6 +1767,7 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-03 (#409) | **OE 已路由价格帧缺 `inPlay` 时可初始化 PRE。** Matheus Pucinelli de Almeida vs Tomas Barrios 实盘日志显示：赛前 OE 顶价已发生 99 次变化，但增量帧始终未提供有效 `marketDefinition.inPlay=false`，导致 phase 空、`first_price/start_price` 均未采集。用户定夺：仅当 `source_market_id → game_id` 已建立且该 game 的统一 phase 仍为空时，把缺 `inPlay` 的首个 OE 有效价格帧视作 false 并初始化 PRE；已有任意 phase 后缺字段不更新，SE 语义不变。现行设计见 data §3.4.3，验收见 OE adapter README #365。**live-unvalidated。** |
 | 2026-10-02 (#408) | **`tier_convert="post"` 增加 `post_ignore` 原始 start 门。** 用户要求按 `venue_replace` 前原始腿 canonical outcome 的 `start_price` 判断；仅当有效 start 严格小于 `post_ignore` 时跳过最终 post 反转，等于阈值或缺值仍执行。该参数不影响 `pre`，且跳过 post 不回滚此前已命中的 `convert` / `attitude` / `deviate_convert` 结果。现行设计见 strategy §3.8，验收见 strategy README `test_action_venue_replace.py`。**live-unvalidated。** |
 | 2026-10-02 (#407) | **`tier_convert` 由 boolean 改为 `pre/post` 阶段枚举。** 用户要求缺失时不影响既有路径；`pre` 完全保留 #405/#406 的最高优先级反转；`post` 先执行 `convert/attitude/deviate_convert/默认替换`，再在 `venue_replace` 产物边界把最终 PM outcome 反转，因此允许与前置规则形成两次反转。旧 `true/false` 不再是合法值，当前实盘配置从 `true` 迁移为 `"pre"` 以保持行为。现行设计见 strategy §3.8，验收见 strategy README `test_action_venue_replace.py`。**live-unvalidated。** |
 | 2026-10-02 (#406) | **扩展 `tier_convert` 的低级别赛事判级。** 用户补充 OE 原始 `competition_name` 中包含 `UTR` 或 `ITF` 的赛事也属于低级别。保持 #405 的数据入口、优先级、定价和缺失回退语义不变，仅将大小写不敏感的 `UTR`、`ITF` 加入既有 `Challenger/WTA` 命中集合。现行设计见 strategy §3.8，验收见 strategy README `test_action_venue_replace.py`。**live-unvalidated。** |
