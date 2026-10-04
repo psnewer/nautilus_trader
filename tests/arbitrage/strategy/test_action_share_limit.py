@@ -351,7 +351,7 @@ def test_current_order_gate_blocks_all_legs_for_any_pair_open_order():
         {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
     ]
 
-    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
 
     assert ctx.scratch["legs"] == []
 
@@ -377,7 +377,7 @@ def test_current_order_gate_blocks_all_candidates_before_outcome_filtering():
     _run(
         ShareLimitModification(
             current_position_gate=True,
-            current_order_gate=True,
+            current_order_gate={"enable": True},
         ).execute(ctx),
     )
 
@@ -396,7 +396,7 @@ def test_current_order_gate_allows_when_pair_has_no_open_order():
         {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
     ]
 
-    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
 
     assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
 
@@ -412,7 +412,7 @@ def test_current_order_gate_ignores_open_order_outside_pair():
         {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
     ]
 
-    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
 
     assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
 
@@ -423,15 +423,148 @@ def test_current_order_gate_missing_live_state_fails_closed():
         {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
     ]
 
-    _run(ShareLimitModification(current_order_gate=True).execute(ctx))
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
 
     assert ctx.scratch["legs"] == []
 
 
-def test_current_order_gate_requires_boolean_param():
+def test_current_order_gate_requires_object_param():
     try:
-        ShareLimitModification(current_order_gate="true")
+        ShareLimitModification(current_order_gate=True)
     except ValueError as exc:
-        assert "current_order_gate must be a boolean" in str(exc)
+        assert "current_order_gate must be an object" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_current_order_gate_can_ignore_first_and_only_submitted_open_order():
+    open_order = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-1",
+        ts_submitted=123,
+    )
+    historical_view = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-1",
+        ts_submitted=123,
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[open_order],
+        order_history=[historical_view],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(
+        current_order_gate={
+            "enable": True,
+            "ignore_start_price": True,
+        },
+    ).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_order_gate_blocks_unsubmitted_open_order():
+    order = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-1",
+        ts_submitted=0,
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(
+        current_order_gate={
+            "enable": True,
+            "ignore_start_price": True,
+        },
+    ).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_current_order_gate_ignores_unsubmitted_history_when_current_is_first_submission():
+    current = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-2",
+        ts_submitted=200,
+    )
+    denied = SimpleNamespace(
+        instrument_id="N.POLYMARKET",
+        client_order_id="O-1",
+        ts_submitted=0,
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET", "N.POLYMARKET"],
+        orders=[current],
+        order_history=[denied, current],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(
+        current_order_gate={
+            "enable": True,
+            "ignore_start_price": True,
+        },
+    ).execute(ctx))
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_order_gate_blocks_when_another_order_was_submitted():
+    current = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-2",
+        ts_submitted=200,
+    )
+    prior = SimpleNamespace(
+        instrument_id="N.POLYMARKET",
+        client_order_id="O-1",
+        ts_submitted=100,
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET", "N.POLYMARKET"],
+        orders=[current],
+        order_history=[prior, current],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(
+        current_order_gate={
+            "enable": True,
+            "ignore_start_price": True,
+        },
+    ).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_current_order_gate_rejects_removed_spread_param():
+    try:
+        ShareLimitModification(
+            current_order_gate={
+                "enable": True,
+                "ignore_start_price": True,
+                "spread": 0.05,
+            },
+        )
+    except ValueError as exc:
+        assert "unknown fields: ['spread']" in str(exc)
     else:
         raise AssertionError("expected ValueError")

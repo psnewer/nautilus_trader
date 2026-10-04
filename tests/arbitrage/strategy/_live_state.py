@@ -10,11 +10,21 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 class StrategyTestCache:
-    def __init__(self, *, books=None, infos=None, positions=None, orders=None, constraints=None):
+    def __init__(
+        self,
+        *,
+        books=None,
+        infos=None,
+        positions=None,
+        orders=None,
+        order_history=None,
+        constraints=None,
+    ):
         self._books = {str(key): value for key, value in (books or {}).items()}
         self._values = {}
         self._positions = list(positions or ())
         self._orders = list(orders or ())
+        self._order_history = list(order_history) if order_history is not None else self._orders
         constraints = constraints or {}
         self._instruments = {}
         for raw_id, raw_info in (infos or {}).items():
@@ -70,6 +80,15 @@ class StrategyTestCache:
             if str(getattr(order, "instrument_id", "")) == str(instrument_id)
         ]
 
+    def orders(self, *, instrument_id=None):
+        if instrument_id is None:
+            return list(self._order_history)
+        return [
+            order
+            for order in self._order_history
+            if str(getattr(order, "instrument_id", "")) == str(instrument_id)
+        ]
+
 
 def live_context(
     *,
@@ -78,6 +97,7 @@ def live_context(
     infos=None,
     positions=None,
     orders=None,
+    order_history=None,
     instrument_ids=None,
     constraints=None,
     **kwargs,
@@ -88,6 +108,7 @@ def live_context(
         infos=infos,
         positions=positions,
         orders=orders,
+        order_history=order_history,
         constraints=constraints,
     )
     registry = PairRegistry()

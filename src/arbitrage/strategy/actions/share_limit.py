@@ -8,7 +8,8 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
   输出调整后的 candidate 数组,供后续 `CandiSelectAction` 选择。
 
 可选 `current_position_gate=True` 时,先按 Portfolio 跨 venue 聚合的当前持仓 outcome 筛腿。
-可选 `current_order_gate=True` 时,只要当前 pair 存在任意 open order 就清空输出。
+可选 `current_order_gate={"enable": true}` 时,只要当前 pair 存在任意 open order 就清空输出；
+`ignore_start_price=true` 时忽略该 pair 首张且唯一曾提交的 open order。
 
 复用原公式,按 Venue Registry odds_model 分支:
   - probability venue: remaining = max - current[role]（单腿独立检查）
@@ -37,15 +38,15 @@ class ShareLimitModification(Action):
         self,
         max_leg_share: float | None = None,
         current_position_gate: bool = False,
-        current_order_gate: bool = False,
+        current_order_gate: dict | None = None,
     ) -> None:
         if not isinstance(current_position_gate, bool):
             raise ValueError("share_limit: current_position_gate must be a boolean")
-        if not isinstance(current_order_gate, bool):
-            raise ValueError("share_limit: current_order_gate must be a boolean")
+        order_gate = _normalize_current_order_gate(current_order_gate)
         self._max_leg_share = float(max_leg_share) if max_leg_share is not None else None
         self._current_position_gate = current_position_gate
-        self._current_order_gate = current_order_gate
+        self._current_order_gate = order_gate["enable"]
+        self._ignore_start_price_orders = order_gate["ignore_start_price"]
 
     async def execute(self, ctx: EvalContext) -> None:
         if self._current_order_gate and not self._apply_current_order_gate(ctx):
@@ -130,8 +131,24 @@ class ShareLimitModification(Action):
             return False
 
         try:
-            for instrument_id in pair_instrument_ids(ctx):
-                if ctx.cache.orders_open(instrument_id=instrument_id):
+            instrument_ids = pair_instrument_ids(ctx)
+            submitted_orders = [
+                order
+                for instrument_id in instrument_ids
+                for order in (ctx.cache.orders(instrument_id=instrument_id) or ())
+                if _was_submitted(order)
+            ]
+            for instrument_id in instrument_ids:
+                open_orders = ctx.cache.orders_open(instrument_id=instrument_id) or ()
+                blocking = next(
+                    (
+                        order
+                        for order in open_orders
+                        if not self._is_ignored_start_price_order(order, submitted_orders)
+                    ),
+                    None,
+                )
+                if blocking is not None:
                     _LOG.info(
                         f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
                         f"open order exists on instrument={instrument_id}, clear output",
@@ -146,6 +163,13 @@ class ShareLimitModification(Action):
             self._clear_all_outputs(ctx)
             return False
         return True
+
+    def _is_ignored_start_price_order(self, order, submitted_orders) -> bool:
+        if not self._ignore_start_price_orders:
+            return False
+        if not _was_submitted(order):
+            return False
+        return not any(not _same_order(order, other) for other in submitted_orders)
 
     @staticmethod
     def _clear_all_outputs(ctx: EvalContext) -> None:
@@ -359,6 +383,43 @@ class ShareLimitModification(Action):
             return self._max_leg_share
         value = (ctx.strategy_defaults or {}).get("max_leg_share")
         return float(value) if value is not None else None
+
+
+def _normalize_current_order_gate(raw: dict | None) -> dict[str, bool]:
+    if raw is None:
+        return {"enable": False, "ignore_start_price": False}
+    if not isinstance(raw, dict):
+        raise ValueError("share_limit: current_order_gate must be an object")
+    unknown = set(raw) - {"enable", "ignore_start_price"}
+    if unknown:
+        raise ValueError(
+            f"share_limit: current_order_gate has unknown fields: {sorted(unknown)}",
+        )
+    enable = raw.get("enable", False)
+    ignore_start_price = raw.get("ignore_start_price", False)
+    if not isinstance(enable, bool):
+        raise ValueError("share_limit: current_order_gate.enable must be a boolean")
+    if not isinstance(ignore_start_price, bool):
+        raise ValueError(
+            "share_limit: current_order_gate.ignore_start_price must be a boolean",
+        )
+    return {
+        "enable": enable,
+        "ignore_start_price": ignore_start_price,
+    }
+
+
+def _was_submitted(order) -> bool:
+    return int(getattr(order, "ts_submitted", 0) or 0) > 0
+
+
+def _same_order(left, right) -> bool:
+    left_id = str(getattr(left, "client_order_id", "") or "")
+    right_id = str(getattr(right, "client_order_id", "") or "")
+    if left_id and right_id:
+        return left_id == right_id
+    return left is right
+
 
 def _candidate_base_share(candidate: dict) -> float:
     for key in ("base_share", "share", "target_share"):

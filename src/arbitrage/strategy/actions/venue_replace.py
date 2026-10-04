@@ -4,23 +4,22 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from copy import deepcopy
 
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.pair_prices import PairPriceStore
-from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import qty_from_share
-from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
+from src.arbitrage.strategy.competition_tier import lower_tier_oe_competition
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
 
 _LOG = logging.getLogger(__name__)
-_LOWER_TIER_COMPETITION_MARKERS = ("CHALLENGER", "WTA", "UTR", "ITF")
 
 
 class VenueReplaceAction(Action):
@@ -45,6 +44,8 @@ class VenueReplaceAction(Action):
     `convert` 未命中时,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
     `deviate_convert=true` 可在 bid >= `1.2xstart_price` 时反转;
     两者均仅在原 outcome 存在 start_price 且完整 PM ask 向量概率和位于 `[0.98,1.02]` 时生效。
+    `set_exempt=N` 且当前 sports period 明确为 `SN` 时,上述四种反转都不命中;
+    非 PM 腿仍默认替换为同 outcome PM 腿。
     缺 start_price 只是不触发动态反转,不阻止后续默认同方向替换。
     PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
     """
@@ -57,6 +58,7 @@ class VenueReplaceAction(Action):
         attitude: bool | None = None,
         tier_convert: str | None = None,
         tier_ignore: float | None = None,
+        set_exempt: int | None = None,
     ) -> None:
         if pm_price is not None and not isinstance(pm_price, bool):
             raise ValueError("pm_price must be a boolean")
@@ -78,6 +80,10 @@ class VenueReplaceAction(Action):
             tier_ignore_value is not None and not math.isfinite(tier_ignore_value)
         ):
             raise ValueError("tier_ignore must be a finite number")
+        if set_exempt is not None and (
+            isinstance(set_exempt, bool) or not isinstance(set_exempt, int) or set_exempt <= 0
+        ):
+            raise ValueError("set_exempt must be a positive integer")
         # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
         self._use_pm_price = pm_price is None or pm_price
         self._convert = bool(convert)
@@ -85,16 +91,28 @@ class VenueReplaceAction(Action):
         self._tier_ignore = tier_ignore_value
         self._deviate_convert = bool(deviate_convert)
         self._attitude = bool(attitude)
+        self._set_exempt = set_exempt
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.scratch.get("cancel_pair_orders"):
             return
 
+        set_exempt_hit = _set_exempt_hit(ctx, self._set_exempt)
+        tier_convert = None if set_exempt_hit else self._tier_convert
+        convert = self._convert and not set_exempt_hit
+        deviate_convert = self._deviate_convert and not set_exempt_hit
+        attitude = self._attitude and not set_exempt_hit
+        if set_exempt_hit:
+            _LOG.info(
+                f"VenueReplace: pair={ctx.pair_id} set_exempt={self._set_exempt} hit; "
+                "skip tier_convert/convert/attitude/deviate_convert",
+            )
+
         pm_legs = _polymarket_legs_by_outcome(ctx)
         lower_tier_competition = (
-            _lower_tier_oe_competition(ctx) if self._tier_convert is not None else None
+            lower_tier_oe_competition(ctx) if tier_convert is not None else None
         )
-        tier_convert_mode = self._tier_convert if lower_tier_competition is not None else None
+        tier_convert_mode = tier_convert if lower_tier_competition is not None else None
         if tier_convert_mode is not None:
             _LOG.info(
                 f"VenueReplace: pair={ctx.pair_id} tier_convert={tier_convert_mode} eligible "
@@ -107,8 +125,8 @@ class VenueReplaceAction(Action):
             else _dynamic_inputs(
                 ctx,
                 pm_legs,
-                self._deviate_convert,
-                self._attitude,
+                deviate_convert,
+                attitude,
                 include_start=tier_start_required,
             )
         )
@@ -122,11 +140,11 @@ class VenueReplaceAction(Action):
                 pm_legs,
                 ctx.pair_id,
                 self._use_pm_price,
-                self._convert,
+                convert,
                 tier_convert_mode,
                 self._tier_ignore,
-                self._deviate_convert,
-                self._attitude,
+                deviate_convert,
+                attitude,
                 pm_bids,
                 start_prices,
             )
@@ -144,11 +162,11 @@ class VenueReplaceAction(Action):
                 pm_legs,
                 ctx.pair_id,
                 self._use_pm_price,
-                self._convert,
+                convert,
                 tier_convert_mode,
                 self._tier_ignore,
-                self._deviate_convert,
-                self._attitude,
+                deviate_convert,
+                attitude,
                 pm_bids,
                 start_prices,
             )
@@ -162,11 +180,11 @@ class VenueReplaceAction(Action):
             pm_legs,
             ctx.pair_id,
             self._use_pm_price,
-            self._convert,
+            convert,
             tier_convert_mode,
             self._tier_ignore,
-            self._deviate_convert,
-            self._attitude,
+            deviate_convert,
+            attitude,
             pm_bids,
             start_prices,
         )
@@ -183,24 +201,6 @@ def _polymarket_legs_by_outcome(ctx: EvalContext) -> dict[str, dict]:
                 key=lambda leg: (float(leg["prob"]), str(leg["instrument_id"])),
             )
     return result
-
-
-def _lower_tier_oe_competition(ctx: EvalContext) -> str | None:
-    """从 pair 的 OE BettingInstrument 读取 venue 原始 competition。"""
-    if ctx.cache is None or ctx.pair_registry is None:
-        return None
-    for value in sorted(ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id), key=str):
-        if venue_id_from_instrument_id(value) != ORBITEXCH:
-            continue
-        instrument_id = (
-            value if isinstance(value, InstrumentId) else InstrumentId.from_str(str(value))
-        )
-        instrument = ctx.cache.instrument(instrument_id)
-        competition = str(getattr(instrument, "competition_name", "") or "").strip()
-        normalized = competition.upper()
-        if any(marker in normalized for marker in _LOWER_TIER_COMPETITION_MARKERS):
-            return competition
-    return None
 
 
 def _polymarket_bids_by_outcome(
@@ -238,6 +238,18 @@ def _dynamic_inputs(
 def _start_prices(ctx: EvalContext) -> dict[str, float]:
     state = PairPriceStore(ctx.cache).get(ctx.pair_id) if ctx.cache is not None else None
     return dict(state.start_price) if state is not None else {}
+
+
+def _set_exempt_hit(ctx: EvalContext, set_exempt: int | None) -> bool:
+    if set_exempt is None or ctx.sports_store is None or ctx.pair_registry is None:
+        return False
+    game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
+    if game_id is None:
+        return False
+    state = ctx.sports_store.get(game_id)
+    period = str(getattr(state, "period", "") or "").strip()
+    match = re.fullmatch(r"S([1-9]\d*)", period, flags=re.IGNORECASE)
+    return match is not None and int(match.group(1)) == set_exempt
 
 
 def _replace_candidate(

@@ -1,6 +1,7 @@
 """VenueReplaceAction:非 PM 腿替换为同 outcome 的 PM 当前报价腿。"""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -104,6 +105,15 @@ def _dynamic_ctx(*, yes_ask, no_ask, yes_bid, no_bid, start_yes, start_no):
     return ctx
 
 
+def _with_period(ctx, period):
+    instrument_ids = ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id)
+    ctx.pair_registry.register(ctx.pair_id, instrument_ids, game_id=7)
+    ctx.sports_store = SimpleNamespace(
+        get=lambda game_id: SimpleNamespace(period=period) if game_id == 7 else None,
+    )
+    return ctx
+
+
 def test_pm_price_false_keeps_original_order_prob():
     ctx = _ctx()
     pm_yes, candidate = _mixed_candidate()
@@ -186,6 +196,83 @@ def test_invalid_tier_convert_param_raises(value):
 def test_invalid_tier_ignore_param_raises(value):
     with pytest.raises(ValueError, match="tier_ignore must be a finite number"):
         VenueReplaceAction(tier_ignore=value)
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "1"])
+def test_invalid_set_exempt_param_raises(value):
+    with pytest.raises(ValueError, match="set_exempt must be a positive integer"):
+        VenueReplaceAction(set_exempt=value)
+
+
+def test_set_exempt_disables_tier_convert_and_keeps_default_replacement():
+    ctx = _with_period(_ctx(), "S2")
+    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "prob": 0.35,
+        "share_if_wins": 75.0,
+    }]
+
+    _run(VenueReplaceAction(tier_convert="pre", set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+
+
+def test_set_exempt_disables_convert_for_native_pm_leg():
+    ctx = _with_period(_ctx(), "S2")
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True, set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+def test_set_exempt_disables_attitude():
+    ctx = _with_period(_dynamic_ctx(
+        yes_ask=0.41,
+        no_ask=0.59,
+        yes_bid=0.40,
+        no_bid=0.58,
+        start_yes=0.40,
+        start_no=0.60,
+    ), "S2")
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(attitude=True, set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+def test_set_exempt_disables_deviate_convert():
+    ctx = _with_period(_dynamic_ctx(
+        yes_ask=0.49,
+        no_ask=0.51,
+        yes_bid=0.48,
+        no_bid=0.50,
+        start_yes=0.40,
+        start_no=0.60,
+    ), "s2")
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(deviate_convert=True, set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+@pytest.mark.parametrize("period", ["S1", "Q2", "", None])
+def test_set_exempt_does_not_apply_without_matching_explicit_set(period):
+    ctx = _with_period(_ctx(), period)
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(convert=True, set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "N.POLYMARKET"
 
 
 @pytest.mark.parametrize(
