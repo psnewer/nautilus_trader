@@ -17,8 +17,22 @@ from openpyxl.utils import get_column_letter
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ISO_TS = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z)")
+LOCAL_TS = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})")
 BEIJING = timezone(timedelta(hours=8))
 SHEET_NAME = "nohup成交_统一规则"
+HEADER_ALIASES = {
+    "策略动作": "pre口径策略动作",
+    "规则买入方向": "pre口径买入方向",
+    "规则买入价(PM ask)": "历史规则买入价(PM ask)",
+    "实际成交方向": "历史实际成交方向",
+    "实际成交价": "历史实际成交价",
+    "成交数量": "历史成交数量",
+    "最终输赢": "历史实际方向最终输赢",
+    "OrderInitialized最终方向": "历史OrderInitialized最终方向",
+    "最终方向start_price": "历史最终方向start_price",
+    "最终方向PM_bid(下单时)": "历史最终方向PM_bid(下单时)",
+    "最终方向PM_ask(下单时)": "历史最终方向PM_ask(下单时)",
+}
 # PMS 比分左右顺序与本地 pair 角色不一致的已核实场次，以实际结算方向为准。
 WINNER_OVERRIDES = {
     "Tennis|Julia Grabher|Oksana Selekhmeteva": "no",
@@ -39,12 +53,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="保留目标 sheet 的历史订单；同一 client_order_id 以本次审计结果更新",
     )
+    parser.add_argument(
+        "--venue-replace-convert",
+        action="store_true",
+        help="源日志对应的 venue_replace 配置启用了 convert=true",
+    )
     return parser.parse_args()
 
 
 def parse_iso_ts(line: str) -> datetime | None:
     match = ISO_TS.search(line)
-    return datetime.fromisoformat(match.group(1).replace("Z", "+00:00")) if match else None
+    if match:
+        return datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+    match = LOCAL_TS.search(line)
+    if not match:
+        return None
+    return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S,%f").replace(
+        tzinfo=BEIJING,
+    ).astimezone(timezone.utc)
 
 
 def parse_beijing(value: str | None) -> datetime | None:
@@ -63,9 +89,12 @@ def prior(items: list[dict], timestamp: datetime) -> dict | None:
     return found
 
 
-def read_log(path: Path) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
+def read_log(
+    path: Path,
+) -> tuple[dict[str, list[dict]], dict[str, list[dict]], dict[str, list[dict]]]:
     snapshots: dict[str, list[dict]] = defaultdict(list)
     scores: dict[str, list[dict]] = defaultdict(list)
+    tier_events: dict[str, list[dict]] = defaultdict(list)
     with path.open(errors="replace") as stream:
         for raw in stream:
             line = ANSI.sub("", raw.rstrip("\n"))
@@ -93,7 +122,117 @@ def read_log(path: Path) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
                         "period": match.group(4),
                         "status": match.group(5),
                     })
-    return snapshots, scores
+            elif (
+                "VenueReplace: pair=" in line
+                and " tier_convert=" in line
+                and " not hit outcome=" not in line
+            ):
+                match = re.search(
+                    r"VenueReplace: pair=(.+?) tier_convert=(pre|post) "
+                    r"(?:hit|eligible) oe_competition=(.+)$",
+                    line,
+                )
+                if match:
+                    tier_events[match.group(1)].append({
+                        "ts": timestamp,
+                        "mode": match.group(2),
+                        "kind": "eligible",
+                    })
+            elif "VenueReplace: pair=" in line and " post ignored outcome=" in line:
+                match = re.search(
+                    r"VenueReplace: pair=(.+?) leg=.*? post ignored outcome=(yes|no) "
+                    r"start_price=([^ ]+) threshold=([^ ]+)$",
+                    line,
+                )
+                if match:
+                    tier_events[match.group(1)].append({
+                        "ts": timestamp,
+                        "mode": "post",
+                        "kind": "ignored",
+                        "outcome": match.group(2),
+                        "start_price": match.group(3),
+                        "threshold": match.group(4),
+                    })
+            elif "VenueReplace: pair=" in line and " not hit outcome=" in line:
+                match = re.search(
+                    r"VenueReplace: pair=(.+?) leg=.*? tier_convert=(pre|post) "
+                    r"not hit outcome=(yes|no) start_price=([^ ]+) threshold=([^ ]+)$",
+                    line,
+                )
+                if match:
+                    tier_events[match.group(1)].append({
+                        "ts": timestamp,
+                        "mode": match.group(2),
+                        "kind": "ignored",
+                        "outcome": match.group(3),
+                        "start_price": match.group(4),
+                        "threshold": match.group(5),
+                    })
+    return snapshots, scores, tier_events
+
+
+def recent_tier_state(
+    events: list[dict],
+    order_time: datetime,
+    source_role: str,
+    *,
+    max_age_seconds: float = 1.0,
+) -> tuple[str | None, dict | None]:
+    recent = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event["ts"] <= order_time
+        and (order_time - event["ts"]).total_seconds() <= max_age_seconds
+    ]
+    eligible = [item for item in recent if item[1]["kind"] == "eligible"]
+    if not eligible:
+        return None, None
+    eligible_index, eligible_event = eligible[-1]
+    ignored = next(
+        (
+            event
+            for index, event in recent
+            if index > eligible_index
+            and event["kind"] == "ignored"
+            and event["outcome"] == source_role
+        ),
+        None,
+    )
+    return (None, ignored) if ignored else (str(eligible_event["mode"]), None)
+
+
+def action_description(
+    *,
+    source_role: str,
+    actual_role: str,
+    native_venue: str,
+    tier_mode: str | None,
+    tier_ignored: dict | None,
+    convert_enabled: bool,
+    fallback_action: str,
+) -> str:
+    """按真实 action 顺序描述反转，避免双反转因首尾同向而被漏记。"""
+    if tier_ignored is not None:
+        return (
+            f"{fallback_action}（tier_convert {tier_ignored['mode']}豁免："
+            f"start_price={tier_ignored['start_price']} < {tier_ignored['threshold']}）"
+        )
+    if tier_mode == "pre":
+        return "tier_convert pre反买"
+    if tier_mode != "post":
+        return fallback_action
+
+    before_post = "no" if actual_role == "yes" else "yes"
+    prior_flipped = before_post != source_role
+    if prior_flipped:
+        prior_action = (
+            "venue_replace convert反买"
+            if convert_enabled and native_venue == "POLYMARKET"
+            else "attitude/deviate_convert反买"
+        )
+        suffix = "（最终原方向）" if actual_role == source_role else ""
+        return f"{prior_action} + tier_convert post再反转{suffix}"
+    return "tier_convert post反买"
 
 
 def quote_map(books: list[dict]) -> dict[str, dict]:
@@ -129,18 +268,19 @@ def main() -> None:
     args = parse_args()
     audit = json.loads(args.audit_json.read_text(encoding="utf-8"))
     source_rows = audit["rows"]
-    snapshots, scores = read_log(args.nohup)
+    snapshots, scores, tier_events = read_log(args.nohup)
 
     headers = [
         "下单时间(北京时间)", "首次成交时间(北京时间)", "client_order_id", "比赛", "订单状态",
         "规则输入方向(venue_replace前)", "下单时盘/局", "start_price",
         "start_yes+start_no", "commission区间合格",
-        "current_PM_bid(规则判断价)", "current_PM_ask(参考)", "bid/start", "策略动作",
-        "规则买入方向", "规则买入价(PM ask)", "实际成交方向", "实际成交价", "成交数量",
-        "下单时比分", "首次成交时比分", "日志末比分", "日志末状态", "最终输赢",
+        "current_PM_bid(规则判断价)", "current_PM_ask(参考)", "bid/start", "pre口径策略动作",
+        "pre口径买入方向", "历史规则买入价(PM ask)", "历史实际成交方向", "历史实际成交价", "历史成交数量",
+        "下单时比分", "首次成交时比分", "日志末比分", "日志末状态", "历史实际方向最终输赢",
         "本金", "毛利润", "手续费", "净利润",
-        "OrderInitialized最终方向", "最终方向start_price", "最终方向PM_bid(下单时)",
-        "最终方向PM_ask(下单时)", "规则方向数据源", "原始下单数量",
+        "历史OrderInitialized最终方向", "历史最终方向start_price", "历史最终方向PM_bid(下单时)",
+        "历史最终方向PM_ask(下单时)", "规则方向数据源", "原始下单数量",
+        "post口径策略动作", "post口径买入方向", "官方最终胜方", "历史实际方向官方输赢",
     ]
     rows = []
     for source in source_rows:
@@ -159,9 +299,7 @@ def main() -> None:
         native_venue = str(source.get("原生腿venue") or "").upper()
         role = str(source.get("venue_replace前方向") or "").lower()
         if role not in {"yes", "no"}:
-            role = "no" if actual_role == "yes" else "yes"
-            if native_venue != "POLYMARKET":
-                role = actual_role
+            role = ""
         role_quote = quotes.get(role, {})
         current_bid = role_quote.get("bid")
         current_ask = role_quote.get("ask")
@@ -172,7 +310,9 @@ def main() -> None:
         commission_ok = start_sum is not None and 0.98 <= start_sum <= 1.02
 
         explicit_convert = native_venue == "POLYMARKET" and actual_role != role
-        if explicit_convert:
+        if not role:
+            action = "无法确认（缺少venue_replace前方向）"
+        elif explicit_convert:
             flip = True
             action = "venue_replace convert反买"
         elif start_price is None:
@@ -187,8 +327,27 @@ def main() -> None:
         else:
             start_value = float(start_price)
             bid_value = float(current_bid)
-            flip = bid_value <= start_value or bid_value >= 1.2 * start_value
-            action = "买对手盘" if flip else "买原方向"
+            if bid_value <= start_value:
+                action = "attitude反买"
+            elif bid_value >= 1.2 * start_value:
+                action = "deviate_convert反买"
+            else:
+                action = "买原方向"
+
+        tier_mode, tier_ignored = recent_tier_state(
+            tier_events[pair],
+            order_time_utc,
+            role,
+        )
+        action = action_description(
+            source_role=role,
+            actual_role=actual_role,
+            native_venue=native_venue,
+            tier_mode=tier_mode,
+            tier_ignored=tier_ignored,
+            convert_enabled=args.venue_replace_convert,
+            fallback_action=action,
+        )
 
         # 实际报表以 OrderInitialized 的最终方向为准；策略推演只用于解释动作。
         buy_role = actual_role
@@ -220,7 +379,7 @@ def main() -> None:
             order_time.replace(tzinfo=None),
             fill_time.replace(tzinfo=None) if fill_time else None,
             source["client_order_id"], f"{source['选手1']} vs {source['选手2']}", source["状态"],
-            role, source["盘/局"], start_price, start_sum,
+            role or None, source["盘/局"], start_price, start_sum,
             "是" if commission_ok else "否（缺值）" if start_sum is None else "否",
             current_bid, current_ask,
             float(current_bid) / float(start_price) if current_bid is not None and start_price not in {None, 0} else None,
@@ -236,15 +395,19 @@ def main() -> None:
             principal, gross, commission, gross - commission if gross is not None else None,
             buy_role, buy_start_price, buy_quote.get("bid"), buy_price,
             "OrderInitialized + 下单前最近PM帧", source["下单数量"],
+            None, None, None, None,
         ])
 
     workbook = load_workbook(args.workbook)
     previous_count = 0
     if args.append and SHEET_NAME in workbook.sheetnames:
         old_sheet = workbook[SHEET_NAME]
-        old_headers = [cell.value for cell in old_sheet[1]]
+        old_headers = [HEADER_ALIASES.get(cell.value, cell.value) for cell in old_sheet[1]]
         missing_headers = set(headers) - set(old_headers)
-        if set(old_headers) - set(headers) or missing_headers not in (set(), {"首次成交时比分"}):
+        if set(old_headers) - set(headers) or missing_headers - {
+            "首次成交时比分", "post口径策略动作", "post口径买入方向",
+            "官方最终胜方", "历史实际方向官方输赢",
+        }:
             raise ValueError(f"{SHEET_NAME} 表头与当前脚本不一致，拒绝追加")
         old_rows = [
             row
@@ -291,7 +454,7 @@ def main() -> None:
             sheet.cell(row_number, column).number_format = "0.0000"
     for column in range(25, 29):
         sheet.cell(total_row, column).number_format = "0.0000"
-    widths = [23, 23, 17, 43, 13, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 24, 24, 14, 12, 13, 13, 13, 13, 24, 20, 24, 24, 34, 16]
+    widths = [23, 23, 17, 43, 13, 24, 13, 13, 18, 19, 27, 21, 12, 38, 13, 21, 15, 13, 12, 24, 24, 24, 14, 12, 13, 13, 13, 13, 24, 20, 24, 24, 34, 16, 46, 18, 18, 24]
     for index, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A2"

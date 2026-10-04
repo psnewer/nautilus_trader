@@ -5,7 +5,7 @@
 **Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节)；所需策略语义已落到当前 Check / Action，迁移前 services 实现已删除。
 
 **测试结构**:
-- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 无外部执行副作用,可全单测；`head/reverse` 命中时会更新进程内 StrategyRuntimeStore
+- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 无外部执行副作用,可全单测；StateQuery 只读当前上下文
 - 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 已挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
@@ -169,7 +169,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 详设见 `architectures/strategy/architecture.md §3.8`(slice 9 落地段)+ `_cross-cutting/configuration.md §10`(slice 9 ✅)。
 
 **当前框架边界**:
-- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由当前状态 `StateQuery` 与 AND/OR/NOT 组成；普通叶子只读 `EvalContext`，`head/reverse` 是受控 Store 更新例外
+- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由只读当前状态的 `StateQuery` 与 AND/OR/NOT 组成
 - ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 position digest（#317:open_orders_digest 已删）
 - ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
@@ -478,7 +478,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - `tie_break=true` 时使用括号内抢七小分；裸 `6-6` 表示已进入抢七但尚为 `0-0`，双方
   仍是非落后。覆盖抢七领先/落后、裸 6-6、默认关闭和参数类型错误。
 - **验收**：`test_action_score_selection.py`；launcher 注册由
-  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
 ## strategy-4.current-set-game-selection：当前盘局分筛选
 
@@ -490,7 +490,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 逐 candidate 筛腿、淘汰空 candidate，撤单候选保留；比分/映射无效时 fail-closed，
   非法 standing 构造失败。
 - **验收**：`test_action_current_set_game_selection.py` 与
-  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`。
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`。
 
 ## strategy-4.40：commission_gate PM 盘口概率和门控
 
@@ -502,7 +502,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `selected_candidate["legs"]` 与 `scratch["legs"]`，候选池输入仅保留撤单 candidate。
 - 纯撤单输入 no-op，避免行情 commission 门控妨碍风险收尾。
 - **验收**：`test_action_commission_gate.py`；launcher 注册由
-  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries` 覆盖。
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
 ## strategy-4.41：price_gate 计划腿概率门控
 
@@ -516,7 +516,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `pre_move` 报价腿概率，而不是 `place_bets(limit=true)` 改写后的最终挂单价。
 - **验收**：`test_action_price_gate.py` 覆盖 PM probability price、OE decimal yes/no 换算、
   `prob` 优先级、边界、双方向、非法概率和三类输入；
-  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`
   覆盖注册；配置验收确认 `pre_game` 支链顺序为 `share_limit -> price_gate(0.5) -> place_bets`。
 
 ## strategy-4.42：venue_select 执行 venue 过滤
@@ -526,7 +526,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 支持裸 `legs`、`selected_candidate`、候选池三种输入；候选元数据和撤单 candidate 保留，
   候选过滤为空时删除该 candidate，已选 candidate 与 scratch legs 同步。
 - **验收**：`test_action_venue_select.py` 覆盖默认值、反向过滤、三种输入和参数校验；
-  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_position_mode_queries`
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`
   覆盖 launcher 注册。
 
 ## 策略内组合场景
@@ -559,57 +559,13 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 ## strategy-4.framework.x:Q21 新框架层用例(2026-05-24)
 
-### strategy-4.framework.runtime-store.{1-8}:策略跨轮变量 Store(#332/#333)
+### strategy-4.framework.retired-position-mode.1：旧运行时状态类型不可装配(#412)
 
-- `strategy_id + pair_id` 双层隔离：同策略不同比赛、同比赛不同策略互不串值。
-- `update` 合并同一 pair 的变量且返回副本；读写嵌套 mutable 值均不暴露内部引用。
-- `delete_pair` 只清目标 pair 并回收空 strategy；`delete_strategy` 清该策略全部 pair，不影响其它策略。
-- 不存在的变量返回调用方提供的 default 副本。
-- `delete_pair_from_all_strategies` 在比赛 ended 收尾清同 pair 的全部策略变量。
-- Evaluator 给 arb/comp 上下文注入同一 Store 和配置策略 id；Action 可观察到准确身份与 Store 实例。
-
-### strategy-4.head-rebate.position-mode.{1-10}:head/reverse 判态、standard 与回撤 Check(#333/#335)
-
-- **.1 head 空仓**：yes/no share 均为 0 时命中，即时率用 pair realized PnL / 配置 share，覆盖 `standard`。
-- **.2 head 对冲仓**：yes/no 均有有效 share 时命中；按抗抖动盘口侧计算 unrealized，加 pair realized 后除以配置 share，并覆盖旧值（即使低于旧值）。
-- **.3 reverse 单向仓**：恰有一个 outcome 有有效 share 时命中；另两个形态不命中。
-- **.4 reverse 初始化**：`standard` 不存在时以即时率初始化，允许初值为负。
-- **.5 reverse 高水位**：已有值时仅“即时率 > 0 且高于旧值”才更新；较低、负数或 0 保持原值。
-- **.6 抗抖动估值报价**：LONG 用 best ask、SHORT 用 best bid；测试同时给出不同 bid/ask 并断言选边。decimal venue 先把概率还原成原生 decimal odds 后调用 Portfolio unrealized PnL。
-- **.7 fail-closed**：缺盘口、PnL、有效配置 share、runtime identity 或仓位投影非法均 no-hit 且不写 Store；已有 `standard` 非数值/非有限也 no-hit。
-- **.8 隔离/收尾**：key 为 `strategy_id + pair_id`，ended 后清该 pair；不同策略/比赛不串值。
-- **.9 ReverseCheck 公式**：`rt/retrieve` 为必填有限 params；即时率 `<`、`=`、`>` 于 `rt * standard - retrieve` 分别通过、通过、拒绝。
-- **.10 求值顺序与 fail-closed**：同一 Condition 先由 reverse StateQuery 更新/初始化 standard，再由 ReverseCheck 读取当轮值；缺即时率、standard、Store 身份或非法数值均拒绝。Check 不更新 standard、不生成 recovery legs。
-
-验收实现：`test_query_position_mode.py`、`test_check_reverse.py`、`test_runtime_store.py`、`test_evaluator.py`。
-
-### strategy-4.head-rebate.scenario.{1-6}:完整配置的连续实时状态(#338)
-
-`scenarios/head_rebate/test_head_rebate_scenarios.py` 从完整 JSON strategy spec 构建
-`head_rebate` 双树，用同一 `StrategyRuntimeStore` 串联评估轮次；执行命中树的
-整条 Action 链到 `ExecutionPlan`，不启动 TradingNode，不进入 Risk/Execution。配置锁定：
-head 链为 `head -> mean_rebate -> venue_replace(pm_price=true) -> share_limit ->
-candi_select -> trend_gate -> place_bets(limit=true)`；reverse 链为
-`reverse -> AND[reverse(rt=1,retrieve=0.1), mean_rebate_recovery(force=true)] ->
-candi_select -> place_bets(intent=recovery,market=true)`。
-
-- **.1 无仓位**：head 命中，`standard=0`；reverse 不命中。OE 优价腿经
-  `venue_replace(pm_price=true)` 转 PM，trend 留上涨 outcome，最终 `limit=true`
-  生成 PM `BUY@best_bid=0.40`，非 market 单。
-- **.2 一个仓位**：head 不命中，reverse 命中；standard 不存在时用当前率
-  `0.10` 初始化。当轮阈值为 `0`，不生成止损计划。
-- **.3 当前返水扩大**：单仓率从 standard `0.10` 升到 `0.25`，reverse 先把
-  standard 抬到 `0.25`；当前率高于新回撤线 `0.15`，不对冲。
-- **.4 减少至限定值**：`standard=0.25`、当前率恰为
-  `1.0 * 0.25 - 0.1 = 0.15`，等号命中；`force=true` 生成缺口 outcome
-  的计划，最终 spec 带 `intent=recovery, market=true`，standard 仍保持 `0.25`。
-- **.5 两个仓位**：对冲完成后回到 head，reverse 不命中；head 用双仓当前率
-  `0.08` 覆盖旧 standard `0.25`，并可继续生成新的单冲计划。
-- **.6 对冲后再进单仓**：先通过双仓 head 把 standard 重置为 `0.08`，再模拟
-  其中一腿平掉后当前率 `0.05`。回撤线按新 standard 为 `-0.02`，因此不止损；
-  若错用对冲前旧高点 `0.25`则会误命中，该用例专门锁定不串旧基准。
-
-验收：✅ 上述 6 例全部通过；属于离线实时状态模拟，**live-unvalidated**。
+- 前置：launcher 注册当前内置 StateQuery / Check。
+- 输入：state query `head`、state query `reverse`、check `reverse`。
+- 步骤：分别经 registry builder 构造。
+- 期望：三者均按未知类型 fail-fast；当前 `in_game/pre_game` 仍可正常构造。
+- 验收：`test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`。
 
 新框架的纯逻辑件,可全单测。落地顺序见 `architectures/strategy/architecture.md §7`。
 
@@ -671,7 +627,7 @@ candi_select -> place_bets(intent=recovery,market=true)`。
 `test_evaluator.py` 中 `test_order_filled_callback_only_dispatches_full_fill`、
 `test_canceled_or_expired_dispatches_only_when_order_has_a_fill`、
 `test_order_filled_tree_runs_directly_and_exposes_terminal_context`、
-`test_order_filled_tree_plan_uses_standard_dispatch_exit`。
+`test_order_filled_tree_plan_uses_unified_dispatch_exit`。
 
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
 - **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_dispatch_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次。**#260 起断言 gate 已释放**(该用例的 `_RecordingAction` 不提交任何订单 → 所有权未交出);旧断言是「fire 后仍 in-flight」,那正是泄漏本身 —— action 空转也永久占闸,该 pair 再不被评估。

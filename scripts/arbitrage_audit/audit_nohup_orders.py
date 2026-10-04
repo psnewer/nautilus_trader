@@ -230,6 +230,9 @@ def main() -> None:
         anchor = prep["ts"] if prep else order["ts"]
         eligible = [item for item in pair_snapshots if not item["skipped"]]
         trigger = last_before(eligible, anchor, 5)
+        # pair_in_flight 只跳过重复 evaluate，不会阻止行情帧更新 live Cache。action 实际读取的
+        # 是 prepare 前最新 Cache，因此还原候选腿时必须包含这些 skipped snapshot。
+        decision = last_before(pair_snapshots, anchor, 5)
         trigger_index = pair_snapshots.index(trigger) if trigger in pair_snapshots else -1
         previous = pair_snapshots[trigger_index - 1] if trigger_index > 0 else None
         trigger_books = book_map(trigger["books"]) if trigger else {}
@@ -271,8 +274,8 @@ def main() -> None:
 
         native_venue = None
         native_role = None
-        if prep and trigger:
-            candidates = candidate_matches(trigger_books, prep["rate"])
+        if prep and decision:
+            candidates = candidate_matches(book_map(decision["books"]), prep["rate"])
             recent_drops = [
                 (item["venue"], item["role"])
                 for item in drops[pair]

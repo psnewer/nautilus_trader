@@ -1,7 +1,6 @@
 """`Condition.self_hits` 的当前状态布尔查询 DSL。
 
-支持 AND/OR/NOT 嵌套；普通叶子只读当前 `EvalContext`。`head/reverse` 是受控例外：
-叶子命中时更新 StrategyRuntimeStore 中的动态基准，不产生下单等执行副作用。
+支持 AND/OR/NOT 嵌套；叶子只读当前 `EvalContext`。
 """
 
 from __future__ import annotations

@@ -22,7 +22,6 @@ from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.registry import Strategy
 from src.arbitrage.strategy.registry import StrategyRegistry
-from src.arbitrage.strategy.runtime_store import StrategyRuntimeStore
 
 
 __all__ = [
@@ -44,6 +43,5 @@ __all__ = [
     "StrategyEvaluator",
     "StrategyEvaluatorConfig",
     "StrategyRegistry",
-    "StrategyRuntimeStore",
     "evaluate_tree",
 ]

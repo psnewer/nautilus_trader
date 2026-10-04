@@ -252,7 +252,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ## ArbitragePortfolio: outcome_exposures / outcome_shares 领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share；`head/reverse` 读取 `realized_pnl_for_pair(pair_id)` 与抗抖动盘口侧（LONG ask / SHORT bid）的 unrealized PnL 合成即时返水率。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。OE/SE position quantity 由 adapter 入站时归一为 USD stake,Portfolio/Risk 不再乘 fx。
+子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。OE/SE position quantity 由 adapter 入站时归一为 USD stake,Portfolio/Risk 不再乘 fx。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 

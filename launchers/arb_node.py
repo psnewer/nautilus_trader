@@ -98,12 +98,9 @@ from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
 from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
-from src.arbitrage.strategy.checks.reverse import ReverseCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
-from src.arbitrage.strategy.queries.position_mode import HeadQuery
-from src.arbitrage.strategy.queries.position_mode import ReverseQuery
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
@@ -130,11 +127,8 @@ def register_builtin_checks_and_actions() -> None:
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
     register_check("pre_move", PreMoveCheck)
-    register_check("reverse", ReverseCheck)
     register_state_query("in_game", InGameQuery)
     register_state_query("pre_game", PreGameQuery)
-    register_state_query("head", HeadQuery)
-    register_state_query("reverse", ReverseQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
     register_action("venue_select", VenueSelectAction)

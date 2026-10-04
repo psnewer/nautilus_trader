@@ -111,16 +111,6 @@ class _CaptureSportsStoreAction(Action):
         self.value = ctx.sports_store
 
 
-class _CaptureRuntimeAction(Action):
-    def __init__(self):
-        self.strategy_id = None
-        self.runtime_store = None
-
-    async def execute(self, ctx):
-        self.strategy_id = ctx.strategy_id
-        self.runtime_store = ctx.runtime_store
-
-
 class _CaptureEventNameAction(Action):
     def __init__(self):
         self.value = None
@@ -339,20 +329,6 @@ def test_eval_context_strategy_defaults_read_arbitrage_params():
     _run(_drain(loop))
 
     assert action.defaults == {"share": 40.0, "max_leg_share": 100.0}
-
-
-def test_eval_context_receives_strategy_runtime_identity_and_store():
-    actor, _, _, strat_reg, loop, _ = _harness()
-    action = _CaptureRuntimeAction()
-    strategy = _strategy(True, False, arb_action=action)
-    strategy.metadata["id"] = "head_rebate"
-    strat_reg.register_pair("match_X", strategy)
-
-    actor.on_data(_mp())
-    _run(_drain(loop))
-
-    assert action.strategy_id == "head_rebate"
-    assert action.runtime_store is actor._runtime_store
 
 
 def test_evaluator_injects_sports_store_into_eval_context():
@@ -624,7 +600,7 @@ def test_order_filled_tree_runs_directly_and_exposes_terminal_context():
     assert action.order is order
 
 
-def test_order_filled_tree_plan_uses_standard_dispatch_exit():
+def test_order_filled_tree_plan_uses_unified_dispatch_exit():
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     pair_reg.register("match_X", ["H.POLYMARKET"])
     submitted = []
@@ -1229,7 +1205,6 @@ def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):
         ("POLYMARKET", "0xcond"), ("ORBITEXCH", "1-123"),
     }
     assert set(actor._market_obd_subscribed) == actor._game_market_obd[888]
-    actor._runtime_store.update("head_rebate", "m1", {"standard": 0.2})
     calls_before_ended = a1.calls
 
     actor.on_data(_sports_update(888, live=False, ended=True))
@@ -1239,7 +1214,6 @@ def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):
     assert 888 not in actor._sports_subscribed
     assert 888 not in actor._game_market_obd
     assert actor._market_obd_subscribed == {}
-    assert actor._runtime_store.snapshot() == {}    # 同场跨轮策略变量一并释放
 
 
 # ── PairPriceStore:PM 初始/开赛价格快照──────────────────────────────

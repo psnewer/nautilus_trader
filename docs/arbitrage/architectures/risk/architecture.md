@@ -296,8 +296,7 @@ outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AN
   该值是已经确定的现金结果，因此同额加到每个 outcome 的 `net_profit`，不改变
   `liability` 与 `outcome_shares`。共享账本契约见 common §8。
 - `realized_pnl_for_pair(pair_id, account_id=None)` 公开同一份 native + reconcile-ledger 聚合，
-  不复制另一套算法。Strategy 的 `head/reverse` 以它和抗抖动盘口侧（LONG ask / SHORT bid）下的 NT `unrealized_pnl`
-  合成即时返水率；Portfolio 仍是 pull-based，不写 Cache/Store。
+  不复制另一套算法；Portfolio 仍是 pull-based，不写 Cache/Store。
 - **`include_realized_pnl` 开关(#327,2026-08-08)**:`outcome_exposures(pair_id, account_id=None, include_realized_pnl=True)`。
   缺省 `True` 保持上一条(realized 平摊进 `net_profit`),Risk 门控(`_check_profit_gates`,engine.py)
   与既有 recovery 均走默认、行为不变。`False` 时返回**不含 realized 的开仓投影**(即上式,未叠加

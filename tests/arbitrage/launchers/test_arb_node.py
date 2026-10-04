@@ -29,9 +29,8 @@ from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
-from src.arbitrage.strategy.checks.reverse import ReverseCheck
-from src.arbitrage.strategy.queries.position_mode import HeadQuery
-from src.arbitrage.strategy.queries.position_mode import ReverseQuery
+from src.arbitrage.strategy.queries.in_game import InGameQuery
+from src.arbitrage.strategy.queries.in_game import PreGameQuery
 
 
 def _cfg(**overrides) -> ArbConfig:
@@ -45,15 +44,17 @@ def _reset_ctx():
     bootstrap.reset_arb_context()
 
 
-def test_register_builtin_checks_and_actions_registers_position_mode_queries():
+def test_register_builtin_checks_and_actions_registers_current_types():
     arb_node.register_builtin_checks_and_actions()
 
-    assert isinstance(build_state_query({"type": "head"}), HeadQuery)
-    assert isinstance(build_state_query({"type": "reverse"}), ReverseQuery)
-    assert isinstance(
-        build_check({"type": "reverse", "params": {"rt": 1.0, "retrieve": 0.1}}),
-        ReverseCheck,
-    )
+    assert isinstance(build_state_query({"type": "in_game"}), InGameQuery)
+    assert isinstance(build_state_query({"type": "pre_game"}), PreGameQuery)
+    with pytest.raises(StrategyConfigError, match="unknown state query type: 'head'"):
+        build_state_query({"type": "head"})
+    with pytest.raises(StrategyConfigError, match="unknown state query type: 'reverse'"):
+        build_state_query({"type": "reverse"})
+    with pytest.raises(StrategyConfigError, match="unknown check type: 'reverse'"):
+        build_check({"type": "reverse", "params": {"rt": 1.0, "retrieve": 0.1}})
     assert isinstance(
         build_check({
             "type": "one_side_recovery",
