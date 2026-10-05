@@ -79,6 +79,22 @@ def test_action_cancel_request_cancels_pair_without_submitting():
     assert canceled == ["p"]
 
 
+def test_action_cancel_request_targets_selected_order_ids():
+    canceled = []
+    ctx = EvalContext(
+        pair_id="p",
+        pair_order_canceler=lambda pair_id, order_ids: canceled.append((pair_id, order_ids)) or 1,
+    )
+    ctx.scratch["cancel_pair_orders"] = {
+        "reason": "start_price_cancel:score_leading",
+        "client_order_ids": ["O-START"],
+    }
+
+    _prepare_and_dispatch(PlaceBetsAction(), ctx)
+
+    assert canceled == [("p", ("O-START",))]
+
+
 def test_action_cancels_when_selected_recovery_candidate_carries_request():
     canceled = []
 

@@ -191,6 +191,7 @@ class PlaceBetsAction(Action):
         ctx.scratch["execution_plan"] = ExecutionPlan.cancel_pair(
             ctx.pair_id,
             request.get("reason"),
+            request.get("client_order_ids"),
         )
         _LOG.info(
             f"PlaceBets[prepare-cancel]: pair={ctx.pair_id} "

@@ -161,10 +161,11 @@ def main() -> None:
             if "PlaceBets[prepare]: pair=" in line:
                 match = re.search(r"pair=(.+?) legs=\d+ strategy=([^ ]+) rate=([^ ]+)", line)
                 if match:
+                    rate_text = match.group(3)
                     preparations[match.group(1)].append({
                         "ts": ts,
                         "strategy": match.group(2),
-                        "rate": float(match.group(3)),
+                        "rate": None if rate_text == "None" else float(rate_text),
                     })
                 continue
 
@@ -274,7 +275,11 @@ def main() -> None:
 
         native_venue = None
         native_role = None
-        if prep and decision:
+        if prep and prep["rate"] is None:
+            # start_game 不经过候选套利腿和 venue_replace，最终 PM 腿就是规则输入腿。
+            native_venue = "POLYMARKET"
+            native_role = order["role"]
+        elif prep and decision:
             candidates = candidate_matches(book_map(decision["books"]), prep["rate"])
             recent_drops = [
                 (item["venue"], item["role"])
@@ -363,6 +368,7 @@ def main() -> None:
             "start_yes": start["yes"] if start else None,
             "start_no": start["no"] if start else None,
             "start来源": start["source"] if start else None,
+            "触发类型": "start_game" if prep and prep["rate"] is None else None,
             "原生腿venue": native_venue,
             "venue_replace前方向": native_role,
             "触发venue": ",".join(changed_venues) or None,

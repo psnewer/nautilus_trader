@@ -181,7 +181,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx)，并保留 `share_if_wins=missing` 供后续 `venue_replace` 重算 PM 数量 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
-- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_order_gate` 使用 `{enable,ignore_start_price}`，默认关闭，开启后任一 pair open order 默认清空全部输出；开启 ignore 后仅忽略 pair 首张且唯一曾 SUBMITTED 的当前挂单，按 `ts_submitted/client_order_id` 识别，不依赖价格；未提交挂单、另一张历史 submitted 或多张当前挂单仍拦，并覆盖缺 live 状态、旧 spread 字段及非法对象参数；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
+- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_order_gate` 使用 `{enable,ignore_start_price}`，默认关闭，开启后任一 pair open order 默认清空全部输出；开启 ignore 后仅忽略已 SUBMITTED 且 `arb:intent=start_game` 的当前挂单，不依赖价格或历史 submitted 数量；未提交或其它 intent 挂单仍拦，并覆盖缺 live 状态、旧 spread 字段及非法对象参数；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变。`pm_price` 只控制未反转的非 PM 输入腿：默认/`True` 用 PM 实时 ask，`False` 保留原 order prob。`tier_convert` 只读取 pair 中 OE instrument 的原始 `competition_name`，Challenger、WTA 125K、普通 WTA、UTR 与 ITF 均判为低级别；归并后的 `info["competition"]` 不参与判级，缺原始 OE 名称或 ATP 非低级别名称沿用旧路径。参数缺失不影响旧逻辑；可选正整数 `set_exempt` 在 Sports state `period=S<N>` 与 N 相等时同时豁免 `tier_convert/convert/attitude/deviate_convert`，非 PM 腿仍默认同方向替换，缺/坏 period 或盘号不等时不豁免，并覆盖四种反转、非法参数与旧逻辑兼容。可选 `tier_ignore` 同时门控 `pre/post`：按原始腿 outcome 读取 start，只有有效 start `>=` 阈值才命中，严格小于或缺 start 均不命中，等号命中。`pre` 命中后跳过 `convert/attitude/deviate_convert`，未命中继续后续旧路径；`post` 命中时在旧路径完成后反转最终 PM outcome，未命中时保留旧路径产物。覆盖 pre/post 的小于、等于、缺值、pre 未命中后的默认替换、post 未命中时保留 convert 产物以及非有限阈值 fail-fast。旧路径中 `convert` 仅原生 PM 腿直接反转，命中后不再检查 start 或动态条件；再未命中时，`attitude=True` 以原 outcome PM bid 命中 `bid<=start_price`，`deviate_convert=True` 命中 `bid>=1.2×start_price` 且不设上限，动态反转共同要求当前 outcome 有有效 start、完整 PM ask commission 位于 `[0.98,1.02]`。缺当前 outcome start 只跳过动态反转，不要求 pair start 完整，也不拦截原生 PM 保持或非 PM 默认同方向替换。覆盖无 start 默认替换、仅当前 outcome 有 start 可动态反转、convert 无 start 仍优先、commission 两个边界、bid/start 的 1.2 边界、超过旧 1.3 上限仍触发、低于区间不触发、非 PM 输入在 `convert` 未命中后可动态反转、参数非法值。任何实际反转始终使用最终 PM token 实时 ask并忽略 `pm_price`；PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到最终 PM venue/outcome
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
@@ -433,12 +433,20 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 验收：`test_query_start_game.py`、`test_check_lower_tier.py`、
   `test_check_start_price_below.py` 及实际 `arb_config.json` 装配。
 
-### strategy-4.pre_rebate.8: current_order_gate 忽略首张唯一 submitted 挂单（#417）
-- `enable=true,ignore_start_price=true` 时，当前 open order 自身须 `ts_submitted > 0`，排除它后
-  pair 内不能再有另一张 `ts_submitted > 0` 的历史订单；订单同一性按 `client_order_id` 判定。
-- 不比较订单价与 `start_price-spread`，也不新增 `arb:origin` 等 Order tags；验证首张唯一 submitted
-  挂单放行、未 submitted/存在既往 submitted 时拦截，以及旧 boolean/`spread` 配置 fail-fast。
+### strategy-4.pre_rebate.8: current_order_gate 按 start_game intent 忽略挂单（#418）
+- `enable=true,ignore_start_price=true` 时，只忽略 `ts_submitted > 0` 且带
+  `arb:intent=start_game` 的 open order；未 submitted 或其它 intent 挂单拦截。
+- 不比较订单价与 `start_price-spread`，不根据 pair 历史 submitted 数量猜测来源；
+  验证存在其它历史订单时 start_game 挂单仍放行，以及旧 boolean/`spread` 配置 fail-fast。
 - 验收：`test_action_share_limit.py`。
+
+### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418）
+- B5 `place_bets(intent="start_game")` 将来源写入 Order tags；仍按普通套利单执行风控。
+- compensation 最后一支 `start_price_cancel(timeout_ms=600000)` 只查已 submitted/open
+  的 start_game 单；订单方向比分领先，或严格超时且 score 为空时命中。
+- `0-0`/`6-6` 等非空比分不属于无比分；超时等号不命中。撤单请求携带
+  `client_order_ids`，pair canceler 只重读并撤销当前仍 open 的目标单，不影响同 pair 其它挂单。
+- 验收：`test_check_start_price_cancel.py`、`test_action_place_bets.py`、`test_evaluator.py`。
 
 ## Pair 动态趋势基准 #356
 
@@ -797,6 +805,8 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   dispatcher 执行 cancel plan 时重新读取目标 pair 全部 open orders；逐单发 NT CancelOrder，并为所有命令
   写入相同 `opportunity_id/expected_cancels`，由 Execution grouped cancel barrier 收齐后
   跨 venue 统一 release。
+- `test_evaluator.py::test_pair_order_canceler_can_target_selected_open_orders`:撤单计划携带
+  `client_order_ids` 时只撤指定 open order，grouped cancel 的 `expected_cancels` 也只包含实际目标。
 - `test_evaluator.py::test_spread_cancel_recovery_completes_comp_tree_then_wins_dispatch`:同轮两树
   命中时，spread cancel 完整经过补偿树生成 cancel plan；统一分发选择补偿，只执行 grouped cancel。
 - `test_mean_rebate_e2e.py::test_spread_cancel_and_mean_recovery_build_as_or_expression`:

@@ -776,6 +776,32 @@ def test_pair_order_canceler_reloads_and_cancels_all_pair_open_orders():
     assert all(set(item["expected_cancels"]) == {"A", "B"} for item in params)
 
 
+def test_pair_order_canceler_can_target_selected_open_orders():
+    first = SimpleNamespace(client_order_id="A")
+    second = SimpleNamespace(client_order_id="B")
+    pair_registry = PairRegistry()
+    pair_registry.register("p", ["H.POLYMARKET", "A.ORBITEXCH"])
+    orders = {
+        "H.POLYMARKET": [first],
+        "A.ORBITEXCH": [second],
+    }
+
+    fake = SimpleNamespace(
+        _pair_registry=pair_registry,
+        cache=SimpleNamespace(
+            orders_open=lambda *, instrument_id: orders.get(str(instrument_id), []),
+        ),
+        cancel_order=MagicMock(),
+    )
+
+    canceler = StrategyEvaluator._make_pair_order_canceler(fake)
+
+    assert canceler("p", ("A",)) == 1
+    assert [call.args[0].client_order_id for call in fake.cancel_order.call_args_list] == ["A"]
+    params = fake.cancel_order.call_args.kwargs["params"]["arb_cancel_opportunity"]
+    assert params["expected_cancels"] == ["A"]
+
+
 def test_arb_and_comp_evaluation_scratch_is_isolated():
     """套利树与补偿树同轮命中时,套利 action 不得读到补偿树写入的单腿 legs。"""
     actor, store, pair_reg, strat_reg, loop, _ = _harness()

@@ -23,6 +23,7 @@ class ExecutionPlan:
     pair_id: str
     orders: tuple[PreparedOrder, ...] = ()
     reason: str | None = None
+    cancel_order_ids: tuple[str, ...] = ()
 
     @classmethod
     def submit(cls, pair_id: str, orders: list[PreparedOrder]) -> ExecutionPlan:
@@ -33,11 +34,13 @@ class ExecutionPlan:
         cls,
         pair_id: str,
         reason: str | None,
+        client_order_ids: tuple[str, ...] | list[str] | None = None,
     ) -> ExecutionPlan:
         return cls(
             kind="cancel_pair",
             pair_id=pair_id,
             reason=reason,
+            cancel_order_ids=tuple(client_order_ids or ()),
         )
 
 
@@ -57,7 +60,11 @@ async def dispatch_execution_plan(
                 f"source={source} reason={plan.reason} orders=0",
             )
             return
-        count = pair_order_canceler(plan.pair_id)
+        count = (
+            pair_order_canceler(plan.pair_id, plan.cancel_order_ids)
+            if plan.cancel_order_ids
+            else pair_order_canceler(plan.pair_id)
+        )
         log.info(
             f"ExecutionPlan[cancel]: pair={plan.pair_id} "
             f"source={source} reason={plan.reason} orders={count}",

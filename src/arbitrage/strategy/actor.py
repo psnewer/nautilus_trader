@@ -790,6 +790,7 @@ class StrategyEvaluator(Strategy):
             "portfolio": self._portfolio,
             "strategy_defaults": self._strategy_defaults(),
             "event_name": event_name,
+            "ts_now_ns": self.clock.timestamp_ns(),
         }
         arb_ctx = EvalContext(**base_ctx)
         comp_ctx = EvalContext(**base_ctx)
@@ -853,6 +854,7 @@ class StrategyEvaluator(Strategy):
             event_name=type(event).__name__,
             trigger_event=event,
             trigger_order=order,
+            ts_now_ns=self.clock.timestamp_ns(),
         )
         result = await self._aevaluate(strategy.order_filled_tree, ctx)
         await self._prepare_actions(result, ctx)
@@ -976,7 +978,8 @@ class StrategyEvaluator(Strategy):
 
     def _make_pair_order_canceler(self):
         """返同步 callable：重读 pair open orders，并作为同组 NT CancelOrder 送入 barrier。"""
-        def cancel(pair_id: str) -> int:
+        def cancel(pair_id: str, client_order_ids: tuple[str, ...] = ()) -> int:
+            targets = set(client_order_ids)
             seen = set()
             orders = []
             for raw_instrument_id in sorted(
@@ -989,7 +992,10 @@ class StrategyEvaluator(Strategy):
                     else InstrumentId.from_str(str(raw_instrument_id))
                 )
                 for order in self.cache.orders_open(instrument_id=instrument_id) or ():
-                    key = str(getattr(order, "client_order_id", "") or id(order))
+                    client_order_id = str(getattr(order, "client_order_id", "") or "")
+                    if targets and client_order_id not in targets:
+                        continue
+                    key = client_order_id or str(id(order))
                     if key in seen:
                         continue
                     seen.add(key)

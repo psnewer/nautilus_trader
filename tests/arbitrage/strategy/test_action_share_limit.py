@@ -437,16 +437,18 @@ def test_current_order_gate_requires_object_param():
         raise AssertionError("expected ValueError")
 
 
-def test_current_order_gate_can_ignore_first_and_only_submitted_open_order():
+def test_current_order_gate_can_ignore_submitted_start_game_open_order():
     open_order = SimpleNamespace(
         instrument_id="Y.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=123,
+        tags=["arb:intent=start_game"],
     )
     historical_view = SimpleNamespace(
         instrument_id="Y.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=123,
+        tags=["arb:intent=start_game"],
     )
     ctx = live_context(
         instrument_ids=["Y.POLYMARKET"],
@@ -473,6 +475,7 @@ def test_current_order_gate_blocks_unsubmitted_open_order():
         instrument_id="Y.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=0,
+        tags=["arb:intent=start_game"],
     )
     ctx = live_context(
         instrument_ids=["Y.POLYMARKET"],
@@ -493,11 +496,12 @@ def test_current_order_gate_blocks_unsubmitted_open_order():
     assert ctx.scratch["legs"] == []
 
 
-def test_current_order_gate_ignores_unsubmitted_history_when_current_is_first_submission():
+def test_current_order_gate_ignores_start_game_order_even_with_other_history():
     current = SimpleNamespace(
         instrument_id="Y.POLYMARKET",
         client_order_id="O-2",
         ts_submitted=200,
+        tags=["arb:intent=start_game"],
     )
     denied = SimpleNamespace(
         instrument_id="N.POLYMARKET",
@@ -524,16 +528,18 @@ def test_current_order_gate_ignores_unsubmitted_history_when_current_is_first_su
     assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
 
 
-def test_current_order_gate_blocks_when_another_order_was_submitted():
+def test_current_order_gate_blocks_submitted_non_start_game_order():
     current = SimpleNamespace(
         instrument_id="Y.POLYMARKET",
         client_order_id="O-2",
         ts_submitted=200,
+        tags=["arb:intent=arbitrage"],
     )
     prior = SimpleNamespace(
         instrument_id="N.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=100,
+        tags=["arb:intent=start_game"],
     )
     ctx = live_context(
         instrument_ids=["Y.POLYMARKET", "N.POLYMARKET"],

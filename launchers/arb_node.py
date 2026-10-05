@@ -101,6 +101,7 @@ from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
+from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
 from src.arbitrage.strategy.queries.start_game import StartGameQuery
@@ -132,6 +133,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("pre_move", PreMoveCheck)
     register_check("lower_tier", LowerTierCheck)
     register_check("start_price_below", StartPriceBelowCheck)
+    register_check("start_price_cancel", StartPriceCancelCheck)
     register_state_query("in_game", InGameQuery)
     register_state_query("pre_game", PreGameQuery)
     register_state_query("start_game", StartGameQuery)

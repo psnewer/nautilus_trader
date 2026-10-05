@@ -304,13 +304,16 @@ def main() -> None:
         current_bid = role_quote.get("bid")
         current_ask = role_quote.get("ask")
         start_price = source.get(f"start_{role}")
+        is_start_game = source.get("触发类型") == "start_game"
         start_sum = None
         if source.get("start_yes") is not None and source.get("start_no") is not None:
             start_sum = float(source["start_yes"]) + float(source["start_no"])
         commission_ok = start_sum is not None and 0.98 <= start_sum <= 1.02
 
         explicit_convert = native_venue == "POLYMARKET" and actual_role != role
-        if not role:
+        if is_start_game:
+            action = "start_game（start_price-spread）"
+        elif not role:
             action = "无法确认（缺少venue_replace前方向）"
         elif explicit_convert:
             flip = True
@@ -334,20 +337,21 @@ def main() -> None:
             else:
                 action = "买原方向"
 
-        tier_mode, tier_ignored = recent_tier_state(
-            tier_events[pair],
-            order_time_utc,
-            role,
-        )
-        action = action_description(
-            source_role=role,
-            actual_role=actual_role,
-            native_venue=native_venue,
-            tier_mode=tier_mode,
-            tier_ignored=tier_ignored,
-            convert_enabled=args.venue_replace_convert,
-            fallback_action=action,
-        )
+        if not is_start_game:
+            tier_mode, tier_ignored = recent_tier_state(
+                tier_events[pair],
+                order_time_utc,
+                role,
+            )
+            action = action_description(
+                source_role=role,
+                actual_role=actual_role,
+                native_venue=native_venue,
+                tier_mode=tier_mode,
+                tier_ignored=tier_ignored,
+                convert_enabled=args.venue_replace_convert,
+                fallback_action=action,
+            )
 
         # 实际报表以 OrderInitialized 的最终方向为准；策略推演只用于解释动作。
         buy_role = actual_role
@@ -425,6 +429,19 @@ def main() -> None:
             merged_rows.append(fresh_by_id.pop(row[2], row))
         merged_rows.extend(fresh_by_id.values())
         rows = merged_rows
+
+    # 风控拒绝从未进入 venue，同一比赛的重复尝试只保留最早一笔，避免
+    # submitted-only 的 start_game 门控在每个行情帧产生大量重复审计行。
+    denied_pairs: set[str] = set()
+    deduplicated_rows = []
+    for row in rows:
+        if row[4] == "未成交-风控拒绝":
+            if row[3] in denied_pairs:
+                continue
+            denied_pairs.add(row[3])
+        deduplicated_rows.append(row)
+    rows = deduplicated_rows
+
     if SHEET_NAME in workbook.sheetnames:
         del workbook[SHEET_NAME]
     sheet = workbook.create_sheet(SHEET_NAME, 0)

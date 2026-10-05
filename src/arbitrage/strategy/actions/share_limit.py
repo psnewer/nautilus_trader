@@ -9,7 +9,7 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
 
 可选 `current_position_gate=True` 时,先按 Portfolio 跨 venue 聚合的当前持仓 outcome 筛腿。
 可选 `current_order_gate={"enable": true}` 时,只要当前 pair 存在任意 open order 就清空输出；
-`ignore_start_price=true` 时忽略该 pair 首张且唯一曾提交的 open order。
+`ignore_start_price=true` 时忽略 `arb:intent=start_game` 的已提交 open order。
 
 复用原公式,按 Venue Registry odds_model 分支:
   - probability venue: remaining = max - current[role]（单腿独立检查）
@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 
+from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
@@ -132,19 +133,13 @@ class ShareLimitModification(Action):
 
         try:
             instrument_ids = pair_instrument_ids(ctx)
-            submitted_orders = [
-                order
-                for instrument_id in instrument_ids
-                for order in (ctx.cache.orders(instrument_id=instrument_id) or ())
-                if _was_submitted(order)
-            ]
             for instrument_id in instrument_ids:
                 open_orders = ctx.cache.orders_open(instrument_id=instrument_id) or ()
                 blocking = next(
                     (
                         order
                         for order in open_orders
-                        if not self._is_ignored_start_price_order(order, submitted_orders)
+                        if not self._is_ignored_start_price_order(order)
                     ),
                     None,
                 )
@@ -164,12 +159,12 @@ class ShareLimitModification(Action):
             return False
         return True
 
-    def _is_ignored_start_price_order(self, order, submitted_orders) -> bool:
+    def _is_ignored_start_price_order(self, order) -> bool:
         if not self._ignore_start_price_orders:
             return False
         if not _was_submitted(order):
             return False
-        return not any(not _same_order(order, other) for other in submitted_orders)
+        return order_intent(order) == "start_game"
 
     @staticmethod
     def _clear_all_outputs(ctx: EvalContext) -> None:
@@ -411,14 +406,6 @@ def _normalize_current_order_gate(raw: dict | None) -> dict[str, bool]:
 
 def _was_submitted(order) -> bool:
     return int(getattr(order, "ts_submitted", 0) or 0) > 0
-
-
-def _same_order(left, right) -> bool:
-    left_id = str(getattr(left, "client_order_id", "") or "")
-    right_id = str(getattr(right, "client_order_id", "") or "")
-    if left_id and right_id:
-        return left_id == right_id
-    return left is right
 
 
 def _candidate_base_share(candidate: dict) -> float:

@@ -31,6 +31,7 @@ from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
+from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
 from src.arbitrage.strategy.queries.start_game import StartGameQuery
@@ -77,6 +78,10 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(
         build_check({"type": "start_price_below", "params": {"price": 0.4}}),
         StartPriceBelowCheck,
+    )
+    assert isinstance(
+        build_check({"type": "start_price_cancel", "params": {"timeout_ms": 600_000}}),
+        StartPriceCancelCheck,
     )
     assert isinstance(
         build_action({

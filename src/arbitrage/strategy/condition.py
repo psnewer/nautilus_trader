@@ -41,7 +41,7 @@ class EvalContext:
     # `spec` schema:{instrument_id, side: "BUY"|"SELL", qty: float, price: float}
     submitter: object | None = None  # Callable[[dict], Awaitable[None]] | None;运行时类型避循环 import
     # Evaluator 分发 cancel_pair 计划时调用；实现必须走 NT 原生 CancelOrder。
-    pair_order_canceler: object | None = None  # Callable[[str], int] | None
+    pair_order_canceler: object | None = None  # Callable[[str, tuple[str, ...]], int] | None
     # ShareLimitModification 等 Action 需要读取持仓数据计算 remaining
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
     # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。
@@ -52,6 +52,10 @@ class EvalContext:
     # 非行情触发树可读取原始触发事件及其终态订单；普通行情评估均为 None。
     trigger_event: object | None = None
     trigger_order: object | None = None
+    # 本轮评估的 NT clock 时间，供基于 Order 时间戳的 Check 做可测试比较。
+    ts_now_ns: int | None = None
+
+
 class CheckExpr(ABC):
     """带 `scratch` 事务语义的决策核查表达式。"""
 
