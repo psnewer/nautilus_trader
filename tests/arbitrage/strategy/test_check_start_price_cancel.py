@@ -1,4 +1,4 @@
-"""start_price_cancel：按 start_game intent 精确撤销领先/超时无比分挂单。"""
+"""start_price_cancel: 按 start_game intent 精确撤销指定比分状态的挂单。"""
 
 from types import SimpleNamespace
 
@@ -60,19 +60,36 @@ def test_losing_start_game_order_does_not_cancel():
     assert StartPriceCancelCheck().passes(ctx) is False
 
 
-def test_no_score_over_timeout_generates_targeted_cancel():
-    submitted = 1_000_000_000
-    ctx = _ctx("", [_order(ts=submitted)], now_ns=submitted + 600_000_000_001)
+def test_losing_start_game_order_can_be_configured_for_cancel():
+    order = _order(ts=100)
+    ctx = _ctx("2-3", [order], now_ns=200)
 
-    assert StartPriceCancelCheck(timeout_ms=600_000).passes(ctx) is True
-    assert ctx.scratch["cancel_pair_orders"]["reason"] == "start_price_cancel:no_score_timeout"
+    assert StartPriceCancelCheck(standing="lose").passes(ctx) is True
+    assert ctx.scratch["cancel_pair_orders"] == {
+        "reason": "start_price_cancel:score_losing",
+        "client_order_ids": ["O-START"],
+    }
 
 
-def test_no_score_exactly_at_timeout_does_not_cancel():
-    submitted = 1_000_000_000
-    ctx = _ctx("", [_order(ts=submitted)], now_ns=submitted + 600_000_000_000)
+def test_leading_start_game_order_is_kept_when_canceling_loser():
+    ctx = _ctx("3-2", [_order(ts=100)], now_ns=200)
 
-    assert StartPriceCancelCheck(timeout_ms=600_000).passes(ctx) is False
+    assert StartPriceCancelCheck(standing="lose").passes(ctx) is False
+
+
+def test_cancel_standing_rejects_unknown_value():
+    try:
+        StartPriceCancelCheck(standing="draw")
+    except ValueError as exc:
+        assert "standing must be 'win' or 'lose'" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_no_score_does_not_cancel_regardless_of_order_age():
+    ctx = _ctx("", [_order(ts=1)], now_ns=700_000_000_000)
+
+    assert StartPriceCancelCheck(standing="lose").passes(ctx) is False
 
 
 def test_non_start_game_order_is_not_canceled():

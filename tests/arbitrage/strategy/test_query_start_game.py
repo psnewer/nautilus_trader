@@ -61,6 +61,55 @@ def test_start_game_rejects_terminal_order_which_was_previously_submitted():
     assert StartGameQuery().matches(_ctx(orders=[order])) is False
 
 
+def test_start_game_can_repeat_after_unfilled_start_game_cancel_when_enabled():
+    order = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        status="CANCELED",
+        ts_submitted=123,
+        filled_qty=0,
+        tags=["arb:intent=start_game"],
+    )
+    assert StartGameQuery(repeat_after_cancel=True).matches(_ctx(orders=[order])) is True
+    assert StartGameQuery().matches(_ctx(orders=[order])) is False
+
+
+def test_start_game_repeat_rejects_partial_fill_other_intent_and_open_order():
+    partial = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        status="CANCELED",
+        ts_submitted=123,
+        filled_qty=1,
+        tags=["arb:intent=start_game"],
+    )
+    other = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        status="CANCELED",
+        ts_submitted=123,
+        filled_qty=0,
+        tags=["arb:intent=arbitrage"],
+    )
+    opened = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        status="ACCEPTED",
+        ts_submitted=123,
+        filled_qty=0,
+        tags=["arb:intent=start_game"],
+    )
+    query = StartGameQuery(repeat_after_cancel=True)
+    assert query.matches(_ctx(orders=[partial])) is False
+    assert query.matches(_ctx(orders=[other])) is False
+    assert query.matches(_ctx(orders=[opened])) is False
+
+
+def test_start_game_repeat_after_cancel_requires_boolean():
+    try:
+        StartGameQuery(repeat_after_cancel="true")
+    except ValueError as exc:
+        assert "repeat_after_cancel must be a boolean" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_start_game_rejects_pre_unknown_and_missing_runtime_state():
     assert StartGameQuery().matches(_ctx(phase="PRE")) is False
     assert StartGameQuery().matches(_ctx(phase=None)) is False

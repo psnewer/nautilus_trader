@@ -420,18 +420,20 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_action_trend_gate.py` 与 `test_action_score_selection.py` 覆盖，树间优先级沿用
   `test_evaluator.py`。
 
-### strategy-4.pre_rebate.7: 低级别 start_game 最低优先级首单（#413）
-- `start_game` 仅在明确 IN_PLAY 且 NT Cache 中该 pair 全部 instrument 没有曾进入
-  SUBMITTED 的订单时命中；以 Order 的 `ts_submitted > 0` 为唯一证据，因此仅 INITIALIZED
-  或 Risk DENIED 不拦，SUBMITTED 以及后续 CANCELED/FILLED 等终态均拦。
+### strategy-4.pre_rebate.7: 低级别 start_game 最低优先级领先重挂（#413/#420）
+- `start_game` 默认仍只在明确 IN_PLAY 且该 pair 无 SUBMITTED 历史时命中；配置
+  `repeat_after_cancel=true` 后，只忽略未成交且终态为 CANCELED 的 `arb:intent=start_game`
+  历史。open start_game、部分/全部成交、其它 intent 或其它终态均继续阻断。
 - `lower_tier` 只读 OE 原始 `competition_name`，与 venue_replace 共用 Challenger/WTA/UTR/ITF
   口径；归并后的 `info["competition"]` 不参与，缺 OE/raw competition fail-closed。
 - `start_price_below(price)` 要求完整 start，严格 `< price`，按唯一最低 outcome 生成一条 PM
   BUY；等号、最低价并列、缺 start/PM/share 均不命中。计划腿使用记录 start，不使用 live ask。
 - 分支固定为 arbitrage `sub_conditions` 最后一项且只随既有 OBD 评估；前支 Check 命中不回落，
   phase 不新增评估，补偿计划仍按 `comp_plan > arb_plan` 胜出。
+- 实际配置在 start_price 腿后增加 `score_selection(standing="win")`，仅比赛级领先时下单；
+  `limit=false, spread=0`，不与当前 best bid 取低，直接挂 start_price。落后撤单后再次领先可重新挂。
 - 验收：`test_query_start_game.py`、`test_check_lower_tier.py`、
-  `test_check_start_price_below.py` 及实际 `arb_config.json` 装配。
+  `test_check_start_price_below.py`、`test_action_score_selection.py` 及实际 `arb_config.json` 装配。
 
 ### strategy-4.pre_rebate.8: current_order_gate 按 start_game intent 忽略挂单（#418）
 - `enable=true,ignore_start_price=true` 时，只忽略 `ts_submitted > 0` 且带
@@ -440,11 +442,12 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   验证存在其它历史订单时 start_game 挂单仍放行，以及旧 boolean/`spread` 配置 fail-fast。
 - 验收：`test_action_share_limit.py`。
 
-### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418）
+### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418/#420）
 - B5 `place_bets(intent="start_game")` 将来源写入 Order tags；仍按普通套利单执行风控。
-- compensation 最后一支 `start_price_cancel(timeout_ms=600000)` 只查已 submitted/open
-  的 start_game 单；订单方向比分领先，或严格超时且 score 为空时命中。
-- `0-0`/`6-6` 等非空比分不属于无比分；超时等号不命中。撤单请求携带
+- compensation 最后一支 `start_price_cancel(standing="lose")` 只查已 submitted/open
+  的 start_game 单；当前配置为订单方向比分落后时撤单。`standing` 默认 `win`
+  保持旧配置兼容；缺比分时 fail-closed，不根据挂单时长撤单，也不处理已成交仓位。
+- 撤单请求携带
   `client_order_ids`，pair canceler 只重读并撤销当前仍 open 的目标单，不影响同 pair 其它挂单。
 - 验收：`test_check_start_price_cancel.py`、`test_action_place_bets.py`、`test_evaluator.py`。
 
