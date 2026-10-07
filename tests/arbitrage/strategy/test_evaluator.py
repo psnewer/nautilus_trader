@@ -1423,14 +1423,23 @@ def test_ended_deletes_pair_prices_after_last_evaluation_finishes():
     actor, _, pair_reg, strat_reg, loop, _ = _harness()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=_RecordingAction("m1")))
     _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
+
+    actor._consecutive_trigger_store.append(
+        "match_X",
+        "pre_rebate",
+        TriggerObservation(1, "MarketOrderBookDeltas", "1-0", ((1, 0, None, None),), "yes", (), (), ()),
+    )
     # MatchedPair 已创建一轮评估但尚未执行；ended 自身不新建评估，只把清理延后到既有 task 完成。
     assert actor._get_pair_price_store().get("match_X") is not None
+    assert actor._consecutive_trigger_store.history("match_X", "pre_rebate")
 
     actor.on_data(_sports_update(888, live=False, ended=True))
     assert actor._get_pair_price_store().get("match_X") is not None
 
     _run(_drain(loop))
     assert actor._get_pair_price_store().get("match_X") is None
+    assert actor._consecutive_trigger_store.history("match_X", "pre_rebate") == ()
     assert 888 not in actor._price_pairs_by_game
 
 # ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────

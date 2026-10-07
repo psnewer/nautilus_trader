@@ -67,6 +67,7 @@ from src.arbitrage.strategy.checks.quote_legs import best_ask
 from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
+from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.registry import StrategyRegistry
 
@@ -214,6 +215,7 @@ class StrategyEvaluator(Strategy):
         self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
         self._game_market_obd: dict[int, set[tuple[str, str]]] = {}
         self._pair_price_store = None
+        self._consecutive_trigger_store = ConsecutiveTriggerStore()
         self._price_pairs_by_game: dict[int, set[str]] = {}
         self._price_game_by_pair: dict[str, int] = {}
         self._price_cleanup_pending: set[str] = set()
@@ -708,6 +710,7 @@ class StrategyEvaluator(Strategy):
         store = self._get_pair_price_store()
         if store is not None:
             store.delete(pair_id)
+        self._consecutive_trigger_store.delete_pair(pair_id)
         game_id = self._price_game_by_pair.pop(pair_id, None)
         if game_id is None:
             return
@@ -784,6 +787,7 @@ class StrategyEvaluator(Strategy):
             "pair_registry": self._pair_registry,
             "sports_store": sports_store,
             "phase_store": phase_store,
+            "consecutive_trigger_store": self._consecutive_trigger_store,
             "positions_digest": positions_digest,
             "submitter": submitter,
             "pair_order_canceler": self._make_pair_order_canceler(),
@@ -846,6 +850,7 @@ class StrategyEvaluator(Strategy):
             pair_registry=self._pair_registry,
             sports_store=self._get_sports_store(),
             phase_store=self._get_phase_store(),
+            consecutive_trigger_store=self._consecutive_trigger_store,
             positions_digest=pair_positions_digest(self.cache, instrument_ids),
             submitter=submitter,
             pair_order_canceler=pair_order_canceler,

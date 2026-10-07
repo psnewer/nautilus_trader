@@ -78,6 +78,7 @@ from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
+from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
@@ -142,6 +143,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("venue_select", VenueSelectAction)
     register_action("candi_select", CandiSelectAction)
     register_action("commission_gate", CommissionGateAction)
+    register_action("consecutive_trigger_gate", ConsecutiveTriggerGateAction)
     register_action("price_gate", PriceGateAction)
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)

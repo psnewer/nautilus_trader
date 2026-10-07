@@ -19,6 +19,7 @@ from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
+from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
@@ -80,8 +81,15 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         StartPriceBelowCheck,
     )
     assert isinstance(
-        build_check({"type": "start_price_cancel", "params": {"timeout_ms": 600_000}}),
+        build_check({"type": "start_price_cancel", "params": {"standing": "lose"}}),
         StartPriceCancelCheck,
+    )
+    assert isinstance(
+        build_action({
+            "type": "consecutive_trigger_gate",
+            "params": {"history_key": "pre_rebate", "required_hits": 2},
+        }),
+        ConsecutiveTriggerGateAction,
     )
     assert isinstance(
         build_action({

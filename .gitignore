@@ -1,4 +1,4 @@
-*.c
+/.c
 *.exp
 *.lib
 *.o
@@ -149,5 +149,5 @@ settings.local.json
 # 历史 web_gateway 配置含明文凭证(已在 git 历史中,需轮换;新 design 不再用)
 src/arbitrage/services/web_gateway/default_config.json
 
-arb_config.json
+arb_config.json*
 .playwright-mcp/

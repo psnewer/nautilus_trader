@@ -31,6 +31,8 @@ class EvalContext:
     pair_registry: object | None = None
     sports_store: object | None = None
     phase_store: object | None = None
+    # 活动 pair 的追加式连续触发历史；仅专用 Action 读写，比赛 ended 后统一回收。
+    consecutive_trigger_store: object | None = None
     # 评估开始时该 pair 的 position 摘要；所有腿透传给 Execution barrier release 前比较。
     # (#317:open_orders_digest 已删 —— barrier 不再做 open-order 校验,承 #316 per-pair ≤1。)
     positions_digest: str | None = None
