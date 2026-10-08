@@ -465,7 +465,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `CommissionGateAction(commission)` | `src/arbitrage/strategy/actions/commission_gate.py` | 按 PM 二元盘口 commission 门控下单：commission 定义为当前 PM `yes/no` 两个 best-ask 隐含概率之和。实际值 `< commission` 时原样放通，`>= commission` 时清空本树下单腿；缺任一 PM outcome 或有效概率时 fail-closed。支持 `selected_candidate`、`candidates`、legs-only 三种输入，候选池中撤单 candidate 原样保留，纯撤单输入 no-op。`commission` 必填且必须为有限数；非 PM 报价不参与计算。 |
 | `PriceGateAction(price, below=False)` | `src/arbitrage/strategy/actions/price_gate.py` | 按执行腿的统一隐含概率逐腿筛选；优先读取 Check 已写入的 `leg.prob`，缺失时经 Venue Registry `probability_from_price(venue, leg.price, claim/role)` 将 PM probability price 或 OE/SE decimal odds 转为 `0–1` 概率。默认删除概率 `< price` 的腿，`below=true` 时删除概率 `> price` 的腿，等于阈值均放通；无法得到有限且位于 `[0,1]` 的概率时 fail-closed。比较发生在 `place_bets(limit=true)` 改写最终限价之前；`venue_replace(pm_price=true)` 会把概率来源改成 PM 实时价，因此 Action 前后位置仍决定比较原候选概率还是替换后的 PM 概率。支持 `selected_candidate`、`candidates`、legs-only 输入，保留撤单 candidate；阈值必填且有限，`below` 必须为 boolean。 |
-| `ConsecutiveTriggerGateAction(history_key, required_hits=2)` | `src/arbitrage/strategy/actions/consecutive_trigger_gate.py` | 仅接受 `OrderBookDeltas/MarketOrderBookDeltas`。从前序筛选后的腿提取唯一 canonical outcome 并读取完整比分；每次有效触发先按 `(pair_id, history_key)` 的旧历史判断，再无条件追加不可变事实快照。同方向、相邻不同比分累计一次；同比分重复保留但不计数；最近出现相反方向即中断。达到 `required_hits` 放通，否则清空执行候选。建议放在比分筛选后、`price_gate/venue_replace` 前，因此历史表示价格门之前且未反转的原始腿。参数 `history_key` 必须非空，`required_hits` 必须为整数且 `>=2`。详见 §3.8.4。 |
+| `ConsecutiveTriggerGateAction(history_key, required_hits=2)` | `src/arbitrage/strategy/actions/consecutive_trigger_gate.py` | 仅接受 `OrderBookDeltas/MarketOrderBookDeltas`。从前序筛选后的腿提取唯一 canonical outcome 并读取完整比分；每次有效触发先按 `(pair_id, history_key)` 的旧历史判断，再无条件追加不可变事实快照。同方向、相邻不同比分累计一次；同比分重复保留但不计数；最近出现相反方向即中断。达到 `required_hits` 放通，否则清空执行候选。当前放在 `trend_gate` 后、比分筛选与 `price_gate/venue_replace` 前，因此历史表示趋势筛选后的原始价格信号，不因当时落后、打平或当前盘未领先而丢失；比分筛选仍决定本轮能否实际下单。参数 `history_key` 必须非空，`required_hits` 必须为整数且 `>=2`。详见 §3.8.4。 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
 | `TrendGateAction(up=True, complement=False, enable_flat=True)` | `src/arbitrage/strategy/actions/trend_gate.py` | 读取 live `PairPriceStore.trend_price` 与当前各 outcome 跨 venue 最低 best-ask 隐含概率，逐 outcome 直接比较：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat。`up` 缺失/`True` 留 up，`False` 留 down。`enable_flat` 缺失/`True` 时，某个 flat outcome 仅在其余所有 outcome 均为同一个非 flat 方向时推断成该方向的反面；二元 flat/down 因而视为 up/down，多 outcome 的对手方向不一致或仍含 flat 时不推断。显式 `False` 时只要完整趋势向量含 flat 就全删。`complement` 缺失/`False` 时各 outcome 独立过滤；显式 `True` 时，完整二元 outcome 的有效方向同为 up 或同为 down 会使本轮全删。它不恢复相邻帧 momentum、各 venue 同向或要求严格一 up 一 down，也无 `steps/trend` 参数。输入按 `selected_candidate` → `candidates` → legs-only 处理：已选 candidate 同步回写其 legs 与 `scratch["legs"]`；未选择的候选池逐 candidate 过滤 legs、淘汰空 candidate，并保留 rate 等元数据，供后续 `candi_select` 对过滤结果做门控与选择；mean/recovery 的 legs-only 则直接回写 `scratch["legs"]`，不凭空构造 candidate。基准、当前完整向量或 outcome 缺失时 fail-closed 全删。撤单 candidate 不处理。详见 §3.8.3 |
 | `ScoreSelectionAction(standing=None, tie_break=False)` | `src/arbitrage/strategy/actions/score_selection.py` | 输入按 `selected_candidate` → `candidates` → legs-only 处理：已选 candidate 同步回写其 legs 与 `scratch["legs"]`；未选择的候选池逐 candidate 过滤 legs、淘汰空 candidate 并保留元数据；裸 legs 直接回写，不构造 candidate。`standing` 缺失时严格 no-op；显式配置时是以 `|` 分隔的 `win/draw/lose` 集合，例如 `win|draw`、`lose`、`win|draw|lose`，分隔符两侧空白与大小写不影响语义。状态描述订单押注方向：BUY 沿用标的参赛方状态，SELL 反转 win/lose、draw 不变，所以落后方 SELL 属于 win。Action 经 `PairRegistry.game_id_for_pair` 从 `SportsGameStateStore` 读取最新比分；逗号分隔的多盘比分先比较已完成盘胜数，盘数相同再比较当前盘。当前盘到 `6-6` 即进入抢七：`tie_break` 缺失/`False` 时不使用可能跳帧的抢七小分，整次判定不可用并 fail-closed；显式 `True` 时读取 `6-6(x-y)` 的括号小分，裸 `6-6` 视为抢七刚开始的 `0-0`。腿的实际参赛方从 live instrument `selection_role=home/away` 映射；PairRegistry 的字符串 ID 在进入 NT Cache 边界前统一转换为 `InstrumentId`。2-way pair 可直接映射，3-way 拆分 pair 的 `claim=no` 是复合结果，不能冒充相反一方，故无法确定的腿与缺比分/坏格式一起 fail-closed 删除。`standing` 非字符串、空段或未知值以及非 boolean `tie_break` 均 fail-fast；撤单 candidate 原样保留。**离线已验证，live-unvalidated（2026-09-14）** |
@@ -628,7 +628,7 @@ DataEngine 批次契约提供(data §2.1)，不依赖 MessageBus priority 解决
 **成熟度**：相关路径有离线用例覆盖；见 `test_pair_prices.py`、`test_price_trend.py`、
 `test_action_trend_gate.py` 与 `test_evaluator.py`。决策史见 refactor #356。
 
-#### 3.8.4 原始腿连续触发历史（#421，已落地 · 离线已验证 · live-unvalidated）
+#### 3.8.4 原始腿连续触发历史（#421/#423，已落地 · 离线已验证 · live-unvalidated）
 
 `ConsecutiveTriggerStore` 是本机制的自然状态归属，不恢复已删除的通用
 `StrategyRuntimeStore`。它在进程内按 `(pair_id, history_key)` 追加
@@ -640,11 +640,12 @@ DataEngine 批次契约提供(data §2.1)，不依赖 MessageBus priority 解决
 `selected_candidate/candidates/legs`：没有腿、仍有多个 outcome、缺 Sports state、空/坏比分或
 Store 缺失时 fail-closed 且不写历史。有效触发先扫描最近连续尾部：同 outcome 的同比分记录跳过，
 每遇到一次比分变化增加一次 hit，遇到相反 outcome 立即停止；满足 `required_hits` 后放通本轮。
-判定完成后无论通过与否都追加本轮，因此被后续 `price_gate`、`venue_replace`、Risk 或执行层拦截
-不影响“该原始信号已经发生”的事实。
+判定完成后无论通过与否都追加本轮，因此被后续比分筛选、`price_gate`、`venue_replace`、Risk 或
+执行层拦截不影响“该原始信号已经发生”的事实。连续性描述价格信号，不要求触发方向当时已经领先；
+落后、打平或当前盘未领先的方向仍写历史，但本轮随后会被比分筛选阻止下单。
 
 当前 `pre_rebate` 顺序为
-`trend_gate → score_selection → current_set_game_selection → consecutive_trigger_gate → price_gate → venue_replace`，
+`trend_gate → consecutive_trigger_gate → score_selection → current_set_game_selection → price_gate → venue_replace`，
 配置为：
 
 ```json
@@ -836,6 +837,7 @@ condition (`pre_game` / `in_game` / `start_game`)分赛前/赛中，共六种：
           {"type": "venue_replace", "params": {"pm_price": false}},
           {"type": "share_limit"},
           {"type": "trend_gate", "params": {"up": true}},
+          {"type": "consecutive_trigger_gate", "params": {"history_key": "pre_rebate_original_leg", "required_hits": 2}},
           {"type": "score_selection", "params": {"standing": "win|draw"}},
           {"type": "current_set_game_selection", "params": {"standing": "win"}},
           {"type": "candi_select"},
