@@ -16,6 +16,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
   - post_only=true 写入 submit spec，由 submitter 构造 NT post-only GTC LimitOrder；缺失或 false
     保持普通限价单。
+  - simulation=true 仍完成全部计划转换并记录最终订单，但不生成执行计划；
+    缺失或 false 保持现有提交/撤单逻辑。
   - limit=true 时最终 BUY 取当前价与 live best bid 的较低者，SELL 取当前价与 live best ask
     的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。若同时配置 spread，先应用
     limit，再对最终 draft 应用 spread。
@@ -59,6 +61,7 @@ class PlaceBetsAction(Action):
         market: bool | None = None,
         limit: bool | None = None,
         post_only: bool | None = None,
+        simulation: bool | None = None,
     ) -> None:
         if enable_timeout is not None and not isinstance(enable_timeout, bool):
             raise ValueError("enable_timeout must be a boolean")
@@ -68,6 +71,8 @@ class PlaceBetsAction(Action):
             raise ValueError("limit must be a boolean")
         if post_only is not None and not isinstance(post_only, bool):
             raise ValueError("post_only must be a boolean")
+        if simulation is not None and not isinstance(simulation, bool):
+            raise ValueError("simulation must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
@@ -76,6 +81,7 @@ class PlaceBetsAction(Action):
         self._market = market
         self._limit = bool(limit)
         self._post_only = post_only
+        self._simulation = bool(simulation)
 
     async def execute(self, ctx: EvalContext) -> None:
         ctx.scratch.pop("execution_plan", None)
@@ -181,6 +187,16 @@ class PlaceBetsAction(Action):
             )
         if not prepared:
             return
+        if self._simulation:
+            for order in prepared:
+                spec = order.spec
+                _LOG.info(
+                    f"PlaceBets[simulation]: pair={ctx.pair_id} strategy={strategy} rate={rate} "
+                    f"instrument={spec['instrument_id']} venue={order.venue} role={order.role} "
+                    f"side={spec['side']} price={spec['price']} qty={spec['qty']:.4f} "
+                    f"intent={intent} opportunity_id={opportunity_id}",
+                )
+            return
         ctx.scratch["execution_plan"] = ExecutionPlan.submit(ctx.pair_id, prepared)
 
     def _prepare_cancel_request(self, ctx: EvalContext) -> bool:
@@ -188,6 +204,13 @@ class PlaceBetsAction(Action):
         request = selected.get("cancel_pair_orders") or ctx.scratch.get("cancel_pair_orders")
         if not request:
             return False
+        if self._simulation:
+            _LOG.info(
+                f"PlaceBets[simulation-cancel]: pair={ctx.pair_id} "
+                f"reason={request.get('reason')} "
+                f"client_order_ids={tuple(request.get('client_order_ids') or ())}",
+            )
+            return True
         ctx.scratch["execution_plan"] = ExecutionPlan.cancel_pair(
             ctx.pair_id,
             request.get("reason"),
