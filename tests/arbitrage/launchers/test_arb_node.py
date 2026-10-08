@@ -81,7 +81,7 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         StartPriceBelowCheck,
     )
     assert isinstance(
-        build_check({"type": "start_price_cancel", "params": {"standing": "lose"}}),
+        build_check({"type": "start_price_cancel", "params": {"standing": "lose|draw"}}),
         StartPriceCancelCheck,
     )
     assert isinstance(

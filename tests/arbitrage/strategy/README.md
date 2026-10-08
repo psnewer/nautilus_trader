@@ -442,10 +442,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   验证存在其它历史订单时 start_game 挂单仍放行，以及旧 boolean/`spread` 配置 fail-fast。
 - 验收：`test_action_share_limit.py`。
 
-### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418/#420）
+### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418/#420/#422）
 - B5 `place_bets(intent="start_game")` 将来源写入 Order tags；仍按普通套利单执行风控。
-- compensation 最后一支 `start_price_cancel(standing="lose")` 只查已 submitted/open
-  的 start_game 单；当前配置为订单方向比分落后时撤单。`standing` 默认 `win`
+- compensation 最后一支 `start_price_cancel(standing="lose|draw")` 只查已 submitted/open
+  的 start_game 单；当前配置为订单方向比分落后或打平时撤单。`standing` 支持以 `|`
+  组合 `win/draw/lose`，默认 `win`
   保持旧配置兼容；缺比分时 fail-closed，不根据挂单时长撤单，也不处理已成交仓位。
 - 撤单请求携带
   `client_order_ids`，pair canceler 只重读并撤销当前仍 open 的目标单，不影响同 pair 其它挂单。

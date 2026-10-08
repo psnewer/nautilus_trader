@@ -458,7 +458,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，逐单直接读取其自身 instrument 的 live OrderBook：BUY 取 best bid，SELL 取 best ask；订单价与盘口价均换算到该 instrument 的同一概率口径后计算严格 `< spread` 的概率差。它不按 outcome exposure 改写 side/instrument，因此能覆盖 `place_bets` 根据 PM 互斥库存动态生成的 SELL。命中时写标准 `legs + cancel_pair_orders`，随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `LowerTierCheck()` | `src/arbitrage/strategy/checks/lower_tier.py` | 复用 `competition_tier.lower_tier_oe_competition`，只读 pair 的 OE instrument 原始 `competition_name`；名称包含 Challenger/WTA/UTR/ITF（大小写不敏感）才命中。缺 OE 腿、缺原始名称或只在归并后的 `info["competition"]` 出现标记均 fail-closed；与 `venue_replace.tier_ignore` 共用同一赛事分级真理源 |
 | `StartPriceBelowCheck(price)` | `src/arbitrage/strategy/checks/start_price_below.py` | 要求 `PairPriceStore.start_price` 完整覆盖 outcomes，筛选严格 `< price` 的 outcome 并选唯一最低价；最低价并列、无合格价、缺 PM instrument/有效 share 均 fail-closed。产出一条 PM BUY，`price/prob` 固定为记录的 start_price，`qty/share_if_wins` 使用 `arbitrage.share`；阈值等号不命中，`price` 必须为 `(0,1)` 内有限数 |
-| `StartPriceCancelCheck(standing="win")` | `src/arbitrage/strategy/checks/start_price_cancel.py` | 只遍历 pair 当前 `SUBMITTED` 且 `arb:intent=start_game` 的 open orders。按现有 `score_selection(tie_break=false)` 的比赛级方向口径判断每张订单；`standing="win"` 保持历史默认的领先撤单，`standing="lose"` 改为落后撤单。Sports state 缺失、`score` 空或无法映射方向时 fail-closed，不按挂单时长撤单。写带 `client_order_ids` 的定向 `cancel_pair_orders`，只撤命中的 start_game 单 |
+| `StartPriceCancelCheck(standing="win")` | `src/arbitrage/strategy/checks/start_price_cancel.py` | 只遍历 pair 当前 `SUBMITTED` 且 `arb:intent=start_game` 的 open orders。按现有 `score_selection(tie_break=false)` 的比赛级方向口径判断每张订单；`standing` 接受以 `|` 分隔的 `win/draw/lose` 组合，默认 `win` 保持兼容，当前实盘配置 `lose|draw` 表示订单方向落后或打平均撤单。Sports state 缺失、`score` 空或无法映射方向时 fail-closed，不按挂单时长撤单。写带 `client_order_ids` 的定向 `cancel_pair_orders`，只撤命中的 start_game 单 |
 | `ShareLimitModification(max_leg_share=None, current_position_gate=False, current_order_gate=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整；单一 legs、candidate 缩放及 `current_position_gate` 语义不变。`current_order_gate` 为对象 `{enable, ignore_start_price}`：缺失或 `enable=false` 不读订单；`enable=true` 时任一 pair open order 默认清空全部输出。仅当 `ignore_start_price=true`、open order 已经 `SUBMITTED` 且 `arb:intent=start_game` 时忽略它；其它未提交或非 start_game 挂单继续拦截。不再依赖订单价或 pair 历史 submitted 数量推断来源；旧 boolean 及 `spread` 字段不再接受，未知对象字段 fail-fast |
 | `VenueReplaceAction(pm_price=None, convert=False, deviate_convert=False, attitude=False, tier_ignore=False, set_exempt=None)` | `src/arbitrage/strategy/actions/venue_replace.py` | 显式 PM 定向执行动作：`tier_ignore=True` 时先经 PairRegistry 找到 pair 的 OE `BettingInstrument`，只读 venue 原始 `competition_name`（不读已归并的 `info["competition"]`）；名称包含 `Challenger`、`WTA`、`UTR` 或 `ITF`（大小写不敏感，普通 WTA 与 WTA 125K 均包含）即清空本树的 `legs/candidates/selected_candidate`，阻止该低级别赛事继续下单。缺 OE 腿、缺原始名称或非低级别名称时不命中；参数缺失或 `False` 完整保持既有路径。该 pair 级拦截优先于 `set_exempt`，不读取 `start_price`。旧 `tier_convert` 参数及 pre/post 反转语义已删除。未拦截时，对 `legs/candidates/selected_candidate` 中每条非 PM 腿按同一 canonical outcome(`yes/no`)替换为 PM 路由腿，decimal 合成 NO 的 `lay_price/exec_instrument_id` 不透传。`set_exempt=N` 仅在 Sports state 明确 `period=SN` 时禁用 `convert/attitude/deviate_convert`，仍允许非 PM 腿默认同 outcome 替换；缺/坏 period 或盘号不等时不豁免。`convert=True` 只反转原生 PM 腿；未命中时，动态反转共同要求完整 PM best-ask 概率和位于 `[0.98,1.02]`，且原 outcome 同时存在有效 PM `best_bid` 与 `start_price`：`attitude=True` 命中 `bid <= start`，`deviate_convert=True` 命中 `bid >= 1.2×start`，不设上限。缺当前 outcome start/bid、动态参数缺失/`False` 或 commission 不合格只跳过动态反转，不拦截默认同方向 PM 替换。`pm_price` 只控制未反转的非 PM 输入腿：缺失/`True` 用 PM best ask，`False` 沿用原腿 `prob`；任何 `convert/attitude/deviate_convert` 反转始终使用最终 PM token 实时 ask。PM `qty=share`，`price/prob/cost` 按所选价重算；缺目标腿、报价或 share 时 fail-closed。`tier_ignore` 与其余 boolean 参数只接受 boolean，`set_exempt` 只接受正整数；撤单计划不替换。推荐放在 `share_limit` 前 |
 | `VenueSelectAction(pm=True)` | `src/arbitrage/strategy/actions/venue_select.py` | 按执行腿的 `venue` 逐腿过滤。`pm` 缺失或 `True` 时只保留 PM 腿；显式 `False` 时删除 PM 腿、保留其它 venue。支持 `selected_candidate`、`candidates`、legs-only 三种输入；候选池中的空 candidate 删除，元数据与撤单 candidate 保留，已选 candidate 同步更新 `selected_candidate["legs"]` 与 `scratch["legs"]`。`pm` 必须为 boolean。 |
@@ -808,7 +808,7 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 `strategy_id="ARB-EVAL"` + `order_id_tag="001"`，由 NT `Strategy` 生成最终 ID。所有 evaluator
 订单的 `order.strategy_id` 与 `SubmitOrder.strategy_id` 均来自该注册策略，不再手写 literal。
 
-### 3.10 pre_rebate 策略配置形态(#326/#341/#361/#370/#375/#376/#413/#418/#420,已落地 · 离线已验证 · live-unvalidated · as-of 2026-10-07)
+### 3.10 pre_rebate 策略配置形态(#326/#341/#361/#370/#375/#376/#413/#418/#420/#422,已落地 · 离线已验证 · live-unvalidated · as-of 2026-10-08)
 
 **意图**:赛前"追赔率变大(概率变小)的腿"投机 + 返水补救；赛中既对失衡仓位优先
 补救，也允许从跨 venue one-side 机会中只买"概率上升且比分非落后"的腿。行为用
@@ -821,7 +821,7 @@ condition (`pre_game` / `in_game` / `start_game`)分赛前/赛中，共六种：
 | B3 开赛强制补救 | phase `live` | 赛中(`in_game`)且仍失衡 | `mean_rebate_recovery(force=true)` 无条件补,不看率 |
 | B4 赛中顺势非落后腿 | OBD | 赛中，跨 venue `one_side_rebate(min_rate=0, one_side=false)` 命中 | 两 outcome 先各按 `arbitrage.share` 规划，再只保留同时满足 trend=up 且比分非落后的腿 |
 | B5 低级别领先 start_price 单 | OBD | B4/B1 均未命中；明确赛中；除“未成交后取消的 start_game 历史”外无任何 SUBMITTED 历史；OE 原始赛事为 Challenger/WTA/UTR/ITF；完整 start 中存在严格 `< price` 的唯一最低腿；该腿比赛级比分领先 | 按该 PM outcome 的 start_price 生成 BUY，不应用 spread；当前配置 `price=0.4/spread=0`。落后撤单后再次领先可重挂；任何成交或其它 intent 提交历史永久阻断 B5 |
-| B6 start_game 挂单撤销 | OBD | 补偿树前置分支均未命中；明确赛中；存在 `arb:intent=start_game` 挂单；该单方向比分落后 | 只撤命中 start_game 挂单；当前 `standing="lose"`；缺比分不撤，已成交仓位不卖出 |
+| B6 start_game 挂单撤销 | OBD | 补偿树前置分支均未命中；明确赛中；存在 `arb:intent=start_game` 挂单；该单方向比分落后或打平 | 只撤命中 start_game 挂单；当前 `standing="lose|draw"`；缺比分不撤，已成交仓位不卖出 |
 
 ```jsonc
 "pre_rebate": {
@@ -869,7 +869,7 @@ condition (`pre_game` / `in_game` / `start_game`)分赛前/赛中，共六种：
         "checktion": {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": 0.0, "pnl": false}},
         "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}] },
       { "self_hits": {"type": "in_game"},
-        "checktion": {"type": "start_price_cancel", "params": {"standing": "lose"}},
+        "checktion": {"type": "start_price_cancel", "params": {"standing": "lose|draw"}},
         "actions": [{"type": "place_bets"}] }
     ]
   }
@@ -903,7 +903,7 @@ condition (`pre_game` / `in_game` / `start_game`)分赛前/赛中，共六种：
   `arb:intent=start_game` 的 open order；非 start_game 或未提交挂单仍拦截。识别不依赖订单价、
   `start_price-spread` 或 pair 历史 submitted 数量，因此 B5 后又出现其它历史订单时仍能精确识别。
 - **B6 低优先级定向撤单**：固定放在 compensation `sub_conditions` 最后，前置 recovery
-  Check 命中时不回落。当前配置 `standing="lose"`，比分落后沿用
+  Check 命中时不回落。当前配置 `standing="lose|draw"`，比分落后或打平均沿用
   `score_selection(tie_break=false)` 的 BUY/SELL 方向语义；
   缺比分时 fail-closed，不使用挂单时长兜底。Sports 更新不主动评估，故落后撤单在
   条件成立后的下一次有效 OBD 评估时触发。撤单只处理

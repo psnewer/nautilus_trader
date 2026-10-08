@@ -77,11 +77,28 @@ def test_leading_start_game_order_is_kept_when_canceling_loser():
     assert StartPriceCancelCheck(standing="lose").passes(ctx) is False
 
 
+def test_losing_or_draw_start_game_order_cancels_both_states():
+    for score in ("2-3", "2-2"):
+        ctx = _ctx(score, [_order(ts=100)], now_ns=200)
+
+        assert StartPriceCancelCheck(standing="lose|draw").passes(ctx) is True
+        assert ctx.scratch["cancel_pair_orders"] == {
+            "reason": "start_price_cancel:score_losing_or_draw",
+            "client_order_ids": ["O-START"],
+        }
+
+
+def test_leading_start_game_order_is_kept_when_canceling_loser_or_draw():
+    ctx = _ctx("3-2", [_order(ts=100)], now_ns=200)
+
+    assert StartPriceCancelCheck(standing="lose|draw").passes(ctx) is False
+
+
 def test_cancel_standing_rejects_unknown_value():
     try:
-        StartPriceCancelCheck(standing="draw")
+        StartPriceCancelCheck(standing="unknown")
     except ValueError as exc:
-        assert "standing must be 'win' or 'lose'" in str(exc)
+        assert "standing must contain win, draw, or lose" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.strategy.actions.score_selection import _pair_roles
+from src.arbitrage.strategy.actions.score_selection import _parse_standings
 from src.arbitrage.strategy.actions.score_selection import _should_keep
 from src.arbitrage.strategy.actions.score_selection import _side_role
 from src.arbitrage.strategy.actions.score_selection import _standings
@@ -16,9 +17,14 @@ class StartPriceCancelCheck(Check):
     """start_game 挂单命中目标比分状态时,生成定向撤单请求。"""
 
     def __init__(self, standing: str = "win") -> None:
-        if standing not in {"win", "lose"}:
-            raise ValueError("start_price_cancel: standing must be 'win' or 'lose'")
-        self._standing = standing
+        try:
+            self._standings = _parse_standings(standing)
+        except ValueError as exc:
+            raise ValueError(
+                "start_price_cancel: standing must contain win, draw, or lose separated by '|'",
+            ) from exc
+        if self._standings is None:
+            raise ValueError("start_price_cancel: standing must be a string")
 
     def passes(self, ctx: EvalContext) -> bool:
         if (
@@ -47,12 +53,12 @@ class StartPriceCancelCheck(Check):
 
         targets = []
         for order in orders:
-            if _order_matches_standing(ctx, order, standings, pair_roles, self._standing):
+            if _order_matches_standing(ctx, order, standings, pair_roles, self._standings):
                 targets.append(str(order.client_order_id))
 
         if not targets:
             return False
-        reason = "score_leading" if self._standing == "win" else "score_losing"
+        reason = _cancel_reason(self._standings)
         ctx.scratch["cancel_pair_orders"] = {
             "reason": f"start_price_cancel:{reason}",
             "client_order_ids": targets,
@@ -60,13 +66,19 @@ class StartPriceCancelCheck(Check):
         return True
 
 
-def _order_matches_standing(ctx, order, standings, pair_roles, standing: str) -> bool:
+def _order_matches_standing(ctx, order, standings, pair_roles, allowed_standings) -> bool:
     leg = {
         "instrument_id": str(order.instrument_id),
         "side": _side_name(getattr(order, "side", None)),
     }
     role = _side_role(ctx, leg, pair_roles)
-    return _should_keep(leg["side"], standings.get(role), frozenset({standing}))
+    return _should_keep(leg["side"], standings.get(role), allowed_standings)
+
+
+def _cancel_reason(standings: frozenset[str]) -> str:
+    labels = {"win": "leading", "draw": "draw", "lose": "losing"}
+    ordered = [labels[value] for value in ("win", "lose", "draw") if value in standings]
+    return "score_" + "_or_".join(ordered)
 
 
 def _side_name(value) -> str:
