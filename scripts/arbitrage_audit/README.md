@@ -17,5 +17,11 @@
 - `recalculate_reverse_profit.py`：针对既有低级别赛事样本，分别重算“原始腿取反”和“实际下单方向取反”；价格优先使用下单时目标方向的直接 PM bid，仅在该 bid 缺失时使用 `1 - 对向 ask`，不应用 spread。
 - `recalculate_current_rule_directions.py`：按当前 `venue_replace` 优先级重放历史订单方向；原生 venue 优先取审计 JSON，低级别赛事优先取日志中的 OE competition。旧日志缺失时会显式标记从历史 action / position 元数据回退，避免把推断当成事实。
 - `rebuild_strategy_profit_workbook.py`：使用事先缓存的 Polymarket 官方 market 元数据重建全量订单的低级别分类与官方结算胜方，并同步重算 tier pre/post 方向、无 spread 利润、spread=0.05 利润及分类汇总。胜方以 market token `winner` 为准，并校验 token outcome 与 pair 选手顺序；官方尚未结算的订单写入方向明细，但暂不纳入利润。总盘排除风控拒绝单，同场只计一笔并按“已成交 > 部分成交 > 其它状态”优先保留。该脚本不主动联网，并在工作簿中写入分类来源与重算口径。
+- `unify_simulation_log.py`：解析 `PlaceBets[simulation]`，关联同一 pair 最近的比分、start price、PM/OE OBD 与连续触发原腿，输出原始触发、逐场归并和口径说明三个 sheet。
+- `add_simulation_settlement.py`：在 simulation 报表中按“每场首条模拟单”补充胜负、毛利润、手续费与净利润；重复 simulation 触发不重复计单。
+- `apply_sim_price_cap.py`：在 simulation 首单结算基础上应用价格上限，分别生成纳入结算和被价格风控排除的明细 sheet。
+- `replay_simulation_venue_replace.py`：以 simulation 原始触发为输入，按当前 `VenueReplaceAction` 优先级回放 `convert → attitude → deviate_convert`（不启用 tier 转换），在最终 PM ask 上应用价格上限，并按 pair 选择首个真正合格机会计算胜负和利润。
+- `replay_all_venue_replace.py`：合并历史 `draw|win` 标准化信号与后续 simulation 新增场次，统一回放 `convert/attitude/deviate_convert`，在反转后的 PM ask 上应用价格上限，输出全量逐场明细及按动作拆分的胜负、毛利、手续费和净利润；同时保留 `deviate_convert` 无上限及 `1.2≤bid/start≤1.3` 两种口径，并对后者按低级别、非低级别、等级未分类及动作交叉汇总。
+- `compare_fixed_replay_reversals.py`：固定既有 `draw_win真实回放` 的每场首个有效信号，不重新选择连续触发机会；从同时间日志帧补齐原腿 venue、双方 PM 报价与最近 start price，在完全相同的256条信号上配对比较“不反转”和 `convert/attitude/deviate_convert(1.2–1.3)`，并分别应用最终 PM ask 上限与手续费。
 
-这些脚本源自一次性审计，仍保留当次报告日期、桌面文件名和 `/private/tmp` 输入路径。再次运行前必须先检查文件顶部的路径常量；脚本不包含凭证，也不会主动连接远端或下单。
+这些脚本源自一次性审计，仍保留当次报告日期、桌面文件名和 `/private/tmp` 输入路径。再次运行前必须先检查文件顶部的路径常量；脚本不包含凭证，也不会主动连接远端或下单。新写的可复用审计脚本应在本回合结束前保存到本目录，`/private/tmp` 仅存日志、缓存和中间产物。

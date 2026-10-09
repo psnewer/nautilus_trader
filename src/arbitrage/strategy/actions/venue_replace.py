@@ -38,7 +38,7 @@ class VenueReplaceAction(Action):
     的输入腿改为对手 outcome,并直接使用对手 PM 实时价;
     `pm_price` 对原生 PM 输入腿不起作用。非 PM 输入仍替换为同 outcome PM 腿。
     `convert` 未命中时,`attitude=true` 可在原 outcome PM bid <= start_price 时反转,
-    `deviate_convert=true` 可在 bid >= `1.2xstart_price` 时反转;
+    `deviate_convert=true` 可在 bid 位于 `[1.2xstart_price,1.3xstart_price]` 时反转;
     两者均仅在原 outcome 存在 start_price 且完整 PM ask 向量概率和位于 `[0.98,1.02]` 时生效。
     `set_exempt=N` 且当前 sports period 明确为 `SN` 时,上述三种反转都不命中;
     非 PM 腿仍默认替换为同 outcome PM 腿。
@@ -379,7 +379,7 @@ def _should_dynamic_convert(
         return False
     if attitude and bid <= start:
         return True
-    return deviate_convert and bid >= 1.2 * start
+    return deviate_convert and 1.2 * start <= bid <= 1.3 * start
 
 
 def _opposite_outcome(outcome: str) -> str:

@@ -118,7 +118,8 @@ def test_action_cancels_when_selected_recovery_candidate_carries_request():
     assert canceled == ["p"]
 
 
-def test_action_only_prepares_plan_without_execution_side_effects():
+@pytest.mark.parametrize("simulation", [None, False])
+def test_action_only_prepares_plan_without_execution_side_effects(simulation):
     submitted = []
     canceled = []
 
@@ -139,7 +140,7 @@ def test_action_only_prepares_plan_without_execution_side_effects():
         "qty": 5.0,
     }]
 
-    _run(PlaceBetsAction().execute(ctx))
+    _run(PlaceBetsAction(simulation=simulation).execute(ctx))
 
     assert ctx.scratch["execution_plan"].kind == "submit"
     assert submitted == []
