@@ -38,6 +38,8 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         if not parts or any(_SCORE_PART.match(part) is None for part in parts):
             return {}
         left, right, _, _ = _SCORE_PART.match(parts[-1]).groups()
+        if int(left) == 0 and int(right) == 0:
+            return {}
         if int(left) > int(right):
             return {"home": "win", "away": "lose"}
         if int(left) < int(right):

@@ -77,12 +77,22 @@ def test_current_set_ignores_completed_set_and_reverses_sell_standing():
     ]
 
 
-@pytest.mark.parametrize("score", ["6-6", "6-4, 6-6(3-4)"])
-def test_tie_break_points_are_ignored_and_six_all_is_draw(score):
+@pytest.mark.parametrize("score", ["1-1", "6-6", "6-4, 6-6(3-4)"])
+def test_nonzero_tied_games_are_draw_and_tie_break_points_are_ignored(score):
     ctx = _ctx(score)
 
     _run(CurrentSetGameSelectionAction(standing="draw").execute(ctx))
     assert len(ctx.scratch["legs"]) == 4
+
+
+@pytest.mark.parametrize("score", ["0-0", "6-4, 0-0"])
+@pytest.mark.parametrize("standing", ["draw", "win|draw"])
+def test_zero_all_is_not_treated_as_draw(score, standing):
+    ctx = _ctx(score)
+
+    _run(CurrentSetGameSelectionAction(standing=standing).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
 
 
 def test_candidate_pool_filters_each_candidate_without_choosing_one():

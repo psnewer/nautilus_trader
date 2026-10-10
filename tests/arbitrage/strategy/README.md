@@ -522,6 +522,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - `6-4, 2-3` 只按当前盘 `2-3` 判断，主方 BUY 属于 lose、客方 BUY 属于 win；
   不让已完成盘 `6-4` 覆盖当前局数。
 - `6-6(3-4)` 与裸 `6-6` 均按 draw，抢七小分不参与；比分缺失或坏格式 fail-closed。
+- 当前盘为 `0-0`（包括后续盘刚开始）时尚无局分领先关系，不算 draw；即使配置
+  `standing=draw` 或 `win|draw` 也 fail-closed，不产出执行腿。
 - 逐 candidate 筛腿、淘汰空 candidate，撤单候选保留；比分/映射无效时 fail-closed，
   非法 standing 构造失败。
 - **验收**：`test_action_current_set_game_selection.py` 与
