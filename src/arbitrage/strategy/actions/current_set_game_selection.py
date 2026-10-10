@@ -4,14 +4,27 @@ from __future__ import annotations
 
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
+from src.arbitrage.strategy.competition_tier import lower_tier_oe_competition
 from src.arbitrage.strategy.condition import EvalContext
 
 
 class CurrentSetGameSelectionAction(ScoreSelectionAction):
-    """沿用比分筛腿语义，只把比较范围限定为最新一盘的局数。"""
+    """按最新一盘局分筛腿，可选择仅对低级别赛事生效。"""
 
-    def __init__(self, standing: str | None = None) -> None:
+    def __init__(
+        self,
+        standing: str | None = None,
+        tier_only: bool | None = None,
+    ) -> None:
+        if tier_only is not None and not isinstance(tier_only, bool):
+            raise ValueError("current_set_game_selection: tier_only must be a boolean")
         super().__init__(standing=standing)
+        self._tier_only = bool(tier_only)
+
+    async def execute(self, ctx: EvalContext) -> None:
+        if self._tier_only and lower_tier_oe_competition(ctx) is None:
+            return
+        await super().execute(ctx)
 
     def _get_standings(self, ctx: EvalContext) -> dict[str, str]:
         if ctx.sports_store is None or ctx.pair_registry is None:

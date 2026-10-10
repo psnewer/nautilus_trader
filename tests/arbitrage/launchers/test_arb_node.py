@@ -99,7 +99,12 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         ScoreSelectionAction,
     )
     assert isinstance(
-        build_action({"type": "current_set_game_selection", "params": {"standing": "win|draw"}}),
+        build_action(
+            {
+                "type": "current_set_game_selection",
+                "params": {"standing": "win|draw", "tier_only": True},
+            },
+        ),
         CurrentSetGameSelectionAction,
     )
     assert isinstance(

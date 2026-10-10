@@ -516,6 +516,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - `current_set_game_selection` 注册为 Action，沿用 `score_selection` 的 `win|draw|lose` 组合、
   BUY/SELL 押注方向语义和 `selected_candidate`/候选池/legs-only 输入；参数缺失时 no-op。
+- `tier_only` 缺失/`None`/`false` 时保持既有筛选；`true` 时复用 OE 原始赛事名的
+  Challenger/WTA/UTR/ITF 低级别判定，只筛选确认命中的低级别比赛，非低级别或无法确认
+  低级别的比赛直接放通；非法非 boolean 值构造失败。
 - `6-4, 2-3` 只按当前盘 `2-3` 判断，主方 BUY 属于 lose、客方 BUY 属于 win；
   不让已完成盘 `6-4` 覆盖当前局数。
 - `6-6(3-4)` 与裸 `6-6` 均按 draw，抢七小分不参与；比分缺失或坏格式 fail-closed。

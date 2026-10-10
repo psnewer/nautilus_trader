@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ISO_TS = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z)")
+LOCAL_TS = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)")
 BEIJING = timezone(timedelta(hours=8))
 
 
@@ -26,14 +27,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("log", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--sheet", default="远端下单明细_1009")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="保留目标 sheet 现有行，并按 client_order_id 去重追加",
+    )
     return parser.parse_args()
 
 
 def line_ts(line: str) -> datetime | None:
     match = ISO_TS.search(line)
-    if not match:
-        return None
-    return datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+    if match:
+        return datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+    match = LOCAL_TS.search(line)
+    if match:
+        local = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S,%f")
+        return local.replace(tzinfo=BEIJING).astimezone(timezone.utc)
+    return None
 
 
 def event_ts(line: str, fallback: datetime) -> datetime:
@@ -73,11 +83,41 @@ def winner_from_score(score: str | None, status: str | None) -> str | None:
     return None
 
 
-def load_log_context(path: Path) -> tuple[dict[str, list[dict]], dict[str, datetime]]:
+def consecutive_scores_before(
+    observations: list[dict],
+    target: datetime,
+) -> tuple[str | None, str | None]:
+    current_index = None
+    for index in range(len(observations) - 1, -1, -1):
+        observation = observations[index]
+        if observation["ts"] <= target and observation["passed"]:
+            if (target - observation["ts"]).total_seconds() <= 5:
+                current_index = index
+            break
+    if current_index is None:
+        return None, None
+
+    current = observations[current_index]
+    for previous in reversed(observations[:current_index]):
+        if previous["outcome"] != current["outcome"]:
+            break
+        if previous["score"] != current["score"]:
+            return previous["score"], current["score"]
+    return None, current["score"]
+
+
+def load_log_context(
+    path: Path,
+) -> tuple[dict[str, list[dict]], dict[str, datetime], dict[str, list[dict]]]:
     scores: dict[str, list[dict]] = defaultdict(list)
     fill_times: dict[str, datetime] = {}
+    consecutive: dict[str, list[dict]] = defaultdict(list)
     score_re = re.compile(
         r"game=\d+ (.+?) vs (.+?) score=(.*?) period=([^ ]+) elapsed=.*? status=([^ ]+)$",
+    )
+    consecutive_re = re.compile(
+        r"ConsecutiveTriggerGate: pair=(.+?) history=.*? outcome=(yes|no) "
+        r"score='(.*?)' count=\d+ required=\d+ passed=(True|False)",
     )
     with path.open(errors="replace") as stream:
         for raw in stream:
@@ -96,13 +136,22 @@ def load_log_context(path: Path) -> tuple[dict[str, list[dict]], dict[str, datet
                         "status": match.group(5),
                     },
                 )
+            match = consecutive_re.search(line)
+            if match:
+                consecutive[match.group(1)].append({
+                    "ts": ts,
+                    "outcome": match.group(2),
+                    "score": match.group(3),
+                    "passed": match.group(4) == "True",
+                })
             if "OrderFilled(" in line and "client_order_id=ARB-" in line:
                 order_match = re.search(r"client_order_id=(ARB-[^,]+)", line)
                 if order_match:
                     fill_times.setdefault(order_match.group(1), event_ts(line, ts))
-    for items in scores.values():
-        items.sort(key=lambda item: item["ts"])
-    return scores, fill_times
+    for collection in (scores, consecutive):
+        for items in collection.values():
+            items.sort(key=lambda item: item["ts"])
+    return scores, fill_times, consecutive
 
 
 def collapse_risk_rejections(rows: list[dict]) -> list[dict]:
@@ -147,12 +196,13 @@ def main() -> None:
     args = parse_args()
     audit = json.loads(args.audit_json.read_text(encoding="utf-8"))
     rows = collapse_risk_rejections(audit["rows"])
-    scores, fill_times = load_log_context(args.log)
+    scores, fill_times, consecutive = load_log_context(args.log)
 
     headers = [
         "下单时间(北京时间)", "client_order_id", "赛事", "状态", "买入方向", "买入选手",
         "限价", "下单数量", "已成交量", "成交均价", "首次成交时间(北京时间)",
-        "下单比分", "下单盘数", "首次成交比分", "首次成交盘数", "最终比分", "最终状态",
+        "连续触发比分1", "连续触发比分2", "下单比分", "下单盘数",
+        "首次成交比分", "首次成交盘数", "最终比分", "最终状态",
         "胜者方向", "胜者", "start_price_YES", "start_price_NO", "start来源", "触发类型",
         "原生腿venue", "venue_replace前方向", "是否反买", "触发venue",
         "变化前_PM_YES", "变化前_PM_NO", "变化前_OE_YES", "变化前_OE_NO",
@@ -161,14 +211,39 @@ def main() -> None:
     ]
 
     workbook = load_workbook(args.workbook)
-    if args.sheet in workbook.sheetnames:
-        del workbook[args.sheet]
-    sheet = workbook.create_sheet(args.sheet, 1)
-    sheet.append(headers)
+    existing_ids: set[str] = set()
+    if args.append and args.sheet in workbook.sheetnames:
+        sheet = workbook[args.sheet]
+        existing_headers = [cell.value for cell in sheet[1]]
+        if existing_headers != headers:
+            raise ValueError(f"目标 sheet 列结构不一致: {args.sheet}")
+        order_id_column = headers.index("client_order_id") + 1
+        existing_ids = {
+            str(sheet.cell(row, order_id_column).value)
+            for row in range(2, sheet.max_row + 1)
+            if sheet.cell(row, order_id_column).value
+        }
+    else:
+        if args.sheet in workbook.sheetnames:
+            del workbook[args.sheet]
+        sheet = workbook.create_sheet(args.sheet, 1)
+        sheet.append(headers)
 
+    added_rows = 0
     for row in rows:
+        if row["client_order_id"] in existing_ids:
+            continue
         pair = f"Tennis|{row['选手1']}|{row['选手2']}"
         pair_scores = scores.get(pair, [])
+        order_time = datetime.strptime(
+            row["下单时间(北京时间)"],
+            "%Y-%m-%d %H:%M:%S.%f",
+        )
+        order_time_utc = order_time.replace(tzinfo=BEIJING).astimezone(timezone.utc)
+        trigger_score_1, trigger_score_2 = consecutive_scores_before(
+            consecutive.get(pair, []),
+            order_time_utc,
+        )
         fill_time = fill_times.get(row["client_order_id"])
         fill_score = prior(pair_scores, fill_time) if fill_time else None
         final = pair_scores[-1] if pair_scores else None
@@ -180,7 +255,7 @@ def main() -> None:
         winner_name = row["选手1"] if winner == "yes" else row["选手2"] if winner == "no" else None
         native_direction = row.get("venue_replace前方向")
         values = {
-            "下单时间(北京时间)": datetime.strptime(row["下单时间(北京时间)"], "%Y-%m-%d %H:%M:%S.%f"),
+            "下单时间(北京时间)": order_time,
             "client_order_id": row["client_order_id"],
             "赛事": f"{row['选手1']} vs {row['选手2']}",
             "状态": row["状态"],
@@ -193,6 +268,8 @@ def main() -> None:
             "首次成交时间(北京时间)": (
                 fill_time.astimezone(BEIJING).replace(tzinfo=None) if fill_time else None
             ),
+            "连续触发比分1": trigger_score_1,
+            "连续触发比分2": trigger_score_2,
             "下单比分": row["下单比分"],
             "下单盘数": row["盘/局"],
             "首次成交比分": fill_score.get("score") if fill_score else None,
@@ -224,6 +301,7 @@ def main() -> None:
             "合并备注": row.get("合并备注"),
         }
         sheet.append([values.get(header) for header in headers])
+        added_rows += 1
 
     format_sheet(sheet)
     workbook.save(args.output)
@@ -231,6 +309,8 @@ def main() -> None:
         "source_orders": len(audit["rows"]),
         "detail_rows": len(rows),
         "risk_rejections_collapsed": len(audit["rows"]) - len(rows),
+        "added_rows": added_rows,
+        "total_sheet_rows": sheet.max_row - 1,
         "sheet": args.sheet,
         "output": str(args.output),
     }, ensure_ascii=False))

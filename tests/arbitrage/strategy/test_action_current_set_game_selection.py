@@ -40,6 +40,25 @@ def _ctx(score):
     return ctx
 
 
+def _tier_ctx(score, competition):
+    infos = {
+        **_INFOS,
+        "H.ORBITEXCH": {"selection_role": "home", "claim": "yes"},
+    }
+    ctx = live_context(
+        infos=infos,
+        instrument_ids=list(infos),
+        sports_store=_SportsStore(score),
+    )
+    ctx.cache.instrument("H.ORBITEXCH").competition_name = competition
+    ctx.pair_registry.register(ctx.pair_id, list(infos), game_id=42)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "side": "BUY"},
+        {"instrument_id": "A.POLYMARKET", "side": "BUY"},
+    ]
+    return ctx
+
+
 def _run(coro):
     try:
         return asyncio.run(coro)
@@ -104,6 +123,51 @@ def test_missing_standing_is_noop():
     _run(CurrentSetGameSelectionAction().execute(ctx))
 
     assert ctx.scratch["legs"] is before
+
+
+def test_tier_only_filters_lower_tier_competition():
+    ctx = _tier_ctx("6-4, 2-3", "WTA Beijing")
+
+    _run(CurrentSetGameSelectionAction(standing="win", tier_only=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == [
+        {"instrument_id": "A.POLYMARKET", "side": "BUY"},
+    ]
+
+
+def test_tier_only_passes_non_lower_tier_competition_without_filtering():
+    ctx = _tier_ctx("6-4, 2-3", "ATP Masters 1000 Shanghai")
+    before = ctx.scratch["legs"]
+
+    _run(CurrentSetGameSelectionAction(standing="win", tier_only=True).execute(ctx))
+
+    assert ctx.scratch["legs"] is before
+
+
+def test_tier_only_passes_when_lower_tier_cannot_be_confirmed():
+    ctx = _ctx("6-4, 2-3")
+    before = ctx.scratch["legs"]
+
+    _run(CurrentSetGameSelectionAction(standing="win", tier_only=True).execute(ctx))
+
+    assert ctx.scratch["legs"] is before
+
+
+@pytest.mark.parametrize("tier_only", [None, False])
+def test_tier_only_disabled_keeps_existing_filtering(tier_only):
+    ctx = _tier_ctx("6-4, 2-3", "ATP Masters 1000 Shanghai")
+
+    _run(CurrentSetGameSelectionAction(standing="win", tier_only=tier_only).execute(ctx))
+
+    assert ctx.scratch["legs"] == [
+        {"instrument_id": "A.POLYMARKET", "side": "BUY"},
+    ]
+
+
+@pytest.mark.parametrize("tier_only", [0, 1, "true", {}, []])
+def test_invalid_tier_only_is_rejected(tier_only):
+    with pytest.raises(ValueError, match="tier_only must be a boolean"):
+        CurrentSetGameSelectionAction(standing="win", tier_only=tier_only)
 
 
 @pytest.mark.parametrize("standing", ["", "win||lose", "ahead", True])
