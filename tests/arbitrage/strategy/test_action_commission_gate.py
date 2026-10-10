@@ -65,6 +65,48 @@ def test_missing_pm_outcome_fails_closed():
     assert ctx.scratch["legs"] == []
 
 
+@pytest.mark.parametrize(
+    ("pm_yes", "pm_no"),
+    [
+        (0.49, 0.49),
+        (0.51, 0.51),
+    ],
+)
+def test_closed_range_boundaries_pass(pm_yes, pm_no):
+    ctx = _ctx(pm_yes=pm_yes, pm_no=pm_no)
+    ctx.scratch["legs"] = list(_LEGS)
+
+    _run(
+        CommissionGateAction(
+            min_commission=0.98,
+            max_commission=1.02,
+        ).execute(ctx),
+    )
+
+    assert ctx.scratch["legs"] == _LEGS
+
+
+@pytest.mark.parametrize(
+    ("pm_yes", "pm_no"),
+    [
+        (0.48, 0.49),
+        (0.51, 0.52),
+    ],
+)
+def test_outside_closed_range_blocks(pm_yes, pm_no):
+    ctx = _ctx(pm_yes=pm_yes, pm_no=pm_no)
+    ctx.scratch["legs"] = list(_LEGS)
+
+    _run(
+        CommissionGateAction(
+            min_commission=0.98,
+            max_commission=1.02,
+        ).execute(ctx),
+    )
+
+    assert ctx.scratch["legs"] == []
+
+
 def test_blocks_selected_candidate_and_synchronizes_legs():
     ctx = _ctx(pm_yes=0.50, pm_no=0.50)
     selected = {"candidate_id": "chosen", "rate": 0.04, "legs": list(_LEGS)}
@@ -107,3 +149,14 @@ def test_cancel_only_input_is_noop_even_without_pm_quotes():
 def test_invalid_commission_fails_fast(value):
     with pytest.raises(ValueError, match="finite number"):
         CommissionGateAction(commission=value)
+
+
+def test_range_requires_both_finite_bounds_in_order():
+    with pytest.raises(ValueError, match="min_commission"):
+        CommissionGateAction(max_commission=1.02)
+    with pytest.raises(ValueError, match="max_commission"):
+        CommissionGateAction(min_commission=0.98)
+    with pytest.raises(ValueError, match="must be <="):
+        CommissionGateAction(min_commission=1.02, max_commission=0.98)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        CommissionGateAction(commission=1.02, min_commission=0.98, max_commission=1.02)

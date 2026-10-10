@@ -526,13 +526,17 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ## strategy-4.40：commission_gate PM 盘口概率和门控
 
-- `commission` 为必填有限数；commission 按 PM `yes/no` 两个 outcome 当前 best ask 隐含概率之和计算，
-  不使用 OE/SE 等其它 venue 报价。
-- 实际 commission 严格小于阈值时保持输入不变；等于或大于阈值时拦截下单。缺任一 PM outcome
-  或有效报价时 fail-closed。
+- 支持互斥的两种配置：旧 `commission` 单阈值，或同时提供有限数
+  `min_commission`/`max_commission` 的闭区间；commission 按 PM `yes/no` 两个 outcome 当前
+  best ask 隐含概率之和计算，不使用 OE/SE 等其它 venue 报价。
+- 单阈值口径下，实际 commission 严格小于阈值时保持输入不变，等于或大于阈值时拦截；
+  闭区间口径下，等于上下边界均放通，低于下界或高于上界均拦截。缺任一 PM outcome
+  或有效报价时 fail-closed；上下界缺一、倒置或与旧参数混用均在构造时失败。
 - 支持 `selected_candidate`、`candidates`、legs-only 三种输入；阻断已选 candidate 时同步清空
   `selected_candidate["legs"]` 与 `scratch["legs"]`，候选池输入仅保留撤单 candidate。
 - 纯撤单输入 no-op，避免行情 commission 门控妨碍风险收尾。
+- 当前 `pre_rebate.in_game` 的 `place_bets(limit=false)` 前配置 `[0.98,1.02]` 闭区间门控；
+  `limit=true` 的其它路径不受该配置影响。
 - **验收**：`test_action_commission_gate.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 

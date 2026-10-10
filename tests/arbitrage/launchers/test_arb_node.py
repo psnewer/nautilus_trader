@@ -107,6 +107,13 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         CommissionGateAction,
     )
     assert isinstance(
+        build_action({
+            "type": "commission_gate",
+            "params": {"min_commission": 0.98, "max_commission": 1.02},
+        }),
+        CommissionGateAction,
+    )
+    assert isinstance(
         build_action({"type": "price_gate", "params": {"price": 0.40}}),
         PriceGateAction,
     )

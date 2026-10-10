@@ -1,4 +1,4 @@
-"""CommissionGateAction —— 按 PM 二元盘口的 commission 过滤执行计划。"""
+"""CommissionGateAction —— 按 PM 二元盘口的 commission 阈值或范围过滤执行计划。"""
 
 from __future__ import annotations
 
@@ -16,9 +16,25 @@ _LOG = logging.getLogger(__name__)
 
 
 class CommissionGateAction(Action):
-    """PM 两个 outcome 的 best-ask 概率和达到阈值时拦截下单计划。"""
+    """按上限阈值或闭区间校验 PM 两个 outcome 的 best-ask 概率和。"""
 
-    def __init__(self, commission: float) -> None:
+    def __init__(
+        self,
+        commission: float | None = None,
+        min_commission: float | None = None,
+        max_commission: float | None = None,
+    ) -> None:
+        if commission is not None and (min_commission is not None or max_commission is not None):
+            raise ValueError(
+                "commission_gate: commission cannot be combined with min/max_commission",
+            )
+        if commission is None:
+            self._threshold = None
+            self._minimum = _finite_value("min_commission", min_commission)
+            self._maximum = _finite_value("max_commission", max_commission)
+            if self._minimum > self._maximum:
+                raise ValueError("commission_gate: min_commission must be <= max_commission")
+            return
         try:
             threshold = float(commission)
         except (TypeError, ValueError) as exc:
@@ -30,21 +46,49 @@ class CommissionGateAction(Action):
                 f"commission_gate: commission must be a finite number, got {commission!r}",
             )
         self._threshold = threshold
+        self._minimum = None
+        self._maximum = None
 
     async def execute(self, ctx: EvalContext) -> None:
         if not _has_submit_plan(ctx):
             return
 
         commission = _pm_commission(ctx)
-        if commission is not None and commission < self._threshold:
-            return
+        if commission is not None:
+            if self._threshold is not None and commission < self._threshold:
+                return
+            if (
+                self._minimum is not None
+                and self._maximum is not None
+                and self._minimum <= commission <= self._maximum
+            ):
+                return
 
         _block_submit_plans(ctx)
         actual = "unavailable" if commission is None else f"{commission:.8f}"
+        expected = (
+            f"threshold={self._threshold:.8f}"
+            if self._threshold is not None
+            else f"range=[{self._minimum:.8f},{self._maximum:.8f}]"
+        )
         _LOG.info(
             f"CommissionGate: pair={ctx.pair_id} blocked "
-            f"pm_commission={actual} threshold={self._threshold:.8f}",
+            f"pm_commission={actual} {expected}",
         )
+
+
+def _finite_value(name: str, value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"commission_gate: {name} must be a finite number, got {value!r}",
+        ) from exc
+    if not math.isfinite(result):
+        raise ValueError(
+            f"commission_gate: {name} must be a finite number, got {value!r}",
+        )
+    return result
 
 
 def _pm_commission(ctx: EvalContext) -> float | None:
