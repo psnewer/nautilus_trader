@@ -18,6 +18,7 @@ from functools import lru_cache
 
 from py_clob_client_v2 import ApiCreds
 from py_clob_client_v2 import ClobClient
+from py_clob_client_v2 import TickSize
 
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_api_key
@@ -38,7 +39,16 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 
+
 POLYGON_CHAIN_ID = 137
+POLYMARKET_ORDER_TICK_SIZE: TickSize = "0.01"
+
+
+class PolymarketClobClient(ClobClient):
+    """使用固定下单价格步长,避免签名时查询 tick-size endpoint。"""
+
+    def get_tick_size(self, token_id: str) -> TickSize:
+        return POLYMARKET_ORDER_TICK_SIZE
 
 
 @lru_cache(1)
@@ -92,7 +102,7 @@ def get_polymarket_http_client(
     )
     key = private_key or get_polymarket_private_key()
     funder = funder or get_polymarket_funder()
-    return ClobClient(
+    return PolymarketClobClient(
         base_url or "https://clob.polymarket.com",
         chain_id=chain_id,
         signature_type=signature_type,

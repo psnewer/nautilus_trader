@@ -33,6 +33,7 @@ from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStat
 from nautilus_trader.adapters.polymarket.contract import TxResult
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.execution import polymarket_signed_order_id
+from nautilus_trader.adapters.polymarket.factories import PolymarketClobClient
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.http import transport as pm_transport
 from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
@@ -61,6 +62,7 @@ from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from src.arbitrage.matching.events import MatchedPair
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -208,6 +210,81 @@ def _cancel_test_client(response):
 
 async def _noop_async():
     return None
+
+
+def test_pm_clob_client_uses_fixed_tick_size_without_sdk_lookup(monkeypatch):
+    client = object.__new__(PolymarketClobClient)
+    monkeypatch.setattr(
+        ClobClient,
+        "get_tick_size",
+        lambda *_args, **_kwargs: pytest.fail("不应查询 SDK tick size"),
+    )
+
+    assert client.get_tick_size("token-id") == "0.01"
+    assert client._ClobClient__resolve_tick_size("token-id") == "0.01"
+
+
+def _matched_pair(tradable_instrument_ids):
+    return MatchedPair(
+        pair_id="Tennis|A|B",
+        sport="Tennis",
+        competition="ATP",
+        confidence=1.0,
+        tradable_instrument_ids=list(tradable_instrument_ids),
+    )
+
+
+def test_matched_pair_prewarms_user_ws_subscription_deduped():
+    subscribed = []
+    scheduled = []
+
+    async def fake_subscribe(condition_id):
+        subscribed.append(condition_id)
+
+    client = SimpleNamespace(
+        _log=_TrackingLog(),
+        _ws_client=SimpleNamespace(subscribe=fake_subscribe),
+        _prewarmed_user_conditions=set(),
+    )
+    client.create_task = lambda coro: scheduled.append(coro)
+    client._prewarm_user_subscriptions = ArbPolymarketExecutionClient._prewarm_user_subscriptions.__get__(client)
+
+    mp = _matched_pair([
+        "0xcond-100.POLYMARKET",   # PM leg
+        "0xcond-200.POLYMARKET",   # same condition_id (opposite token) → dedup to one
+        "1.ORBITEXCH",             # non-PM → ignored
+    ])
+
+    ArbPolymarketExecutionClient._on_matched_pair(client, mp)
+
+    # Only the single unique PM condition_id gets scheduled for prewarm.
+    assert len(scheduled) == 1
+    assert client._prewarmed_user_conditions == {"0xcond"}
+    _run(scheduled[0])
+    assert subscribed == ["0xcond"]
+
+    # Republish of the same MatchedPair must not re-subscribe (idempotent dedup).
+    ArbPolymarketExecutionClient._on_matched_pair(client, mp)
+    assert len(scheduled) == 1
+
+
+def test_matched_pair_prewarm_failure_falls_back_without_raising():
+    async def failing_subscribe(_condition_id):
+        raise RuntimeError("ws down")
+
+    client = SimpleNamespace(
+        _log=_TrackingLog(),
+        _ws_client=SimpleNamespace(subscribe=failing_subscribe),
+        _prewarmed_user_conditions=set(),
+    )
+    scheduled = []
+    client.create_task = lambda coro: scheduled.append(coro)
+    client._prewarm_user_subscriptions = ArbPolymarketExecutionClient._prewarm_user_subscriptions.__get__(client)
+
+    ArbPolymarketExecutionClient._on_matched_pair(client, _matched_pair(["0xcond-100.POLYMARKET"]))
+    # Failure is swallowed (logged, no raise); condition stays marked so there is no retry.
+    _run(scheduled[0])
+    assert client._prewarmed_user_conditions == {"0xcond"}
 
 
 async def _pm_positions_with_avg_price(**_kwargs):

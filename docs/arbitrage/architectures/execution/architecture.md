@@ -92,8 +92,13 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 - 批量撤单调 `cancel_orders(order_hashes)`。
 - 市场撤单调 `cancel_market_orders(OrderMarketCancelParams(...))`。
 - 下单仍走两步 `create_order/create_market_order` → `post_order/post_orders`,并使用 v2 `PostOrdersArgs`。
+- 下单签名统一使用固定 `tick_size=0.01`：factory 构造的 `PolymarketClobClient` 覆盖 SDK
+  `get_tick_size()`，不在 submit 关键路径查询 tick-size endpoint。该约束主动放弃 `0.001`
+  细粒度报价；策略当前最多使用两位小数价格。
 
 该约束由 `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface` 锁定;下一次 PM cancel-only live 验收必须先看到 `orderID` / `venue_order_id` 落 cache,再继续验证下一轮 cancel-only。
+
+**PM user WS 预热(#425,已落地 / 待 live 复验)**:首单对新 market 调 `_maintain_active_market` → `_ws_client.subscribe(condition_id)` 会在 submit 关键路径现订 user 频道(实测冷启约 0.28–0.74s)。`_connect` 只按"连接那一刻 `_cache.instruments(POLYMARKET)` 快照"订 user 频道,而 PM instrument 入 cache 仅由 **DataClient** 负责(`data.py` `_send_all_instruments_to_data_engine` / `add_instrument`);exec `_connect` 与 data 填 cache 是**并发竞态**(`kernel._connect_clients` 只 schedule 不 await),且 user 频道**无任何运行时补订**路径——盘中新注册的 pair 必冷启。修复对齐 DataClient 的 market 频道动态订阅与 strategy actor 对 `MatchedPair` 的 OBD/sports 预订:`ArbPolymarketExecutionClient` 订阅 `data.MatchedPair*`,对本 venue 腿的 `condition_id` 事件驱动 `_ws_client.subscribe`(`create_task` 异步、不挡同步 publish),按 condition_id 去重(MatchedPair 每轮 republish),只预热 registered/tradable 的 pair。预热失败只告警、不重试,退回下单时 `_maintain_active_market` 的懒订冷启(失败不兜底)。验收 `tests/arbitrage/execution/test_polymarket_client.py::test_matched_pair_prewarms_user_ws_subscription_deduped` / `::test_matched_pair_prewarm_failure_falls_back_without_raising`。
 
 **PM cancel 终态约束(#99/#113/#342,已落地,2026-08-16)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当 `canceled[]` 确实包含目标 venue order ID 时,adapter 立即经 `_generate_cancel_success_event` 生成 `OrderCanceled`,并 ACK/结束 cancel session,不再依赖可能缺失的 USER WS `CANCELLATION`。迟到的 USER WS cancellation 仍走同一 helper 并保持幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply REST 产生的 `OrderCanceled` 时,用有界 `_cancel_terminal_client_ids` 窗口按 `client_order_id` 跳过重复终态,避免向 NT 重放 `CANCELED -> CANCELED`。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(不能从该歧义文本判断撤单还是成交)。覆盖范围:单笔 `_cancel_order`、deferred cancel、batch/cancel-all 与 USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 

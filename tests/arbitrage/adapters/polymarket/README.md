@@ -176,6 +176,13 @@ size，避免破坏 share/quote 口径。
 **期望**: PM adapter 不回退旧 `py_clob_client`;使用 v2 SDK 的订单提交 / 查询 / 撤单 surface
 **验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface`
 
+### pm-adapter-5.1b.1: PM 下单固定 tick size
+
+**输入**:任意 token 的 PM 订单进入 SDK 构单/签名路径。
+**期望**:factory 返回的 `PolymarketClobClient` 固定返回 `tick_size=0.01`，不调用 SDK
+tick-size endpoint；下单价格只使用两位小数网格。
+**验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_clob_client_uses_fixed_tick_size_without_sdk_lookup`
+
 ### pm-adapter-5.1c: PM CLOB REST geoblock + API readiness preflight
 
 **前置**: `skip_execution=false`,PM ExecClient 准备真连接;`venues.polymarket.proxy_url` 已由 JSON 或 env 决定。
