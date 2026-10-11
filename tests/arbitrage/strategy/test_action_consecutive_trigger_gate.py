@@ -44,24 +44,26 @@ def _ctx(*, score="0-1", outcome="yes", store=None, event_name="MarketOrderBookD
     return ctx
 
 
-def _run(ctx, *, required_hits=2):
+def _run(ctx, *, required_hits=2, limit=None):
     asyncio.run(
         ConsecutiveTriggerGateAction(
             history_key="pre_rebate",
             required_hits=required_hits,
+            limit=limit,
         ).execute(ctx),
     )
 
 
-def test_second_same_direction_at_changed_score_passes_and_keeps_both_records():
+@pytest.mark.parametrize("limit", [None, False])
+def test_second_same_direction_at_changed_score_passes_and_keeps_both_records(limit):
     store = ConsecutiveTriggerStore()
     first = _ctx(score="0-1", store=store)
-    _run(first)
+    _run(first, limit=limit)
     assert first.scratch["candidates"] == []
 
     second = _ctx(score="0-2", store=store)
     original = second.scratch["candidates"]
-    _run(second)
+    _run(second, limit=limit)
 
     assert second.scratch["candidates"] == original
     original[0]["legs"][0]["price"] = 0.99
@@ -106,6 +108,54 @@ def test_required_hits_walks_recent_history_and_ignores_same_score_duplicates():
     assert current.scratch["candidates"]
 
 
+def test_limit_requires_elapsed_games_to_reach_required_hits():
+    store = ConsecutiveTriggerStore()
+    _run(_ctx(score="0-1", store=store), limit=True)
+
+    one_game_later = _ctx(score="0-2", store=store)
+    _run(one_game_later, limit=True)
+    assert one_game_later.scratch["candidates"] == []
+
+    two_games_later = _ctx(score="0-3", store=store)
+    _run(two_games_later, limit=True)
+    assert two_games_later.scratch["candidates"]
+
+
+def test_limit_stops_at_set_boundary_then_counts_within_current_set():
+    store = ConsecutiveTriggerStore()
+    _run(_ctx(score="5-4", store=store), limit=True)
+
+    new_set = _ctx(score="6-4, 0-1", store=store)
+    _run(new_set, limit=True)
+    assert new_set.scratch["candidates"] == []
+
+    two_games_later = _ctx(score="6-4, 0-3", store=store)
+    _run(two_games_later, limit=True)
+    assert two_games_later.scratch["candidates"]
+
+
+def test_limit_does_not_count_tie_break_points_as_games():
+    store = ConsecutiveTriggerStore()
+    _run(_ctx(score="6-6(1-0)", store=store), limit=True)
+
+    current = _ctx(score="6-6(5-4)", store=store)
+    _run(current, limit=True)
+
+    assert current.scratch["candidates"] == []
+
+
+def test_limit_uses_required_hits_as_minimum_elapsed_games():
+    store = ConsecutiveTriggerStore()
+    for score in ("0-1", "0-2", "0-3"):
+        ctx = _ctx(score=score, store=store)
+        _run(ctx, required_hits=3, limit=True)
+        assert ctx.scratch["candidates"] == []
+
+    current = _ctx(score="0-4", store=store)
+    _run(current, required_hits=3, limit=True)
+    assert current.scratch["candidates"]
+
+
 @pytest.mark.parametrize("score", ["", "bad score"])
 def test_missing_or_invalid_score_fails_closed_without_record(score):
     store = ConsecutiveTriggerStore()
@@ -126,9 +176,19 @@ def test_non_obd_event_fails_closed_without_record():
 
 
 @pytest.mark.parametrize(
-    ("history_key", "required_hits"),
-    [("", 2), ("x", 1), ("x", True)],
+    ("history_key", "required_hits", "limit"),
+    [
+        ("", 2, None),
+        ("x", 1, None),
+        ("x", True, None),
+        ("x", 2, 1),
+        ("x", 2, "true"),
+    ],
 )
-def test_invalid_params_fail_fast(history_key, required_hits):
+def test_invalid_params_fail_fast(history_key, required_hits, limit):
     with pytest.raises(ValueError):
-        ConsecutiveTriggerGateAction(history_key=history_key, required_hits=required_hits)
+        ConsecutiveTriggerGateAction(
+            history_key=history_key,
+            required_hits=required_hits,
+            limit=limit,
+        )

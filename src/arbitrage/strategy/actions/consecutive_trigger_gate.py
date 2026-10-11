@@ -20,7 +20,12 @@ _OBD_EVENTS = frozenset({"OrderBookDeltas", "MarketOrderBookDeltas"})
 class ConsecutiveTriggerGateAction(Action):
     """当前触发与最近连续历史同方向、且累计足够多次比分变化时放行。"""
 
-    def __init__(self, history_key: str, required_hits: int = 2) -> None:
+    def __init__(
+        self,
+        history_key: str,
+        required_hits: int = 2,
+        limit: bool | None = None,
+    ) -> None:
         if not isinstance(history_key, str) or not history_key.strip():
             raise ValueError("consecutive_trigger_gate: history_key must be a non-empty string")
         if (
@@ -29,8 +34,11 @@ class ConsecutiveTriggerGateAction(Action):
             or required_hits < 2
         ):
             raise ValueError("consecutive_trigger_gate: required_hits must be an integer >= 2")
+        if limit is not None and not isinstance(limit, bool):
+            raise ValueError("consecutive_trigger_gate: limit must be a boolean")
         self._history_key = history_key.strip()
         self._required_hits = required_hits
+        self._limit = bool(limit)
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.event_name not in _OBD_EVENTS:
@@ -43,17 +51,19 @@ class ConsecutiveTriggerGateAction(Action):
             return
 
         recent = store.iter_recent(ctx.pair_id, self._history_key)
-        passed, count = _matches_recent_sequence(
+        passed, count, elapsed_games = _matches_recent_sequence(
             recent,
             observation,
             required_hits=self._required_hits,
+            limit=self._limit,
         )
         # 判定读取旧历史；无论是否放行，本次有效触发都在判定后追加且永不覆盖。
         store.append(ctx.pair_id, self._history_key, observation)
         _LOG.info(
             f"ConsecutiveTriggerGate: pair={ctx.pair_id} history={self._history_key} "
             f"outcome={observation.outcome} score={observation.score_raw!r} "
-            f"count={count} required={self._required_hits} passed={passed}",
+            f"count={count} required={self._required_hits} passed={passed} "
+            f"limit={self._limit} elapsed_games={elapsed_games}",
         )
         if not passed:
             _clear_outputs(ctx)
@@ -142,19 +152,45 @@ def _optional_int(value: str | None) -> int | None:
     return int(value) if value is not None else None
 
 
-def _matches_recent_sequence(recent, current, *, required_hits: int) -> tuple[bool, int]:
+def _matches_recent_sequence(
+    recent,
+    current,
+    *,
+    required_hits: int,
+    limit: bool,
+) -> tuple[bool, int, int | None]:
     count = 1
     last_score = current.score_key
+    farthest_score = current.score_key
     for previous in recent:
         if previous.outcome != current.outcome:
+            break
+        if limit and not _same_set(previous.score_key, current.score_key):
             break
         if previous.score_key == last_score:
             continue
         count += 1
         last_score = previous.score_key
-        if count >= required_hits:
-            return True, count
-    return False, count
+        farthest_score = previous.score_key
+        if not limit and count >= required_hits:
+            return True, count, None
+    if count < required_hits:
+        return False, count, None
+    elapsed_games = _elapsed_games_same_set(farthest_score, current.score_key)
+    return elapsed_games is not None and elapsed_games >= required_hits, count, elapsed_games
+
+
+def _same_set(previous_score, current_score) -> bool:
+    return len(previous_score) == len(current_score) and previous_score[:-1] == current_score[:-1]
+
+
+def _elapsed_games_same_set(previous_score, current_score) -> int | None:
+    if not _same_set(previous_score, current_score):
+        return None
+    previous_left, previous_right, _, _ = previous_score[-1]
+    current_left, current_right, _, _ = current_score[-1]
+    elapsed = current_left + current_right - previous_left - previous_right
+    return elapsed if elapsed >= 0 else None
 
 
 def _snapshot_leg(leg: dict) -> TriggerLeg:
