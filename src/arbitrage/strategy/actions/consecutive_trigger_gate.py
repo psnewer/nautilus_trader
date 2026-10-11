@@ -85,7 +85,7 @@ def _observation(ctx: EvalContext) -> TriggerObservation | None:
         return None
     score_raw = _score(ctx)
     score_key = _score_key(score_raw)
-    if score_key is None:
+    if score_key is None or _tie_break_in_progress(score_key):
         return None
     outcome = next(iter(outcomes))
     return TriggerObservation(
@@ -155,6 +155,11 @@ def _score_key(score: str) -> tuple[tuple[int, int, int | None, int | None], ...
 
 def _optional_int(value: str | None) -> int | None:
     return int(value) if value is not None else None
+
+
+def _tie_break_in_progress(score_key) -> bool:
+    left, right, _, _ = score_key[-1]
+    return left == right == 6
 
 
 def _matches_recent_sequence(

@@ -145,9 +145,9 @@ def test_limit_cross_set_counts_regular_games_across_set_boundary():
     assert current.scratch["candidates"]
 
 
-def test_limit_cross_set_does_not_count_tie_break_points_as_games():
+def test_limit_cross_set_does_not_count_tie_break_game():
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="6-6(1-0)", store=store), limit=True, cross_set=True)
+    _run(_ctx(score="6-5", store=store), limit=True, cross_set=True)
 
     set_finished = _ctx(score="7-6(7-4), 0-0", store=store)
     _run(set_finished, limit=True, cross_set=True)
@@ -155,26 +155,22 @@ def test_limit_cross_set_does_not_count_tie_break_points_as_games():
 
     one_regular_game_later = _ctx(score="7-6(7-4), 1-0", store=store)
     _run(one_regular_game_later, limit=True, cross_set=True)
-    assert one_regular_game_later.scratch["candidates"] == []
-
-    two_regular_games_later = _ctx(score="7-6(7-4), 2-0", store=store)
-    _run(two_regular_games_later, limit=True, cross_set=True)
-    assert two_regular_games_later.scratch["candidates"]
+    assert one_regular_game_later.scratch["candidates"]
 
 
-def test_limit_does_not_count_tie_break_points_as_games():
+@pytest.mark.parametrize("score", ["6-6", "6-6(0-0)", "6-6(5-4)"])
+def test_tie_break_score_fails_closed_without_record(score):
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="6-6(1-0)", store=store), limit=True)
-
-    current = _ctx(score="6-6(5-4)", store=store)
+    current = _ctx(score=score, store=store)
     _run(current, limit=True)
 
     assert current.scratch["candidates"] == []
+    assert store.history("p", "pre_rebate") == ()
 
 
 def test_limit_does_not_count_tie_break_game_itself():
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="6-6(1-0)", store=store), limit=True)
+    _run(_ctx(score="6-5", store=store), limit=True)
 
     current = _ctx(score="7-6(7-4)", store=store)
     _run(current, limit=True)
