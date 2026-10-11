@@ -262,6 +262,8 @@ def test_matched_pair_prewarms_user_ws_subscription_deduped():
     assert client._prewarmed_user_conditions == {"0xcond"}
     _run(scheduled[0])
     assert subscribed == ["0xcond"]
+    # 成功预热打 INFO 锚点(实盘验证"注册即预热"用)。
+    assert any("prewarmed condition_id=0xcond" in str(args) for args in client._log.infos)
 
     # Republish of the same MatchedPair must not re-subscribe (idempotent dedup).
     ArbPolymarketExecutionClient._on_matched_pair(client, mp)

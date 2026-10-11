@@ -157,9 +157,10 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._prewarmed_user_conditions.add(condition_id)
             new_conditions.append(condition_id)
         if new_conditions:
-            self.create_task(self._prewarm_user_subscriptions(new_conditions))
+            pair_id = str(getattr(mp, "pair_id", "") or "")
+            self.create_task(self._prewarm_user_subscriptions(new_conditions, pair_id))
 
-    async def _prewarm_user_subscriptions(self, condition_ids: list[str]) -> None:
+    async def _prewarm_user_subscriptions(self, condition_ids: list[str], pair_id: str = "") -> None:
         """对 condition_id 幂等订阅 user 频道;失败只告警,退回 `_maintain_active_market` 懒订冷启。"""
         for condition_id in condition_ids:
             try:
@@ -168,6 +169,11 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 self._log.warning(
                     f"PM user WS prewarm subscribe failed condition_id={condition_id}: {e!r}; "
                     "falling back to on-submit subscription",
+                )
+            else:
+                # 成功锚点:注册即预热触发的实证,验证用(下单时 `_maintain_active_market` 命中已订 no-op)。
+                self._log.info(
+                    f"PM user WS prewarmed condition_id={condition_id} pair_id={pair_id}",
                 )
 
     def _should_book_early_fill(self, venue_order_id) -> bool:
