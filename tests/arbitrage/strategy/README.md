@@ -886,9 +886,9 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 - `test_action_consecutive_trigger_gate.py`：第一条不同比分触发只记录不放行；同 outcome 第二个不同
   比分放行；同比分重复全部追加但不计数；相反 outcome 打断最近连续序列；`required_hits>2` 从历史尾部
   跳过同比分重复后累计；`limit` 缺失/`None`/`false` 保持原逻辑，`true` 时取最近连续同 outcome
-  且同一盘内最早触发比分，要求该盘经过局数 `>= required_hits`；盘切换中断 limit 计数，抢七小分
-  不计局，当前盘总局数倒退 fail-closed；缺/坏比分和非 OBD 事件 fail-closed 且不写历史；非法配置
-  fail-fast。
+  的最早触发比分，要求经过局数 `>= required_hits`；`cross_set` 缺失/`None`/`false` 时盘切换中断
+  limit 计数，`true` 时允许跨盘累计各盘常规局数；两种模式都排除抢七决胜局及括号内小分；总局数
+  倒退 fail-closed；缺/坏比分和非 OBD 事件 fail-closed 且不写历史；非法配置 fail-fast。
 - 每条历史保存不可变的原始腿、候选 id/rate、原始及规范化比分，不因后续 Action 修改 candidate 而漂移。
 - 实盘 Action 顺序为 `trend_gate → consecutive_trigger_gate → score_selection → current_set_game_selection`：
   落后、打平或当前盘未领先的趋势腿照常写连续触发历史，但比分 Action 仍清空本轮执行腿；后续该方向

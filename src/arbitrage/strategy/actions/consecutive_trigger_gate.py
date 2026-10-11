@@ -25,6 +25,7 @@ class ConsecutiveTriggerGateAction(Action):
         history_key: str,
         required_hits: int = 2,
         limit: bool | None = None,
+        cross_set: bool | None = None,
     ) -> None:
         if not isinstance(history_key, str) or not history_key.strip():
             raise ValueError("consecutive_trigger_gate: history_key must be a non-empty string")
@@ -36,9 +37,12 @@ class ConsecutiveTriggerGateAction(Action):
             raise ValueError("consecutive_trigger_gate: required_hits must be an integer >= 2")
         if limit is not None and not isinstance(limit, bool):
             raise ValueError("consecutive_trigger_gate: limit must be a boolean")
+        if cross_set is not None and not isinstance(cross_set, bool):
+            raise ValueError("consecutive_trigger_gate: cross_set must be a boolean")
         self._history_key = history_key.strip()
         self._required_hits = required_hits
         self._limit = bool(limit)
+        self._cross_set = bool(cross_set)
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.event_name not in _OBD_EVENTS:
@@ -56,6 +60,7 @@ class ConsecutiveTriggerGateAction(Action):
             observation,
             required_hits=self._required_hits,
             limit=self._limit,
+            cross_set=self._cross_set,
         )
         # 判定读取旧历史；无论是否放行，本次有效触发都在判定后追加且永不覆盖。
         store.append(ctx.pair_id, self._history_key, observation)
@@ -63,7 +68,7 @@ class ConsecutiveTriggerGateAction(Action):
             f"ConsecutiveTriggerGate: pair={ctx.pair_id} history={self._history_key} "
             f"outcome={observation.outcome} score={observation.score_raw!r} "
             f"count={count} required={self._required_hits} passed={passed} "
-            f"limit={self._limit} elapsed_games={elapsed_games}",
+            f"limit={self._limit} cross_set={self._cross_set} elapsed_games={elapsed_games}",
         )
         if not passed:
             _clear_outputs(ctx)
@@ -158,6 +163,7 @@ def _matches_recent_sequence(
     *,
     required_hits: int,
     limit: bool,
+    cross_set: bool,
 ) -> tuple[bool, int, int | None]:
     count = 1
     last_score = current.score_key
@@ -165,7 +171,7 @@ def _matches_recent_sequence(
     for previous in recent:
         if previous.outcome != current.outcome:
             break
-        if limit and not _same_set(previous.score_key, current.score_key):
+        if limit and not cross_set and not _same_set(previous.score_key, current.score_key):
             break
         if previous.score_key == last_score:
             continue
@@ -176,7 +182,11 @@ def _matches_recent_sequence(
             return True, count, None
     if count < required_hits:
         return False, count, None
-    elapsed_games = _elapsed_games_same_set(farthest_score, current.score_key)
+    elapsed_games = (
+        _elapsed_games_across_sets(farthest_score, current.score_key)
+        if cross_set
+        else _elapsed_games_same_set(farthest_score, current.score_key)
+    )
     return elapsed_games is not None and elapsed_games >= required_hits, count, elapsed_games
 
 
@@ -189,8 +199,29 @@ def _elapsed_games_same_set(previous_score, current_score) -> int | None:
         return None
     previous_left, previous_right, _, _ = previous_score[-1]
     current_left, current_right, _, _ = current_score[-1]
-    elapsed = current_left + current_right - previous_left - previous_right
+    elapsed = (
+        _regular_games_in_set(current_left, current_right)
+        - _regular_games_in_set(previous_left, previous_right)
+    )
     return elapsed if elapsed >= 0 else None
+
+
+def _elapsed_games_across_sets(previous_score, current_score) -> int | None:
+    previous_games = sum(
+        _regular_games_in_set(left, right)
+        for left, right, _, _ in previous_score
+    )
+    current_games = sum(
+        _regular_games_in_set(left, right)
+        for left, right, _, _ in current_score
+    )
+    elapsed = current_games - previous_games
+    return elapsed if elapsed >= 0 else None
+
+
+def _regular_games_in_set(left: int, right: int) -> int:
+    games = left + right
+    return games - 1 if (left, right) in {(7, 6), (6, 7)} else games
 
 
 def _snapshot_leg(leg: dict) -> TriggerLeg:

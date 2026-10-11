@@ -87,7 +87,12 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(
         build_action({
             "type": "consecutive_trigger_gate",
-            "params": {"history_key": "pre_rebate", "required_hits": 2, "limit": True},
+            "params": {
+                "history_key": "pre_rebate",
+                "required_hits": 2,
+                "limit": True,
+                "cross_set": True,
+            },
         }),
         ConsecutiveTriggerGateAction,
     )
