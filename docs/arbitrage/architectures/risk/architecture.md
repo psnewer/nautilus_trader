@@ -119,6 +119,13 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 
+**SubmitOrder 延迟诊断日志**:`ArbitrageLiveRiskEngine` 只对单笔 `SubmitOrder` 记录
+`ORDER_PIPELINE`，并以 `client_order_id` 串联 `risk_enqueued`、`risk_dequeued`、
+`risk_forwarded` 三个阶段。`risk_dequeued.queue_wait_ms` 表示命令进入 Risk 队列到消费的等待；
+`risk_forwarded.risk_elapsed_ms` 表示出队后经过父类检查、应用层门控及 submit throttler，直到交给
+ExecutionEngine 的耗时。拒单路径必须清理对应临时时间戳，诊断状态不得改变拒单、放行或路由
+语义。该日志用于定位实盘偶发延迟，调查完成后按调试日志纪律回滚。
+
 **`_check_balance` —— 统一读 AccountState.free(Q17 修订,已落地)**:
 
 | 输入 | Risk 行为 | 说明 |

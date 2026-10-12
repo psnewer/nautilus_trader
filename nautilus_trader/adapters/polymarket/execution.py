@@ -1363,6 +1363,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
             await self._retry_manager_pool.release(retry_manager)
 
     async def _submit_order(self, command: SubmitOrder) -> None:
+        self._log.info(
+            "ORDER_PIPELINE stage=pm_task_started "
+            f"client_order_id={command.order.client_order_id}",
+        )
         await self._maintain_active_market(command.instrument_id)
 
         order = command.order

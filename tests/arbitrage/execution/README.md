@@ -437,3 +437,11 @@ PM 侧验收:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`�
 - 输入:收到 `OrderCanceled` / OE-SE `CURRENT_BETS` 确认撤单。
 - 期望:第一阶段不主动加回余额;等待下一次 venue 真值余额更新覆盖。
 - 验收:余额可能短期偏保守,但不会因本地推断和 venue 真值重复加回。若未来要加回,也必须由 execution terminal 事件驱动,不能由 Risk 倒推。
+
+### execution-submit-pipeline:单笔提交延迟诊断不改变派发
+
+- 前置：`ArbLiveExecutionEngine` 已注册目标 ExecutionClient，订单不需要等待多腿 barrier。
+- 输入：单笔 `SubmitOrder` 进入 ExecutionEngine command queue。
+- 期望：同一 `client_order_id` 产生 `exec_enqueued`、`exec_dequeued`、`client_dispatched`
+  日志；入队时间戳在出队后清理，命令仍只派发一次。
+- 验收：`test_engine_barrier.py::test_submit_pipeline_trace_preserves_single_leg_dispatch`。

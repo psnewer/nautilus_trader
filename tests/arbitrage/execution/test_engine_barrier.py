@@ -172,6 +172,19 @@ def test_barrier_waits_until_all_legs_pass_before_release():
     assert len(ctx.client.commands) == 2
 
 
+def test_submit_pipeline_trace_preserves_single_leg_dispatch():
+    ctx = _Ctx()
+    command = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",))
+
+    ctx.engine.execute(command)
+    ctx.loop.run_until_complete(asyncio.sleep(0))
+    queued = ctx.engine._cmd_queue.get_nowait()
+    ctx.engine._execute_command(queued)
+
+    assert str(command.order.client_order_id) not in ctx.engine._arb_submit_enqueued_ns
+    assert ctx.client.commands == [command]
+
+
 def test_pending_cancel_inflight_failure_rejects_cancel_and_restores_open_state():
     ctx = _Ctx()
     order = ctx.submit_cmd("pm:home:0", expected=("pm:home:0",)).order

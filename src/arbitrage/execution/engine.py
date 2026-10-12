@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -60,7 +61,18 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         self._arb_position_reconciliation_snapshots = {}
         self._arb_position_reconcile_clients = []
         self._arb_startup_position_reconcile_clients = []
+        self._arb_submit_enqueued_ns: dict[str, int] = {}
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
+
+    def execute(self, command) -> None:
+        if isinstance(command, SubmitOrder):
+            client_order_id = str(command.order.client_order_id)
+            self._arb_submit_enqueued_ns[client_order_id] = time.monotonic_ns()
+            self._log.info(
+                "ORDER_PIPELINE stage=exec_enqueued "
+                f"client_order_id={client_order_id} qsize_before={self.cmd_qsize()}",
+            )
+        super().execute(command)
 
     def configure_arb(
         self,
@@ -411,6 +423,16 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         return passed_reports, passed_instruments
 
     def _execute_command(self, command) -> None:
+        if isinstance(command, SubmitOrder):
+            client_order_id = str(command.order.client_order_id)
+            dequeued_ns = time.monotonic_ns()
+            enqueued_ns = self._arb_submit_enqueued_ns.pop(client_order_id, None)
+            queue_wait_ms = None if enqueued_ns is None else (dequeued_ns - enqueued_ns) / 1_000_000
+            self._log.info(
+                "ORDER_PIPELINE stage=exec_dequeued "
+                f"client_order_id={client_order_id} queue_wait_ms={queue_wait_ms} "
+                f"qsize_after={self.cmd_qsize()}",
+            )
         if isinstance(command, CancelOrder):
             meta = cancel_meta_from_command(command)
             if meta is not None:
@@ -425,6 +447,13 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 self._handle_opportunity_pass(meta, command)
                 return
         super()._execute_command(command)
+
+    def _handle_submit_order(self, client, command) -> None:
+        self._log.info(
+            "ORDER_PIPELINE stage=client_dispatched "
+            f"client_order_id={command.order.client_order_id} client_id={client.id}",
+        )
+        super()._handle_submit_order(client, command)
 
     def _handle_cancel_opportunity(self, meta: CancelOpportunityMeta, command: CancelOrder) -> None:
         ctx = self._get_group(_CANCEL_GROUP, meta.opportunity_id)

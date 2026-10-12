@@ -397,3 +397,11 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - merge 不使用 condition adjustment：尝试 merge 后同轮重拉
   `/positions + /closed-positions.realizedPnl`，按 instrument 去重合并（current 覆盖重叠、保留
   closed-only）后由权威仓位与 realized 基线接管。
+
+## risk-submit-pipeline:单笔提交延迟诊断不改变路由
+
+- 前置：`ArbitrageLiveRiskEngine` 后接标准 ExecutionEngine，提交一笔可放行的 PM recovery 订单。
+- 输入：订单依次经过 Risk command queue、检查与 execution endpoint。
+- 期望：以同一个 `client_order_id` 产生 `risk_enqueued`、`risk_dequeued`、`risk_forwarded`
+  日志；诊断时间戳在放行或拒绝后清理，订单仍恰好路由一次。
+- 验收：`test_engine.py::test_submit_pipeline_trace_preserves_risk_routing`。

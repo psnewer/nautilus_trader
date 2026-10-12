@@ -18,8 +18,10 @@ notional/submit_rate/TradingState/native 余额)+ 应用层余额检查 + 单场
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
+from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.enums import TradingState
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
@@ -45,6 +47,56 @@ _UNSUPPORTED_EXPECTED_LEG_VENUE = "__UNSUPPORTED_EXPECTED_LEG__"
 
 
 class ArbitrageLiveRiskEngine(LiveRiskEngine):
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._arb_submit_enqueued_ns: dict[str, int] = {}
+        self._arb_submit_dequeued_ns: dict[str, int] = {}
+
+    @staticmethod
+    def _submit_client_order_id(command) -> str | None:
+        if not isinstance(command, SubmitOrder):
+            return None
+        return str(command.order.client_order_id)
+
+    def execute(self, command) -> None:
+        client_order_id = self._submit_client_order_id(command)
+        if client_order_id is not None:
+            self._arb_submit_enqueued_ns[client_order_id] = time.monotonic_ns()
+            self._log.info(
+                "ORDER_PIPELINE stage=risk_enqueued "
+                f"client_order_id={client_order_id} qsize_before={self.cmd_qsize()}",
+            )
+        super().execute(command)
+
+    def _execute_command(self, command) -> None:
+        client_order_id = self._submit_client_order_id(command)
+        if client_order_id is None:
+            super()._execute_command(command)
+            return
+
+        dequeued_ns = time.monotonic_ns()
+        enqueued_ns = self._arb_submit_enqueued_ns.pop(client_order_id, None)
+        self._arb_submit_dequeued_ns[client_order_id] = dequeued_ns
+        queue_wait_ms = None if enqueued_ns is None else (dequeued_ns - enqueued_ns) / 1_000_000
+        self._log.info(
+            "ORDER_PIPELINE stage=risk_dequeued "
+            f"client_order_id={client_order_id} queue_wait_ms={queue_wait_ms} "
+            f"qsize_after={self.cmd_qsize()}",
+        )
+        super()._execute_command(command)
+
+    def _send_to_execution(self, command) -> None:
+        client_order_id = self._submit_client_order_id(command)
+        if client_order_id is not None:
+            now_ns = time.monotonic_ns()
+            dequeued_ns = self._arb_submit_dequeued_ns.pop(client_order_id, None)
+            risk_elapsed_ms = None if dequeued_ns is None else (now_ns - dequeued_ns) / 1_000_000
+            self._log.info(
+                "ORDER_PIPELINE stage=risk_forwarded "
+                f"client_order_id={client_order_id} risk_elapsed_ms={risk_elapsed_ms}",
+            )
+        super()._send_to_execution(command)
 
     # ── 注入(launcher 在 kernel 原生构造后调用)─────────────────────
     def configure_arb(
@@ -181,6 +233,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         return False
 
     def _deny_order(self, order, reason: str) -> None:
+        client_order_id = str(order.client_order_id)
+        self._arb_submit_enqueued_ns.pop(client_order_id, None)
+        self._arb_submit_dequeued_ns.pop(client_order_id, None)
         super()._deny_order(order, reason)
         meta = meta_from_order(order)
         if meta is None:

@@ -733,3 +733,11 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 **期望**：PM tradable 与 PMSPORTS anchor 都把 `info.competition` 写为 `Tennis`；缺省分组配置
 时仍走原精确 alias。**验收**：`test_arb_provider.py::test_load_all_async_applies_sport_competition_group`
 与 `test_sports.py::test_sports_provider_applies_sport_competition_group`。
+
+### pm-adapter-exec.submit-pipeline：PM 异步提交起点日志
+
+**输入**：ExecutionEngine 已把单笔 `SubmitOrder` 派发给 PM client。**期望**：`_submit_order`
+协程开始执行时记录 `ORDER_PIPELINE stage=pm_task_started` 与 `client_order_id`，使
+`client_dispatched → pm_task_started` 的任务调度等待可与签名、HTTP、`OrderSubmitted` 阶段分离；
+不改变 user WS 维护、签名或提交行为。**验收**：execution 的单腿派发回归测试与 PM adapter
+既有提交测试全量通过；live 诊断按相同 `client_order_id` 串联各阶段。

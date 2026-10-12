@@ -703,6 +703,63 @@ def test_recovery_intent_skips_profit_gates_on_real_submit_path():
     assert exec_engine.command_count == 1
 
 
+def test_submit_pipeline_trace_preserves_risk_routing():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=100))
+
+    exec_engine = ExecutionEngine(
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+        config=ExecEngineConfig(),
+    )
+    exec_client = MockExecutionClient(
+        client_id=ClientId("POLYMARKET"),
+        venue=Venue("POLYMARKET"),
+        account_type=AccountType.CASH,
+        base_currency=None,
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+    )
+    exec_engine.register_client(exec_client)
+    strategy = Strategy()
+    strategy.register(
+        trader_id=ctx.trader_id,
+        portfolio=ctx.portfolio,
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+    )
+    order = strategy.order_factory.limit(
+        pm.id,
+        OrderSide.BUY,
+        Quantity.from_int(10),
+        pm.make_price(0.4),
+        tags=["arb:intent=recovery"],
+    )
+    command = SubmitOrder(
+        trader_id=ctx.trader_id,
+        strategy_id=strategy.id,
+        position_id=None,
+        order=order,
+        command_id=UUID4(),
+        ts_init=ctx.clock.timestamp_ns(),
+    )
+
+    ctx.engine.execute(command)
+    ctx.loop.run_until_complete(asyncio.sleep(0))
+    queued = ctx.engine._cmd_queue.get_nowait()
+    ctx.engine._execute_command(queued)
+
+    client_order_id = str(order.client_order_id)
+    assert client_order_id not in ctx.engine._arb_submit_enqueued_ns
+    assert client_order_id not in ctx.engine._arb_submit_dequeued_ns
+    assert exec_engine.command_count == 1
+
+
 def test_recovery_intent_still_checks_balance():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")

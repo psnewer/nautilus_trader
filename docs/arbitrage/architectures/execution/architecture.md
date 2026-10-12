@@ -102,6 +102,14 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 **PM CLOB version 启动预热(#432)**:`py_clob_client_v2` 的构单路径通过私有 `__resolve_version()` 懒加载并缓存 `/version`；只调公开 `get_version()` 不会填该缓存。`PolymarketClobClient.prewarm_version()` 因此显式调 resolve 路径，`ArbPolymarketExecutionClient._connect` 在上游 geoblock/provider/account 初始化前用 `asyncio.to_thread` 执行。后续首单构建 `SignedOrderV2` 直接命中 SDK 缓存，不再把首次 `/version` 往返放在 submit 关键路径。这不取消 SDK 在 `order version mismatch` 后的强制刷新逻辑。启动日志锚点为 `PM CLOB version cache prewarmed version=...`。
 
+**SubmitOrder 延迟诊断日志**:`ArbLiveExecutionEngine` 对单笔 `SubmitOrder` 记录
+`ORDER_PIPELINE stage=exec_enqueued/exec_dequeued/client_dispatched`；PM adapter 在异步提交协程
+真正开始执行时再记录 `stage=pm_task_started`。四者均携带同一个 `client_order_id`。
+`exec_dequeued.queue_wait_ms` 是 ExecutionEngine 队列等待；`exec_dequeued → client_dispatched`
+覆盖 grouped-command barrier 与 client 路由；`client_dispatched → pm_task_started` 是异步任务
+调度等待。再结合既有签名、HTTP 与 `OrderSubmitted` 日志，可把端到端延迟定位到唯一阶段。
+这些观测点不改变 barrier、路由或 venue 提交行为，调查完成后按调试日志纪律回滚。
+
 **PM cancel 终态约束(#99/#113/#342,已落地,2026-08-16)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当 `canceled[]` 确实包含目标 venue order ID 时,adapter 立即经 `_generate_cancel_success_event` 生成 `OrderCanceled`,并 ACK/结束 cancel session,不再依赖可能缺失的 USER WS `CANCELLATION`。迟到的 USER WS cancellation 仍走同一 helper 并保持幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply REST 产生的 `OrderCanceled` 时,用有界 `_cancel_terminal_client_ids` 窗口按 `client_order_id` 跳过重复终态,避免向 NT 重放 `CANCELED -> CANCELED`。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(不能从该歧义文本判断撤单还是成交)。覆盖范围:单笔 `_cancel_order`、deferred cancel、batch/cancel-all 与 USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 
 **PM `auto_redeem` USER WS 通知(#382/#383,2026-09-06)**:`auto_redeem` 是结算通知,不是 order/trade 状态事件。adapter 在严格 order/trade schema 解码失败路径识别该类型,记录 `condition_id` / `amount` / `txn_hash` 后结束处理;不伪造缺少成交价的 `FillReport`。后续周期 position reconciliation 看到 venue 仓位减少时按 §4.6 的归属规则关闭原 strategy NETTING 仓位；realized PnL 仍以 `/closed-positions` 快照为权威。
