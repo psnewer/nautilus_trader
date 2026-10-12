@@ -37,6 +37,7 @@ from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 from src.arbitrage.matching.normalizer import events_from_instruments
 
 
@@ -188,10 +189,26 @@ class MarketMatchingActor(Actor):
             self._release_sports_subscription(gid)
 
     def _evict_pair(self, pair_id: str, *, reason: str) -> None:
+        was_registered = bool(self._pair_registry.instrument_ids_for_pair(pair_id))
         self._pair_registry.unregister_pair(pair_id)
         self._emitted_pairs.discard(pair_id)
         self._clear_pair_validation(pair_id)
+        if was_registered:
+            self._publish_pair_evicted(pair_id, reason=reason)
         self.log.info(f"Evicted pair {pair_id} ({reason})")
+
+    def _publish_pair_evicted(self, pair_id: str, *, reason: str) -> None:
+        """PairRegistry 移除后同步通知下游释放 pair 级资源。"""
+        now = self.clock.timestamp_ns()
+        self.publish_data(
+            data_type=DataType(PairEvicted),
+            data=PairEvicted(
+                ts_event=now,
+                ts_init=now,
+                pair_id=pair_id,
+                reason=reason,
+            ),
+        )
 
     def _clear_pair_validation(self, pair_id: str) -> None:
         state = self._pair_validations.pop(pair_id, None)
@@ -642,6 +659,10 @@ class MarketMatchingActor(Actor):
                 self._unsubscribe_validation_books(sibling, state)
             if self._pair_registry.instrument_ids_for_pair(sibling):
                 self._pair_registry.unregister_pair(sibling)
+                self._publish_pair_evicted(
+                    sibling,
+                    reason=f"sibling {failed_pair_id} probability validation failed",
+                )
             self._emitted_pairs.discard(sibling)
             self.log.info(
                 f"Evicted pair {sibling} (sibling {failed_pair_id} probability validation failed)",

@@ -313,12 +313,18 @@ def on_data(d): if isinstance(d, SportsGameUpdate) and d.ended: self._evict_game
 def _evict_game(gid):
     self._ended_games.add(gid)
     pids = self._game_to_pair.pop(gid, set())
-    for pid in pids: registry.unregister_pair(pid); _emitted_pairs.discard(pid); _clear_pair_validation(pid)
+    for pid in pids:
+        registry.unregister_pair(pid); _emitted_pairs.discard(pid); _clear_pair_validation(pid)
+        publish PairEvicted(pair_id=pid, reason=f"game {gid} ended")
 # _emit_pair 填 game_to_pair[anchor 腿 info["game_id"]].add(pair_id);_maybe_match 排除 game_id ∈ _ended_games 的 anchor 腿
 ```
 - **映射键 `game_id`**:`arb_provider` / 后续 PMSPORTS provider 发现时抽 `event["gameId"]` 入 `info["game_id"]`(== sports WS gameId,§5.9 实采证实)。
 - **纯 `ended` 无兜底**(D4 用户定):漏 `ended` 就不清(`finished_timestamp` 与 ended 绑定不能当 fallback)。
 - **P11 归属 = matching**(MarketMatchingActor 是 PairRegistry 唯一写者 + game→pair 索引宿主;`SportsGameUpdate` 生产者是 sports DataClient,单一归属挂 data 主方)—— 不耦合 execution。expiration 静态属性**不再用于 eviction**。
+- **pair 清理事件(#432)**:`PairRegistry` 真正移除已注册 pair 后，Matching
+  同步发布 `PairEvicted(pair_id, reason)`。Matching 是 pair 生命周期的契约定义者，
+  Execution 等下游只消费该事件释放 pair 级资源；PENDING 从未注册/从未发布
+  `MatchedPair`，因此清理时不发 `PairEvicted`。概率校验 FAIL 连坐移除已注册兄弟时也发同一事件。
 
 > **#250/#252 接线(已落地)**:matching 的 sports 订阅随 **candidate 产生**逐场发起
 > (`_maybe_match` emit 点 `_ensure_sports_subscription(gid)`,幂等,gid ∈ `_ended_games` 跳过;

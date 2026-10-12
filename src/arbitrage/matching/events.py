@@ -1,9 +1,10 @@
 """
-Matching 自定义 Data 事件 —— `MatchedPair`。
+Matching 自定义 Data 事件 —— `MatchedPair` / `PairEvicted`。
 
-由 `MarketMatchingActor` 在成功匹配 anchor↔tradable 事件后 publish;Strategy 订阅决策。
-**risk/portfolio/session 不订此事件**——它们经 `PairRegistry` pull 拿 pair_id(注册与发布
-同 tick 内由 matching 完成,语义同步)。
+`MarketMatchingActor` 成功注册 anchor↔tradable 后发 `MatchedPair`，Strategy 订阅决策；
+真正移除已注册 pair 后发 `PairEvicted`，供 Execution 等消费者释放 pair 级资源。
+**risk/portfolio/session 不订 `MatchedPair`**——它们经 `PairRegistry` pull 拿 pair_id
+(注册与发布同 tick 内由 matching 完成，语义同步)。
 
 走 NT `@customdataclass`(`nautilus_trader.model.custom`)注册为可发布 Data 类型 +
 可序列化(arrow + serializer)。同 `InstrumentsRefreshed` 模式。
@@ -18,6 +19,7 @@ import pyarrow as pa
 
 from nautilus_trader.core import Data
 from nautilus_trader.model.custom import customdataclass
+
 
 @customdataclass
 class MatchedPair(Data):
@@ -113,6 +115,45 @@ class MatchedPair(Data):
             tradable_instrument_ids=tradable_ids,
             venue_instrument_ids=venue_ids,
             order_books_managed=bool(values.get("order_books_managed", False)),
+        )
+
+
+@customdataclass
+class PairEvicted(Data):
+    """Matching 已从 `PairRegistry` 移除的 pair。
+
+    该事件是 pair 生命周期的消费侧清理信号；`reason` 只用于诊断，
+    不参与清理判定。
+    """
+
+    pair_id: str
+    reason: str = ""
+
+    _schema = pa.schema(
+        {
+            "pair_id": pa.string(),
+            "reason": pa.string(),
+            "ts_event": pa.int64(),
+            "ts_init": pa.int64(),
+        },
+        metadata={"type": "PairEvicted"},
+    )
+
+    def to_dict(self, to_arrow: bool = False) -> dict[str, Any]:
+        return {
+            "pair_id": self.pair_id,
+            "reason": self.reason,
+            "ts_event": self.ts_event,
+            "ts_init": self.ts_init,
+        }
+
+    @staticmethod
+    def from_dict(values: dict[str, Any]) -> "PairEvicted":
+        return PairEvicted(
+            ts_event=values["ts_event"],
+            ts_init=values["ts_init"],
+            pair_id=values["pair_id"],
+            reason=str(values.get("reason") or ""),
         )
 
 

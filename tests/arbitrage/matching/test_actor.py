@@ -39,6 +39,7 @@ from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.matching.actor import _RuntimeDeps
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 
 
 # ── matching info 完整的 instrument 构造器 ───────────────────
@@ -514,7 +515,8 @@ def test_pmsports_anchor_ended_evicts_aggregated_pair():
         _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
     ]:
         cache.add_instrument(instrument)
-    actor.publish_data = lambda **k: None
+    published = []
+    actor.publish_data = lambda **k: published.append(k["data"])
 
     actor._maybe_match()
     assert len(registry) > 0
@@ -528,6 +530,10 @@ def test_pmsports_anchor_ended_evicts_aggregated_pair():
     assert len(registry) == 0
     assert actor._emitted_pairs == set()
     assert 888 in actor._ended_games
+    evictions = [event for event in published if isinstance(event, PairEvicted)]
+    assert len(evictions) == 1
+    assert evictions[0].pair_id
+    assert evictions[0].reason == "game 888 ended"
 
     actor._maybe_match()
     assert len(registry) == 0

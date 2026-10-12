@@ -2,8 +2,8 @@
 
 from nautilus_trader.core import Data
 from nautilus_trader.model.data import DataType
-
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 
 
 def test_matched_pair_is_data_subclass():
@@ -123,3 +123,19 @@ def test_matched_pair_arrow_roundtrip_preserves_venue_map():
 
     assert rebuilt.venue_instrument_ids == src.venue_instrument_ids
     assert rebuilt.anchor_instrument_ids == src.anchor_instrument_ids
+
+
+def test_pair_evicted_dict_roundtrip():
+    """matching-3.event.7:pair eviction 清理事件可发布且可序列化。"""
+    src = PairEvicted(
+        ts_event=3,
+        ts_init=4,
+        pair_id="Tennis|A|B",
+        reason="game ended",
+    )
+
+    assert issubclass(PairEvicted, Data)
+    assert DataType(PairEvicted).type is PairEvicted
+    rebuilt = PairEvicted.from_dict(src.to_dict())
+    assert rebuilt.pair_id == src.pair_id
+    assert rebuilt.reason == src.reason

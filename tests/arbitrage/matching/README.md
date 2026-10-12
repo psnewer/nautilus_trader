@@ -6,7 +6,7 @@
 
 **落地状态(2026-07-02)**:`src/arbitrage/matching/{events,normalizer,engine,actor}.py` + `src/arbitrage/common/pair_registry.py` 全落:
 - ✅ `test_pair_registry.py`(9:register/get/unregister/同 pair 覆盖/隔离/pair→legs 反查 + #127 anchor ids 分槽登记/覆盖)
-- ✅ `test_matched_pair_event.py`(7:Data 子类、anchor/tradable/venue 字段、keyed venue map 主通路、dict roundtrip、旧 pm/oe payload 不回填主字段、旧 payload 即使带后缀也不推断主字段、Arrow map roundtrip)
+- ✅ `test_matched_pair_event.py`(8:Data 子类、anchor/tradable/venue 字段、keyed venue map 主通路、dict roundtrip、旧 pm/oe payload 不回填主字段、旧 payload 即使带后缀也不推断主字段、Arrow map roundtrip、`PairEvicted` roundtrip)
 - ✅ `test_normalizer.py`(7:`normalize_team_name` + `events_from_instruments` 反推/分组/Venue Registry 后缀解析/info 缺失跳过/venue 缺失跳过且不读 `info["venue"]` 兜底/group_key)
 - ✅ `test_engine.py`(9:同组队名匹/跨 competition 隔/相似度近似匹/全候选最高 confidence 优先贪心/confidence denominator/`competition_max_matches`/零 confidence 过滤/空输入)
 - ✅ `test_actor.py`(16:timer 驱动 + cache-非空 latch —— PM 单边 cache 空不配 / 未显式配置 anchor/tradable venue 时不做 PM/OE 兜底 / 显式 PM tradable anchor 下 PM↔OE 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **SE opt-in 多 tradable venue**:OE 缺失但 SE 存在时 PM↔SE 可匹配、OE+SE 同场在显式 PM tradable anchor 路径产两个不同 pair_id / **#127 `anchor_venue`+`tradable_venues` 配置覆盖显式 PM tradable anchor** / **#127 PMSPORTS non-tradable anchor 聚合 PM+OE 可交易腿到同一 pair** / **Matching 概率校验门控**:通过后 register+publish、venue ask 和不干净时 pending、best sum 过低时 failed sticky、ended 清 pending 订阅 / **#127 PMSPORTS anchor ended eviction** / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair set → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
@@ -256,6 +256,13 @@
 **用例**:`test_per_game_subscription_drives_eviction_and_unsubscribe`。
 **期望/验收**:per-game topic 发布经 NT 路由到达 Matching → eviction 全部关联 pair,
 并退订本场 sports(与 strategy 侧退订汇合归零后,client 回收 Store 条目)。
+
+### matching-3.sports.2b:eviction 发布 pair 清理事件(#432)
+
+**用例**:`test_pmsports_anchor_ended_evicts_aggregated_pair` / `test_pair_evicted_dict_roundtrip`。
+**期望/验收**:已注册 pair 被 sports ended 或概率校验 FAIL 连坐移除后，
+Matching 在 `PairRegistry.unregister_pair` 之后发布可序列化的
+`PairEvicted(pair_id, reason)`；从未注册的 PENDING pair 不发该事件。
 
 ### matching-3.sports.3:PairRegistry game_id 双向反查
 

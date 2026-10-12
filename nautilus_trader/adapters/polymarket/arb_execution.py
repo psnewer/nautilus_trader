@@ -48,6 +48,7 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.execution.session import cancel_session_started
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 
 
 def _optional_float(value) -> float | None:
@@ -132,17 +133,46 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         # #424(user WS prewarm):matching 概率校验通过即 publish `MatchedPair`;exec client
         # 据此把本 venue 腿的 condition_id 提前订上 user 频道,消除首单在 `_maintain_active_market`
         # 的冷启(exec `_connect` 快照与 data client 填 cache 是竞态,盘中新 pair 更是必冷启)。
-        # 镜像 strategy actor 对 MatchedPair 做 OBD/sports 预订的对称件。`subscribe` 幂等,这里再按
-        # condition_id 去重(MatchedPair 每轮 republish);预热失败只告警、不重试,退回下单时的懒订冷启。
-        self._prewarmed_user_conditions: set[str] = set()
+        # 镜像 strategy actor 对 MatchedPair 做 OBD/sports 预订的对称件。WS `subscribe`
+        # 使用引用计数，因此这里按
+        # pair 级引用决定 condition 并集；只在首个 pair 出现时订阅，最后一个
+        # pair eviction 时退订，避免相同 PM market 被多个 pair 共享时提前释放。
+        self._user_conditions_by_pair: dict[str, set[str]] = {}
+        self._active_user_conditions: set[str] = set()
+        self._user_subscription_lock = asyncio.Lock()
         self._msgbus.subscribe(
             topic=f"data.{MatchedPair.__name__}*",
             handler=self._on_matched_pair,
         )
+        self._msgbus.subscribe(
+            topic=f"data.{PairEvicted.__name__}*",
+            handler=self._on_pair_evicted,
+        )
+
+    async def _connect(self) -> None:
+        version = await asyncio.to_thread(self._http_client.prewarm_version)
+        self._log.info(f"PM CLOB version cache prewarmed version={version}")
+        await super()._connect()
+
+    def _initial_user_subscription_condition_ids(self) -> tuple[str, ...]:
+        """套利客户端由 MatchedPair/PairEvicted 成对管理预热订阅。"""
+        return ()
+
+    async def _maintain_active_market(self, instrument_id: InstrumentId) -> None:
+        """已预热的 condition 不在每次下单时重复增加 WS 引用计数。"""
+        condition_id = get_polymarket_condition_id(instrument_id)
+        async with self._user_subscription_lock:
+            if condition_id in self._active_user_conditions:
+                return
+            await self._ws_client.subscribe(condition_id)
+            self._active_user_conditions.add(condition_id)
 
     def _on_matched_pair(self, mp: MatchedPair) -> None:
         """注册即预热:对本 venue 新出现的 condition_id 提前订 user 频道(事件驱动,去重)。"""
-        new_conditions: list[str] = []
+        pair_id = str(getattr(mp, "pair_id", "") or "")
+        if not pair_id:
+            return
+        conditions: set[str] = set()
         for instrument_id in getattr(mp, "tradable_instrument_ids", None) or ():
             text = str(instrument_id)
             if not text.endswith(f".{POLYMARKET}"):
@@ -151,30 +181,57 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 condition_id = get_polymarket_condition_id(InstrumentId.from_str(text))
             except ValueError:
                 continue
-            if condition_id in self._prewarmed_user_conditions:
-                continue
-            # 启动尝试即登记:成功避免重复订,失败也不重试(失败不兜底,退回下单时冷启)。
-            self._prewarmed_user_conditions.add(condition_id)
-            new_conditions.append(condition_id)
-        if new_conditions:
-            pair_id = str(getattr(mp, "pair_id", "") or "")
-            self.create_task(self._prewarm_user_subscriptions(new_conditions, pair_id))
+            conditions.add(condition_id)
+        if self._user_conditions_by_pair.get(pair_id) == conditions:
+            return
+        self._user_conditions_by_pair[pair_id] = conditions
+        self.create_task(self._reconcile_user_subscriptions(pair_id))
 
-    async def _prewarm_user_subscriptions(self, condition_ids: list[str], pair_id: str = "") -> None:
-        """对 condition_id 幂等订阅 user 频道;失败只告警,退回 `_maintain_active_market` 懒订冷启。"""
-        for condition_id in condition_ids:
-            try:
-                await self._ws_client.subscribe(condition_id)
-            except Exception as e:  # 预热失败不兜底,下单时懒订仍是冷启兜底
-                self._log.warning(
-                    f"PM user WS prewarm subscribe failed condition_id={condition_id}: {e!r}; "
-                    "falling back to on-submit subscription",
-                )
-            else:
-                # 成功锚点:注册即预热触发的实证,验证用(下单时 `_maintain_active_market` 命中已订 no-op)。
-                self._log.info(
-                    f"PM user WS prewarmed condition_id={condition_id} pair_id={pair_id}",
-                )
+    def _on_pair_evicted(self, event: PairEvicted) -> None:
+        pair_id = str(getattr(event, "pair_id", "") or "")
+        if not pair_id or self._user_conditions_by_pair.pop(pair_id, None) is None:
+            return
+        self.create_task(self._reconcile_user_subscriptions(pair_id))
+
+    async def _reconcile_user_subscriptions(self, pair_id: str = "") -> None:
+        """使 user WS 实际订阅等于当前全部注册 pair 需求的 condition 并集。"""
+        async with self._user_subscription_lock:
+            desired = (
+                set().union(*self._user_conditions_by_pair.values())
+                if self._user_conditions_by_pair
+                else set()
+            )
+            for condition_id in sorted(self._active_user_conditions - desired):
+                try:
+                    await self._ws_client.unsubscribe(condition_id)
+                except Exception as e:
+                    self._log.warning(
+                        f"PM user WS prewarm unsubscribe failed condition_id={condition_id}: {e!r}",
+                    )
+                finally:
+                    self._active_user_conditions.discard(condition_id)
+            for condition_id in sorted(desired - self._active_user_conditions):
+                try:
+                    await self._ws_client.subscribe(condition_id)
+                except Exception as e:  # 失败不重试，下单时懒订仍是冷启兜底
+                    self._log.warning(
+                        f"PM user WS prewarm subscribe failed condition_id={condition_id}: {e!r}; "
+                        "falling back to on-submit subscription",
+                    )
+                    # WS client 在建连前已增加引用计数；立即回滚，
+                    # 避免下单重试再叠加一个无主引用。
+                    try:
+                        await self._ws_client.unsubscribe(condition_id)
+                    except Exception as unsubscribe_error:
+                        self._log.warning(
+                            "PM user WS failed prewarm rollback failed "
+                            f"condition_id={condition_id}: {unsubscribe_error!r}",
+                        )
+                else:
+                    self._active_user_conditions.add(condition_id)
+                    self._log.info(
+                        f"PM user WS prewarmed condition_id={condition_id} pair_id={pair_id}",
+                    )
 
     def _should_book_early_fill(self, venue_order_id) -> bool:
         # 套利主单 `enable_timeout=false`(tracking ends on ack):这类单常被 spread_cancel_recovery

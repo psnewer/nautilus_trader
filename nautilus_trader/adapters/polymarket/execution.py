@@ -316,9 +316,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         await self._instrument_provider.initialize()
 
         # Add initial market subscriptions
-        instruments = self._cache.instruments(venue=POLYMARKET_VENUE)
-        for instrument in instruments:
-            condition_id = get_polymarket_condition_id(instrument.id)
+        for condition_id in self._initial_user_subscription_condition_ids():
             self._ws_client.add_subscription(condition_id)
 
         try:
@@ -337,6 +335,13 @@ class PolymarketExecutionClient(LiveExecutionClient):
             if isinstance(e.error_msg, dict) and e.error_msg.get("error") == POLYMARKET_INVALID_API_KEY:
                 await self._ws_client.disconnect()
             raise e
+
+    def _initial_user_subscription_condition_ids(self) -> tuple[str, ...]:
+        """返回连接时需要预先订阅的 USER channel condition。"""
+        return tuple(
+            get_polymarket_condition_id(instrument.id)
+            for instrument in self._cache.instruments(venue=POLYMARKET_VENUE)
+        )
 
     async def _disconnect(self) -> None:
         await self._ws_client.disconnect()

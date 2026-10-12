@@ -45,10 +45,14 @@ POLYMARKET_ORDER_TICK_SIZE: TickSize = "0.01"
 
 
 class PolymarketClobClient(ClobClient):
-    """使用固定下单价格步长,避免签名时查询 tick-size endpoint。"""
+    """固定下单价格步长，并支持启动阶段预热 SDK version 缓存。"""
 
     def get_tick_size(self, token_id: str) -> TickSize:
         return POLYMARKET_ORDER_TICK_SIZE
+
+    def prewarm_version(self) -> int:
+        """提前填充 SDK 构单路径使用的私有 version 缓存。"""
+        return self._ClobClient__resolve_version()
 
 
 @lru_cache(1)

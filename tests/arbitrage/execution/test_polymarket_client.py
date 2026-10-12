@@ -63,6 +63,7 @@ from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -224,6 +225,36 @@ def test_pm_clob_client_uses_fixed_tick_size_without_sdk_lookup(monkeypatch):
     assert client._ClobClient__resolve_tick_size("token-id") == "0.01"
 
 
+def test_pm_clob_client_prewarms_sdk_version_cache(monkeypatch):
+    client = object.__new__(PolymarketClobClient)
+    client._ClobClient__cached_version = None
+    calls = []
+    monkeypatch.setattr(client, "get_version", lambda: calls.append(True) or 7)
+
+    assert client.prewarm_version() == 7
+    assert client._ClobClient__resolve_version() == 7
+    assert calls == [True]
+
+
+def test_arb_pm_client_disables_unowned_initial_user_subscriptions():
+    client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+
+    assert client._initial_user_subscription_condition_ids() == ()
+
+
+def test_upstream_pm_client_keeps_initial_cache_subscription_default():
+    instrument = SimpleNamespace(
+        id=InstrumentId.from_str("0xcond-100.POLYMARKET"),
+    )
+    client = SimpleNamespace(
+        _cache=SimpleNamespace(instruments=lambda **_kwargs: [instrument]),
+    )
+
+    assert PolymarketExecutionClient._initial_user_subscription_condition_ids(client) == (
+        "0xcond",
+    )
+
+
 def _matched_pair(tradable_instrument_ids):
     return MatchedPair(
         pair_id="Tennis|A|B",
@@ -244,10 +275,14 @@ def test_matched_pair_prewarms_user_ws_subscription_deduped():
     client = SimpleNamespace(
         _log=_TrackingLog(),
         _ws_client=SimpleNamespace(subscribe=fake_subscribe),
-        _prewarmed_user_conditions=set(),
+        _user_conditions_by_pair={},
+        _active_user_conditions=set(),
+        _user_subscription_lock=asyncio.Lock(),
     )
     client.create_task = lambda coro: scheduled.append(coro)
-    client._prewarm_user_subscriptions = ArbPolymarketExecutionClient._prewarm_user_subscriptions.__get__(client)
+    client._reconcile_user_subscriptions = (
+        ArbPolymarketExecutionClient._reconcile_user_subscriptions.__get__(client)
+    )
 
     mp = _matched_pair([
         "0xcond-100.POLYMARKET",   # PM leg
@@ -259,7 +294,7 @@ def test_matched_pair_prewarms_user_ws_subscription_deduped():
 
     # Only the single unique PM condition_id gets scheduled for prewarm.
     assert len(scheduled) == 1
-    assert client._prewarmed_user_conditions == {"0xcond"}
+    assert client._user_conditions_by_pair == {"Tennis|A|B": {"0xcond"}}
     _run(scheduled[0])
     assert subscribed == ["0xcond"]
     # 成功预热打 INFO 锚点(实盘验证"注册即预热"用)。
@@ -270,23 +305,111 @@ def test_matched_pair_prewarms_user_ws_subscription_deduped():
     assert len(scheduled) == 1
 
 
-def test_matched_pair_prewarm_failure_falls_back_without_raising():
-    async def failing_subscribe(_condition_id):
-        raise RuntimeError("ws down")
+def test_pair_eviction_releases_user_ws_after_last_pair():
+    subscribed = []
+    unsubscribed = []
+    scheduled = []
+
+    async def fake_subscribe(condition_id):
+        subscribed.append(condition_id)
+
+    async def fake_unsubscribe(condition_id):
+        unsubscribed.append(condition_id)
 
     client = SimpleNamespace(
         _log=_TrackingLog(),
-        _ws_client=SimpleNamespace(subscribe=failing_subscribe),
-        _prewarmed_user_conditions=set(),
+        _ws_client=SimpleNamespace(subscribe=fake_subscribe, unsubscribe=fake_unsubscribe),
+        _user_conditions_by_pair={},
+        _active_user_conditions=set(),
+        _user_subscription_lock=asyncio.Lock(),
+    )
+    client.create_task = lambda coro: scheduled.append(coro)
+    client._reconcile_user_subscriptions = (
+        ArbPolymarketExecutionClient._reconcile_user_subscriptions.__get__(client)
+    )
+
+    first = _matched_pair(["0xcond-100.POLYMARKET"])
+    second = MatchedPair(
+        pair_id="Tennis|A|B|SHARPEXCH",
+        sport="Tennis",
+        competition="ATP",
+        confidence=1.0,
+        tradable_instrument_ids=["0xcond-200.POLYMARKET"],
+    )
+    ArbPolymarketExecutionClient._on_matched_pair(client, first)
+    _run(scheduled.pop(0))
+    ArbPolymarketExecutionClient._on_matched_pair(client, second)
+    _run(scheduled.pop(0))
+    assert subscribed == ["0xcond"]
+
+    ArbPolymarketExecutionClient._on_pair_evicted(
+        client,
+        PairEvicted(ts_event=1, ts_init=1, pair_id=first.pair_id, reason="ended"),
+    )
+    _run(scheduled.pop(0))
+    assert unsubscribed == []
+
+    ArbPolymarketExecutionClient._on_pair_evicted(
+        client,
+        PairEvicted(ts_event=2, ts_init=2, pair_id=second.pair_id, reason="ended"),
+    )
+    _run(scheduled.pop(0))
+    assert unsubscribed == ["0xcond"]
+    assert client._active_user_conditions == set()
+
+
+def test_order_uses_preheated_user_ws_without_incrementing_reference_count():
+    subscribed = []
+
+    async def fake_subscribe(condition_id):
+        subscribed.append(condition_id)
+
+    client = SimpleNamespace(
+        _ws_client=SimpleNamespace(subscribe=fake_subscribe),
+        _active_user_conditions={"0xcond"},
+        _user_subscription_lock=asyncio.Lock(),
+    )
+
+    _run(
+        ArbPolymarketExecutionClient._maintain_active_market(
+            client,
+            InstrumentId.from_str("0xcond-100.POLYMARKET"),
+        ),
+    )
+
+    assert subscribed == []
+
+
+def test_matched_pair_prewarm_failure_falls_back_without_raising():
+    unsubscribed = []
+
+    async def failing_subscribe(_condition_id):
+        raise RuntimeError("ws down")
+
+    async def fake_unsubscribe(condition_id):
+        unsubscribed.append(condition_id)
+
+    client = SimpleNamespace(
+        _log=_TrackingLog(),
+        _ws_client=SimpleNamespace(
+            subscribe=failing_subscribe,
+            unsubscribe=fake_unsubscribe,
+        ),
+        _user_conditions_by_pair={},
+        _active_user_conditions=set(),
+        _user_subscription_lock=asyncio.Lock(),
     )
     scheduled = []
     client.create_task = lambda coro: scheduled.append(coro)
-    client._prewarm_user_subscriptions = ArbPolymarketExecutionClient._prewarm_user_subscriptions.__get__(client)
+    client._reconcile_user_subscriptions = (
+        ArbPolymarketExecutionClient._reconcile_user_subscriptions.__get__(client)
+    )
 
     ArbPolymarketExecutionClient._on_matched_pair(client, _matched_pair(["0xcond-100.POLYMARKET"]))
-    # Failure is swallowed (logged, no raise); condition stays marked so there is no retry.
+    # Failure is swallowed and its reference is rolled back; an actual order can retry cleanly.
     _run(scheduled[0])
-    assert client._prewarmed_user_conditions == {"0xcond"}
+    assert client._active_user_conditions == set()
+    assert unsubscribed == ["0xcond"]
 
 
 async def _pm_positions_with_avg_price(**_kwargs):

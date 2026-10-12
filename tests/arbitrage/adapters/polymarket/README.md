@@ -183,6 +183,27 @@ size，避免破坏 share/quote 口径。
 tick-size endpoint；下单价格只使用两位小数网格。
 **验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_clob_client_uses_fixed_tick_size_without_sdk_lookup`
 
+### pm-adapter-5.1b.2: PM CLOB version 启动预热
+
+**输入**:`ArbPolymarketExecutionClient._connect`。
+**期望**:调上游 connect 前通过 `PolymarketClobClient.prewarm_version()` 填充
+SDK 构单使用的 version 缓存；首单不再现场请求 `/version`。
+**验收**:`test_pm_clob_client_prewarms_sdk_version_cache`；live 以
+`PM CLOB version cache prewarmed version=...` 确认该专属路径实际执行。
+
+### pm-adapter-5.user-ws.2:pair eviction 回收预热订阅
+
+**前置**:一个或多个已注册 pair 共享 PM condition。
+**输入**:Matching 发布 `PairEvicted`。
+**期望**:ExecutionClient 删除该 pair 的 condition 需求；仍有其他 pair 引用时
+不退订，最后一个 pair 移除后调 user WS `unsubscribe`。套利子类不执行上游
+“启动 cache 全量预订”，避免该基准引用让 eviction 无法真正退订；上游默认不变。
+**验收**:`test_upstream_pm_client_keeps_initial_cache_subscription_default` /
+`test_arb_pm_client_disables_unowned_initial_user_subscriptions` /
+`test_order_uses_preheated_user_ws_without_incrementing_reference_count` /
+`test_pair_eviction_releases_user_ws_after_last_pair` /
+`test_matched_pair_prewarm_failure_falls_back_without_raising`。
+
 ### pm-adapter-5.1c: PM CLOB REST geoblock + API readiness preflight
 
 **前置**: `skip_execution=false`,PM ExecClient 准备真连接;`venues.polymarket.proxy_url` 已由 JSON 或 env 决定。
