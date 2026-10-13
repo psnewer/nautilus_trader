@@ -403,5 +403,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 前置：`ArbitrageLiveRiskEngine` 后接标准 ExecutionEngine，提交一笔可放行的 PM recovery 订单。
 - 输入：订单依次经过 Risk command queue、检查与 execution endpoint。
 - 期望：以同一个 `client_order_id` 产生 `risk_enqueued`、`risk_dequeued`、`risk_forwarded`
-  日志；诊断时间戳在放行或拒绝后清理，订单仍恰好路由一次。
+  日志；launcher 将 `RiskEngine` 组件级别设为 `INFO`；诊断时间戳在放行或拒绝后清理，
+  订单仍恰好路由一次。测试必须通过 `RiskEngine.execute` MessageBus endpoint 发送，
+  不得直接调用 engine 方法绕过真实入口。
 - 验收：`test_engine.py::test_submit_pipeline_trace_preserves_risk_routing`。

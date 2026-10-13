@@ -165,6 +165,7 @@ def test_build_trading_node_config_has_pm_oe_data_exec_clients():
     assert nc.exec_engine.inflight_check_retries == 1
     assert nc.exec_engine.reconciliation_startup_delay_secs == 0.0
     assert nc.timeout_connection == 180.0
+    assert nc.logging.log_component_levels["RiskEngine"] == "INFO"
 
 
 def test_position_check_threshold_tracks_position_check_interval():

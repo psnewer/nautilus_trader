@@ -130,12 +130,18 @@ def make_submitter(*, cache, order_factory, submit_order, log):
             if qty_value <= 0:
                 log.warning(f"submit: {iid} qty {spec['qty']} rounds to zero on order grid {grid}; skip")
                 return
+        time_in_force = {
+            "GTC": TimeInForce.GTC,
+            "IOC": TimeInForce.IOC,
+        }.get(str(spec.get("time_in_force", "GTC")).upper())
+        if time_in_force is None:
+            raise ValueError(f"unsupported time_in_force: {spec.get('time_in_force')!r}")
         order = order_factory.limit(
             instrument_id=iid,
             order_side=order_side,
             quantity=Quantity(qty_value, precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
-            time_in_force=TimeInForce.GTC,
+            time_in_force=time_in_force,
             post_only=bool(spec.get("post_only", False)),
             tags=tags,
             client_order_id=ClientOrderId(f"ARB-{UUID4().value[:8]}"),

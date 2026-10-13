@@ -365,12 +365,23 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - 前置：配置 `PlaceBetsAction(post_only=true)`，或省略/显式设为 `false`。
 - 期望：`true` 时每条 submit spec 携带 `post_only=true`，submitter 构造 NT
-  `LimitOrder.is_post_only=True`；缺失或 `false` 均为普通 GTC 限价单。该参数不改计划价与数量，
+  `LimitOrder.is_post_only=True`；缺失或 `false` 均为非 maker-only 限价单，TIF 由独立参数决定。该参数不改计划价与数量，
   不替代 `limit` 盘口定价；非 boolean 配置 fail-fast。
 - 验收：✅ `test_action_place_bets.py::test_action_writes_optional_post_only_to_every_submit_spec` /
   `test_action_rejects_non_boolean_post_only`；✅
   `test_submitter.py::test_submit_sets_nt_post_only_from_spec`；✅
   `test_mean_rebate_e2e.py::test_place_bets_post_only_param_loads_from_strategy_json`。
+
+### strategy-4.35: PlaceBetsAction 可选 IOC 限价单
+
+- 前置：配置 `PlaceBetsAction(time_in_force="IOC", post_only=false)`；订单具有策略计算出的限价。
+- 期望：submit spec 携带规范化后的 `IOC`，submitter 构造 NT IOC `LimitOrder`；PM adapter 将其
+  映射为 CLOB `FAK`，立即成交限价范围内可用数量并取消余量。参数缺失时保持 GTC；仅接受
+  `GTC/IOC`，且 `IOC + post_only=true` fail-fast。
+- 验收：✅ `test_action_place_bets.py::test_action_writes_optional_time_in_force_to_every_submit_spec` /
+  `test_action_rejects_unsupported_time_in_force` / `test_action_rejects_ioc_post_only_combination`；✅
+  `test_submitter.py::test_submit_sets_nt_ioc_from_spec`；✅
+  `test_mean_rebate_e2e.py::test_place_bets_time_in_force_param_loads_from_strategy_json`。
 
 ## pre_rebate 策略(#326/#341,已落地 · 离线已验证 · live-unvalidated)
 

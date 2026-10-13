@@ -749,7 +749,9 @@ def test_submit_pipeline_trace_preserves_risk_routing():
         ts_init=ctx.clock.timestamp_ns(),
     )
 
-    ctx.engine.execute(command)
+    # 必须走 Strategy 实盘使用的 MessageBus endpoint,不能直接调 engine.execute,
+    # 否则 endpoint 注册或派发回归时测试仍会虚假通过。
+    ctx.msgbus.send(endpoint="RiskEngine.execute", msg=command)
     ctx.loop.run_until_complete(asyncio.sleep(0))
     queued = ctx.engine._cmd_queue.get_nowait()
     ctx.engine._execute_command(queued)

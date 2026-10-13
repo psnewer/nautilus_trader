@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import TraderId
@@ -76,6 +77,7 @@ def test_submit_builds_limit_order_and_delegates_to_strategy():
     assert order.side == OrderSide.BUY
     assert float(order.quantity) == 5.625
     assert float(order.price) == 4.0
+    assert order.time_in_force == TimeInForce.GTC
     assert order.is_post_only is False
     assert order.tags == ["arb:intent=arbitrage"]
 
@@ -93,6 +95,21 @@ def test_submit_sets_nt_post_only_from_spec():
     }))
 
     assert submitted[0].is_post_only is True
+
+
+def test_submit_sets_nt_ioc_from_spec():
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _fake_instrument()
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 5.0,
+        "price": 0.5,
+        "time_in_force": "IOC",
+    }))
+
+    assert submitted[0].time_in_force == TimeInForce.IOC
 
 
 def test_submit_with_sell_side():

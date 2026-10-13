@@ -124,7 +124,8 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 `risk_forwarded` 三个阶段。`risk_dequeued.queue_wait_ms` 表示命令进入 Risk 队列到消费的等待；
 `risk_forwarded.risk_elapsed_ms` 表示出队后经过父类检查、应用层门控及 submit throttler，直到交给
 ExecutionEngine 的耗时。拒单路径必须清理对应临时时间戳，诊断状态不得改变拒单、放行或路由
-语义。该日志用于定位实盘偶发延迟，调查完成后按调试日志纪律回滚。
+语义。launcher 必须将 `RiskEngine` 组件日志级别设为 `INFO`，否则上述三个锚点会在日志出口被过滤。
+该日志用于定位实盘偶发延，调查完成后按调试日志纪律回滚。
 
 **`_check_balance` —— 统一读 AccountState.free(Q17 修订,已落地)**:
 

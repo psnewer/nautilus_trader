@@ -16,6 +16,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
   - post_only=true 写入 submit spec，由 submitter 构造 NT post-only GTC LimitOrder；缺失或 false
     保持普通限价单。
+  - time_in_force="IOC" 写入 submit spec，由 submitter 构造 IOC LimitOrder；缺失时保持 GTC。
+    IOC 与 post_only=true 互斥。
   - simulation=true 仍完成全部计划转换并记录最终订单，但不生成执行计划；
     缺失或 false 保持现有提交/撤单逻辑。
   - limit=true 时最终 BUY 取当前价与 live best bid 的较低者，SELL 取当前价与 live best ask
@@ -61,6 +63,7 @@ class PlaceBetsAction(Action):
         market: bool | None = None,
         limit: bool | None = None,
         post_only: bool | None = None,
+        time_in_force: str | None = None,
         simulation: bool | None = None,
     ) -> None:
         if enable_timeout is not None and not isinstance(enable_timeout, bool):
@@ -71,6 +74,11 @@ class PlaceBetsAction(Action):
             raise ValueError("limit must be a boolean")
         if post_only is not None and not isinstance(post_only, bool):
             raise ValueError("post_only must be a boolean")
+        normalized_tif = str(time_in_force).upper() if time_in_force is not None else None
+        if normalized_tif not in (None, "GTC", "IOC"):
+            raise ValueError("time_in_force must be GTC or IOC")
+        if normalized_tif == "IOC" and post_only is True:
+            raise ValueError("IOC time_in_force cannot be post_only")
         if simulation is not None and not isinstance(simulation, bool):
             raise ValueError("simulation must be a boolean")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
@@ -81,6 +89,7 @@ class PlaceBetsAction(Action):
         self._market = market
         self._limit = bool(limit)
         self._post_only = post_only
+        self._time_in_force = normalized_tif
         self._simulation = bool(simulation)
 
     async def execute(self, ctx: EvalContext) -> None:
@@ -178,6 +187,8 @@ class PlaceBetsAction(Action):
                 spec["market"] = self._market
             if self._post_only is not None:
                 spec["post_only"] = self._post_only
+            if self._time_in_force is not None:
+                spec["time_in_force"] = self._time_in_force
             prepared.append(
                 PreparedOrder(
                     spec=spec,

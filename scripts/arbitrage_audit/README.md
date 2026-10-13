@@ -24,5 +24,6 @@
 - `replay_simulation_venue_replace.py`：以 simulation 原始触发为输入，按当前 `VenueReplaceAction` 优先级回放 `convert → attitude → deviate_convert`（不启用 tier 转换），在最终 PM ask 上应用价格上限，并按 pair 选择首个真正合格机会计算胜负和利润。
 - `replay_all_venue_replace.py`：合并历史 `draw|win` 标准化信号与后续 simulation 新增场次，统一回放 `convert/attitude/deviate_convert`，在反转后的 PM ask 上应用价格上限，输出全量逐场明细及按动作拆分的胜负、毛利、手续费和净利润；同时保留 `deviate_convert` 无上限及 `1.2≤bid/start≤1.3` 两种口径，并对后者按低级别、非低级别、等级未分类及动作交叉汇总。
 - `compare_fixed_replay_reversals.py`：固定既有 `draw_win真实回放` 的每场首个有效信号，不重新选择连续触发机会；从同时间日志帧补齐原腿 venue、双方 PM 报价与最近 start price，在完全相同的256条信号上配对比较“不反转”和 `convert/attitude/deviate_convert(1.2–1.3)`，并分别应用最终 PM ask 上限与手续费。
+- `replay_strategy_log.py`：直接解析 `nohup.out` 的 OBD、比分和 `pair_in_flight`，用指定 JSON 配置逐帧执行真实策略树；PlaceBets 产出后应用可从配置独立重建的概率 Risk 门控，只有通过后才模拟入账供 `share_limit` 阻止后续重复机会。余额、profit gate 和异步执行时序无法由日志完整还原，因此输出区分策略计划、概率拒绝与模拟接受，不把计划直接冒充成交。
 
 这些脚本源自一次性审计，仍保留当次报告日期、桌面文件名和 `/private/tmp` 输入路径。再次运行前必须先检查文件顶部的路径常量；脚本不包含凭证，也不会主动连接远端或下单。新写的可复用审计脚本应在本回合结束前保存到本目录，`/private/tmp` 仅存日志、缓存和中间产物。

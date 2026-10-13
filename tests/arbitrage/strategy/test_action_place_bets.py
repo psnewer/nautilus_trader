@@ -361,6 +361,43 @@ def test_action_rejects_non_boolean_post_only():
         PlaceBetsAction(post_only="true")
 
 
+@pytest.mark.parametrize("time_in_force", [None, "GTC", "ioc"])
+def test_action_writes_optional_time_in_force_to_every_submit_spec(time_in_force):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [{
+        "instrument_id": "A.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "home",
+        "price": 0.4,
+        "share_if_wins": 22.5,
+    }]
+
+    _prepare_and_dispatch(PlaceBetsAction(time_in_force=time_in_force), ctx)
+
+    assert len(calls) == 1
+    if time_in_force is None:
+        assert "time_in_force" not in calls[0]
+    else:
+        assert calls[0]["time_in_force"] == time_in_force.upper()
+
+
+@pytest.mark.parametrize("time_in_force", ["FAK", "FOK", "GTD", "invalid"])
+def test_action_rejects_unsupported_time_in_force(time_in_force):
+    with pytest.raises(ValueError, match="time_in_force must be GTC or IOC"):
+        PlaceBetsAction(time_in_force=time_in_force)
+
+
+def test_action_rejects_ioc_post_only_combination():
+    with pytest.raises(ValueError, match="IOC time_in_force cannot be post_only"):
+        PlaceBetsAction(time_in_force="IOC", post_only=True)
+
+
 def test_action_simulation_logs_final_order_without_execution_plan(caplog):
     submitted = []
 
