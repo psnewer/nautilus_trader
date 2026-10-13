@@ -163,6 +163,19 @@ size，避免破坏 share/quote 口径。
 **验收**:`tests/arbitrage/execution/test_polymarket_client.py::test_pm_order_without_market_metadata_delegates_to_upstream_limit` /
 `test_pm_market_metadata_uses_official_market_order_at_submit_boundary`。
 
+### pm-adapter-5.1a.1: IOC BUY 使用官方 market builder 满足 makerAmount 分精度
+
+**前置**：NT `LimitOrder(quantity=5.05, price=0.74, time_in_force=IOC)`，不要求
+`market=true` metadata。
+**步骤**：PM 套利子类在最终提交边界构造 `MarketOrderArgs(amount=3.737, price=0.74,
+order_type=FAK)`，由官方 SDK 签名并以 FAK 提交。
+**期望**：SDK 签名结果为 `makerAmount=3.73 USDC`、`takerAmount=5.0405 shares`；原计划限价
+`0.74` 保留，提交成功后以 `OrderUpdated` 将 NT quantity 对齐实际 taker amount。不得额外查询
+盘口、market info 或增加 HTTP 请求；固定 tick、已预热 version 与已知 neg-risk 直接传给 SDK
+builder。普通 GTC limit 与非 IOC `market=true` FOK 路径保持不变。
+**验收**：`tests/arbitrage/execution/test_polymarket_client.py::test_pm_clob_client_builds_ioc_without_market_info_lookup`、
+`test_pm_ioc_buy_uses_market_builder_with_limit_price_and_fak`。
+
 ### pm-adapter-5.1b: PM py_clob_client_v2 surface 锁定
 
 **前置**: 本地 `py_clob_client_v2` 版本为当前项目依赖版本

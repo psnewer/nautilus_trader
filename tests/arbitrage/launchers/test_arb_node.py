@@ -35,6 +35,7 @@ from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
 from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
+from src.arbitrage.strategy.queries.lower_tier import LowerTierQuery
 from src.arbitrage.strategy.queries.start_game import StartGameQuery
 
 
@@ -54,6 +55,7 @@ def test_register_builtin_checks_and_actions_registers_current_types():
 
     assert isinstance(build_state_query({"type": "in_game"}), InGameQuery)
     assert isinstance(build_state_query({"type": "pre_game"}), PreGameQuery)
+    assert isinstance(build_state_query({"type": "lower_tier"}), LowerTierQuery)
     assert isinstance(build_state_query({"type": "start_game"}), StartGameQuery)
     with pytest.raises(StrategyConfigError, match="unknown state query type: 'head'"):
         build_state_query({"type": "head"})

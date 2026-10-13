@@ -911,6 +911,42 @@ def test_submitter_uses_native_strategy_submit_order_path():
     assert actor.cache.orders_open(instrument_id=instrument.id) == []
 
 
+def test_submitter_tags_latest_sports_score_at_order_creation():
+    """生产 submitter 在构造 NT Order 前经 pair 路由读取最新比分帧。"""
+    from nautilus_trader.execution.messages import SubmitOrder
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    actor, _, pair_reg, *_ = _harness()
+    instrument = oe_instrument("ATP-score-tag", "home")
+    actor.cache.add_instrument(instrument)
+    pair_reg.register("match_X", [str(instrument.id)], game_id=123)
+    actor._sports_store = MagicMock()
+    actor._sports_store.get.return_value = SimpleNamespace(
+        score="7-6(7-4), 2-2",
+        ts_event=1791820079000000000,
+    )
+    commands = []
+    actor.msgbus.register(endpoint="RiskEngine.execute", handler=commands.append)
+
+    _run(actor._make_submitter()({
+        "instrument_id": instrument.id,
+        "side": "BUY",
+        "qty": 7.0,
+        "price": 2.0,
+        "opportunity_id": "opp-score",
+        "pair_id": "match_X",
+        "leg_key": "orbitexch:home:0",
+        "expected_legs": ("orbitexch:home:0",),
+    }))
+
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, SubmitOrder)
+    assert "arb:order_score=7-6(7-4), 2-2" in command.order.tags
+    assert "arb:order_score_ts_ns=1791820079000000000" in command.order.tags
+    actor._sports_store.get.assert_called_once_with(123)
+
+
 def test_submitter_binds_inventory_sell_to_existing_position_id():
     """PM inventory SELL 经 NT 原生 SubmitOrder 绑定要关闭的 Position。"""
     from nautilus_trader.execution.messages import SubmitOrder

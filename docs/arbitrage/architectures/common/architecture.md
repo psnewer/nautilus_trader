@@ -14,6 +14,7 @@
 | `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / positions_digest / intent / venue_required_balance / enable_timeout / market`；`positions_digest` 是 Strategy 评估开始时该 pair 的仓位基线（#317:open_orders_digest 已删）；`enable_timeout`、`market` 都是三态字段，缺省不写 tag |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
+| `order_score_tags(score, ts_event_ns)` | 把订单创建前最后已知的 Sports 原始比分及该帧 `ts_event` 编码为 `arb:order_score` / `arb:order_score_ts_ns`；缺值显式编码为空字符串，不伪造默认比分 |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
 | `order_requests_market(order)` | 仅当订单 metadata 显式为 `market=true` 时返回真，供 venue 最终提交边界选择市价语义 |
 | `order_intent(order)` | Risk 读取 `arb:intent`,默认 `arbitrage` |
@@ -23,6 +24,10 @@
 
 **约束**:
 - 下单 metadata 的权威载体是 `Order.tags`,不是 `SubmitOrder.params`,因为 Risk deny 和 SubmitOrder barrier 都以 `order` 为入口。
+- `arb:order_score` 是 Strategy submitter 在构造 NT Order、产生 `OrderInitialized` 之前读取的
+  最新已知 PMS Sports 原始比分；`arb:order_score_ts_ns` 是该 `SportsGameUpdate.ts_event`，不是
+  订单事件时间。两者只用于观测，不参与 Risk / Execution 决策；比分缺失或读取异常时均写空值，
+  不得阻断订单。
 - grouped cancel 不伪造 Order/tag,也不经过 Risk；其 metadata 权威载体是进程内
   `CancelOrder.params["arb_cancel_opportunity"]`。未带该字段的普通 `CancelOrder` 保持 NT 原生直通。
 - `expected_cancels` 必须是非空、无重复的 `client_order_id` 集合，并包含本命令的

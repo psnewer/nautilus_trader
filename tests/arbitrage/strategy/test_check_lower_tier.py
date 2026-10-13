@@ -3,6 +3,7 @@
 import pytest
 
 from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
+from src.arbitrage.strategy.queries.lower_tier import LowerTierQuery
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -29,3 +30,15 @@ def test_lower_tier_does_not_use_grouped_competition_or_missing_oe():
 
     assert LowerTierCheck().passes(grouped) is False
     assert LowerTierCheck().passes(pm_only) is False
+
+
+@pytest.mark.parametrize("predicate", [LowerTierCheck(), LowerTierQuery()])
+def test_lower_tier_check_and_self_hits_query_share_classification(predicate):
+    lower = live_context(infos={"Y.ORBITEXCH": {"competition": "Tennis"}})
+    lower.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Challenger Porto 2"
+    regular = live_context(infos={"Y.ORBITEXCH": {"competition": "Tennis"}})
+    regular.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Masters 1000 Shanghai"
+
+    evaluate = predicate.passes if isinstance(predicate, LowerTierCheck) else predicate.matches
+    assert evaluate(lower) is True
+    assert evaluate(regular) is False

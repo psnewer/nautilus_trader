@@ -16,6 +16,16 @@
   `test_execution_translation.py` 的 OE/SE market payload 参数化用例及
   `test_action_place_bets.py::test_strategy_keeps_planned_price_for_execution_adapter`。
 
+## execution-3.6.1: PM IOC BUY 金额精度与限价保持
+
+- **输入**：PM BUY IOC，计划 `quantity=5.05, price=0.74`。
+- **期望**：最终边界用官方 market builder 签名 FAK，显式保留 `0.74` 限价；maker amount
+  向下量化为 `3.73 USDC`，taker amount 为 `5.0405 shares` 并回写 NT quantity。
+- **不变量**：固定 tick、已预热 version 和 adapter 已知 neg-risk 直接进入 SDK builder，不触发
+  market-info 查询；GTC、SELL 及非 IOC `market=true` 语义不回归。
+- **验收**：`test_polymarket_client.py::test_pm_clob_client_builds_ioc_without_market_info_lookup`、
+  `test_pm_ioc_buy_uses_market_builder_with_limit_price_and_fak`。
+
 ## Opportunity execution barrier(#106/#107,已落地代码)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.4bis` + execution §3.5。

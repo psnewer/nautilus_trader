@@ -7,6 +7,7 @@ from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_meta_from_command
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.opportunity import meta_from_tags
+from src.arbitrage.common.opportunity import order_score_tags
 from src.arbitrage.common.opportunity import tags_from_meta
 
 
@@ -56,6 +57,32 @@ def test_opportunity_meta_round_trips_market():
     )
 
     assert meta_from_tags(tags_from_meta(meta)) == meta
+
+
+def test_order_score_tags_encode_score_and_sports_event_time():
+    assert order_score_tags(" 7-6(7-4), 2-2 ", 1791820079000000000) == [
+        "arb:order_score=7-6(7-4), 2-2",
+        "arb:order_score_ts_ns=1791820079000000000",
+    ]
+
+
+def test_order_score_tags_keep_missing_values_empty():
+    assert order_score_tags(None, None) == [
+        "arb:order_score=",
+        "arb:order_score_ts_ns=",
+    ]
+
+
+def test_order_score_tags_do_not_change_opportunity_meta_parsing():
+    meta = OpportunityMeta(
+        opportunity_id="opp-1",
+        pair_id="pair-1",
+        leg_key="pm:home:0",
+        expected_legs=("pm:home:0",),
+    )
+    tags = tags_from_meta(meta) + order_score_tags("2-2", 123)
+
+    assert meta_from_tags(tags) == meta
 
 
 def test_cancel_opportunity_meta_round_trips_through_command_params():

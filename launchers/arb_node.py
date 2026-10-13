@@ -105,6 +105,7 @@ from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
 from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
+from src.arbitrage.strategy.queries.lower_tier import LowerTierQuery
 from src.arbitrage.strategy.queries.start_game import StartGameQuery
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
@@ -137,6 +138,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("start_price_cancel", StartPriceCancelCheck)
     register_state_query("in_game", InGameQuery)
     register_state_query("pre_game", PreGameQuery)
+    register_state_query("lower_tier", LowerTierQuery)
     register_state_query("start_game", StartGameQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)

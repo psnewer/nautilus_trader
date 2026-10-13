@@ -38,6 +38,7 @@ from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import QueryOrder
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
@@ -251,31 +252,49 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         await super()._cancel_order(command, session_started=session_started)
 
     async def _submit_limit_order(self, command, instrument) -> None:
-        """按订单 metadata 在最终 PM 出站边界选择普通限价或官方市价单。"""
-        if not order_requests_market(command.order):
+        """在最终 PM 出站边界转换官方市价单或 IOC 限价单。"""
+        order = command.order
+        requests_market = order_requests_market(order)
+        is_ioc = getattr(order, "time_in_force", None) == TimeInForce.IOC
+        if not requests_market and not is_ioc:
             await super()._submit_limit_order(command, instrument)
             return
 
-        order = command.order
         amount = (
             float(order.quantity) * float(order.price)
             if order.side == OrderSide.BUY
             else float(order.quantity)
         )
+        poly_order_type = PolyOrderType.FAK if is_ioc else PolyOrderType.FOK
+        # PM 将 FAK BUY 视为 market buy，makerAmount（USDC）只允许两位小数。
+        # 使用官方 market-order builder 让 amount 按分向下量化，同时显式保留 IOC
+        # 的策略限价；普通 market=true 仍沿用动态 BUY 价/最低 SELL 价的 FOK 语义。
+        price = (
+            float(order.price)
+            if is_ioc
+            else (0.01 if order.side == OrderSide.SELL else 0)
+        )
         order_args = MarketOrderArgs(
             token_id=get_polymarket_token_id(order.instrument_id),
             amount=amount,
             side=order_side_to_str(order.side),
-            price=0.01 if order.side == OrderSide.SELL else 0,
-            order_type=PolyOrderType.FOK,
+            price=price,
+            order_type=poly_order_type,
         )
         neg_risk = self._get_neg_risk_for_instrument(instrument)
-        options = PartialCreateOrderOptions(neg_risk=neg_risk)
-        signed_order = await asyncio.to_thread(
-            self._http_client.create_market_order,
-            order_args,
-            options=options,
-        )
+        if is_ioc:
+            signed_order = await asyncio.to_thread(
+                self._http_client.create_ioc_order,
+                order_args,
+                neg_risk=neg_risk,
+            )
+        else:
+            options = PartialCreateOrderOptions(neg_risk=neg_risk)
+            signed_order = await asyncio.to_thread(
+                self._http_client.create_market_order,
+                order_args,
+                options=options,
+            )
 
         self._register_signed_order_id(order, signed_order, neg_risk=neg_risk)
         self.generate_order_submitted(
@@ -293,7 +312,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         await self._post_signed_order(
             order,
             signed_order,
-            order_type_override=PolyOrderType.FOK,
+            order_type_override=poly_order_type,
             base_quantity=base_quantity,
         )
 

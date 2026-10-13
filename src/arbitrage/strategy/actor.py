@@ -52,6 +52,7 @@ from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import new_opportunity_id
+from src.arbitrage.common.opportunity import order_score_tags
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.common.pair_registry import PairRegistry
@@ -72,10 +73,13 @@ from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.registry import StrategyRegistry
 
 
-def make_submitter(*, cache, order_factory, submit_order, log):
+def make_submitter(*, cache, order_factory, submit_order, log, score_snapshot=None):
     """把 Action spec 转成 NT Order，再经 `Strategy.submit_order` 提交。
 
     `spec` schema:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, ...}`
+
+    `score_snapshot(pair_id)` 可选；生产路径在构造 Order 前读取最后已知 Sports 比分帧。
+    该观测 metadata 缺失或读取失败时写空 tag，不改变订单提交。
 
     流程:`spec` → 经 `cache.instrument(iid).{size_precision,price_precision}` 构 NT `LimitOrder`
     → `Strategy.submit_order` 发布 initialized event、写 Cache、检查重复 ID并路由 RiskEngine
@@ -118,6 +122,7 @@ def make_submitter(*, cache, order_factory, submit_order, log):
                 enable_timeout=spec.get("enable_timeout"),
                 market=spec.get("market"),
             ))
+        tags.extend(_score_tags(score_snapshot, spec, log))
         # PM 下单量统一保留到 order_size_increment 网格：SELL 向下取整保证不超卖，
         # BUY 正常四舍五入。持仓仍保留 token 真值(1e-6)。
         # OE/SE 无此键，不受影响。
@@ -158,6 +163,22 @@ def make_submitter(*, cache, order_factory, submit_order, log):
             submit_order(order, position_id=position_id)
 
     return submit
+
+
+def _score_tags(score_snapshot, spec: dict, log) -> list[str]:
+    if score_snapshot is None:
+        return []
+    score = ""
+    score_ts_ns = None
+    try:
+        pair_id = str(spec.get("pair_id") or "")
+        snapshot = score_snapshot(pair_id) if pair_id else None
+        if snapshot is not None:
+            score, score_ts_ns = snapshot
+    except Exception as exc:
+        # 观测 metadata 不得阻断真钱订单。
+        log.warning(f"submit: order score snapshot unavailable: {exc!r}")
+    return order_score_tags(score, score_ts_ns)
 
 
 def _best_bid(book) -> float | None:
@@ -985,7 +1006,23 @@ class StrategyEvaluator(Strategy):
             order_factory=self.order_factory,
             submit_order=self.submit_order,
             log=self._log,
+            score_snapshot=self._order_score_snapshot,
         )
+
+    def _order_score_snapshot(self, pair_id: str) -> tuple[str, int | None] | None:
+        """读取创建订单前该 pair 最后已知的 Sports 比分帧。"""
+        game_id = self._pair_registry.game_id_for_pair(pair_id)
+        store = self._get_sports_store()
+        if game_id is None or store is None:
+            return None
+        state = store.get(game_id)
+        if state is None:
+            return None
+        score = str(getattr(state, "score", "") or "").strip()
+        if not score:
+            return None
+        raw_ts = getattr(state, "ts_event", None)
+        return score, int(raw_ts) if raw_ts is not None else None
 
     def _make_pair_order_canceler(self):
         """返同步 callable：重读 pair open orders，并作为同组 NT CancelOrder 送入 barrier。"""

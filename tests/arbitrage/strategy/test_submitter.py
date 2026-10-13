@@ -198,6 +198,118 @@ def test_submit_writes_opportunity_metadata_tags():
     ]
 
 
+def test_submit_samples_order_score_immediately_before_order_creation():
+    cache = MagicMock()
+    cache.instrument.return_value = _fake_instrument()
+    submitted = []
+    observed = []
+    order_factory = OrderFactory(
+        trader_id=TraderId("TEST-001"),
+        strategy_id=StrategyId("ARB-EVAL-001"),
+        clock=TestClock(),
+    )
+
+    def score_snapshot(pair_id):
+        observed.append(pair_id)
+        return "7-6(7-4), 2-2", 1791820079000000000
+
+    submit = make_submitter(
+        cache=cache,
+        order_factory=order_factory,
+        submit_order=submitted.append,
+        log=MagicMock(),
+        score_snapshot=score_snapshot,
+    )
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 1.0,
+        "price": 0.5,
+        "opportunity_id": "opp-1",
+        "pair_id": "Tennis|Sean Cuenin|Izan Almazan Valiente",
+        "leg_key": "pm:yes:0",
+        "expected_legs": ("pm:yes:0",),
+    }))
+
+    assert observed == ["Tennis|Sean Cuenin|Izan Almazan Valiente"]
+    assert "arb:order_score=7-6(7-4), 2-2" in submitted[0].tags
+    assert "arb:order_score_ts_ns=1791820079000000000" in submitted[0].tags
+
+
+def test_submit_writes_empty_order_score_when_snapshot_fails():
+    cache = MagicMock()
+    cache.instrument.return_value = _fake_instrument()
+    submitted = []
+    log = MagicMock()
+    order_factory = OrderFactory(
+        trader_id=TraderId("TEST-001"),
+        strategy_id=StrategyId("ARB-EVAL-001"),
+        clock=TestClock(),
+    )
+
+    def score_snapshot(_pair_id):
+        raise RuntimeError("sports unavailable")
+
+    submit = make_submitter(
+        cache=cache,
+        order_factory=order_factory,
+        submit_order=submitted.append,
+        log=log,
+        score_snapshot=score_snapshot,
+    )
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 1.0,
+        "price": 0.5,
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "pm:yes:0",
+        "expected_legs": ("pm:yes:0",),
+    }))
+
+    assert len(submitted) == 1
+    assert "arb:order_score=" in submitted[0].tags
+    assert "arb:order_score_ts_ns=" in submitted[0].tags
+    log.warning.assert_called_once()
+
+
+def test_submit_writes_empty_order_score_when_snapshot_is_missing():
+    cache = MagicMock()
+    cache.instrument.return_value = _fake_instrument()
+    submitted = []
+    log = MagicMock()
+    order_factory = OrderFactory(
+        trader_id=TraderId("TEST-001"),
+        strategy_id=StrategyId("ARB-EVAL-001"),
+        clock=TestClock(),
+    )
+    submit = make_submitter(
+        cache=cache,
+        order_factory=order_factory,
+        submit_order=submitted.append,
+        log=log,
+        score_snapshot=lambda _pair_id: None,
+    )
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 1.0,
+        "price": 0.5,
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "pm:yes:0",
+        "expected_legs": ("pm:yes:0",),
+    }))
+
+    assert "arb:order_score=" in submitted[0].tags
+    assert "arb:order_score_ts_ns=" in submitted[0].tags
+    log.warning.assert_not_called()
+
+
 def test_submit_skips_when_instrument_missing():
     """cache.instrument 返 None → warning + skip,不 raise,不 send。"""
     submit, cache, submitted = _build()

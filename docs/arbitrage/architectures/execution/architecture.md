@@ -296,6 +296,18 @@ venue 服务端接口时，adapter 才做最后一次 venue-specific 转换：
   否则签名的 makerAmount 会按极端价格放大，价格改善将产生超出计划数量的 shares。
   签名、neg-risk、确定性 order hash、submitted/accepted/rejected 事件仍复用上游 PM
   ExecutionClient。
+  **IOC 是独立于 `market=true` 的限价立即成交语义**：PM 把 IOC 映射为 FAK，并对 BUY FAK
+  的签名 `makerAmount`（支付 USDC）强制最多两位小数；普通 `create_order(size, price)` 会让
+  `makerAmount=size×price` 带三至四位而被服务端 400 拒绝。因此套利 PM 子类在最终提交边界
+  将 IOC `LimitOrder` 改用官方 market-order builder 构造：BUY amount 为计划
+  `quantity×limit_price`，SELL amount 为计划 quantity，BUY/SELL 均显式传入原计划限价且以
+  FAK 提交。SDK 将 BUY maker amount 向下量化到分，并按该限价派生 taker amount；BUY 再复用
+  上述 `OrderUpdated` 通路把签名后的实际 base quantity 回写 NT。该转换不增加 HTTP 请求，
+  不读取新盘口，也不把 IOC 变成无价格上限的 market order。具体由自有
+  `PolymarketClobClient.create_ioc_order` 使用固定 tick、已预热 version 和 adapter 已知的
+  neg-risk 直接调用 SDK builder，避免官方 `create_market_order` 在首单热路径执行 market-info
+  缓存查询。若同时配置 `market=true` 与 IOC，
+  IOC 的 FAK + 原限价语义优先；非 IOC 的 `market=true` 继续保持动态取价 FOK。
 - **OrbitExch / SharpExch**：普通订单 payload 使用计划 decimal odds；`market=true` 时只在最终
   `placeBets` payload 把 BACK price 设为 `1.01`；LAY 从真实执行 instrument 的 NT book
   `bids()` 最后一档读取当前最差 LAY 深度，再经 Venue Registry 还原成 decimal odds。

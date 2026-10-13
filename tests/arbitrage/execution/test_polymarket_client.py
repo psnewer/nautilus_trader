@@ -13,11 +13,14 @@ from types import SimpleNamespace
 import msgspec
 import pytest
 from py_clob_client_v2 import ClobClient
+from py_clob_client_v2 import MarketOrderArgs
 from py_clob_client_v2 import PostOrdersArgs as TopLevelPostOrdersArgs
 from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import OrderType as PolyOrderType
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 from py_clob_client_v2.exceptions import PolyApiException
+from py_clob_client_v2.order_builder.builder import ROUNDING_CONFIG
+from py_clob_client_v2.order_builder.builder import OrderBuilder as PolyOrderBuilder
 from py_clob_client_v2.order_utils.model.order_data_v2 import SignedOrderV2
 from py_clob_client_v2.order_utils.model.side import Side as PolySide
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
@@ -48,6 +51,7 @@ from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -234,6 +238,43 @@ def test_pm_clob_client_prewarms_sdk_version_cache(monkeypatch):
     assert client.prewarm_version() == 7
     assert client._ClobClient__resolve_version() == 7
     assert calls == [True]
+
+
+def test_pm_clob_client_builds_ioc_without_market_info_lookup():
+    captured = {}
+    signed_order = object()
+
+    def build_market_order(args, options, *, version, fee_rate_bps):
+        captured.update(
+            args=args,
+            options=options,
+            version=version,
+            fee_rate_bps=fee_rate_bps,
+        )
+        return signed_order
+
+    client = SimpleNamespace(
+        assert_level_1_auth=lambda: None,
+        builder_config=None,
+        builder=SimpleNamespace(build_market_order=build_market_order),
+        prewarm_version=lambda: 2,
+    )
+    args = MarketOrderArgs(
+        token_id="token-id",
+        amount=3.737,
+        side="BUY",
+        price=0.74,
+        order_type=PolyOrderType.FAK,
+    )
+
+    result = PolymarketClobClient.create_ioc_order(client, args, neg_risk=True)
+
+    assert result is signed_order
+    assert captured["args"] is args
+    assert captured["options"].tick_size == "0.01"
+    assert captured["options"].neg_risk is True
+    assert captured["version"] == 2
+    assert captured["fee_rate_bps"] is None
 
 
 def test_arb_pm_client_disables_unowned_initial_user_subscriptions():
@@ -822,6 +863,78 @@ def test_pm_market_metadata_uses_official_market_order_at_submit_boundary(
         assert base_quantity is None
     else:
         assert float(base_quantity) == pytest.approx(expected_base_quantity)
+
+
+def test_pm_ioc_buy_uses_market_builder_with_limit_price_and_fak():
+    captured = {}
+    signed_order = SignedOrderV2(
+        salt="1",
+        maker="0x" + "1" * 40,
+        signer="0x" + "2" * 40,
+        tokenId="123",
+        makerAmount="3730000",
+        takerAmount="5040500",
+        side=PolySide.BUY,
+        signatureType=SignatureTypeV2.EOA,
+        timestamp="1",
+        metadata="0x" + "0" * 64,
+        builder="0x" + "0" * 64,
+        signature="0x" + "3" * 130,
+    )
+
+    def create_ioc_order(args, *, neg_risk):
+        captured["args"] = args
+        captured["neg_risk"] = neg_risk
+        return signed_order
+
+    async def post_signed_order(order, signed, *, order_type_override, base_quantity=None):
+        captured["posted"] = (order, signed, order_type_override, base_quantity)
+
+    order = SimpleNamespace(
+        strategy_id=StrategyId("S-1"),
+        instrument_id=InstrumentId.from_str("0xcond-123.POLYMARKET"),
+        client_order_id=ClientOrderId("O-IOC"),
+        side=OrderSide.BUY,
+        quantity=5.05,
+        price=0.74,
+        time_in_force=TimeInForce.IOC,
+        tags=[],
+    )
+    client = SimpleNamespace(
+        _http_client=SimpleNamespace(create_ioc_order=create_ioc_order),
+        _clock=_Clock(),
+        _get_neg_risk_for_instrument=lambda _instrument: False,
+        _register_signed_order_id=lambda *args, **kwargs: None,
+        generate_order_submitted=lambda **kwargs: None,
+        _post_signed_order=post_signed_order,
+    )
+
+    _run(
+        ArbPolymarketExecutionClient._submit_limit_order(
+            client,
+            SimpleNamespace(order=order),
+            SimpleNamespace(size_precision=6),
+        ),
+    )
+
+    assert captured["args"].amount == pytest.approx(3.737)
+    assert captured["args"].price == pytest.approx(0.74)
+    assert captured["args"].order_type == PolyOrderType.FAK
+    assert captured["neg_risk"] is False
+    _, maker_amount, taker_amount = PolyOrderBuilder.__new__(
+        PolyOrderBuilder,
+    ).get_market_order_amounts(
+        "BUY",
+        captured["args"].amount,
+        captured["args"].price,
+        ROUNDING_CONFIG["0.01"],
+    )
+    assert maker_amount == 3_730_000
+    assert taker_amount == 5_040_500
+    _, posted_signed, posted_type, base_quantity = captured["posted"]
+    assert posted_signed is signed_order
+    assert posted_type == PolyOrderType.FAK
+    assert float(base_quantity) == pytest.approx(5.0405)
 
 
 def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():

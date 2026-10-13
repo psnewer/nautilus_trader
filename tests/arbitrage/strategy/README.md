@@ -432,6 +432,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_evaluator.py`。
 
 ### strategy-4.pre_rebate.7: 低级别 start_game 最低优先级领先重挂（#413/#420）
+- #434 后这些组件能力仍保留，但当前 `arb_config.json` 的低级别顶层分支为空，不再接入本链。
 - `start_game` 默认仍只在明确 IN_PLAY 且该 pair 无 SUBMITTED 历史时命中；配置
   `repeat_after_cancel=true` 后，只忽略未成交且终态为 CANCELED 的 `arb:intent=start_game`
   历史。open start_game、部分/全部成交、其它 intent 或其它终态均继续阻断。
@@ -454,6 +455,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 验收：`test_action_share_limit.py`。
 
 ### strategy-4.pre_rebate.9: start_game 挂单低优先级撤销（#418/#420/#422）
+- #434 后组件能力仍保留，但当前低级别 compensation 分支为空，不再接入本链。
 - B5 `place_bets(intent="start_game")` 将来源写入 Order tags；仍按普通套利单执行风控。
 - compensation 最后一支 `start_price_cancel(standing="lose|draw")` 只查已 submitted/open
   的 start_game 单；当前配置为订单方向比分落后或打平时撤单。`standing` 支持以 `|`
@@ -462,6 +464,16 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 撤单请求携带
   `client_order_ids`，pair canceler 只重读并撤销当前仍 open 的目标单，不影响同 pair 其它挂单。
 - 验收：`test_check_start_price_cancel.py`、`test_action_place_bets.py`、`test_evaluator.py`。
+
+### strategy-4.pre_rebate.10: 顶层赛事等级 condition 分流（#434）
+- arbitrage/compensation 两棵树均先以 `lower_tier` 与 `NOT lower_tier` 两个互斥
+  `self_hits` 分支分流；低级别分支当前 actions 为空且不得回落原策略。
+- 非低级别分支保留原有 `in_game` / `pre_game` 子树；缺 OE 原始 competition 或无法确认
+  低级别时进入该分支。
+- StateQuery 与现有同名 Check 必须复用 Challenger/WTA/UTR/ITF 分类真理源，且可同时注册。
+- 验收：`test_check_lower_tier.py` 覆盖两种 predicate 分类一致；
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖同名跨注册表装配；
+  实际 `arb_config.json` 须通过 loader 与 strategy registry 完整装配。
 
 ## Pair 动态趋势基准 #356
 
@@ -921,3 +933,15 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 `test_action_simulation_logs_cancel_without_canceling` /
 `test_action_rejects_non_boolean_simulation`，以及
 `test_mean_rebate_e2e.py::test_place_bets_simulation_param_loads_from_strategy_json`。
+
+## strategy-4.45：订单创建时比分标签
+
+**前置**：最终执行计划已选中，submit spec 带 `pair_id`；PairRegistry 可选地路由到最新
+`SportsGameUpdate`。**步骤/期望**：submitter 在 `order_factory.limit` 前而非 PlaceBets 规划时读取
+最新 `score/ts_event`，把它们写成 `arb:order_score` / `arb:order_score_ts_ns`，随后沿 NT 原生路径
+产生 `OrderInitialized`。Sports state 缺失或读取异常时两个 tag 均为空，异常记录 warning，但订单仍提交；
+不得用 `0-0` 等默认比分兜底，也不得让观测 metadata 进入 Risk/barrier 判断。
+**验收**：`test_submitter.py::test_submit_samples_order_score_immediately_before_order_creation`、
+`::test_submit_writes_empty_order_score_when_snapshot_fails`、
+`::test_submit_writes_empty_order_score_when_snapshot_is_missing`，以及
+`test_evaluator.py::test_submitter_tags_latest_sports_score_at_order_creation`。

@@ -14,11 +14,18 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from dataclasses import replace
 from functools import lru_cache
 
 from py_clob_client_v2 import ApiCreds
 from py_clob_client_v2 import ClobClient
+from py_clob_client_v2 import CreateOrderOptions
+from py_clob_client_v2 import MarketOrderArgs
+from py_clob_client_v2 import PartialCreateOrderOptions
 from py_clob_client_v2 import TickSize
+from py_clob_client_v2.constants import BYTES32_ZERO
+from py_clob_client_v2.exceptions import PolyException
+from py_clob_client_v2.utilities import price_valid
 
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_api_key
@@ -53,6 +60,44 @@ class PolymarketClobClient(ClobClient):
     def prewarm_version(self) -> int:
         """提前填充 SDK 构单路径使用的私有 version 缓存。"""
         return self._ClobClient__resolve_version()
+
+    def create_ioc_order(self, order_args: MarketOrderArgs, *, neg_risk: bool):
+        """按官方 market-order 金额规则构造 IOC，且不在下单热路径查询 market info。"""
+        self.assert_level_1_auth()
+        price = order_args.price
+        if not price_valid(price, POLYMARKET_ORDER_TICK_SIZE):
+            tick_size = float(POLYMARKET_ORDER_TICK_SIZE)
+            raise PolyException(
+                f"invalid price ({price}), min: {tick_size} - max: {1 - tick_size}",
+            )
+
+        if (
+            self.builder_config
+            and self.builder_config.builder_code
+            and (not order_args.builder_code or order_args.builder_code == BYTES32_ZERO)
+        ):
+            order_args = replace(order_args, builder_code=self.builder_config.builder_code)
+
+        version = self.prewarm_version()
+        if version != 2:
+            # v1 还需要按 token 解析 fee rate；该旧协议走 SDK 完整兼容路径。
+            return super().create_market_order(
+                order_args,
+                options=PartialCreateOrderOptions(
+                    tick_size=POLYMARKET_ORDER_TICK_SIZE,
+                    neg_risk=neg_risk,
+                ),
+            )
+
+        return self.builder.build_market_order(
+            order_args,
+            CreateOrderOptions(
+                tick_size=POLYMARKET_ORDER_TICK_SIZE,
+                neg_risk=neg_risk,
+            ),
+            version=version,
+            fee_rate_bps=None,
+        )
 
 
 @lru_cache(1)

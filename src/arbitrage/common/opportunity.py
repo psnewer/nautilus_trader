@@ -59,6 +59,19 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
     return tags
 
 
+def order_score_tags(score: str | None, ts_event_ns: int | None) -> list[str]:
+    """编码订单创建前最后已知的比分及其 Sports 帧时间。"""
+    normalized_score = str(score or "").strip()
+    try:
+        normalized_ts = "" if ts_event_ns is None else str(int(ts_event_ns))
+    except (TypeError, ValueError):
+        normalized_ts = ""
+    return [
+        f"{TAG_PREFIX}order_score={normalized_score}",
+        f"{TAG_PREFIX}order_score_ts_ns={normalized_ts}",
+    ]
+
+
 def meta_from_tags(tags) -> OpportunityMeta | None:
     values = _tag_values(tags)
     opportunity_id = values.get("opportunity_id")
