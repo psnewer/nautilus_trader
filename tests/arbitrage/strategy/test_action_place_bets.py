@@ -35,6 +35,80 @@ def _prepare_and_dispatch(action, ctx):
     return plan
 
 
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_PRE
+
+
+class _PhaseStore:
+    def __init__(self, phase):
+        self._phase = phase
+
+    def get(self, _game_id):
+        return SimpleNamespace(phase=self._phase) if self._phase is not None else None
+
+
+def _derive_ctx(*, tree_kind=None, phase=None):
+    ctx = live_context(
+        books={"Y.POLYMARKET": {"ask": 0.4}},
+        infos={"Y.POLYMARKET": {"claim": "yes"}},
+        instrument_ids=["Y.POLYMARKET"],
+        tree_kind=tree_kind,
+        phase_store=_PhaseStore(phase),
+    )
+    ctx.pair_registry.register(ctx.pair_id, ["Y.POLYMARKET"], game_id=7)
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+        "role": "yes", "price": 0.4, "qty": 5.0,
+    }]
+    return ctx
+
+
+def _first_spec(action, ctx):
+    _run(action.execute(ctx))
+    return ctx.scratch["execution_plan"].orders[0].spec
+
+
+def test_intent_defaults_to_recovery_in_compensation_tree():
+    spec = _first_spec(PlaceBetsAction(), _derive_ctx(tree_kind="compensation"))
+    assert spec["intent"] == "recovery"
+
+
+@pytest.mark.parametrize("tree_kind", ["arbitrage", None])
+def test_intent_defaults_to_arbitrage_otherwise(tree_kind):
+    spec = _first_spec(PlaceBetsAction(), _derive_ctx(tree_kind=tree_kind))
+    assert spec["intent"] == "arbitrage"
+
+
+def test_explicit_intent_overrides_tree_derivation():
+    spec = _first_spec(PlaceBetsAction(intent="arbitrage"), _derive_ctx(tree_kind="compensation"))
+    assert spec["intent"] == "arbitrage"
+
+
+def test_candidate_intent_overrides_everything():
+    ctx = _derive_ctx(tree_kind="compensation")
+    ctx.scratch["selected_candidate"] = {"intent": "start_game"}
+    assert _first_spec(PlaceBetsAction(intent="recovery"), ctx)["intent"] == "start_game"
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [(PHASE_IN_PLAY, "in_game"), (PHASE_PRE, "pre_game")],
+)
+def test_origin_derived_from_phase(phase, expected):
+    spec = _first_spec(PlaceBetsAction(), _derive_ctx(phase=phase))
+    assert spec["origin"] == expected
+
+
+def test_origin_absent_when_phase_unknown():
+    spec = _first_spec(PlaceBetsAction(), _derive_ctx(phase=None))
+    assert "origin" not in spec
+
+
+def test_explicit_origin_overrides_phase_derivation():
+    spec = _first_spec(PlaceBetsAction(origin="pre_game"), _derive_ctx(phase=PHASE_IN_PLAY))
+    assert spec["origin"] == "pre_game"
+
+
 def test_pm_size_equals_share():
     assert _compute_size("POLYMARKET", 22.5, 0.40) == 22.5
 
@@ -86,13 +160,13 @@ def test_action_cancel_request_targets_selected_order_ids():
         pair_order_canceler=lambda pair_id, order_ids: canceled.append((pair_id, order_ids)) or 1,
     )
     ctx.scratch["cancel_pair_orders"] = {
-        "reason": "start_price_cancel:score_leading",
-        "client_order_ids": ["O-START"],
+        "reason": "order_cancel:price_drift",
+        "client_order_ids": ["O-1"],
     }
 
     _prepare_and_dispatch(PlaceBetsAction(), ctx)
 
-    assert canceled == [("p", ("O-START",))]
+    assert canceled == [("p", ("O-1",))]
 
 
 def test_action_cancels_when_selected_recovery_candidate_carries_request():
@@ -320,6 +394,11 @@ def test_action_rejects_non_boolean_market():
         PlaceBetsAction(market="true")
 
 
+def test_action_rejects_unknown_origin():
+    with pytest.raises(ValueError, match="origin must be pre_game or in_game"):
+        PlaceBetsAction(origin="recovery")
+
+
 @pytest.mark.parametrize("post_only", [None, False, True])
 def test_action_writes_optional_post_only_to_every_submit_spec(post_only):
     calls = []
@@ -447,8 +526,8 @@ def test_action_simulation_logs_cancel_without_canceling(caplog):
 
     ctx = EvalContext(pair_id="p", pair_order_canceler=fail_cancel)
     ctx.scratch["cancel_pair_orders"] = {
-        "reason": "start_price_cancel:score_leading",
-        "client_order_ids": ["O-START"],
+        "reason": "order_cancel:price_drift",
+        "client_order_ids": ["O-1"],
     }
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
@@ -458,8 +537,8 @@ def test_action_simulation_logs_cancel_without_canceling(caplog):
     assert "execution_plan" not in ctx.scratch
     assert any(
         "PlaceBets[simulation-cancel]" in record.message
-        and "reason=start_price_cancel:score_leading" in record.message
-        and "client_order_ids=('O-START',)" in record.message
+        and "reason=order_cancel:price_drift" in record.message
+        and "client_order_ids=('O-1',)" in record.message
         for record in caplog.records
     )
 

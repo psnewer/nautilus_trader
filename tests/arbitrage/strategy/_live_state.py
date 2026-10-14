@@ -89,6 +89,17 @@ class StrategyTestCache:
             if str(getattr(order, "instrument_id", "")) == str(instrument_id)
         ]
 
+    def order(self, client_order_id):
+        target = str(client_order_id)
+        return next(
+            (
+                order
+                for order in self._order_history
+                if str(getattr(order, "client_order_id", "")) == target
+            ),
+            None,
+        )
+
 
 def live_context(
     *,

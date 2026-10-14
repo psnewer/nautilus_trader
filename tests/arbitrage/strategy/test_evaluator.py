@@ -27,6 +27,7 @@ from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
 from src.arbitrage.common.sports_phase import PHASE_POST
 from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
@@ -1477,6 +1478,20 @@ def test_ended_deletes_pair_prices_after_last_evaluation_finishes():
     assert actor._get_pair_price_store().get("match_X") is None
     assert actor._consecutive_trigger_store.history("match_X", "pre_rebate") == ()
     assert 888 not in actor._price_pairs_by_game
+
+
+def test_pair_evicted_deletes_in_game_position_override():
+    actor, _, _, _, _, _ = _harness()
+    actor._in_game_position_store.set_min_set("match_X", 4)
+
+    actor.on_data(PairEvicted(
+        ts_event=1,
+        ts_init=1,
+        pair_id="match_X",
+        reason="test",
+    ))
+
+    assert actor._in_game_position_store.min_set("match_X") is None
 
 # ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────
 class _RaisingAction(Action):

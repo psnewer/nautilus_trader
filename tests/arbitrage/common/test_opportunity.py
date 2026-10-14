@@ -7,6 +7,7 @@ from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import cancel_meta_from_command
 from src.arbitrage.common.opportunity import cancel_params_from_meta
 from src.arbitrage.common.opportunity import meta_from_tags
+from src.arbitrage.common.opportunity import order_score
 from src.arbitrage.common.opportunity import order_score_tags
 from src.arbitrage.common.opportunity import tags_from_meta
 
@@ -59,6 +60,18 @@ def test_opportunity_meta_round_trips_market():
     assert meta_from_tags(tags_from_meta(meta)) == meta
 
 
+def test_opportunity_meta_round_trips_origin():
+    meta = OpportunityMeta(
+        opportunity_id="opp-1",
+        pair_id="pair-1",
+        leg_key="pm:home:0",
+        expected_legs=("pm:home:0",),
+        origin="pre_game",
+    )
+
+    assert meta_from_tags(tags_from_meta(meta)) == meta
+
+
 def test_order_score_tags_encode_score_and_sports_event_time():
     assert order_score_tags(" 7-6(7-4), 2-2 ", 1791820079000000000) == [
         "arb:order_score=7-6(7-4), 2-2",
@@ -71,6 +84,12 @@ def test_order_score_tags_keep_missing_values_empty():
         "arb:order_score=",
         "arb:order_score_ts_ns=",
     ]
+
+
+def test_order_score_reads_frozen_order_tag():
+    order = SimpleNamespace(tags=["arb:origin=in_game", "arb:order_score=6-4, 1-2"])
+    assert order_score(order) == "6-4, 1-2"
+    assert order_score(SimpleNamespace(tags=[])) == ""
 
 
 def test_order_score_tags_do_not_change_opportunity_meta_parsing():

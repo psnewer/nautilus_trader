@@ -64,12 +64,14 @@ from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.events import MatchedPair
+from src.arbitrage.matching.events import PairEvicted
 from src.arbitrage.strategy.checks.quote_legs import best_ask
 from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
+from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from src.arbitrage.strategy.registry import StrategyRegistry
 
 
@@ -110,6 +112,8 @@ def make_submitter(*, cache, order_factory, submit_order, log, score_snapshot=No
         side_str = spec.get("side", "BUY").upper()
         order_side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
         tags = [f"arb:intent={spec.get('intent', 'arbitrage')}"]
+        if spec.get("origin") is not None:
+            tags.append(f"arb:origin={spec['origin']}")
         if all(k in spec for k in ("opportunity_id", "pair_id", "leg_key", "expected_legs")):
             tags = tags_from_meta(OpportunityMeta(
                 opportunity_id=str(spec["opportunity_id"]),
@@ -118,6 +122,7 @@ def make_submitter(*, cache, order_factory, submit_order, log, score_snapshot=No
                 expected_legs=tuple(str(v) for v in spec["expected_legs"]),
                 positions_digest=spec.get("positions_digest"),
                 intent=str(spec.get("intent", "arbitrage")),
+                origin=spec.get("origin"),
                 venue_required_balance=spec.get("venue_required_balance"),
                 enable_timeout=spec.get("enable_timeout"),
                 market=spec.get("market"),
@@ -243,6 +248,7 @@ class StrategyEvaluator(Strategy):
         self._game_market_obd: dict[int, set[tuple[str, str]]] = {}
         self._pair_price_store = None
         self._consecutive_trigger_store = ConsecutiveTriggerStore()
+        self._in_game_position_store = InGamePositionRuntimeStore()
         self._price_pairs_by_game: dict[int, set[str]] = {}
         self._price_game_by_pair: dict[str, int] = {}
         self._price_cleanup_pending: set[str] = set()
@@ -266,6 +272,10 @@ class StrategyEvaluator(Strategy):
             topic=f"data.{MatchedPair.__name__}*",
             handler=self.on_data,
         )
+        self._msgbus.subscribe(
+            topic=f"data.{PairEvicted.__name__}*",
+            handler=self.on_data,
+        )
         # #250:sports 订阅按 game 粒度,在 MatchedPair 到达时逐场发起(`_ensure_sports_subscribed`),
         # ended 分发完毕后退订;on_start 无全局 sports 订阅。
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
@@ -276,6 +286,11 @@ class StrategyEvaluator(Strategy):
 
     # ── data 入口(NT 路由)──────────────────────────────────────────
     def on_data(self, data) -> None:
+        if isinstance(data, PairEvicted):
+            self._price_cleanup_pending.add(data.pair_id)
+            if not self._has_eval_task(data.pair_id):
+                self._delete_pair_price(data.pair_id)
+            return
         # 1. MatchedPair fire → 按 venue market 订阅 OBD，并按场订阅 sports。
         if isinstance(data, MatchedPair):
             self._initialize_pair_prices(data)
@@ -738,6 +753,7 @@ class StrategyEvaluator(Strategy):
         if store is not None:
             store.delete(pair_id)
         self._consecutive_trigger_store.delete_pair(pair_id)
+        self._in_game_position_store.delete_pair(pair_id)
         game_id = self._price_game_by_pair.pop(pair_id, None)
         if game_id is None:
             return
@@ -815,6 +831,7 @@ class StrategyEvaluator(Strategy):
             "sports_store": sports_store,
             "phase_store": phase_store,
             "consecutive_trigger_store": self._consecutive_trigger_store,
+            "in_game_position_store": self._in_game_position_store,
             "positions_digest": positions_digest,
             "submitter": submitter,
             "pair_order_canceler": self._make_pair_order_canceler(),
@@ -823,8 +840,8 @@ class StrategyEvaluator(Strategy):
             "event_name": event_name,
             "ts_now_ns": self.clock.timestamp_ns(),
         }
-        arb_ctx = EvalContext(**base_ctx)
-        comp_ctx = EvalContext(**base_ctx)
+        arb_ctx = EvalContext(**base_ctx, tree_kind="arbitrage")
+        comp_ctx = EvalContext(**base_ctx, tree_kind="compensation")
         # 并行 evaluate;各树 scratch 独立,顶层等两树都返回后再决定 fire
         arb_res, comp_res = await asyncio.gather(
             self._aevaluate(strategy.arbitrage_tree, arb_ctx),
@@ -878,6 +895,7 @@ class StrategyEvaluator(Strategy):
             sports_store=self._get_sports_store(),
             phase_store=self._get_phase_store(),
             consecutive_trigger_store=self._consecutive_trigger_store,
+            in_game_position_store=self._in_game_position_store,
             positions_digest=pair_positions_digest(self.cache, instrument_ids),
             submitter=submitter,
             pair_order_canceler=pair_order_canceler,

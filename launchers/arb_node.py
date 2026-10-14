@@ -77,11 +77,13 @@ from src.arbitrage.strategy.actor import _RuntimeDeps as StrategyDeps
 from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
+from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
@@ -95,14 +97,19 @@ from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
 from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
+from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
-from src.arbitrage.strategy.checks.neg_rebate import NegRebateCheck
+from src.arbitrage.strategy.checks.order_cancel import OrderCancelCheck
+from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
+from src.arbitrage.strategy.checks.pre_game_order import PreGameOrderCheck
+from src.arbitrage.strategy.checks.pre_game_reverse import PreGameReverseCheck
 from src.arbitrage.strategy.checks.pre_move import PreMoveCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
+from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
-from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
+from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
 from src.arbitrage.strategy.queries.lower_tier import LowerTierQuery
@@ -135,10 +142,15 @@ def register_builtin_checks_and_actions() -> None:
     register_check("pre_move", PreMoveCheck)
     register_check("lower_tier", LowerTierCheck)
     register_check("start_price_below", StartPriceBelowCheck)
-    register_check("start_price_cancel", StartPriceCancelCheck)
+    register_check("pre_game_order", PreGameOrderCheck)
+    register_check("pre_game_reverse", PreGameReverseCheck)
+    register_check("select_orders", SelectOrdersCheck)
+    register_check("order_cancel", OrderCancelCheck)
+    register_check("position_close", PositionCloseCheck)
     register_state_query("in_game", InGameQuery)
     register_state_query("pre_game", PreGameQuery)
     register_state_query("lower_tier", LowerTierQuery)
+    register_state_query("exposure_source", ExposureSourceQuery)
     register_state_query("start_game", StartGameQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
@@ -152,6 +164,8 @@ def register_builtin_checks_and_actions() -> None:
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)
     register_action("trend_gate", TrendGateAction)
     register_action("place_bets", PlaceBetsAction)
+    register_action("pm_quote_legs", PmQuoteLegsAction)
+    register_action("advance_min_set", AdvanceMinSetAction)
 
 
 def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:

@@ -23,6 +23,7 @@ class OpportunityMeta:
     expected_legs: tuple[str, ...]
     positions_digest: str | None = None  # #317:open_orders_digest 已删(barrier 仅校验 position)
     intent: str = "arbitrage"
+    origin: str | None = None
     venue_required_balance: float | None = None
     enable_timeout: bool | None = None
     market: bool | None = None
@@ -48,6 +49,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         f"{TAG_PREFIX}expected_legs={','.join(meta.expected_legs)}",
         f"{TAG_PREFIX}intent={meta.intent}",
     ]
+    if meta.origin is not None:
+        tags.append(f"{TAG_PREFIX}origin={meta.origin}")
     if meta.positions_digest is not None:
         tags.append(f"{TAG_PREFIX}positions_digest={meta.positions_digest}")
     if meta.venue_required_balance is not None:
@@ -91,6 +94,7 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
         expected_legs=expected,
         positions_digest=values.get("positions_digest"),
         intent=values.get("intent", "arbitrage"),
+        origin=values.get("origin"),
         venue_required_balance=required_balance,
         enable_timeout=(
             values["enable_timeout"].lower() == "true"
@@ -118,6 +122,16 @@ def order_requests_market(order) -> bool:
 def order_intent(order) -> str:
     values = _tag_values(getattr(order, "tags", None) or [])
     return values.get("intent", "arbitrage")
+
+
+def order_origin(order) -> str | None:
+    """返回订单冻结的策略阶段来源。"""
+    return _tag_values(getattr(order, "tags", None) or []).get("origin")
+
+
+def order_score(order) -> str:
+    """返回订单创建前冻结的最后已知比分;缺失时返回空字符串。"""
+    return _tag_values(getattr(order, "tags", None) or []).get("order_score", "")
 
 
 def cancel_params_from_meta(meta: CancelOpportunityMeta) -> dict[str, object]:

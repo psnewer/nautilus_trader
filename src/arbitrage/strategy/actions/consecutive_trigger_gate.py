@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 
-from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.consecutive_triggers import TriggerLeg
 from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
+from src.arbitrage.strategy.consecutive_triggers import elapsed_games_same_set
+from src.arbitrage.strategy.consecutive_triggers import regular_games_in_set
+from src.arbitrage.strategy.consecutive_triggers import same_set
+from src.arbitrage.strategy.consecutive_triggers import score_key
+from src.arbitrage.strategy.consecutive_triggers import tie_break_in_progress
 
 
 _LOG = logging.getLogger(__name__)
@@ -63,6 +68,7 @@ class ConsecutiveTriggerGateAction(Action):
             cross_set=self._cross_set,
         )
         # 判定读取旧历史；无论是否放行，本次有效触发都在判定后追加且永不覆盖。
+        observation = replace(observation, passed=passed)
         store.append(ctx.pair_id, self._history_key, observation)
         _LOG.info(
             f"ConsecutiveTriggerGate: pair={ctx.pair_id} history={self._history_key} "
@@ -84,15 +90,15 @@ def _observation(ctx: EvalContext) -> TriggerObservation | None:
     if len(outcomes) != 1:
         return None
     score_raw = _score(ctx)
-    score_key = _score_key(score_raw)
-    if score_key is None or _tie_break_in_progress(score_key):
+    parsed_score = score_key(score_raw)
+    if parsed_score is None or tie_break_in_progress(parsed_score):
         return None
     outcome = next(iter(outcomes))
     return TriggerObservation(
         ts_ns=int(ctx.ts_now_ns or 0),
         event_name=str(ctx.event_name or ""),
         score_raw=score_raw,
-        score_key=score_key,
+        score_key=parsed_score,
         outcome=outcome,
         legs=tuple(_snapshot_leg(leg) for leg in legs),
         candidate_ids=tuple(
@@ -141,27 +147,6 @@ def _score(ctx: EvalContext) -> str:
     return str(getattr(state, "score", "") or "").strip()
 
 
-def _score_key(score: str) -> tuple[tuple[int, int, int | None, int | None], ...] | None:
-    parts = [part.strip() for part in score.split(",") if part.strip()]
-    result = []
-    for part in parts:
-        match = _SCORE_PART.match(part)
-        if match is None:
-            return None
-        left, right, tie_left, tie_right = match.groups()
-        result.append((int(left), int(right), _optional_int(tie_left), _optional_int(tie_right)))
-    return tuple(result) or None
-
-
-def _optional_int(value: str | None) -> int | None:
-    return int(value) if value is not None else None
-
-
-def _tie_break_in_progress(score_key) -> bool:
-    left, right, _, _ = score_key[-1]
-    return left == right == 6
-
-
 def _matches_recent_sequence(
     recent,
     current,
@@ -176,7 +161,7 @@ def _matches_recent_sequence(
     for previous in recent:
         if previous.outcome != current.outcome:
             break
-        if limit and not cross_set and not _same_set(previous.score_key, current.score_key):
+        if limit and not cross_set and not same_set(previous.score_key, current.score_key):
             break
         if previous.score_key == last_score:
             continue
@@ -190,43 +175,22 @@ def _matches_recent_sequence(
     elapsed_games = (
         _elapsed_games_across_sets(farthest_score, current.score_key)
         if cross_set
-        else _elapsed_games_same_set(farthest_score, current.score_key)
+        else elapsed_games_same_set(farthest_score, current.score_key)
     )
     return elapsed_games is not None and elapsed_games >= required_hits, count, elapsed_games
 
 
-def _same_set(previous_score, current_score) -> bool:
-    return len(previous_score) == len(current_score) and previous_score[:-1] == current_score[:-1]
-
-
-def _elapsed_games_same_set(previous_score, current_score) -> int | None:
-    if not _same_set(previous_score, current_score):
-        return None
-    previous_left, previous_right, _, _ = previous_score[-1]
-    current_left, current_right, _, _ = current_score[-1]
-    elapsed = (
-        _regular_games_in_set(current_left, current_right)
-        - _regular_games_in_set(previous_left, previous_right)
-    )
-    return elapsed if elapsed >= 0 else None
-
-
 def _elapsed_games_across_sets(previous_score, current_score) -> int | None:
     previous_games = sum(
-        _regular_games_in_set(left, right)
+        regular_games_in_set(left, right)
         for left, right, _, _ in previous_score
     )
     current_games = sum(
-        _regular_games_in_set(left, right)
+        regular_games_in_set(left, right)
         for left, right, _, _ in current_score
     )
     elapsed = current_games - previous_games
     return elapsed if elapsed >= 0 else None
-
-
-def _regular_games_in_set(left: int, right: int) -> int:
-    games = left + right
-    return games - 1 if (left, right) in {(7, 6), (6, 7)} else games
 
 
 def _snapshot_leg(leg: dict) -> TriggerLeg:

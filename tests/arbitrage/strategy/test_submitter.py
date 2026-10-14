@@ -165,6 +165,22 @@ def test_submit_marks_recovery_intent_tag():
     assert submitted[0].tags == ["arb:intent=recovery"]
 
 
+def test_submit_keeps_origin_separate_from_intent():
+    submit, cache, submitted = _build()
+    cache.instrument.return_value = _fake_instrument()
+
+    _run(submit({
+        "instrument_id": "X-1.POLYMARKET",
+        "side": "BUY",
+        "qty": 1.0,
+        "price": 0.5,
+        "intent": "recovery",
+        "origin": "pre_game",
+    }))
+
+    assert submitted[0].tags == ["arb:intent=recovery", "arb:origin=pre_game"]
+
+
 def test_submit_writes_opportunity_metadata_tags():
     submit, cache, submitted = _build()
     cache.instrument.return_value = _fake_instrument()

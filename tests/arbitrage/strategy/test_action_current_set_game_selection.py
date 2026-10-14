@@ -66,14 +66,14 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def test_current_set_ignores_completed_set_and_reverses_sell_standing():
+def test_current_set_ignores_completed_set_and_order_side():
     ctx = _ctx("6-4, 2-3")
 
     _run(CurrentSetGameSelectionAction(standing="win").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
-        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
     ]
 
 
@@ -135,6 +135,19 @@ def test_missing_standing_is_noop():
     assert ctx.scratch["legs"] is before
 
 
+def test_max_keeps_loser_at_boundary_and_drops_over_limit():
+    boundary = _ctx("6-4, 2-3")
+    _run(CurrentSetGameSelectionAction(standing="lose", max=1).execute(boundary))
+    assert boundary.scratch["legs"] == [
+        {"instrument_id": "H.POLYMARKET", "side": "BUY"},
+        {"instrument_id": "H.POLYMARKET", "side": "SELL"},
+    ]
+
+    over_limit = _ctx("6-4, 1-3")
+    _run(CurrentSetGameSelectionAction(standing="lose", max=1).execute(over_limit))
+    assert over_limit.scratch["legs"] == []
+
+
 def test_tier_only_filters_lower_tier_competition():
     ctx = _tier_ctx("6-4, 2-3", "WTA Beijing")
 
@@ -178,6 +191,12 @@ def test_tier_only_disabled_keeps_existing_filtering(tier_only):
 def test_invalid_tier_only_is_rejected(tier_only):
     with pytest.raises(ValueError, match="tier_only must be a boolean"):
         CurrentSetGameSelectionAction(standing="win", tier_only=tier_only)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.0, True, "1"])
+def test_invalid_max_is_rejected(value):
+    with pytest.raises(ValueError, match="max must be a positive integer"):
+        CurrentSetGameSelectionAction(standing="lose", max=value)
 
 
 @pytest.mark.parametrize("standing", ["", "win||lose", "ahead", True])

@@ -33,6 +33,8 @@ class EvalContext:
     phase_store: object | None = None
     # 活动 pair 的追加式连续触发历史；仅专用 Action 读写，比赛 ended 后统一回收。
     consecutive_trigger_store: object | None = None
+    # in_game 部分成交撤单后才按需写入的持仓平仓盘数覆盖；无条目时使用配置默认值。
+    in_game_position_store: object | None = None
     # 评估开始时该 pair 的 position 摘要；所有腿透传给 Execution barrier release 前比较。
     # (#317:open_orders_digest 已删 —— barrier 不再做 open-order 校验,承 #316 per-pair ≤1。)
     positions_digest: str | None = None
@@ -56,6 +58,9 @@ class EvalContext:
     trigger_order: object | None = None
     # 本轮评估的 NT clock 时间，供基于 Order 时间戳的 Check 做可测试比较。
     ts_now_ns: int | None = None
+    # 本轮评估所属的树种类:"arbitrage" / "compensation";供 Action 推导默认 intent
+    # (补偿树默认 recovery、套利树默认 arbitrage)。None 时按 arbitrage 兜底。
+    tree_kind: str | None = None
 
 
 class CheckExpr(ABC):

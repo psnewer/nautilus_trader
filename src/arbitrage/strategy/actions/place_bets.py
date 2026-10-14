@@ -9,8 +9,12 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - probability BUY 仅在互斥 LONG 的 SELL 参考价不高于当前 best bid 时，
     拆成 SELL 减仓 + BUY 剩余量；limit=true 可再让最终 SELL 与 best ask 取较高价
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
-  - intent 默认 `"arbitrage"`；补偿树可配置 `"recovery"`，胜出 candidate 的显式 intent
-    优先于 Action 默认值，经 submitter 写入 order tags 供 Risk 判定。
+  - intent 未显式配置时按树推导:补偿树 `"recovery"`、套利树(及 None)`"arbitrage"`;
+    优先级为 胜出 candidate 标记 > Action 显式配置 > 按树推导。经 submitter 写入 order tags
+    供 Risk 判定(`intent=="recovery"` 豁免 TP/SL 止盈止损硬停)。
+  - origin 未显式配置时按当前 phase 推导 `"pre_game"` / `"in_game"`(与 InGame/PreGameQuery
+    同口径,UNKNOWN 不写);显式配置优先覆盖,非法显式值构造即 ValueError。与 intent 正交,
+    写入 order tags;补偿树按它分类订单,仓位则通过 `opening_order_id` 反查 opening order 的 origin。
   - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
     cancel session 收到正常撤单响应即结束，不消费该参数。
   - market=true 只写入订单 metadata；计划价保持不变，由 venue adapter 在最终提交边界转换。
@@ -33,6 +37,8 @@ import logging
 import math
 
 from src.arbitrage.common.opportunity import new_opportunity_id
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import price_from_probability
@@ -57,7 +63,8 @@ class PlaceBetsAction(Action):
         self,
         price_overrides: dict[str, float] | None = None,
         qty_overrides: dict[str, float] | None = None,
-        intent: str = "arbitrage",
+        intent: str | None = None,
+        origin: str | None = None,
         spread: float | None = None,
         enable_timeout: bool | None = None,
         market: bool | None = None,
@@ -81,9 +88,12 @@ class PlaceBetsAction(Action):
             raise ValueError("IOC time_in_force cannot be post_only")
         if simulation is not None and not isinstance(simulation, bool):
             raise ValueError("simulation must be a boolean")
+        if origin not in (None, "pre_game", "in_game"):
+            raise ValueError("origin must be pre_game or in_game")
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
-        self._intent = str(intent)
+        self._intent = str(intent) if intent is not None else None
+        self._origin = origin
         self._spread = _normalize_spread(spread)
         self._enable_timeout = enable_timeout
         self._market = market
@@ -102,12 +112,14 @@ class PlaceBetsAction(Action):
             _LOG.debug(f"PlaceBets: pair={ctx.pair_id} no legs (Check 未写),skip")
             return
 
-        # 胜出 candidate 可覆盖本树 Action 的 intent；无标记时使用 Action 配置值。
+        # intent 解析优先级:胜出 candidate 标记 > Action 显式配置 > 按树推导(补偿树 recovery,
+        # 套利树 arbitrage)。origin 未显式配置时按当前 phase 推导(pre_game/in_game)。
         selected = ctx.scratch.get("selected_candidate") or {}
         mean_rate = ctx.scratch.get("mean_rebate_rate")
         strategy = str(selected.get("strategy") or ("mean_rebate" if mean_rate is not None else "unknown"))
         rate = selected.get("rate", mean_rate)
-        intent = str(selected.get("intent") or self._intent)
+        intent = str(selected.get("intent") or self._intent or _default_intent(ctx))
+        origin = self._origin if self._origin is not None else _derive_origin(ctx)
         _LOG.info(
             f"PlaceBets[prepare]: pair={ctx.pair_id} legs={len(legs)} "
             f"strategy={strategy} rate={rate}",
@@ -155,6 +167,8 @@ class PlaceBetsAction(Action):
                 "role": str(leg.get("claim") or leg.get("role") or idx),
                 "source_index": idx,
             }
+            if leg.get("position_id") is not None:
+                draft["position_id"] = leg["position_id"]
             spread = 0.0 if self._limit else self._spread
             drafts.extend(_expand_probability_inventory(draft, leg, ctx, spread))
 
@@ -179,6 +193,8 @@ class PlaceBetsAction(Action):
                 "positions_digest": ctx.positions_digest,
                 "venue_required_balance": required_by_venue[draft["venue"]],
             }
+            if origin is not None:
+                spec["origin"] = origin
             if draft.get("position_id") is not None:
                 spec["position_id"] = draft["position_id"]
             if self._enable_timeout is not None:
@@ -239,6 +255,29 @@ def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]
     if not raw:
         return {}
     return {str(k).upper(): float(v) for k, v in raw.items()}
+
+
+def _default_intent(ctx: EvalContext) -> str:
+    """未显式配置 intent 时按树推导:补偿树 recovery,其余(套利/None)arbitrage。"""
+    return "recovery" if getattr(ctx, "tree_kind", None) == "compensation" else "arbitrage"
+
+
+def _derive_origin(ctx: EvalContext) -> str | None:
+    """未显式配置 origin 时按当前 phase 推导;与 InGame/PreGameQuery 同口径,UNKNOWN 返 None。"""
+    pair_registry = getattr(ctx, "pair_registry", None)
+    phase_store = getattr(ctx, "phase_store", None)
+    if pair_registry is None or phase_store is None:
+        return None
+    game_id = pair_registry.game_id_for_pair(ctx.pair_id)
+    if game_id is None:
+        return None
+    state = phase_store.get(game_id)
+    phase = getattr(state, "phase", None) if state is not None else None
+    if phase == PHASE_IN_PLAY:
+        return "in_game"
+    if phase == PHASE_PRE:
+        return "pre_game"
+    return None
 
 
 def _normalize_spread(value: float | None) -> float:

@@ -53,14 +53,14 @@ def _ctx(score="6-4, 2-3", *, constraints=None):
     return ctx
 
 
-def test_win_draw_combination_keeps_winning_exposure():
+def test_win_draw_combination_keeps_winning_instrument_for_both_order_sides():
     ctx = _ctx()  # 主方已赢一盘，即使当前盘 2-3，比赛级仍非落后
 
     _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
-        ("A.POLYMARKET", "SELL"),
+        ("H.POLYMARKET", "SELL"),
     ]
     assert ctx.scratch["selected_candidate"]["rate"] == 0.1
 
@@ -82,18 +82,18 @@ def test_cache_lookup_converts_registry_strings_to_instrument_ids():
     assert seen
     assert [leg["instrument_id"] for leg in ctx.scratch["legs"]] == [
         "H.POLYMARKET",
-        "A.POLYMARKET",
+        "H.POLYMARKET",
     ]
 
 
-def test_lose_keeps_losing_exposure():
+def test_lose_keeps_losing_instrument_for_both_order_sides():
     ctx = _ctx()
 
     _run(ScoreSelectionAction(standing="lose").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
-        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
     ]
 
 
@@ -113,8 +113,8 @@ def test_draw_keeps_both_sides_and_both_order_directions():
 @pytest.mark.parametrize(
     ("standing", "expected"),
     [
-        ("win", [("H.POLYMARKET", "BUY"), ("A.POLYMARKET", "SELL")]),
-        ("lose", [("A.POLYMARKET", "BUY"), ("H.POLYMARKET", "SELL")]),
+        ("win", [("H.POLYMARKET", "BUY"), ("H.POLYMARKET", "SELL")]),
+        ("lose", [("A.POLYMARKET", "BUY"), ("A.POLYMARKET", "SELL")]),
         (
             " win | lose ",
             [
@@ -153,7 +153,7 @@ def test_tie_break_enabled_uses_tie_break_points():
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
-        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
     ]
 
 
@@ -220,7 +220,7 @@ def test_filters_legs_without_selected_candidate():
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
-        ("A.POLYMARKET", "SELL"),
+        ("H.POLYMARKET", "SELL"),
     ]
     assert "selected_candidate" not in ctx.scratch
 

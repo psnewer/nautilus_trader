@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 
 from nautilus_trader.model.identifiers import InstrumentId
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import price_from_probability
-from src.arbitrage.common.venues import venue_preference_rank
 from src.arbitrage.common.venues import venue_id_from_instrument_id
+from src.arbitrage.common.venues import venue_preference_rank
 
 
 VALID_OUTCOMES = ("yes", "no")
@@ -33,6 +34,23 @@ def best_probabilities_by_outcome(cache, pair_registry, pair_id: str) -> dict[st
         best = min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
         result[outcome] = float(best["prob"])
     return result
+
+
+def pm_ask_by_outcome(ctx, outcome: str) -> float | None:
+    """返回指定 outcome 唯一 PM instrument 的当前 best ask 概率。"""
+    prices = []
+    for instrument_id in pair_instrument_ids(ctx):
+        if venue_of(instrument_id) != POLYMARKET:
+            continue
+        instrument = ctx.cache.instrument(instrument_id)
+        info = getattr(instrument, "info", None) or {}
+        candidate = str(info.get("claim") or info.get("selection_role") or "").lower()
+        if candidate != outcome:
+            continue
+        price = best_ask(ctx.cache.order_book(instrument_id))
+        if price is not None and math.isfinite(price) and 0 < price < 1:
+            prices.append(float(price))
+    return prices[0] if len(prices) == 1 else None
 
 
 def _quote_legs_by_outcome(cache, pair_registry, pair_id: str) -> dict[str, list[dict]]:

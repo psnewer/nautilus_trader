@@ -18,9 +18,11 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
+from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
@@ -30,9 +32,14 @@ from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
+from src.arbitrage.strategy.checks.order_cancel import OrderCancelCheck
+from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
+from src.arbitrage.strategy.checks.pre_game_order import PreGameOrderCheck
+from src.arbitrage.strategy.checks.pre_game_reverse import PreGameReverseCheck
 from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
+from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
-from src.arbitrage.strategy.checks.start_price_cancel import StartPriceCancelCheck
+from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
 from src.arbitrage.strategy.queries.lower_tier import LowerTierQuery
@@ -56,6 +63,13 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(build_state_query({"type": "in_game"}), InGameQuery)
     assert isinstance(build_state_query({"type": "pre_game"}), PreGameQuery)
     assert isinstance(build_state_query({"type": "lower_tier"}), LowerTierQuery)
+    assert isinstance(
+        build_state_query({
+            "type": "exposure_source",
+            "params": {"source": "pre_game_position"},
+        }),
+        ExposureSourceQuery,
+    )
     assert isinstance(build_state_query({"type": "start_game"}), StartGameQuery)
     with pytest.raises(StrategyConfigError, match="unknown state query type: 'head'"):
         build_state_query({"type": "head"})
@@ -78,13 +92,39 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     )
     assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
+    assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)
+    assert isinstance(build_action({"type": "advance_min_set"}), AdvanceMinSetAction)
+    assert isinstance(
+        build_check({"type": "pre_game_order", "params": {"offset": 0.2}}),
+        PreGameOrderCheck,
+    )
+    assert isinstance(build_check({"type": "pre_game_reverse"}), PreGameReverseCheck)
+    assert isinstance(
+        build_check({"type": "select_orders", "params": {"origin": "in_game"}}),
+        SelectOrdersCheck,
+    )
+    assert isinstance(
+        build_check({
+            "type": "order_cancel",
+            "params": {
+                "book_side": "ask",
+                "price_drift": 0.05,
+                "game_drift": 1,
+                "min_set": 1,
+            },
+        }),
+        OrderCancelCheck,
+    )
+    assert isinstance(
+        build_check({
+            "type": "position_close",
+            "params": {"min_set": 3, "origin": "in_game"},
+        }),
+        PositionCloseCheck,
+    )
     assert isinstance(
         build_check({"type": "start_price_below", "params": {"price": 0.4}}),
         StartPriceBelowCheck,
-    )
-    assert isinstance(
-        build_check({"type": "start_price_cancel", "params": {"standing": "lose|draw"}}),
-        StartPriceCancelCheck,
     )
     assert isinstance(
         build_action({

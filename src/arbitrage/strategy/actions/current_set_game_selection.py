@@ -15,11 +15,15 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         self,
         standing: str | None = None,
         tier_only: bool | None = None,
+        max: int | None = None,
     ) -> None:
         if tier_only is not None and not isinstance(tier_only, bool):
             raise ValueError("current_set_game_selection: tier_only must be a boolean")
+        if max is not None and (isinstance(max, bool) or not isinstance(max, int) or max <= 0):
+            raise ValueError("current_set_game_selection: max must be a positive integer")
         super().__init__(standing=standing)
         self._tier_only = bool(tier_only)
+        self._max = max
 
     async def execute(self, ctx: EvalContext) -> None:
         if self._tier_only and lower_tier_oe_competition(ctx) is None:
@@ -40,8 +44,12 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         left, right, _, _ = _SCORE_PART.match(parts[-1]).groups()
         if int(left) == 0 and int(right) == 0:
             return {}
-        if int(left) > int(right):
+        left_games = int(left)
+        right_games = int(right)
+        if self._max is not None and abs(left_games - right_games) > self._max:
+            return {}
+        if left_games > right_games:
             return {"home": "win", "away": "lose"}
-        if int(left) < int(right):
+        if left_games < right_games:
             return {"home": "lose", "away": "win"}
         return {"home": "draw", "away": "draw"}

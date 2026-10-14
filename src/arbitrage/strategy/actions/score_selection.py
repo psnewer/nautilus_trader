@@ -1,4 +1,4 @@
-"""ScoreSelectionAction —— 按当前比分与订单方向筛选执行腿。"""
+"""ScoreSelectionAction —— 按执行腿对应参赛方的当前比分筛选。"""
 
 from __future__ import annotations
 
@@ -16,11 +16,10 @@ _VALID_STANDINGS = frozenset({"win", "draw", "lose"})
 
 
 class ScoreSelectionAction(Action):
-    """按订单押注方向当前的比赛状态保留 BUY/SELL 腿。
+    """按 instrument 对应参赛方的比赛状态保留执行腿。
 
     `standing=None` 时完全放通；显式配置时接受以 ``|`` 分隔的 ``win/draw/lose``
-    组合。SELL 的 win/lose 与标的参赛方相反，draw 不变。比分或主客方映射未知时
-    fail-closed。
+    组合。BUY/SELL 不改变目标参赛方；比分或主客方映射未知时 fail-closed。
     """
 
     def __init__(self, standing: str | None = None, tie_break: bool = False) -> None:
@@ -98,8 +97,8 @@ class ScoreSelectionAction(Action):
         for leg in legs:
             side_role = _side_role(ctx, leg, pair_roles)
             standing = standings.get(side_role)
-            side = str(leg.get("side") or "BUY").upper()
-            keep = _should_keep(side, standing, self._standings)
+            side = str(leg.get("side") or "").upper()
+            keep = _should_keep(standing, self._standings)
             if keep:
                 kept.append(leg)
                 continue
@@ -199,16 +198,10 @@ def _side_role(ctx: EvalContext, leg: dict, pair_roles: set[str]) -> str | None:
 
 
 def _should_keep(
-    side: str,
     standing: str | None,
     allowed_standings: frozenset[str],
 ) -> bool:
-    if standing is None or side not in {"BUY", "SELL"}:
-        return False
-    order_standing = standing
-    if side == "SELL":
-        order_standing = {"win": "lose", "draw": "draw", "lose": "win"}[standing]
-    return order_standing in allowed_standings
+    return standing in allowed_standings
 
 
 def _parse_standings(value: str | None) -> frozenset[str] | None:

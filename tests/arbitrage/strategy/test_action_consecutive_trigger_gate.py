@@ -70,6 +70,7 @@ def test_second_same_direction_at_changed_score_passes_and_keeps_both_records(li
     original[0]["legs"][0]["price"] = 0.99
     history = store.history("p", "pre_rebate")
     assert [value.score_raw for value in history] == ["0-1", "0-2"]
+    assert [value.passed for value in history] == [False, True]
     assert history[0].legs[0].price == 0.42
     assert history[1].legs[0].price == 0.42
     assert history[0].candidate_ids == ("one_side:yes",)
