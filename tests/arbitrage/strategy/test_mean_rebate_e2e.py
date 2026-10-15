@@ -381,29 +381,3 @@ def test_place_bets_time_in_force_param_loads_from_strategy_json():
     action = strategy.arbitrage_tree.actions[0]
     assert isinstance(action, PlaceBetsAction)
     assert action._time_in_force == "IOC"
-
-
-def test_place_bets_simulation_param_loads_from_strategy_json():
-    cfg = msgspec.convert({
-        "strategy": {
-            "strategies": {
-                "mr_simulation": {
-                    "arbitrage_tree": {
-                        "checktion": {
-                            "type": "mean_rebate",
-                            "params": {"min_rate": 0.01},
-                        },
-                        "actions": [{"type": "place_bets", "params": {"simulation": True}}],
-                    },
-                },
-            },
-            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_simulation"}],
-        },
-    }, type=ArbConfig)
-
-    strategy = to_strategy_registry(cfg).get_for(None, "ATP", None)
-
-    assert strategy is not None
-    action = strategy.arbitrage_tree.actions[0]
-    assert isinstance(action, PlaceBetsAction)
-    assert action._simulation is True

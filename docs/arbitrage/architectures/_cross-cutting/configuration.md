@@ -185,11 +185,21 @@ class RiskSectionConfig(ConfigStruct):
 
 
 class ExecutionSectionConfig(ConfigStruct):
+    mode:                          str = "live"  # live | paper
+    paper:                         PaperExecutionConfig
     tracking_timeout_sec:          float = 30.0
     # #110:health_check_interval_sec 已删(PM 无 HealthCheckLoop;merge/redeem 走 NT position 对账)
     cleanup_enabled:               bool = True
     cleanup_merge_enabled:         bool = True
     cleanup_claim_enabled:         bool = True
+
+
+class PaperExecutionConfig(ConfigStruct):
+    host:               str = "127.0.0.1"
+    port:               int = 8765
+    database_path:      str = "var/polymarket-paper.sqlite3"
+    starting_balance:   float = 10_000.0
+    poll_interval_ms:   int = 250
 
 
 class DebugSectionConfig(ConfigStruct):
@@ -241,7 +251,17 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
   },
   "arbitrage": {"share": 22.5, "max_leg_share": 100, "fx": 1.33, "evaluate_on_depth_change": false},
   "risk": {"match_tp": 0.05, "match_sl": -0.05},
-  "execution": {"tracking_timeout_sec": 30, "...": "..."},
+  "execution": {
+    "mode": "live",
+    "paper": {
+      "host": "127.0.0.1",
+      "port": 8765,
+      "database_path": "var/polymarket-paper.sqlite3",
+      "starting_balance": 10000,
+      "poll_interval_ms": 250
+    },
+    "tracking_timeout_sec": 30
+  },
   "strategy": {
     "enabled": true,
     "strategies": {
@@ -283,6 +303,22 @@ instrument 的原生字段中，不参与该分组覆盖。
 启用该字段后，`competition_max_matches` 和 `strategy.bindings` 中的
 `competition:<name>` 都应使用最终分组名（例如 `Tennis`）；仍写 `ATP` / `WTA` 时不会命中
 已被归入 `Tennis` 的 pair。也可以继续使用 `sport:Tennis` strategy binding。
+
+### 3.1 Execution mode
+
+`execution.mode` 缺失时默认 `live`，因此现有配置兼容。`paper` 时：
+
+- PM DataClient / Gamma / PMSPORTS / OE / SE 数据端点不变；
+- PM ExecClient 的 HTTP、USER WS 和 Data API 改连 `execution.paper.host:port`；
+- `venues.polymarket.proxy_url` 仍是所有真实 PM 公开请求的出口；共享 CLOB HTTP client
+  仅对 localhost 安装直连 transport，paper USER WS/Data API 也直连；
+- 只注册 PM ExecutionClient，不注册 OE/SE ExecutionClient；
+- 保留 NT open-order/position reconciliation；
+- 无条件禁用 PM merge/redeem/claim。
+
+`paper.host` 只允许 `127.0.0.1|localhost`；port 必须在 `1..65535`，
+starting balance 不得为负，poll interval 必须为正数。本地服务协议、撮合与
+持久化语义见 [`../paper/architecture.md`](../paper/architecture.md)。
 
 ---
 
@@ -457,6 +493,11 @@ Polymarket `ws_url` 传给 NT 上游 `PolymarketWebSocketClient` 时必须是 ba
 | PM | 结算 Relayer(SDK requests) | `configure_relayer_http_transport(proxy_url)` swap(`contract.initialize` 调用;`OddsSubscriptionConfig.polymarket_proxy_url`) | Session `trust_env=False` |
 | OE/SE | 全部流量(浏览器) | `PlaywrightBrowserManager(proxy_url=…)` → `launch(proxy={"server": …})` | 未配置时 launch 加 `--no-proxy-server`(Chromium 默认吃系统代理设置) |
 
+Paper 特例不改变上述真理源：共享 CLOB REST client 的默认 transport 仍按 PM proxy 路由
+真实公网 URL，但 `http://127.0.0.1` / `http://localhost` 使用显式直连 mount；paper server
+向真实 PM 查询公开 metadata/book 时显式传相同 proxy。ExecClient 的本地 USER WS/Data API
+也强制直连，防止 localhost 请求误入代理。
+
 PMSPORTS 不另设代理字段,复用 `venues.polymarket.proxy_url`(同一物理出口)。背景:NT pyo3
 `WebSocketClient` 不读系统代理,PM CLOB/Sports WS 在部分网络直连会 `Operation timed out`,
 必须显式 `proxy_url`;独立脚本(`scripts/`、gapc 探针)不在本政策范围,需要代理时显式传参。
@@ -567,7 +608,7 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 | 组件 | 输入 |
 |---|---|
 | `PMSPORTS DataClient` | `to_sports_data_client_config(cfg)`;仅 `data_sources.sports_status.enabled=true` 时由 launcher 加入 TradingNode |
-| `PolymarketDataClient` / `ExecClient` | `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`;仅 `venues.polymarket.enabled=true` 时由 launcher 加入 TradingNode;PM settlement 也只在 PM venue enabled 且 cleanup/凭证满足时构造 |
+| `PolymarketDataClient` / `ExecClient` | `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`;仅 `venues.polymarket.enabled=true` 时由 launcher 加入 TradingNode。`live` 均走真实 PM；`paper` 只把 ExecClient 私有执行路由到 localhost，DataClient 仍走真实公开数据，且 settlement 强制关闭 |
 | `OrbitExchDataClient` / `ExecutionClient` | `to_orbitexch_data_client_config(cfg)` / `to_orbitexch_exec_client_config(cfg)`;仅 `venues.orbitexch.enabled=true` 时由 launcher 加入 TradingNode |
 | `SharpExchDataClient` / `ExecutionClient` | `to_sharpexch_data_client_config(cfg)` / `to_sharpexch_exec_client_config(cfg)`;仅 `venues.sharpexch.enabled=true` 时由 launcher 加入 TradingNode |
 | OE / SE discovery factory | `to_oe_scraper_config(cfg)` / `to_se_discovery_config(cfg)`;启用判断经 Venue Registry descriptor `config_key` 读取 runtime venue enabled + `discovery.<venue>.enabled`,公开入口返回各自 adapter config 类型,内部共用 browser discovery 构造逻辑(强制 headless + 无登录 profile + `discovery.<venue>.sports`) |
@@ -588,6 +629,7 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
   1. 用户**轮换所有凭证**(PM API key / OE 账户密码)
   2. (可选)`git filter-repo` 重写历史
 - 新 `arb_config.json` schema **不接受**凭证字段从 JSON 注入,loader 在 §5 检测到 JSON 中存在凭证字段时 → `ConfigWarning` 提醒
+- Paper 服务不验证签名，因此配置校验禁止非 localhost host；私有写请求不存在任何真实 PM fallback。
 
 ---
 

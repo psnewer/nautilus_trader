@@ -77,6 +77,7 @@ flowchart LR
 | Matching | MarketMatchingActor(异构归一) | 占位(Step3 概要) | [matching/](architectures/matching/architecture.md) |
 | Strategy | ArbitrageStrategy(信号流水线 + 快照) | **搁置**(核心信号框架待设计) | [strategy/](architectures/strategy/architecture.md) |
 | **Execution** | ExecClients + session + timeout + 健康检查 + settlement | **✅ 详细** | [execution/](architectures/execution/architecture.md) |
+| **Paper Execution** | localhost PM 私有执行协议 + SQLite 权威账本 + 撮合 | **✅ 详细** | [paper/](architectures/paper/architecture.md) |
 | **Risk** | ArbitrageRiskEngine + ArbitragePortfolio | **✅ 详细** | [risk/](architectures/risk/architecture.md) |
 | Common | 跨组件轻量契约 / 注册表 / 工具 | **✅ 详细** | [common/](architectures/common/architecture.md) |
 | SharpExch | 第三 venue 接入设计(OE 型 Playwright/BIAB exchange) | **设计中** | [sharpexch/](architectures/sharpexch/architecture.md) |
@@ -98,6 +99,7 @@ flowchart LR
 - **订单簿源帧**：区分 venue `source_market_id` 与策略 `binary_market_id`，DataEngine 先应用整条上游帧再逐二元市场发布 → `order-book-frame.md`
 - **健康检查**:OE(页面 staleness)/ PM(report 对账 + merge/redeem),NT clock 自重排,详见 `execution/architecture.md §4.3`
 - **VenueExecutionLiveness**(#108,取代退役的 `leg_settled`):per-venue `order_alive && position_alive`,execution/reconciliation 写、**Risk 读门控**(Strategy/Portfolio 不读)→ `_cross-cutting/synchronization.md §8.5`
+- **Paper execution**：真实公开行情 + localhost PM 私有执行服务，保留 NT Risk/Cache/Portfolio/reconcile，禁用真实 settlement → `paper/architecture.md`
 
 ---
 

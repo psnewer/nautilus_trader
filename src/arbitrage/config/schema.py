@@ -194,7 +194,20 @@ class RiskSectionConfig(ConfigStruct):
     prob_buy_only: bool = False
 
 
+class PaperExecutionConfig(ConfigStruct):
+    """本地 PM paper 服务连接与模拟账户参数。"""
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    database_path: str = "var/polymarket-paper.sqlite3"
+    starting_balance: float = 10_000.0
+    poll_interval_ms: int = 250
+
+
 class ExecutionSectionConfig(ConfigStruct):
+    # live=真实执行；paper=PM 私有执行协议改连本地 paper 服务。
+    mode: str = "live"
+    paper: PaperExecutionConfig = msgspec.field(default_factory=PaperExecutionConfig)
     tracking_timeout_sec: float = 30.0
     # 注(#110):PM merge/redeem 改 NT 连续 position 对账驱动(无 HealthCheckLoop)→ 旧
     # `health_check_interval_sec`(PM tick 间隔)已删;对账节奏在 launcher `position_check_interval_secs`。

@@ -754,3 +754,20 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 `client_dispatched → pm_task_started` 的任务调度等待可与签名、HTTP、`OrderSubmitted` 阶段分离；
 不改变 user WS 维护、签名或提交行为。**验收**：execution 的单腿派发回归测试与 PM adapter
 既有提交测试全量通过；live 诊断按相同 `client_order_id` 串联各阶段。
+
+### pm-adapter-exec.paper-order-id：paper 回执 ID 不与 CLOB hash 冲突
+
+**前置**：`PolymarketExecClientConfig.paper_mode=true`。**输入**：已签名 PM 订单。
+**期望**：adapter 可计算 CLOB hash，但不在 POST 前写 Cache；等 localhost POST 回执后
+再索引本地 venue order ID。Live 模式的 POST 前 hash 索引不变。
+**验收**：`tests/arbitrage/execution/test_polymarket_client.py::
+test_paper_mode_defers_venue_order_id_index_until_post_response`。
+
+### pm-adapter-exec.paper-proxy-split：共享 PM transport 的公网代理与本地直连
+
+**前置**：`execution.mode=paper` 且配置 `venues.polymarket.proxy_url`。
+**期望**：SDK 共享 CLOB client 的默认 transport 继续通过 PM proxy 访问真实公网；
+`http://127.0.0.1` / `http://localhost` 使用直连 mount。ExecClient 的本地 USER WS 与
+Data API 直连，不把 localhost 请求交给代理。
+**验收**：`test_polymarket_factory_configures_v2_http_proxy` /
+`test_polymarket_data_api_http_client_uses_proxy`。

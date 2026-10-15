@@ -166,6 +166,10 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
         Calculated CASH accounts raise ``AccountBalanceNegative`` if the locally
         computed balance goes negative between venue pulls; set to False to fall
         back to venue-pull-only balances if that misbehaves in live trading.
+    paper_mode : bool, default False
+        Whether private execution endpoints point to the local paper service. In this
+        mode the live geoblock preflight is skipped; public market data is configured
+        independently by the data client.
 
     """
 
@@ -189,3 +193,4 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
     log_raw_ws_messages: bool = False
     ack_timeout_secs: PositiveFloat = 5.0
     calculate_account_state: bool = True
+    paper_mode: bool = False

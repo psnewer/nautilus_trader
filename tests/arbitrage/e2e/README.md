@@ -108,3 +108,12 @@
 - 期望: 不依赖第一阶段 PM/OE/SE 硬编码路径推进真钱 E2E;SE leg 与其它 venue leg 同步 release,成交/撤单/失败均走统一出口。
 - 验收: 一次完整 opportunity 不出现半边绕过 barrier、pair_inflight 卡死、SE liveness 误判、或残单未进入 cancel-only/reconcile 的情况。
 - 状态:第二阶段完成后再执行;第一阶段不跑该真钱 E2E。
+
+### e2e-13: localhost PM paper 完整执行链
+
+- 前置:`execution.mode=paper`，local paper server 已启动，禁止真实私有 PM/OE/SE 写路由。
+- 输入:一笔可立即成交单与一笔驻留后撤单。
+- 期望:Strategy → Risk → barrier → PM adapter → localhost HTTP/USER WS →
+  Cache/Portfolio 完整执行；周期 reconcile 与 SQLite 一致；settlement 不构造。
+- 验收:需看到各组件专属日志锚点，不用单元测通过替代运行路径证据。
+- 状态:待 paper 进程级 smoke；不需要真钱授权。

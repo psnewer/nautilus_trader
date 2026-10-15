@@ -8,6 +8,10 @@
 
 ## 1. 职责与边界
 
+`execution.mode=paper` 不改变 discovery：PM/PMSPORTS/OE/SE provider 仍使用原配置的
+真实公开发现端点。Paper 只替换 PM 私有执行服务，见
+[`../paper/architecture.md`](../paper/architecture.md)。
+
 | 件 | 基类 | 职责 |
 |---|---|---|
 | PM InstrumentProvider | 上游 `PolymarketInstrumentProvider` | **零代码**,配置即用(P1)。产出 `BinaryOption`(`info` 由上游 + 我们配置补 matching 字段) |

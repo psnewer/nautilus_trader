@@ -367,3 +367,13 @@ CLEAR。**期望**：adapter 自有 `binary_market_id → members` 与首订/最
 也已就绪，因此建立 PRE；runner routing 已存在但 `game_id` 尚未建立时仍须暂存。真正缺少 `inPlay`
 的帧仍不更新 phase。**验收**：OE adapter README #365 及
 `test_data_client_step2.py::{test_market_subscription_replays_unrouted_initial_inplay_observation,test_market_subscription_routes_initial_inplay_frame_after_state_is_ready,test_on_price_frame_missing_inplay_does_not_create_phase}`。
+
+### discovery-paper.1：paper 模式不改变发现/行情路由
+
+**输入**：`execution.mode=paper`。**期望**：PM/PMSPORTS/OE/SE DataClient 仍按原配置
+注册，PM DataClient 的 CLOB HTTP/market WS 不指向 localhost；配置 PM proxy 时，SDK
+共享 HTTP client 仍以该 proxy 访问公网，仅 loopback URL 使用直连 mount。
+**验收**：`tests/arbitrage/launchers/test_arb_node.py::
+test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally` 和
+`tests/arbitrage/execution/test_polymarket_client.py::
+test_polymarket_factory_configures_v2_http_proxy`。

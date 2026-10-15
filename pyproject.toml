@@ -82,6 +82,7 @@ ib = [
 ]
 docker = ["docker>=7.1.0,<8.0.0"]
 polymarket = [
+  "aiohttp==3.13.5,<4.0.0", # Local paper execution HTTP/USER WS service
   "py-clob-client-v2>=1.0.1,<2.0.0",
   "py-builder-relayer-client>=0.0.1,<1.0.0",
 ]

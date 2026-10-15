@@ -11,6 +11,10 @@
 - ✅ `test_arb_node.py`:builtin Strategy 注册包含 `head` / `reverse` StateQuery；JSON loader 可按这两个正式名称构造对应查询，不注册草稿名 `in_head/in_reverse`。独立 Check registry 同时注册 `reverse(rt, retrieve)`，两类 registry 同名互不冲突。
 - ✅ `test_arb_node.py`:PolymarketSettlement launcher 接线 —— 通过 Venue Registry `settlement_kind=polymarket_ctf` 能力触发;PM runtime venue disabled、cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 PM enabled 时构造 `PolymarketContractService` 并初始化,成功后按 `cleanup_merge_enabled` / `cleanup_claim_enabled` 注入 `PolymarketSettlement`;初始化失败则不阻塞节点启动。
 - ✅ `test_arb_node.py`:venue runtime enablement —— launcher 要求 `venues.*.enabled=true` 的 runtime venue 不少于 2 个,且 `data_sources.sports_status.enabled=true` 提供 PMSPORTS anchor client;默认 PM+OE;PM+SE 时不注册 OE;OE+SE 时注册 PMSPORTS/OE/SE 且不注册 PM;PM+OE+SE 时三个 trading venue 同时注册。SE 显式 `true` 时加入 SE data+exec config、注册 SE factories、`VenueExecutionLiveness` 可标记 SE,并通过 `session_timeout_secs_by_venue` / `discovery_config_by_venue` 等 keyed map 注入 ArbContext。
+- ✅ `test_arb_node.py`:paper mode —— PM DataClient 仍指向真实公开端点，只有 PM
+  ExecClient 改指 localhost HTTP/USER WS/Data API；不注册 OE/SE ExecClient，保留
+  reconciliation，强制关闭 PM settlement。未知 mode、非 localhost host、非法
+  port/balance/poll interval 均 fail-fast。
 
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import ast
 import re
 from collections import Counter, defaultdict
@@ -11,13 +12,25 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-LOG = Path("/private/tmp/remote_nohup_simulation_20261009.out")
-SOURCE_BOOK = Path("/Users/miller/Desktop/PM/连续触发策略_全日志明细_20260929-20261007.xlsx")
-OUTPUT_BOOK = Path("/private/tmp/连续触发策略_全日志明细_20260929-20261009_simulation.xlsx")
 LOCAL_TZ = timezone(timedelta(hours=8))
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ISO_TS = re.compile(r"(2026-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z)")
 LOCAL_TS = re.compile(r"^(2026-\d\d-\d\d \d\d:\d\d:\d\d,\d+)")
+
+
+parser = argparse.ArgumentParser(description="将 PlaceBets[simulation] 日志写入既有 Excel 工作簿")
+parser.add_argument("log", type=Path, help="nohup.out 日志快照")
+parser.add_argument("workbook", type=Path, help="源 Excel 工作簿")
+parser.add_argument("--output", type=Path, help="输出工作簿，默认覆盖源工作簿")
+parser.add_argument("--sheet-suffix", required=True, help="sheet 后缀，例如 1014-15")
+args = parser.parse_args()
+
+LOG = args.log
+SOURCE_BOOK = args.workbook
+OUTPUT_BOOK = args.output or SOURCE_BOOK
+RAW_SHEET = f"sim原始_{args.sheet_suffix}"
+PAIR_SHEET = f"sim逐场_{args.sheet_suffix}"
+META_SHEET = f"sim口径_{args.sheet_suffix}"
 
 
 def timestamp(line: str) -> datetime | None:
@@ -147,6 +160,7 @@ for line_no, line in enumerate(lines, start=1):
                 "event": match.group(2),
                 "books": books,
             }
+            latest_gate.pop(pair, None)
             latest_trend_drops[pair] = []
         continue
 
@@ -211,7 +225,12 @@ for line_no, line in enumerate(lines, start=1):
             "ts": ts,
             "pair": pair,
             "strategy": match.group(2),
-            "rate": float(match.group(3)),
+            "rate": None if match.group(3) == "None" else float(match.group(3)),
+            "trigger_type": (
+                "in_game_one_side_rebate"
+                if match.group(2) != "unknown" or match.group(3) != "None"
+                else "pre_game_order"
+            ),
             "instrument": match.group(4),
             "venue": match.group(5),
             "final": final,
@@ -261,21 +280,28 @@ by_pair: dict[str, list[dict]] = defaultdict(list)
 for record in records:
     by_pair[record["pair"]].append(record)
 
+resolved_first_results = []
+for pair, items in by_pair.items():
+    final_state = all_scores.get(pair, [{}])[-1]
+    winner = winner_from_score(final_state.get("score"), final_state.get("status"))
+    if winner is not None:
+        resolved_first_results.append(items[0]["final"] == winner)
+
 wb = load_workbook(SOURCE_BOOK)
-for sheet_name in ("sim原始_1008-09", "sim逐场_1008-09", "sim口径_1008-09"):
+for sheet_name in (RAW_SHEET, PAIR_SHEET, META_SHEET):
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
 
 raw_headers = [
     "序号", "日志行", "simulation时间(北京时间)", "pair_id", "选手YES", "选手NO",
-    "策略", "rate", "连续触发原腿方向", "原腿选手", "原腿venue(推断)",
+    "触发分支", "策略", "rate", "连续触发原腿方向", "原腿选手", "原腿venue(推断)",
     "最终模拟方向", "最终模拟选手", "是否反转", "下单价", "数量", "side", "intent",
     "opportunity_id", "触发比分", "比分帧", "盘", "状态", "start_price_YES",
     "start_price_NO", "start来源", "PM_YES_bid", "PM_YES_ask", "PM_NO_bid", "PM_NO_ask",
     "PM_ask_sum", "OE_YES_bid", "OE_YES_ask", "OE_NO_bid", "OE_NO_ask", "触发事件",
     "OBD到simulation间隔_ms", "instrument", "日志来源",
 ]
-raw_ws = wb.create_sheet("sim原始_1008-09")
+raw_ws = wb.create_sheet(RAW_SHEET)
 raw_ws.append(raw_headers)
 for index, record in enumerate(records, start=1):
     raw_ws.append([
@@ -285,6 +311,7 @@ for index, record in enumerate(records, start=1):
         record["pair"],
         record["yes_name"],
         record["no_name"],
+        record["trigger_type"],
         record["strategy"],
         record["rate"],
         record["original"],
@@ -322,13 +349,13 @@ for index, record in enumerate(records, start=1):
 format_sheet(raw_ws)
 
 pair_headers = [
-    "序号", "pair_id", "选手YES", "选手NO", "原始触发数", "方向计数", "原腿方向计数",
+    "序号", "pair_id", "选手YES", "选手NO", "原始触发数", "分支计数", "方向计数", "原腿方向计数",
     "反转触发数", "首次simulation时间(北京时间)", "末次simulation时间(北京时间)",
     "首次触发比分", "末次触发比分", "首次最终方向", "首次最终选手", "首次价格",
     "最低价格", "最高价格", "start_price_YES", "start_price_NO", "末尾比分", "末尾状态",
     "推断胜者方向", "推断胜者", "真实OrderInitialized数", "归并口径说明",
 ]
-pair_ws = wb.create_sheet("sim逐场_1008-09")
+pair_ws = wb.create_sheet(PAIR_SHEET)
 pair_ws.append(pair_headers)
 for index, (pair, items) in enumerate(sorted(by_pair.items()), start=1):
     first, last = items[0], items[-1]
@@ -341,6 +368,7 @@ for index, (pair, items) in enumerate(sorted(by_pair.items()), start=1):
         yes_name,
         no_name,
         len(items),
+        ", ".join(f"{key}:{value}" for key, value in Counter(item["trigger_type"] for item in items).items()),
         ", ".join(f"{key}:{value}" for key, value in Counter(item["final"] for item in items).items()),
         ", ".join(f"{key}:{value}" for key, value in Counter(item["original"] for item in items).items()),
         sum(item["reversed"] for item in items),
@@ -364,7 +392,7 @@ for index, (pair, items) in enumerate(sorted(by_pair.items()), start=1):
     ])
 format_sheet(pair_ws)
 
-meta_ws = wb.create_sheet("sim口径_1008-09")
+meta_ws = wb.create_sheet(META_SHEET)
 meta_rows = [
     ("项目", "值/说明"),
     ("日志文件", str(LOG)),
@@ -372,9 +400,19 @@ meta_rows = [
     ("PlaceBets[simulation]条数", len(records)),
     ("唯一pair数", len(by_pair)),
     ("唯一opportunity_id数", len({record['opportunity_id'] for record in records})),
+    ("触发分支计数", ", ".join(f"{key}:{value}" for key, value in Counter(record["trigger_type"] for record in records).items())),
     ("真实OrderInitialized条数", sum("OrderInitialized" in line for line in lines)),
+    ("日志内已finished且可判胜负pair数", len(resolved_first_results)),
+    ("每场首条simulation方向赛果(不代表成交)", f"{sum(resolved_first_results)}胜{len(resolved_first_results) - sum(resolved_first_results)}负"),
+    ("ERROR日志数", sum("[ERROR]" in line for line in lines)),
+    ("WARN日志数", sum("[WARN]" in line for line in lines)),
+    ("PM user WS断线重连数", sum("Disconnected from wss://ws-subscriptions-clob.polymarket.com/ws/user" in line for line in lines)),
+    ("PM market WS断线清缓存数", sum("PM market WS disconnected" in line for line in lines)),
+    ("OE价格页断线清缓存数", sum("OE competition page" in line and "prices disconnected" in line for line in lines)),
+    ("PM交叉/同价帧丢弃数", sum("Dropping non-positive-spread PM market frame" in line for line in lines)),
+    ("退订后尾部OBD丢弃数", sum("Dropping MarketOrderBookDeltas: no subscription" in line for line in lines)),
     ("原始明细口径", "每一条PlaceBets[simulation]日志保留一行；关联此前最近的同pair比分、start_price和order_books帧。"),
-    ("逐场口径", "按pair归并；simulation不会写入订单/持仓，因此重复触发不能直接当作真实可累计订单。"),
+    ("逐场口径", "按pair归并；simulation不会写入订单/持仓，current_order_gate看不到已挂单，因此重复触发不能直接当作真实可累计订单。"),
     ("原腿venue口径", "根据同次评估TrendGate丢弃的venue反推；无法唯一反推时留空。"),
     ("胜者口径", "仅当日志状态为finished时按终局盘分推断；未finished留空，不擅自补结果。"),
     ("数据完整性", "OBD到simulation间隔用于核对关联帧；原始日志行号可回查。"),

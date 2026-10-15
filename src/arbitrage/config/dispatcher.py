@@ -93,6 +93,20 @@ def to_sports_data_client_config(cfg: ArbConfig) -> PolymarketSportsDataClientCo
 
 def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConfig:
     pm = cfg.venues.polymarket
+    paper_mode = cfg.execution.mode == "paper"
+    if paper_mode:
+        paper = cfg.execution.paper
+        base_url_http = f"http://{paper.host}:{paper.port}"
+        base_url_ws = f"ws://{paper.host}:{paper.port}/ws/"
+        base_url_data_api = base_url_http
+        # py_clob_client_v2 使用进程级共享 HTTP transport。保留 PM 公开
+        # CLOB 的显式代理，transport 对 localhost paper 路由单独强制直连。
+        proxy_url = pm.proxy_url
+    else:
+        base_url_http = pm.clob_url
+        base_url_ws = _polymarket_ws_base_url(pm.ws_url)
+        base_url_data_api = None
+        proxy_url = pm.proxy_url
     return PolymarketExecClientConfig(
         private_key=pm.private_key,
         signature_type=pm.signature_type,
@@ -100,13 +114,33 @@ def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConf
         api_key=pm.clob_api_key,
         api_secret=pm.clob_api_secret,
         passphrase=pm.clob_passphrase,
-        base_url_http=pm.clob_url,
-        base_url_ws=_polymarket_ws_base_url(pm.ws_url),
-        proxy_url=pm.proxy_url,
+        base_url_http=base_url_http,
+        base_url_ws=base_url_ws,
+        base_url_data_api=base_url_data_api,
+        proxy_url=proxy_url,
         max_retries=pm.max_retries,
         retry_delay_initial_ms=pm.retry_delay_initial_ms,
         retry_delay_max_ms=pm.retry_delay_max_ms,
+        paper_mode=paper_mode,
     )
+
+
+def validate_execution_config(cfg: ArbConfig) -> None:
+    """校验执行模式与 paper 服务的安全边界。"""
+    if cfg.execution.mode not in {"live", "paper"}:
+        raise ConfigError("execution.mode must be 'live' or 'paper'")
+    if cfg.execution.mode != "paper":
+        return
+
+    paper = cfg.execution.paper
+    if paper.host not in {"127.0.0.1", "localhost"}:
+        raise ConfigError("execution.paper.host must be localhost in paper mode")
+    if not 1 <= paper.port <= 65_535:
+        raise ConfigError("execution.paper.port must be between 1 and 65535")
+    if paper.starting_balance < 0:
+        raise ConfigError("execution.paper.starting_balance must be non-negative")
+    if paper.poll_interval_ms <= 0:
+        raise ConfigError("execution.paper.poll_interval_ms must be positive")
 
 
 def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig:

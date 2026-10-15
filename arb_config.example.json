@@ -83,6 +83,7 @@
     "prob_buy_only": false
   },
   "execution": {
+    "mode": "live",
     "tracking_timeout_sec": 30
   },
   "web": {

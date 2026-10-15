@@ -595,6 +595,41 @@ def test_polymarket_signed_order_id_is_deterministic_clob_hash():
     )
 
 
+def test_paper_mode_defers_venue_order_id_index_until_post_response():
+    signed_order = SimpleNamespace(
+        salt="1",
+        maker="0x0000000000000000000000000000000000000001",
+        signer="0x0000000000000000000000000000000000000002",
+        tokenId="3",
+        makerAmount="4000000",
+        takerAmount="5000000",
+        side=0,
+        signatureType=2,
+        timestamp="1710000000000",
+        metadata="0x" + "00" * 32,
+        builder="0x" + "00" * 32,
+        expiration="0",
+        signature="0x",
+    )
+    indexed = []
+    client = SimpleNamespace(
+        _config=SimpleNamespace(paper_mode=True),
+        _http_client=SimpleNamespace(chain_id=137),
+        _cache=SimpleNamespace(add_venue_order_id=lambda *args: indexed.append(args)),
+    )
+    order = SimpleNamespace(client_order_id=ClientOrderId("O-PAPER"))
+
+    result = PolymarketExecutionClient._register_signed_order_id(
+        client,
+        order,
+        signed_order,
+        neg_risk=False,
+    )
+
+    assert result.value.startswith("0x")
+    assert indexed == []
+
+
 def test_arb_ambiguous_submit_failure_keeps_session_untouched():
     client = SimpleNamespace(
         _cache=SimpleNamespace(
@@ -2524,16 +2559,24 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
         proxy_url="http://127.0.0.1:7890",
     )
 
-    assert [transport.kwargs for transport in transports] == [{
-        "http2": True,
-        "proxy": "http://127.0.0.1:7890",
-        "trust_env": False,
-        "retries": 1,
-    }]
+    assert [transport.kwargs for transport in transports] == [
+        {
+            "http2": True,
+            "proxy": "http://127.0.0.1:7890",
+            "trust_env": False,
+            "retries": 1,
+        },
+        {"http2": True, "trust_env": False, "retries": 1},
+        {"http2": True, "trust_env": False, "retries": 1},
+    ]
     assert clients == [{
         "transport": transports[0],
         "trust_env": False,
         "timeout": pm_transport.httpx.Timeout(5.0, connect=15.0),
+        "mounts": {
+            "http://127.0.0.1": transports[1],
+            "http://localhost": transports[2],
+        },
     }]
     assert old_client.closed
 
@@ -2621,9 +2664,11 @@ def test_polymarket_balance_query_failure_is_not_retried():
 
 
 def test_polymarket_data_api_http_client_uses_proxy(monkeypatch):
-    """PM Data API(`/positions`) 必须吃同一个 proxy_url,避免周期 position 对账直连。"""
+    """Live 私有流量走 PM proxy；paper 私有 localhost 流量必须直连。"""
     source = inspect.getsource(PolymarketExecutionClient.__init__)
-    assert "HttpClient(timeout_secs=15, proxy_url=config.proxy_url)" in source
+    assert "private_proxy_url = None if config.paper_mode else config.proxy_url" in source
+    assert "HttpClient(timeout_secs=15, proxy_url=private_proxy_url)" in source
+    assert "proxy_url=private_proxy_url" in source
 
 
 def test_polymarket_geoblock_preflight_rejects_blocked_route(monkeypatch):

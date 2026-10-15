@@ -218,6 +218,61 @@ def test_position_check_threshold_tracks_position_check_interval():
     assert nc.exec_engine.position_check_threshold_ms == 45_500
 
 
+def test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally():
+    cfg = _cfg(execution={
+        "mode": "paper",
+        "paper": {"host": "127.0.0.1", "port": 9876},
+    }, venues={"polymarket": {"proxy_url": "http://pm-proxy:7890"}})
+
+    nc = arb_node.build_trading_node_config(cfg)
+
+    assert set(nc.exec_clients) == {"POLYMARKET"}
+    assert nc.data_clients["POLYMARKET"].base_url_http == cfg.venues.polymarket.clob_url
+    assert nc.exec_clients["POLYMARKET"].base_url_http == "http://127.0.0.1:9876"
+    assert nc.exec_clients["POLYMARKET"].base_url_ws == "ws://127.0.0.1:9876/ws/"
+    assert nc.exec_clients["POLYMARKET"].base_url_data_api == "http://127.0.0.1:9876"
+    assert nc.exec_clients["POLYMARKET"].proxy_url == "http://pm-proxy:7890"
+    assert nc.exec_clients["POLYMARKET"].paper_mode is True
+    assert nc.exec_engine.reconciliation is True
+
+
+def test_paper_mode_requires_polymarket_enabled():
+    cfg = _cfg(
+        execution={"mode": "paper"},
+        venues={
+            "polymarket": {"enabled": False},
+            "orbitexch": {"enabled": True},
+            "sharpexch": {"enabled": True},
+        },
+    )
+
+    with pytest.raises(ConfigError, match="requires venues.polymarket.enabled=true"):
+        arb_node.build_trading_node_config(cfg)
+
+
+def test_rejects_unknown_execution_mode():
+    cfg = _cfg(execution={"mode": "shadow"})
+
+    with pytest.raises(ConfigError, match="execution.mode"):
+        arb_node.build_trading_node_config(cfg)
+
+
+@pytest.mark.parametrize(
+    ("paper", "message"),
+    [
+        ({"host": "0.0.0.0"}, "host must be localhost"),
+        ({"port": 0}, "port must be between"),
+        ({"starting_balance": -1}, "starting_balance must be non-negative"),
+        ({"poll_interval_ms": 0}, "poll_interval_ms must be positive"),
+    ],
+)
+def test_paper_mode_rejects_unsafe_or_invalid_server_config(paper, message):
+    cfg = _cfg(execution={"mode": "paper", "paper": paper})
+
+    with pytest.raises(ConfigError, match=message):
+        arb_node.build_trading_node_config(cfg)
+
+
 def test_build_trading_node_config_includes_credentials_from_cfg():
     cfg = _cfg(venues={"polymarket": {"clob_api_key": "K", "private_key": "0xpk"}})
     nc = arb_node.build_trading_node_config(cfg)
@@ -331,6 +386,18 @@ def test_make_pm_settlement_skips_when_cleanup_disabled():
     assert arb_node._make_pm_settlement(cfg) is None
 
 
+def test_make_pm_settlement_is_always_disabled_in_paper_mode(monkeypatch):
+    cfg = _cfg(
+        execution={"mode": "paper", "cleanup_enabled": True},
+        venues={"polymarket": {"private_key": "0xpk", "funder": "0xfunder"}},
+    )
+    contract_ctor = MagicMock()
+    monkeypatch.setattr(arb_node, "PolymarketContractService", contract_ctor)
+
+    assert arb_node._make_pm_settlement(cfg) is None
+    contract_ctor.assert_not_called()
+
+
 def test_make_pm_settlement_skips_when_polymarket_disabled(monkeypatch):
     cfg = _cfg(
         venues={
@@ -435,6 +502,18 @@ def test_register_factories_registers_pm_oe_data_exec():
     exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
     assert set(data_venues) == {"POLYMARKET", "ORBITEXCH", "PMSPORTS"}
     assert set(exec_venues) == {"POLYMARKET", "ORBITEXCH"}
+
+
+def test_register_factories_paper_mode_registers_only_pm_execution():
+    node = MagicMock()
+    cfg = _cfg(execution={"mode": "paper"})
+
+    arb_node.register_factories(node, cfg)
+
+    data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
+    exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
+    assert set(data_venues) == {"POLYMARKET", "ORBITEXCH", "PMSPORTS"}
+    assert exec_venues == ["POLYMARKET"]
 
 
 def test_register_factories_registers_sharpexch_when_enabled():

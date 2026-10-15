@@ -192,8 +192,7 @@ def test_action_cancels_when_selected_recovery_candidate_carries_request():
     assert canceled == ["p"]
 
 
-@pytest.mark.parametrize("simulation", [None, False])
-def test_action_only_prepares_plan_without_execution_side_effects(simulation):
+def test_action_only_prepares_plan_without_execution_side_effects():
     submitted = []
     canceled = []
 
@@ -214,7 +213,7 @@ def test_action_only_prepares_plan_without_execution_side_effects(simulation):
         "qty": 5.0,
     }]
 
-    _run(PlaceBetsAction(simulation=simulation).execute(ctx))
+    _run(PlaceBetsAction().execute(ctx))
 
     assert ctx.scratch["execution_plan"].kind == "submit"
     assert submitted == []
@@ -475,77 +474,6 @@ def test_action_rejects_unsupported_time_in_force(time_in_force):
 def test_action_rejects_ioc_post_only_combination():
     with pytest.raises(ValueError, match="IOC time_in_force cannot be post_only"):
         PlaceBetsAction(time_in_force="IOC", post_only=True)
-
-
-def test_action_simulation_logs_final_order_without_execution_plan(caplog):
-    submitted = []
-
-    async def fake_submitter(spec: dict) -> None:
-        submitted.append(spec)
-
-    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
-    ctx.scratch["legs"] = [
-        {
-            "instrument_id": "A.POLYMARKET",
-            "venue": "POLYMARKET",
-            "side": "BUY",
-            "role": "yes",
-            "price": 0.4,
-            "qty": 10.0,
-        },
-    ]
-    ctx.scratch["selected_candidate"] = {
-        "strategy": "one_side_rebate",
-        "rate": 0.12,
-    }
-
-    with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        plan = _prepare_and_dispatch(PlaceBetsAction(simulation=True, spread=0.05), ctx)
-
-    assert plan is None
-    assert "execution_plan" not in ctx.scratch
-    assert submitted == []
-    simulation_logs = [
-        record.message for record in caplog.records if "PlaceBets[simulation]" in record.message
-    ]
-    assert len(simulation_logs) == 1
-    assert "strategy=one_side_rebate" in simulation_logs[0]
-    assert "rate=0.12" in simulation_logs[0]
-    assert "instrument=A.POLYMARKET" in simulation_logs[0]
-    assert "venue=POLYMARKET" in simulation_logs[0]
-    assert "role=yes" in simulation_logs[0]
-    assert "side=BUY" in simulation_logs[0]
-    assert "price=0.35000000000000003" in simulation_logs[0]
-    assert "qty=10.0000" in simulation_logs[0]
-    assert "intent=arbitrage" in simulation_logs[0]
-
-
-def test_action_simulation_logs_cancel_without_canceling(caplog):
-    def fail_cancel(*_args, **_kwargs):
-        raise AssertionError("模拟模式不得撤单")
-
-    ctx = EvalContext(pair_id="p", pair_order_canceler=fail_cancel)
-    ctx.scratch["cancel_pair_orders"] = {
-        "reason": "order_cancel:price_drift",
-        "client_order_ids": ["O-1"],
-    }
-
-    with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        plan = _prepare_and_dispatch(PlaceBetsAction(simulation=True), ctx)
-
-    assert plan is None
-    assert "execution_plan" not in ctx.scratch
-    assert any(
-        "PlaceBets[simulation-cancel]" in record.message
-        and "reason=order_cancel:price_drift" in record.message
-        and "client_order_ids=('O-1',)" in record.message
-        for record in caplog.records
-    )
-
-
-def test_action_rejects_non_boolean_simulation():
-    with pytest.raises(ValueError, match="simulation must be a boolean"):
-        PlaceBetsAction(simulation="true")
 
 
 def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():

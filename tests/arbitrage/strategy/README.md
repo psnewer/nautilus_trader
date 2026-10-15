@@ -1023,19 +1023,14 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 - `test_evaluator.py::test_ended_deletes_pair_prices_after_last_evaluation_finishes` 同时验证：ended 到达时若有
   在途评估，价格与连续触发历史都延后回收；最后一个 task 完成后该 pair 的全部 history key 一并删除。
 
-## strategy-4.44：PlaceBetsAction 实盘观察模式
+## strategy-4.44：PlaceBetsAction 不再分叉模拟执行
 
-**前置**：strategy JSON 的 `place_bets.params.simulation=true`。
-**输入**：普通 submit legs 或 cancel-only request。
-**步骤/期望**：
-- submit legs 完整执行现有 inventory 拆单、limit、spread 和 metadata 转换，
-  逐条打印 `PlaceBets[simulation]` 最终订单，但不写 `execution_plan`、不调用 submitter；
-- cancel-only 打印 `PlaceBets[simulation-cancel]`，但不调用 pair canceler；
-- `simulation` 缺失或 `false` 完全保持现有 submit/cancel 行为，非 boolean fail-fast。
-**验收**：`test_action_place_bets.py::test_action_simulation_logs_final_order_without_execution_plan` /
-`test_action_simulation_logs_cancel_without_canceling` /
-`test_action_rejects_non_boolean_simulation`，以及
-`test_mean_rebate_e2e.py::test_place_bets_simulation_param_loads_from_strategy_json`。
+**前置**：普通 submit legs 或 cancel-only request。
+**步骤/期望**：`PlaceBetsAction` 始终生成完整 `ExecutionPlan`，未知
+`simulation` 字段按 action 参数契约 fail-fast。模拟实盘由 `execution.mode=paper`
+在 launcher/execution 层切换，不绕过 Risk、barrier、Cache 或 Portfolio。
+**验收**：`test_action_place_bets.py` 现有 submit/cancel 计划用例 +
+`tests/arbitrage/paper/test_polymarket_paper.py`。
 
 ## strategy-4.45：订单创建时比分标签
 

@@ -13,6 +13,7 @@ To reduce common LLM coding mistakes, please follow the @karpathy-skills guideli
 | 迁移初设 | [docs/arbitrage/refactor.md](docs/arbitrage/refactor.md) | NT 迁移初设 + 决策史(Q1–Q20)+ 修订记录(**先读这个**了解为什么) |
 | 架构总览 | [docs/arbitrage/architecture.md](docs/arbitrage/architecture.md) | NT 端态架构总览 + 组件导航 |
 | 组件详细设计 | [docs/arbitrage/architectures/](docs/arbitrage/architectures/) | 分组件详细设计(接口/数据流/算法/时序),面向代码落地 |
+| Paper Execution | [docs/arbitrage/architectures/paper/architecture.md](docs/arbitrage/architectures/paper/architecture.md) | 本地 PM 执行服务、SQLite 账本、撮合和安全边界 |
 | 需求说明 | [docs/arbitrage/requirements.md](docs/arbitrage/requirements.md) | 系统功能需求(行为真理源;按旧服务名组织) |
 | 数据库设计 | [docs/arbitrage/database-schema.md](docs/arbitrage/database-schema.md) | PostgreSQL表设计、Redis数据结构 |
 | NautilusTrader | [docs/arbitrage/NautilusTrader.md](docs/arbitrage/NautilusTrader.md) | 框架说明、组件职责、适配器开发 |

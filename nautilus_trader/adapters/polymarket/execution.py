@@ -261,7 +261,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         # HTTP API
         self._http_client = http_client
-        self._http_client_async = HttpClient(timeout_secs=15, proxy_url=config.proxy_url)
+        private_proxy_url = None if config.paper_mode else config.proxy_url
+        self._http_client_async = HttpClient(timeout_secs=15, proxy_url=private_proxy_url)
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=config.max_retries or 0,
@@ -286,7 +287,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             loop=self._loop,
             auth=self._ws_auth,
             max_subscriptions_per_connection=self._config.ws_max_subscriptions_per_connection,
-            proxy_url=self._config.proxy_url,
+            proxy_url=private_proxy_url,
         )
         self._decoder_user_msg = msgspec.json.Decoder(USER_WS_MESSAGE)
 
@@ -312,7 +313,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
         return Money(commission, USDC_POS)
 
     async def _connect(self) -> None:
-        await asyncio.to_thread(check_polymarket_geoblock, self._config.proxy_url)
+        if not self._config.paper_mode:
+            await asyncio.to_thread(check_polymarket_geoblock, self._config.proxy_url)
         await self._instrument_provider.initialize()
 
         # Add initial market subscriptions
@@ -1948,13 +1950,18 @@ class PolymarketExecutionClient(LiveExecutionClient):
             await self._retry_manager_pool.release(retry_manager)
 
     def _register_signed_order_id(self, order: Order, signed_order, *, neg_risk: bool) -> VenueOrderId:
-        """POST 前登记 order hash，使无 HTTP 回执时仍可查询真实订单。"""
+        """POST 前登记真实 CLOB order hash。
+
+        Paper 服务的订单 ID 由本地服务生成，必须等 POST 回执再建立映射；
+        否则这里的链上 hash 会与本地 ID 冲突。
+        """
         venue_order_id = polymarket_signed_order_id(
             signed_order,
             chain_id=self._http_client.chain_id,
             neg_risk=neg_risk,
         )
-        self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
+        if not self._config.paper_mode:
+            self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
         return venue_order_id
 
     def _handle_ambiguous_submit_failure(self, order: Order, reason: str | None) -> None:

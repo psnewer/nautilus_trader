@@ -177,7 +177,7 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         data_clients[source.client_id] = getattr(config_dispatcher, source.data_config_builder)(cfg)
     for venue in enabled_venues(cfg):
         data_clients[venue.venue_id] = getattr(config_dispatcher, venue.data_config_builder)(cfg)
-        if venue.exec_config_builder:
+        if venue.exec_config_builder and (cfg.execution.mode != "paper" or venue.venue_id == "POLYMARKET"):
             exec_clients[venue.venue_id] = getattr(config_dispatcher, venue.exec_config_builder)(cfg)
 
     return TradingNodeConfig(
@@ -242,6 +242,9 @@ def validate_venue_enablement(cfg: ArbConfig) -> None:
         raise ConfigError("At least two venues must be enabled under venues.*.enabled")
     if not enabled_sports_client_ids(cfg):
         raise ConfigError("sports_status data source must be enabled for PMSPORTS event anchor")
+    config_dispatcher.validate_execution_config(cfg)
+    if cfg.execution.mode == "paper" and "POLYMARKET" not in enabled:
+        raise ConfigError("execution.mode=paper requires venues.polymarket.enabled=true")
 
 
 def enabled_runtime_venues(cfg: ArbConfig) -> tuple[str, ...]:
@@ -255,7 +258,7 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
     只在 cleanup 开启且链上操作所需基础凭证存在时初始化;初始化失败时返回 None,
     让交易节点继续启动,由后续 position reconcile 只做对账不做链上 settlement。
     """
-    if not cfg.execution.cleanup_enabled:
+    if cfg.execution.mode == "paper" or not cfg.execution.cleanup_enabled:
         return None
     settlement_venues = enabled_settlement_venues(cfg, "polymarket_ctf")
     if not settlement_venues:
@@ -299,7 +302,7 @@ def register_factories(node: TradingNode, cfg: ArbConfig | None = None) -> None:
     for venue in enabled_venues(cfg):
         if venue.data_factory is not None:
             node.add_data_client_factory(venue.venue_id, resolve_factory(venue.data_factory))
-        if venue.exec_factory is not None:
+        if venue.exec_factory is not None and (cfg.execution.mode != "paper" or venue.venue_id == "POLYMARKET"):
             node.add_exec_client_factory(venue.venue_id, resolve_factory(venue.exec_factory))
 
 

@@ -87,10 +87,31 @@ def configure_clob_http_transport(proxy_url: str | None) -> None:
         trust_env=False,
         retries=CLOB_HTTP_CONNECT_RETRIES,
     )
+    mounts = None
+    if proxy_url is not None:
+        # Paper execution 与真实 PM DataClient 共用 SDK 的进程级 HTTP client。
+        # 真实 PM 仍走显式代理，localhost 私有执行必须强制直连。
+        mounts = {
+            "http://127.0.0.1": httpx.HTTPTransport(
+                http2=True,
+                trust_env=False,
+                retries=CLOB_HTTP_CONNECT_RETRIES,
+            ),
+            "http://localhost": httpx.HTTPTransport(
+                http2=True,
+                trust_env=False,
+                retries=CLOB_HTTP_CONNECT_RETRIES,
+            ),
+        }
+    client_kwargs = {
+        "transport": transport,
+        "trust_env": False,
+        "timeout": httpx.Timeout(5.0, connect=CLOB_HTTP_CONNECT_TIMEOUT_SECS),
+    }
+    if mounts is not None:
+        client_kwargs["mounts"] = mounts
     clob_http_helpers._http_client = httpx.Client(
-        transport=transport,
-        trust_env=False,
-        timeout=httpx.Timeout(5.0, connect=CLOB_HTTP_CONNECT_TIMEOUT_SECS),
+        **client_kwargs,
     )
     old_client.close()
     _configured_proxy_url = proxy_url

@@ -159,6 +159,19 @@ LIMIT/GTC 只是缺少原始页面委托类型时的订单身份载体，不替�
 
 WS 接线约束:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,内部按 USER channel 拼接 `user`;项目 dispatcher 兼容旧 `.../ws/market` / `.../ws/user` 配置并统一归一化。否则 ExecClient user WS 会误连 `.../ws/marketuser`。
 
+**PM paper 执行路由**：`execution.mode=paper` 时，dispatcher 只把 PM
+ExecClient 的 CLOB HTTP、USER WS 和 Data API 指向 localhost paper 服务；PM
+DataClient 仍使用真实公开 CLOB/WS。ExecClient 跳过 geoblock，但签名、
+`OrderSubmitted` / HTTP ACK / USER WS / Cache / Portfolio / Risk / reconcile 不绕过。
+由于 v2 SDK 的 CLOB HTTP client 是进程级共享对象，paper 模式不能把全局 proxy 清空：
+共享 client 继续以 `venues.polymarket.proxy_url` 作为真实 PM 默认出口，仅为
+`http://127.0.0.1` / `http://localhost` 安装直连 transport；ExecClient 私有 USER WS 和
+Data API 同样对 localhost 直连。Paper matcher 的真实 `/book` 查询则复用 PM proxy。
+真实模式 POST 前预索引 CLOB order hash；paper 模式延后到 HTTP 回执才索引
+本地 order ID，避免两种 ID 冲突。Launcher 不注册 OE/SE ExecClient，且
+`_make_pm_settlement` 无条件返回 `None`。完整协议、撮合模型和启动步骤见
+[`../paper/architecture.md`](../paper/architecture.md)。
+
 **PM 持仓成本映射约束(#100,已落地)**:`generate_position_status_reports` 的数据源是 PM Data API `/positions`。该接口返回的是按 token 聚合后的当前持仓,其中 `size` 是 share 数量,`avgPrice`/`avg_price` 是平均开仓成本。翻译成 NT 通用 `PositionStatusReport` 时必须同时填 `quantity` 与 `avg_px_open`;若 Data API 未返回平均成本,`avg_px_open` 保持 `None`(未知),不得在 strategy/risk 侧用当前盘口估算或把未知成本当 0。这样 `ArbitragePortfolio.outcome_exposures/outcome_shares` 与 `mean_rebate_recovery` 继续只读 NT cache position,成本权威仍在 execution adapter 的 venue report 翻译层。
 
 **套利子类新增**:

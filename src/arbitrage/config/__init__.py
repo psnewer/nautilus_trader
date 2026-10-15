@@ -15,6 +15,7 @@ from src.arbitrage.config.schema import DiscoveryConfig
 from src.arbitrage.config.schema import ExecutionSectionConfig
 from src.arbitrage.config.schema import MatchingConfig
 from src.arbitrage.config.schema import OrbitExchSectionConfig
+from src.arbitrage.config.schema import PaperExecutionConfig
 from src.arbitrage.config.schema import PolymarketSectionConfig
 from src.arbitrage.config.schema import RiskSectionConfig
 from src.arbitrage.config.schema import SharpExchSectionConfig
@@ -36,6 +37,7 @@ __all__ = [
     "ExecutionSectionConfig",
     "MatchingConfig",
     "OrbitExchSectionConfig",
+    "PaperExecutionConfig",
     "PolymarketSectionConfig",
     "RiskSectionConfig",
     "SharpExchSectionConfig",

@@ -407,3 +407,13 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   订单仍恰好路由一次。测试必须通过 `RiskEngine.execute` MessageBus endpoint 发送，
   不得直接调用 engine 方法绕过真实入口。
 - 验收：`test_engine.py::test_submit_pipeline_trace_preserves_risk_routing`。
+
+## risk-paper-account:本地 paper 账本不绕过资金/仓位约束
+
+- 前置：PM ExecClient 连 localhost paper 服务。
+- 输入：两笔总额超过现金的 BUY（含并发提交），或两笔总数超过已有仓位的 SELL。
+- 期望：原 NT Risk 仍执行；本地权威账本另外预留 LIVE 订单名义额/数量，
+  超用请求拒绝，不会产生负现金或超卖。
+- 验收：`tests/arbitrage/paper/test_polymarket_paper.py::
+  test_open_orders_reserve_balance_and_position`、
+  `test_concurrent_orders_cannot_overreserve_balance`。
