@@ -44,6 +44,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import order_requests_market
+from src.arbitrage.common.opportunity import order_score
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -59,6 +60,25 @@ def _optional_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _paper_order_metadata(order, instrument) -> dict[str, object]:
+    meta = meta_from_order(order)
+    info = getattr(instrument, "info", None) or {}
+    return {
+        "client_order_id": str(order.client_order_id),
+        "pair_id": meta.pair_id if meta is not None else None,
+        "opportunity_id": meta.opportunity_id if meta is not None else None,
+        "leg_key": meta.leg_key if meta is not None else None,
+        "intent": meta.intent if meta is not None else None,
+        "origin": meta.origin if meta is not None else None,
+        "instrument_id": str(order.instrument_id),
+        "outcome": str(getattr(instrument, "outcome", "") or ""),
+        "selection_role": str(info.get("claim") or info.get("selection_role") or ""),
+        "strategy_id": str(order.strategy_id),
+        "order_score": order_score(order),
+        "ts_submitted_ns": int(getattr(order, "ts_submitted", 0) or 0),
+    }
 
 
 def _realized_by_instrument(rows: list[dict]) -> dict[str, float]:
@@ -250,6 +270,53 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
     async def _cancel_order(self, command: CancelOrder, *, session_started: bool = False) -> None:
         session_started = session_started or cancel_session_started(command)
         await super()._cancel_order(command, session_started=session_started)
+
+    async def _post_signed_order(
+        self,
+        order,
+        signed_order,
+        order_type_override=None,
+        base_quantity: Quantity | None = None,
+    ) -> None:
+        await super()._post_signed_order(
+            order,
+            signed_order,
+            order_type_override=order_type_override,
+            base_quantity=base_quantity,
+        )
+        if self._config.paper_mode:
+            await self._persist_paper_order_metadata(order)
+
+    async def _post_signed_orders_batch(self, orders, signed_orders_args) -> None:
+        await super()._post_signed_orders_batch(orders, signed_orders_args)
+        if self._config.paper_mode:
+            await asyncio.gather(*(self._persist_paper_order_metadata(order) for order in orders))
+
+    async def _persist_paper_order_metadata(self, order) -> None:
+        venue_order_id = self._cache.venue_order_id(order.client_order_id)
+        if venue_order_id is None:
+            return
+        instrument = self._cache.instrument(order.instrument_id)
+        payload = _paper_order_metadata(order, instrument)
+        payload["order_id"] = venue_order_id.value
+        url = f"{self._config.base_url_http.rstrip('/')}/paper/order-metadata"
+        try:
+            response: HttpResponse = await self._http_client_async.post(
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=msgspec.json.encode(payload),
+            )
+            if response.status >= 400:
+                self._log.warning(
+                    "Paper order metadata update failed "
+                    f"client_order_id={order.client_order_id} HTTP {response.status}",
+                )
+        except Exception as exc:
+            # 审计字段失败不能改变已经由 paper 服务接受的订单终态。
+            self._log.warning(
+                "Paper order metadata update failed "
+                f"client_order_id={order.client_order_id}: {exc!r}",
+            )
 
     async def _submit_limit_order(self, command, instrument) -> None:
         """在最终 PM 出站边界转换官方市价单或 IOC 限价单。"""

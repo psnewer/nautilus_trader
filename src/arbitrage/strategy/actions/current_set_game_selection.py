@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.score_selection import _unit_is_complete
 from src.arbitrage.strategy.competition_tier import lower_tier_oe_competition
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -41,7 +42,18 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         parts = [part.strip() for part in str(score or "").split(",") if part.strip()]
         if not parts or any(_SCORE_PART.match(part) is None for part in parts):
             return {}
-        left, right, _, _ = _SCORE_PART.match(parts[-1]).groups()
+        match = _SCORE_PART.match(parts[-1])
+        left, right, tie_left, tie_right = match.groups()
+        latest = (
+            int(left),
+            int(right),
+            int(tie_left) if tie_left is not None else None,
+            int(tie_right) if tie_right is not None else None,
+        )
+        # 新盘 0-0 到达前，数据源会短暂只保留刚结束的一盘。此时没有“当前盘”，
+        # 不能把上一盘终局误当成当前局分领先关系。
+        if _unit_is_complete(latest):
+            return {}
         if int(left) == 0 and int(right) == 0:
             return {}
         left_games = int(left)

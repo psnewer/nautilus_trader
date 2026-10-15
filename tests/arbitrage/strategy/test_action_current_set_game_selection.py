@@ -95,6 +95,18 @@ def test_zero_all_is_not_treated_as_draw(score, standing):
     assert ctx.scratch["legs"] == []
 
 
+@pytest.mark.parametrize(
+    "score",
+    ["7-5", "6-4, 7-5", "6-7(1-7), 7-5", "6-4, 7-6(7-5)"],
+)
+def test_completed_latest_set_before_next_zero_all_fails_closed(score):
+    ctx = _ctx(score)
+
+    _run(CurrentSetGameSelectionAction(standing="win|draw").execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
 def test_candidate_pool_filters_each_candidate_without_choosing_one():
     ctx = _ctx("6-4, 2-3")
     legs = ctx.scratch.pop("legs")

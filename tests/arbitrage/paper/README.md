@@ -14,9 +14,11 @@ schema 解码。
 ## paper-2：驻留单、FAK 与预留
 
 **输入**：未交叉 GTC，后续交叉；未交叉 FAK；超过现金/仓位的第二笔单。
-**期望**：GTC 仅在后续轮询交叉后以 maker 成交；FAK 自动撤单；未成交名义额与
-SELL 数量均被预留，不得超用。
+**期望**：GTC 由后续 Market WS 帧交叉后立即以 maker 成交，成交价是订单 limit 而非
+触发帧 quote；触价后一帧立刻回撤也不漏成交。FAK 自动撤单；未成交名义额与 SELL 数量
+均被预留，不得超用；`bid >= ask` 的异常帧不发布也不撮合。
 **验收**：`test_resting_gtc_fills_only_after_later_price_cross` /
+`test_crossed_market_frame_is_not_published_or_matched` /
 `test_unmatched_ioc_is_canceled` / `test_open_orders_reserve_balance_and_position`。
 
 ## paper-3：重试幂等
@@ -41,9 +43,23 @@ SELL 数量均被预留，不得超用。
 PM/OE/SE 写请求。
 **离线验收**：`test_http_and_user_ws_protocol_round_trip` 已覆盖本地 HTTP submit/report/
 positions 与 USER WS placement/trade 回路；`test_paper_server_launcher_passes_public_pm_proxy`
-钉住 launcher 的 proxy 传递，`test_public_market_query_uses_configured_proxy` 钉住 matcher
-公开 PM 请求实际使用该 proxy；`test_real_clob_sdk_submit_and_reports_round_trip` 使用真实
+钉住 launcher 把真实 Market WS URL 与 proxy 传给 paper 服务，
+`test_public_market_query_uses_configured_proxy` 钉住公开 PM 请求实际使用该 proxy；
+`test_real_clob_sdk_submit_and_reports_round_trip` 使用真实
 `py_clob_client_v2.ClobClient` 验证 submit → get_order/get_trades 以及驻留单
 get_open_orders → cancel → get_order 协议。
 **状态**：独立 server + arb node 进程级运行时验收仍待补；不用离线绿色
 替代该路径证据。
+
+## paper-5：订单 metadata、旧库迁移与 Excel 归集
+
+**前置**：已有旧 schema SQLite，或新 paper 订单已由 ExecClient 取得 venue order ID。
+**输入**：`pair_id/origin/intent`、下单比分等 NT Order metadata；一笔含成交的 paper 订单；
+以及按 `client_order_id` 关联的撤单日志审计 JSON。
+**期望**：旧库自动增加可空审计列；metadata 端点按 venue order ID 更新且不改变订单终态；
+Excel 包含“订单明细/Pair汇总/类型汇总/说明”，并以 `origin/intent` 标识订单类型；撤单行带
+撤单时间、撤单前最近比分及 PM/OE/SE bid/ask；成交行带首次成交前最近比分和盘号，日志
+缺失值保持为空。
+**验收**：`test_existing_database_is_migrated_and_order_metadata_is_persisted` /
+`test_http_and_user_ws_protocol_round_trip` / `test_export_workbook_writes_detail_pair_and_type_sheets` /
+`test_export_workbook_merges_cancel_score_and_quotes_from_log_audit`。

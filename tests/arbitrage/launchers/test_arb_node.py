@@ -263,7 +263,6 @@ def test_rejects_unknown_execution_mode():
         ({"host": "0.0.0.0"}, "host must be localhost"),
         ({"port": 0}, "port must be between"),
         ({"starting_balance": -1}, "starting_balance must be non-negative"),
-        ({"poll_interval_ms": 0}, "poll_interval_ms must be positive"),
     ],
 )
 def test_paper_mode_rejects_unsafe_or_invalid_server_config(paper, message):

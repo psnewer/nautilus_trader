@@ -288,6 +288,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             auth=self._ws_auth,
             max_subscriptions_per_connection=self._config.ws_max_subscriptions_per_connection,
             proxy_url=private_proxy_url,
+            enable_idle_timeout=not self._config.paper_mode,
         )
         self._decoder_user_msg = msgspec.json.Decoder(USER_WS_MESSAGE)
 

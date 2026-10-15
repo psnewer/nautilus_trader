@@ -201,7 +201,6 @@ class PaperExecutionConfig(ConfigStruct):
     port: int = 8765
     database_path: str = "var/polymarket-paper.sqlite3"
     starting_balance: float = 10_000.0
-    poll_interval_ms: int = 250
 
 
 class ExecutionSectionConfig(ConfigStruct):

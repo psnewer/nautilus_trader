@@ -95,6 +95,7 @@ class PolymarketWebSocketClient:
         max_subscriptions_per_connection: int = 200,
         proxy_url: str | None = None,
         handler_disconnect: Callable[[tuple[str, ...]], None] | None = None,
+        enable_idle_timeout: bool = True,
     ) -> None:
         self._clock = clock
         self._log: Logger = Logger(type(self).__name__)
@@ -109,6 +110,7 @@ class PolymarketWebSocketClient:
         self._handler_disconnect = handler_disconnect
         self._loop = loop
         self._proxy_url: str | None = proxy_url
+        self._enable_idle_timeout = enable_idle_timeout
         self._tasks: WeakSet[asyncio.Task] = WeakSet()
 
         # Multi-client tracking
@@ -375,7 +377,11 @@ class PolymarketWebSocketClient:
                 url=self._ws_url,
                 headers=[],
                 heartbeat=10,
-                idle_timeout_ms=_idle_timeout_ms_for(self._channel),
+                idle_timeout_ms=(
+                    _idle_timeout_ms_for(self._channel)
+                    if self._enable_idle_timeout
+                    else None
+                ),
                 proxy_url=self._proxy_url,
             )
 

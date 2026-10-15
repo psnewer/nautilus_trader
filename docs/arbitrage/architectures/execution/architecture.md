@@ -166,7 +166,14 @@ DataClient 仍使用真实公开 CLOB/WS。ExecClient 跳过 geoblock，但签�
 由于 v2 SDK 的 CLOB HTTP client 是进程级共享对象，paper 模式不能把全局 proxy 清空：
 共享 client 继续以 `venues.polymarket.proxy_url` 作为真实 PM 默认出口，仅为
 `http://127.0.0.1` / `http://localhost` 安装直连 transport；ExecClient 私有 USER WS 和
-Data API 同样对 localhost 直连。Paper matcher 的真实 `/book` 查询则复用 PM proxy。
+Data API 同样对 localhost 直连。Paper matcher 通过真实 PM Market WS 逐帧撮合并复用 PM
+proxy，不轮询 `/book`；本地 USER WS 允许长期无业务消息，paper ExecClient 因此关闭
+300 秒业务 idle timeout，但底层断线重连保持不变。
+签名请求不包含 NT Order tags；paper 订单 HTTP 成功后，套利 ExecClient 以本地 venue order ID
+为键，把 `pair_id/origin/intent`、机会标识、instrument/outcome 与下单比分回写 paper 服务的
+审计 metadata 端点。该 best-effort 回写只影响离线报表完整度，不参与 ACK、成交或 session
+终态判断；批量与单笔提交使用相同契约。字段与 Excel 归集见
+[`../paper/architecture.md`](../paper/architecture.md) §3.1/§5。
 真实模式 POST 前预索引 CLOB order hash；paper 模式延后到 HTTP 回执才索引
 本地 order ID，避免两种 ID 冲突。Paper 只替换 PM 的私有执行服务，Launcher 仍按
 venue enablement 注册 OE/SE ExecClient，保证它们的登录、发现依赖和既有运行行为不变；

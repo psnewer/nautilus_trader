@@ -7,7 +7,9 @@ import ast
 import json
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from pathlib import Path
 
 
@@ -58,6 +60,15 @@ def ask_vector(books: dict[tuple[str, str], dict]) -> list[float | None]:
     return [books.get((venue, role), {}).get("ask") for venue in VENUES for role in ROLES]
 
 
+def quote_vector(books: dict[tuple[str, str], dict]) -> list[float | None]:
+    return [
+        books.get((venue, role), {}).get(side)
+        for venue in VENUES
+        for role in ROLES
+        for side in ("bid", "ask")
+    ]
+
+
 def candidate_matches(books: dict[tuple[str, str], dict], rate: float) -> list[dict]:
     by_role: dict[str, list[tuple[str, float]]] = defaultdict(list)
     for (venue, role), quote in books.items():
@@ -88,6 +99,9 @@ def main() -> None:
 
     snapshots: dict[str, list[dict]] = defaultdict(list)
     scores: dict[str, list[dict]] = defaultdict(list)
+    phases: dict[str, list[dict]] = defaultdict(list)
+    pair_games: dict[str, str] = {}
+    pending_pair: str | None = None
     starts: dict[str, list[dict]] = defaultdict(list)
     preparations: dict[str, list[dict]] = defaultdict(list)
     drops: dict[str, list[dict]] = defaultdict(list)
@@ -100,6 +114,27 @@ def main() -> None:
             line = ANSI.sub("", raw.rstrip("\n"))
             ts = parse_ts(line)
             if ts is None:
+                continue
+
+            if "MatchedPair " in line:
+                match = re.search(r"MatchedPair (.+?) \(", line)
+                if match:
+                    pending_pair = match.group(1)
+                continue
+
+            if pending_pair and "game_id" in line and "SubscribeData(" in line:
+                match = re.search(r"['\"]game_id['\"]:\s*(\d+)", line)
+                if match:
+                    pair_games[pending_pair] = match.group(1)
+                    pending_pair = None
+
+            if "Sports phase updated: game=" in line:
+                match = re.search(r"game=(\d+) phase=([^ ]+)", line)
+                if match:
+                    phases[match.group(1)].append({
+                        "ts": ts,
+                        "phase": match.group(2),
+                    })
                 continue
 
             if "Strategy evaluate scheduled: pair_id=" in line and "order_books=" in line:
@@ -132,8 +167,7 @@ def main() -> None:
                     line,
                 )
                 if match:
-                    pair_tail = f"{match.group(2)}|{match.group(3)}"
-                    scores[pair_tail].append({
+                    scores[match.group(1)].append({
                         "ts": ts,
                         "score": match.group(4).split("->")[-1],
                         "period": match.group(5),
@@ -218,7 +252,7 @@ def main() -> None:
                 if event and order_id:
                     terminal[order_id.group(1)] = {"ts": ts, "event": event.group(1)}
 
-    for values in (snapshots, scores, starts, preparations, drops):
+    for values in (snapshots, scores, phases, starts, preparations, drops):
         for items in values.values():
             items.sort(key=lambda item: item["ts"])
 
@@ -226,6 +260,9 @@ def main() -> None:
     for order in sorted(orders.values(), key=lambda item: item["ts"]):
         pair = order["pair"]
         sport, player_1, player_2 = pair.split("|", 2)
+        game_id = pair_games.get(pair)
+        pair_scores = scores.get(game_id, [])
+        pair_phases = phases.get(game_id, [])
         pair_snapshots = snapshots[pair]
         prep = last_before(preparations[pair], order["ts"], 5)
         anchor = prep["ts"] if prep else order["ts"]
@@ -270,7 +307,7 @@ def main() -> None:
                     }
                     break
 
-        score = last_before(scores[f"{player_1}|{player_2}"], order["ts"])
+        score = last_before(pair_scores, order["ts"])
         start = last_before(starts[pair], order["ts"])
 
         native_venue = None
@@ -304,6 +341,19 @@ def main() -> None:
                     native_venue = next(iter(role_venues))
 
         order_fills = fills.get(order["id"], [])
+        first_fill_score = (
+            last_before(pair_scores, order_fills[0]["ts"])
+            if order_fills else None
+        )
+        first_fill_phase = (
+            last_before(pair_phases, order_fills[0]["ts"])
+            if order_fills else None
+        )
+        first_fill_is_pre = (
+            first_fill_score is None
+            and first_fill_phase is not None
+            and first_fill_phase["phase"] == "PRE"
+        )
         filled_quantity = sum(item["quantity"] for item in order_fills)
         average_fill_price = (
             sum(item["quantity"] * item["price"] for item in order_fills) / filled_quantity
@@ -323,6 +373,15 @@ def main() -> None:
             }[end["event"]]
         else:
             status = "未成交-日志结束时无终态"
+
+        cancel_score = None
+        cancel_snapshot = None
+        cancel_books: dict[tuple[str, str], dict] = {}
+        if end and end["event"] == "OrderCanceled":
+            cancel_score = last_before(pair_scores, end["ts"])
+            cancel_snapshot = last_before(pair_snapshots, end["ts"])
+            cancel_books = book_map(cancel_snapshot["books"]) if cancel_snapshot else {}
+        cancel_quote = cancel_books.get(("POLYMARKET", order["role"]), {})
 
         closest = None
         if status != "已成交":
@@ -351,6 +410,24 @@ def main() -> None:
             "下单时间(北京时间)": order["ts"].astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "client_order_id": order["id"],
             "状态": status,
+            "撤单时间(北京时间)": (
+                end["ts"].astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                if end and end["event"] == "OrderCanceled" else None
+            ),
+            "撤单比分": cancel_score["score"] if cancel_score else None,
+            "撤单盘/局": cancel_score["period"] if cancel_score else None,
+            "撤单方向PM_bid": cancel_quote.get("bid"),
+            "撤单方向PM_ask": cancel_quote.get("ask"),
+            **dict(zip(
+                [
+                    f"撤单时_{venue}_{role.upper()}_{side}"
+                    for venue in ("PM", "OE", "SE")
+                    for role in ROLES
+                    for side in ("bid", "ask")
+                ],
+                quote_vector(cancel_books) if cancel_snapshot else [None] * 12,
+                strict=True,
+            )),
             "赛事": sport,
             "选手1": player_1,
             "选手2": player_2,
@@ -361,6 +438,14 @@ def main() -> None:
             "首次成交时间(北京时间)": (
                 order_fills[0]["ts"].astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
                 if order_fills else None
+            ),
+            "首次成交比分": (
+                first_fill_score["score"] if first_fill_score
+                else "PRE" if first_fill_is_pre else None
+            ),
+            "首次成交盘/局": (
+                first_fill_score["period"] if first_fill_score
+                else "PRE" if first_fill_is_pre else None
             ),
             "成交均价": average_fill_price,
             "下单比分": score["score"] if score else None,

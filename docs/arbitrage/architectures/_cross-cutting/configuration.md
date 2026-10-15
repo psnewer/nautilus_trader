@@ -199,7 +199,6 @@ class PaperExecutionConfig(ConfigStruct):
     port:               int = 8765
     database_path:      str = "var/polymarket-paper.sqlite3"
     starting_balance:   float = 10_000.0
-    poll_interval_ms:   int = 250
 
 
 class DebugSectionConfig(ConfigStruct):
@@ -257,8 +256,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
       "host": "127.0.0.1",
       "port": 8765,
       "database_path": "var/polymarket-paper.sqlite3",
-      "starting_balance": 10000,
-      "poll_interval_ms": 250
+      "starting_balance": 10000
     },
     "tracking_timeout_sec": 30
   },
@@ -317,7 +315,8 @@ instrument 的原生字段中，不参与该分组覆盖。
 - 无条件禁用 PM merge/redeem/claim。
 
 `paper.host` 只允许 `127.0.0.1|localhost`；port 必须在 `1..65535`，
-starting balance 不得为负，poll interval 必须为正数。本地服务协议、撮合与
+starting balance 不得为负。Paper matcher 直接消费 `venues.polymarket.ws_url` 对应的真实
+Market WS，不提供轮询周期配置。本地服务协议、撮合与
 持久化语义见 [`../paper/architecture.md`](../paper/architecture.md)。
 
 ---

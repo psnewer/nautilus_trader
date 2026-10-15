@@ -26,6 +26,7 @@ from py_clob_client_v2.order_utils.model.side import Side as PolySide
 from py_clob_client_v2.order_utils.model.signature_type_v2 import SignatureTypeV2
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.arb_execution import _paper_order_metadata
 from nautilus_trader.adapters.polymarket.arb_execution import _realized_by_instrument
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
@@ -62,6 +63,7 @@ from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import order_score_tags
 from src.arbitrage.common.opportunity import tags_from_meta
 from src.arbitrage.common.realized_pnl import RealizedPnlLedger
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
@@ -93,6 +95,73 @@ class _RetryPool:
 
     async def release(self, _retry_manager):
         return None
+
+
+def test_paper_order_metadata_preserves_pair_origin_intent_and_score():
+    meta = OpportunityMeta(
+        opportunity_id="OPP-1",
+        pair_id="Tennis|Player A|Player B",
+        leg_key="POLYMARKET:yes",
+        expected_legs=("POLYMARKET:yes",),
+        intent="recovery",
+        origin="in_game",
+    )
+    order = SimpleNamespace(
+        client_order_id=ClientOrderId("ARB-1"),
+        instrument_id=InstrumentId.from_str("0xcondition-123.POLYMARKET"),
+        strategy_id=StrategyId("S-1"),
+        tags=tags_from_meta(meta) + order_score_tags("1-0, 2-1", 123),
+        ts_submitted=456,
+    )
+    instrument = SimpleNamespace(
+        outcome="Player A",
+        info={"claim": "yes", "selection_role": "home"},
+    )
+
+    payload = _paper_order_metadata(order, instrument)
+
+    assert payload["pair_id"] == "Tennis|Player A|Player B"
+    assert payload["origin"] == "in_game"
+    assert payload["intent"] == "recovery"
+    assert payload["outcome"] == "Player A"
+    assert payload["selection_role"] == "yes"
+    assert payload["order_score"] == "1-0, 2-1"
+
+
+def test_persist_paper_order_metadata_posts_to_local_service():
+    async def scenario():
+        captured = {}
+
+        class HttpClient:
+            async def post(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(status=200)
+
+        order = SimpleNamespace(
+            client_order_id=ClientOrderId("ARB-1"),
+            instrument_id=InstrumentId.from_str("0xcondition-123.POLYMARKET"),
+            strategy_id=StrategyId("S-1"),
+            tags=[],
+            ts_submitted=456,
+        )
+        client = SimpleNamespace(
+            _cache=SimpleNamespace(
+                venue_order_id=lambda _client_order_id: VenueOrderId("paper-order-1"),
+                instrument=lambda _instrument_id: SimpleNamespace(outcome="Player A", info={}),
+            ),
+            _config=SimpleNamespace(base_url_http="http://127.0.0.1:8765"),
+            _http_client_async=HttpClient(),
+            _log=SimpleNamespace(warning=lambda _message: None),
+        )
+
+        await ArbPolymarketExecutionClient._persist_paper_order_metadata(client, order)
+
+        assert captured["url"] == "http://127.0.0.1:8765/paper/order-metadata"
+        payload = msgspec.json.decode(captured["body"])
+        assert payload["order_id"] == "paper-order-1"
+        assert payload["client_order_id"] == "ARB-1"
+
+    asyncio.run(scenario())
 
 
 class _FailedRetryPool:

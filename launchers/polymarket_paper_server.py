@@ -33,8 +33,8 @@ def main(argv: list[str] | None = None) -> int:
         port=paper.port,
         database_path=paper.database_path,
         starting_balance=paper.starting_balance,
-        poll_interval_ms=paper.poll_interval_ms,
         market_http_url=cfg.venues.polymarket.clob_url,
+        market_ws_url=cfg.venues.polymarket.ws_url.rstrip("/") + "/market",
         market_proxy_url=cfg.venues.polymarket.proxy_url,
     ))
     return 0

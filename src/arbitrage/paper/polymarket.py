@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import ClientSession
+from aiohttp import ClientWebSocketResponse
+from aiohttp import WSMsgType
 from aiohttp import web
 
 
@@ -32,6 +34,20 @@ _PUBLIC_GET_PREFIXES = (
     "/clob-markets/",
     "/book",
 )
+_ORDER_AUDIT_COLUMNS = {
+    "client_order_id": "TEXT",
+    "pair_id": "TEXT",
+    "opportunity_id": "TEXT",
+    "leg_key": "TEXT",
+    "intent": "TEXT",
+    "origin": "TEXT",
+    "instrument_id": "TEXT",
+    "outcome": "TEXT",
+    "selection_role": "TEXT",
+    "strategy_id": "TEXT",
+    "order_score": "TEXT",
+    "ts_submitted_ns": "INTEGER",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +56,8 @@ class PaperServerConfig:
     port: int = 8765
     database_path: str = "var/polymarket-paper.sqlite3"
     starting_balance: float = 10_000.0
-    poll_interval_ms: int = 250
     market_http_url: str = "https://clob.polymarket.com"
+    market_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     market_proxy_url: str | None = None
 
 
@@ -92,11 +108,38 @@ class PaperStore:
             );
             """,
         )
+        self._ensure_order_audit_columns()
         self._db.execute(
             "INSERT OR IGNORE INTO metadata(key, value) VALUES ('balance', ?)",
             (str(float(starting_balance)),),
         )
         self._db.commit()
+
+    def _ensure_order_audit_columns(self) -> None:
+        """为已有 paper 数据库原地补齐可空审计列。"""
+        existing = {
+            str(row["name"])
+            for row in self._db.execute("PRAGMA table_info(orders)")
+        }
+        for name, sql_type in _ORDER_AUDIT_COLUMNS.items():
+            if name not in existing:
+                self._db.execute(f"ALTER TABLE orders ADD COLUMN {name} {sql_type}")
+
+    def update_order_metadata(self, order_id: str, metadata: dict[str, Any]) -> bool:
+        values = {
+            name: metadata.get(name)
+            for name in _ORDER_AUDIT_COLUMNS
+            if name in metadata
+        }
+        if not values:
+            return False
+        assignments = ", ".join(f"{name} = ?" for name in values)
+        cursor = self._db.execute(
+            f"UPDATE orders SET {assignments} WHERE id = ?",
+            (*values.values(), order_id),
+        )
+        self._db.commit()
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         self._db.close()
@@ -239,24 +282,49 @@ class PaperStore:
 
 
 class PolymarketPaperExchange:
-    """本地订单状态机；真实公共 book 仅作为成交判据。"""
+    """本地订单状态机；真实 PM Market WS 逐帧驱动模拟撮合。"""
 
     def __init__(self, config: PaperServerConfig, store: PaperStore | None = None) -> None:
         self.config = config
         self.store = store or PaperStore(config.database_path, config.starting_balance)
         self._session: ClientSession | None = None
         self._websockets: set[web.WebSocketResponse] = set()
-        self._poll_task: asyncio.Task | None = None
+        self._market_ws: ClientWebSocketResponse | None = None
+        self._market_ws_task: asyncio.Task | None = None
+        self._market_subscriptions: set[str] = set()
+        self._market_books: dict[str, tuple[float | None, float | None]] = {}
+        self._market_ready: dict[str, asyncio.Event] = {}
+        self._market_subscription_changed = asyncio.Event()
+        self._market_send_lock = asyncio.Lock()
+        self._placement_events: dict[str, dict[str, Any]] = {}
+        self._pending_trade_events: dict[str, dict[str, Any]] = {}
+        self._placement_sent: set[str] = set()
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._place_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._session = ClientSession()
-        self._poll_task = asyncio.create_task(self._poll_open_orders(), name="pm-paper-matcher")
+        self._market_subscriptions.update({
+            str(order["asset_id"])
+            for order in self.store.orders(open_only=True)
+        })
+        if self._market_subscriptions:
+            self._market_subscription_changed.set()
+        self._market_ws_task = asyncio.create_task(
+            self._run_market_ws(),
+            name="pm-paper-market-ws",
+        )
 
     async def stop(self) -> None:
-        if self._poll_task:
-            self._poll_task.cancel()
-            await asyncio.gather(self._poll_task, return_exceptions=True)
+        if self._market_ws_task:
+            self._market_ws_task.cancel()
+            await asyncio.gather(self._market_ws_task, return_exceptions=True)
+        for task in self._background_tasks:
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        if self._market_ws is not None:
+            await self._market_ws.close()
         for ws in tuple(self._websockets):
             await ws.close()
         if self._session:
@@ -283,13 +351,120 @@ class PolymarketPaperExchange:
         return str(condition_id)
 
     async def best_prices(self, token_id: str) -> tuple[float | None, float | None]:
-        status, body, _ = await self.public_get(f"/book?token_id={token_id}")
-        if status >= 400:
-            return None, None
-        payload = json.loads(body)
-        bids = [float(item["price"]) for item in payload.get("bids") or []]
-        asks = [float(item["price"]) for item in payload.get("asks") or []]
-        return (max(bids) if bids else None, min(asks) if asks else None)
+        return self._market_books.get(token_id, (None, None))
+
+    async def ensure_market_subscription(self, token_id: str) -> None:
+        """下单前确保 Market WS 已收到该 token 的初始盘口。"""
+        ready = self._market_ready.setdefault(token_id, asyncio.Event())
+        if token_id in self._market_books:
+            return
+        is_new = token_id not in self._market_subscriptions
+        self._market_subscriptions.add(token_id)
+        self._market_subscription_changed.set()
+        if is_new and self._market_ws is not None and not self._market_ws.closed:
+            async with self._market_send_lock:
+                await self._market_ws.send_json({
+                    "assets_ids": [token_id],
+                    "operation": "subscribe",
+                })
+            _LOG.info("PAPER_MARKET_WS subscribed token_id=%s", token_id)
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=15.0)
+        except TimeoutError as exc:
+            raise web.HTTPBadGateway(text="PM market WS initial book timeout") from exc
+
+    async def _run_market_ws(self) -> None:
+        assert self._session is not None
+        while True:
+            if not self._market_subscriptions:
+                self._market_subscription_changed.clear()
+                await self._market_subscription_changed.wait()
+            try:
+                async with self._session.ws_connect(
+                    self.config.market_ws_url,
+                    proxy=self.config.market_proxy_url,
+                    heartbeat=10,
+                ) as ws:
+                    self._market_ws = ws
+                    await ws.send_json({
+                        "type": "market",
+                        "assets_ids": sorted(self._market_subscriptions),
+                    })
+                    _LOG.info(
+                        "PAPER_MARKET_WS connected subscriptions=%d",
+                        len(self._market_subscriptions),
+                    )
+                    async for message in ws:
+                        if message.type == WSMsgType.TEXT:
+                            if message.data.strip().upper() == "PING":
+                                await ws.send_str("PONG")
+                            else:
+                                await self._handle_market_ws_payload(message.data)
+                        elif message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOG.exception("PM paper Market WS disconnected")
+            finally:
+                self._market_ws = None
+                self._market_books.clear()
+                for ready in self._market_ready.values():
+                    ready.clear()
+            await asyncio.sleep(1.0)
+
+    async def _handle_market_ws_payload(self, raw: str) -> None:
+        if raw.strip().upper() in {"PING", "PONG"}:
+            return
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            _LOG.warning("Ignoring invalid PM Market WS payload: %s", raw[:200])
+            return
+        messages = payload if isinstance(payload, list) else [payload]
+        for message in messages:
+            event_type = message.get("event_type")
+            if event_type == "book":
+                token_id = str(message.get("asset_id") or "")
+                bids = [float(level["price"]) for level in message.get("bids") or []]
+                asks = [float(level["price"]) for level in message.get("asks") or []]
+                await self._on_market_prices(
+                    token_id,
+                    max(bids) if bids else None,
+                    min(asks) if asks else None,
+                )
+            elif event_type == "price_change":
+                for change in message.get("price_changes") or []:
+                    token_id = str(change.get("asset_id") or "")
+                    bid = change.get("best_bid")
+                    ask = change.get("best_ask")
+                    if bid is None or ask is None:
+                        continue
+                    await self._on_market_prices(token_id, float(bid), float(ask))
+
+    async def _on_market_prices(
+        self,
+        token_id: str,
+        bid: float | None,
+        ask: float | None,
+    ) -> None:
+        if not token_id:
+            return
+        if (
+            bid is not None
+            and ask is not None
+            and (bid <= 0 or ask <= 0 or bid >= ask)
+        ):
+            _LOG.warning(
+                "Dropping non-positive-spread paper market frame: token_id=%s bid=%s ask=%s",
+                token_id,
+                bid,
+                ask,
+            )
+            return
+        self._market_books[token_id] = (bid, ask)
+        self._market_ready.setdefault(token_id, asyncio.Event()).set()
+        await self._match_resting_orders(token_id, bid, ask)
 
     async def place(self, payload: dict[str, Any]) -> dict[str, Any]:
         signed = payload.get("order") or {}
@@ -309,6 +484,7 @@ class PolymarketPaperExchange:
         if self.store.order(order_id) is not None:
             return {"success": True, "orderID": order_id, "status": "live"}
         market = await self.resolve_market(token_id)
+        await self.ensure_market_subscription(token_id)
         now = int(time.time())
         order = {
             "id": order_id,
@@ -344,7 +520,16 @@ class PolymarketPaperExchange:
             if side == "SELL" and size > self.store.available_position(token_id) + 1e-9:
                 return {"success": False, "errorMsg": "insufficient paper position"}
             self.store.insert_order(order)
-        asyncio.create_task(self._after_place(order_id))
+            stored_order = self.store.order(order_id)
+            assert stored_order is not None
+            self._placement_events[order_id] = self._order_event(stored_order, "PLACEMENT")
+            bid, ask = await self.best_prices(token_id)
+            trade = self._match_order(stored_order, bid, ask, immediate=True)
+            if trade is not None:
+                self._pending_trade_events[order_id] = trade
+        task = asyncio.create_task(self._after_place(order_id))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return {"success": True, "orderID": order_id, "status": "live"}
 
     async def _after_place(self, order_id: str) -> None:
@@ -352,32 +537,73 @@ class PolymarketPaperExchange:
         order = self.store.order(order_id)
         if order is None:
             return
-        await self.broadcast(self._order_event(order, "PLACEMENT"))
-        matched = await self.try_match(order_id, immediate=True)
-        if not matched and order["order_type"] in {"FAK", "FOK", "IOC"}:
+        placement = self._placement_events.pop(order_id, None)
+        if placement is not None:
+            await self.broadcast(placement)
+        self._placement_sent.add(order_id)
+        trade = self._pending_trade_events.pop(order_id, None)
+        if trade is not None:
+            await self.broadcast(trade)
+            self._placement_sent.discard(order_id)
+            await self._release_market_subscription_if_unused(str(order["asset_id"]))
+            return
+        if order["order_type"] in {"FAK", "FOK", "IOC"}:
             await self.cancel(order_id)
 
-    async def try_match(self, order_id: str, *, immediate: bool) -> bool:
-        order = self.store.order(order_id)
-        if order is None or order["status"] != "LIVE":
-            return False
-        bid, ask = await self.best_prices(order["asset_id"])
+    def _match_order(
+        self,
+        order: dict[str, Any],
+        bid: float | None,
+        ask: float | None,
+        *,
+        immediate: bool,
+    ) -> dict[str, Any] | None:
+        if order["status"] != "LIVE":
+            return None
         if order["side"] == "BUY":
-            match_price = ask
             marketable = ask is not None and ask <= float(order["price"])
+            taker_price = ask
         else:
-            match_price = bid
             marketable = bid is not None and bid >= float(order["price"])
-        if not marketable or match_price is None:
-            return False
-        if order["post_only"] and immediate:
-            await self.cancel(order_id)
-            return False
+            taker_price = bid
+        if not marketable or taker_price is None:
+            return None
+        match_price = float(taker_price) if immediate else float(order["price"])
         trade = self._trade_event(order, float(match_price), immediate=immediate)
-        if self.store.fill(order_id, float(match_price), trade) is None:
-            return False
-        await self.broadcast(trade)
-        return True
+        if self.store.fill(order["id"], float(match_price), trade) is None:
+            return None
+        _LOG.info(
+            "PAPER_MATCH order_id=%s token_id=%s liquidity=%s limit=%s quote=%s fill=%s",
+            order["id"],
+            order["asset_id"],
+            "taker" if immediate else "maker",
+            order["price"],
+            taker_price,
+            match_price,
+        )
+        return trade
+
+    async def _match_resting_orders(
+        self,
+        token_id: str,
+        bid: float | None,
+        ask: float | None,
+    ) -> None:
+        for order in self.store.orders(open_only=True):
+            if str(order["asset_id"]) != token_id:
+                continue
+            if order["order_type"] in {"FAK", "FOK", "IOC"}:
+                continue
+            trade = self._match_order(order, bid, ask, immediate=False)
+            if trade is None:
+                continue
+            order_id = str(order["id"])
+            if order_id in self._placement_sent:
+                await self.broadcast(trade)
+                self._placement_sent.discard(order_id)
+            else:
+                self._pending_trade_events[order_id] = trade
+        await self._release_market_subscription_if_unused(token_id)
 
     async def cancel(self, order_id: str) -> bool:
         if not self.store.cancel(order_id):
@@ -385,7 +611,30 @@ class PolymarketPaperExchange:
         order = self.store.order(order_id)
         assert order is not None
         await self.broadcast(self._order_event(order, "CANCELLATION"))
+        self._placement_events.pop(order_id, None)
+        self._pending_trade_events.pop(order_id, None)
+        self._placement_sent.discard(order_id)
+        await self._release_market_subscription_if_unused(str(order["asset_id"]))
         return True
+
+    async def _release_market_subscription_if_unused(self, token_id: str) -> None:
+        if any(
+            str(order["asset_id"]) == token_id
+            for order in self.store.orders(open_only=True)
+        ):
+            return
+        if token_id not in self._market_subscriptions:
+            return
+        self._market_subscriptions.discard(token_id)
+        self._market_books.pop(token_id, None)
+        self._market_ready.pop(token_id, None)
+        if self._market_ws is not None and not self._market_ws.closed:
+            async with self._market_send_lock:
+                await self._market_ws.send_json({
+                    "assets_ids": [token_id],
+                    "operation": "unsubscribe",
+                })
+        _LOG.info("PAPER_MARKET_WS unsubscribed token_id=%s", token_id)
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
         stale = []
@@ -396,16 +645,6 @@ class PolymarketPaperExchange:
                 stale.append(ws)
         for ws in stale:
             self._websockets.discard(ws)
-
-    async def _poll_open_orders(self) -> None:
-        interval = max(10, self.config.poll_interval_ms) / 1000
-        while True:
-            await asyncio.sleep(interval)
-            for order in self.store.orders(open_only=True):
-                try:
-                    await self.try_match(order["id"], immediate=False)
-                except Exception:  # noqa: BLE001 - 单一公共盘口失败不能终止全局 matcher
-                    _LOG.exception("PM paper matcher failed for order %s", order["id"])
 
     @staticmethod
     def order_report(order: dict[str, Any]) -> dict[str, Any]:
@@ -592,6 +831,12 @@ def create_app(exchange: PolymarketPaperExchange) -> web.Application:
     async def closed_positions(_request: web.Request) -> web.Response:
         return web.json_response([])
 
+    async def order_metadata(request: web.Request) -> web.Response:
+        payload = await request.json()
+        order_id = str(payload.pop("order_id", "") or "")
+        updated = bool(order_id) and exchange.store.update_order_metadata(order_id, payload)
+        return web.json_response({"success": updated}, status=200 if updated else 404)
+
     async def user_ws(request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
@@ -620,6 +865,7 @@ def create_app(exchange: PolymarketPaperExchange) -> web.Application:
     app.router.add_get("/balance-allowance", balance)
     app.router.add_get("/positions", positions)
     app.router.add_get("/closed-positions", closed_positions)
+    app.router.add_post("/paper/order-metadata", order_metadata)
     app.router.add_get("/ws/user", user_ws)
     return app
 

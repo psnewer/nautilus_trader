@@ -771,3 +771,21 @@ test_paper_mode_defers_venue_order_id_index_until_post_response`。
 Data API 直连，不把 localhost 请求交给代理。
 **验收**：`test_polymarket_factory_configures_v2_http_proxy` /
 `test_polymarket_data_api_http_client_uses_proxy`。
+
+### pm-adapter-exec.paper-user-ws-idle：本地 USER WS 静默不触发周期重连
+
+**前置**：`PolymarketExecClientConfig.paper_mode=true`。**输入**：USER WS 已订阅但长期没有
+订单/成交业务消息。**期望**：构造底层连接时 `idle_timeout_ms=None`，不因正常静默每 300 秒
+主动重连；live 模式仍保留原 USER idle timeout，真实断线处理不变。
+**验收**：`tests/arbitrage/adapters/polymarket/test_websocket_client.py::
+test_user_channel_can_disable_idle_timeout_for_local_paper` / `::
+test_user_channel_keeps_default_idle_timeout_for_live`。
+
+### pm-adapter-exec.paper-order-audit：成功提交后回写 NT Order metadata
+
+**前置**：`paper_mode=true`，订单 POST 已成功并建立本地 venue order ID 映射。
+**输入**：携带 opportunity tags、`origin/intent` 与下单比分的 NT Order。
+**期望**：单笔和批量提交均向 localhost `/paper/order-metadata` 回写 pair、订单类型、instrument/
+outcome 与比分；回写失败只告警，不改变已接受订单的 ACK/终态。Live 模式不调用该端点。
+**验收**：`test_paper_order_metadata_preserves_pair_origin_intent_and_score` /
+`test_persist_paper_order_metadata_posts_to_local_service`。

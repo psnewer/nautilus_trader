@@ -139,8 +139,6 @@ def validate_execution_config(cfg: ArbConfig) -> None:
         raise ConfigError("execution.paper.port must be between 1 and 65535")
     if paper.starting_balance < 0:
         raise ConfigError("execution.paper.starting_balance must be non-negative")
-    if paper.poll_interval_ms <= 0:
-        raise ConfigError("execution.paper.poll_interval_ms must be positive")
 
 
 def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig:
