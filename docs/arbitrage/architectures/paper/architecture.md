@@ -19,7 +19,7 @@ Risk、Portfolio 和周期 reconcile。
 | PM order/cancel/open-orders/trades/balance/positions | 本地 paper 服务 |
 | PM USER WS | 本地 paper 服务 |
 | merge/redeem/claim | 强制关闭 |
-| OE/SE execution client | 不注册，防止 paper 节点落真单 |
+| OE/SE execution client | 按原配置注册；paper 不改变其它 venue 的运行行为 |
 
 本地服务只允许绑定 `127.0.0.1` 或 `localhost`；它不校验 API 签名，
 因此不能暴露到局域网或公网。
@@ -124,7 +124,7 @@ SQLite 文件是可恢复账本；`starting_balance` 只在新数据库第一次
 
 - `execution.mode` 只允许 `live|paper`，paper 要求 PM venue enabled。
 - paper host 只允许 localhost，端口/初始余额/轮询周期 fail-fast 校验。
-- paper node 只注册 PM ExecutionClient，但保留所有已启用 DataClient。
+- paper node 保留全部 enabled venue 的 ExecutionClient 与 DataClient，只替换 PM 私有执行端点。
 - paper 跳过 geoblock 检查，但仅因私有执行目标是 localhost；公开数据路径不变。
 - paper 无条件禁用 `PolymarketSettlement`，即使 cleanup 和真实链上凭证都存在。
 - 原 action 级 `place_bets.simulation` 已删除。Strategy 始终产生真实 NT
@@ -136,7 +136,7 @@ SQLite 文件是可恢复账本；`starting_balance` 只在新数据库第一次
 协议往返、
 可成交单的账本/USER WS/REST trade schema、驻留单后续交叉、
 FAK 未成交撤单、资金与仓位预留、并发预占、重试幂等、paper 路由、共享 PM proxy 下的
-localhost 直连、只注册 PM execution、settlement 强制关闭。
+localhost 直连、其它 venue execution 保持注册、settlement 强制关闭。
 
 还需在不发真单的 paper 运行中验收专属日志链：HTTP submit → USER WS →
 `OrderAccepted/OrderFilled` → Cache/Portfolio → 周期 reconcile。仅有这条路径实际执行后，

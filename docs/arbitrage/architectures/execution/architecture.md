@@ -168,7 +168,8 @@ DataClient 仍使用真实公开 CLOB/WS。ExecClient 跳过 geoblock，但签�
 `http://127.0.0.1` / `http://localhost` 安装直连 transport；ExecClient 私有 USER WS 和
 Data API 同样对 localhost 直连。Paper matcher 的真实 `/book` 查询则复用 PM proxy。
 真实模式 POST 前预索引 CLOB order hash；paper 模式延后到 HTTP 回执才索引
-本地 order ID，避免两种 ID 冲突。Launcher 不注册 OE/SE ExecClient，且
+本地 order ID，避免两种 ID 冲突。Paper 只替换 PM 的私有执行服务，Launcher 仍按
+venue enablement 注册 OE/SE ExecClient，保证它们的登录、发现依赖和既有运行行为不变；
 `_make_pm_settlement` 无条件返回 `None`。完整协议、撮合模型和启动步骤见
 [`../paper/architecture.md`](../paper/architecture.md)。
 

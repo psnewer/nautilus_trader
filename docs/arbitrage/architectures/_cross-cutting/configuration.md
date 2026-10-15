@@ -312,7 +312,7 @@ instrument 的原生字段中，不参与该分组覆盖。
 - PM ExecClient 的 HTTP、USER WS 和 Data API 改连 `execution.paper.host:port`；
 - `venues.polymarket.proxy_url` 仍是所有真实 PM 公开请求的出口；共享 CLOB HTTP client
   仅对 localhost 安装直连 transport，paper USER WS/Data API 也直连；
-- 只注册 PM ExecutionClient，不注册 OE/SE ExecutionClient；
+- OE/SE ExecutionClient 继续按 venue enablement 注册；paper 不改变其它 venue；
 - 保留 NT open-order/position reconciliation；
 - 无条件禁用 PM merge/redeem/claim。
 

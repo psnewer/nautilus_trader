@@ -370,8 +370,8 @@ CLEAR。**期望**：adapter 自有 `binary_market_id → members` 与首订/最
 
 ### discovery-paper.1：paper 模式不改变发现/行情路由
 
-**输入**：`execution.mode=paper`。**期望**：PM/PMSPORTS/OE/SE DataClient 仍按原配置
-注册，PM DataClient 的 CLOB HTTP/market WS 不指向 localhost；配置 PM proxy 时，SDK
+**输入**：`execution.mode=paper`。**期望**：PM/PMSPORTS/OE/SE DataClient 与 OE/SE
+ExecClient 仍按原配置注册，PM DataClient 的 CLOB HTTP/market WS 不指向 localhost；配置 PM proxy 时，SDK
 共享 HTTP client 仍以该 proxy 访问公网，仅 loopback URL 使用直连 mount。
 **验收**：`tests/arbitrage/launchers/test_arb_node.py::
 test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally` 和

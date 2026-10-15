@@ -177,7 +177,7 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         data_clients[source.client_id] = getattr(config_dispatcher, source.data_config_builder)(cfg)
     for venue in enabled_venues(cfg):
         data_clients[venue.venue_id] = getattr(config_dispatcher, venue.data_config_builder)(cfg)
-        if venue.exec_config_builder and (cfg.execution.mode != "paper" or venue.venue_id == "POLYMARKET"):
+        if venue.exec_config_builder:
             exec_clients[venue.venue_id] = getattr(config_dispatcher, venue.exec_config_builder)(cfg)
 
     return TradingNodeConfig(
@@ -302,7 +302,7 @@ def register_factories(node: TradingNode, cfg: ArbConfig | None = None) -> None:
     for venue in enabled_venues(cfg):
         if venue.data_factory is not None:
             node.add_data_client_factory(venue.venue_id, resolve_factory(venue.data_factory))
-        if venue.exec_factory is not None and (cfg.execution.mode != "paper" or venue.venue_id == "POLYMARKET"):
+        if venue.exec_factory is not None:
             node.add_exec_client_factory(venue.venue_id, resolve_factory(venue.exec_factory))
 
 

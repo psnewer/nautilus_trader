@@ -32,8 +32,8 @@ ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 - ✅ **slice 8**:运行组件接线已落地。`MarketMatchingActor` / `StrategyEvaluator` NT Strategy /
   optional `WebGatewayActor` 由 launcher 构造，运行时控制命令由 owner 组件订阅 apply；对应验收分布在
   launcher、matching、strategy、web 测试域。
-- ✅ **paper execution**：`execution.mode` 默认 `live`；`paper` 把 PM ExecClient
-  的 HTTP/USER WS/Data API 路由到 localhost，PM DataClient 不变。路由与安全参数验收在
+- ✅ **paper execution**：`execution.mode` 默认 `live`；`paper` 只把 PM ExecClient
+  的 HTTP/USER WS/Data API 路由到 localhost，PM DataClient 与其它 venue client 不变。路由与安全参数验收在
   `tests/arbitrage/launchers/test_arb_node.py`。
 
 ## 关键约束(P10-类同 / Q23)

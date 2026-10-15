@@ -226,7 +226,7 @@ def test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally():
 
     nc = arb_node.build_trading_node_config(cfg)
 
-    assert set(nc.exec_clients) == {"POLYMARKET"}
+    assert set(nc.exec_clients) == {"POLYMARKET", "ORBITEXCH"}
     assert nc.data_clients["POLYMARKET"].base_url_http == cfg.venues.polymarket.clob_url
     assert nc.exec_clients["POLYMARKET"].base_url_http == "http://127.0.0.1:9876"
     assert nc.exec_clients["POLYMARKET"].base_url_ws == "ws://127.0.0.1:9876/ws/"
@@ -504,7 +504,7 @@ def test_register_factories_registers_pm_oe_data_exec():
     assert set(exec_venues) == {"POLYMARKET", "ORBITEXCH"}
 
 
-def test_register_factories_paper_mode_registers_only_pm_execution():
+def test_register_factories_paper_mode_keeps_other_execution_clients():
     node = MagicMock()
     cfg = _cfg(execution={"mode": "paper"})
 
@@ -513,7 +513,7 @@ def test_register_factories_paper_mode_registers_only_pm_execution():
     data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
     exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
     assert set(data_venues) == {"POLYMARKET", "ORBITEXCH", "PMSPORTS"}
-    assert exec_venues == ["POLYMARKET"]
+    assert set(exec_venues) == {"POLYMARKET", "ORBITEXCH"}
 
 
 def test_register_factories_registers_sharpexch_when_enabled():

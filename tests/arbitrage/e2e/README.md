@@ -111,7 +111,8 @@
 
 ### e2e-13: localhost PM paper 完整执行链
 
-- 前置:`execution.mode=paper`，local paper server 已启动，禁止真实私有 PM/OE/SE 写路由。
+- 前置:`execution.mode=paper`，local paper server 已启动，确认 PM 私有写路由全部指向 localhost；
+  OE/SE client 保持原配置，本场景只向 PM 产出订单。
 - 输入:一笔可立即成交单与一笔驻留后撤单。
 - 期望:Strategy → Risk → barrier → PM adapter → localhost HTTP/USER WS →
   Cache/Portfolio 完整执行；周期 reconcile 与 SQLite 一致；settlement 不构造。

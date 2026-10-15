@@ -455,3 +455,13 @@ PM 侧验收:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`�
 - 期望：同一 `client_order_id` 产生 `exec_enqueued`、`exec_dequeued`、`client_dispatched`
   日志；入队时间戳在出队后清理，命令仍只派发一次。
 - 验收：`test_engine_barrier.py::test_submit_pipeline_trace_preserves_single_leg_dispatch`。
+
+### execution-paper-boundary：paper 只替换 PM 私有执行服务
+
+- 前置：启用 PM、OE，设置 `execution.mode=paper`。
+- 输入：构建 `TradingNodeConfig` 并注册 venue factories。
+- 期望：PM ExecClient 的 HTTP、USER WS、Data API 指向 localhost paper 服务；OE 以及其余
+  enabled venue 的 ExecClient config/factory 仍照常注册，不受 paper 模式过滤。
+- 验收：`tests/arbitrage/launchers/test_arb_node.py::
+  test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally` 与
+  `test_register_factories_paper_mode_keeps_other_execution_clients`。

@@ -622,3 +622,11 @@ Soccer 仅接受 EPL；sport 分组优先于精确 competition alias。**验收*
 `test_orbitexch_discovery_client.py::test_discovery_client_filters_each_sport_independently`、
 `test_orbitexch_provider.py::test_build_legs_sport_group_overrides_competition_alias`、
 `test_data_factory_provider_wiring.py::test_factory_constructs_real_provider_when_scraper_config_present`。
+
+## #462：PM paper 模式不关闭 OE execution
+
+**前置**：PM 与 OE 均 enabled，`execution.mode=paper`。**期望**：OE ExecClient config 和
+factory 仍照常注册并完成共享浏览器登录，使 OE discovery 可以取得 CSRF；只有 PM 私有执行
+端点切换到 localhost。**验收**：launcher 测试
+`test_paper_mode_keeps_live_data_and_routes_only_pm_execution_locally` 与
+`test_register_factories_paper_mode_keeps_other_execution_clients`。
