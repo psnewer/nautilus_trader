@@ -101,6 +101,15 @@ venue order ID 后，向本地 metadata 端点回写 `client_order_id/pair_id/op
 V1 模型由真实 PM Market WS 的每个有效业务帧驱动，不复制 L2 队列：
 
 - 新 token 下单前动态订阅并等待初始 book，避免用未知盘口接单；最后一张 LIVE 订单终止后退订；
+- 从初始 `book` 建立 token 级 bid/ask 全量价位表，后续 `price_change` 按
+  `side/price/size` 增量更新并重算 best quote；`best_bid/best_ask` 是可选便利字段，
+  缺失时不得丢弃业务帧，删除最优档后必须自然露出下一档；
+- 从开始等待初始 book 到订单写入 SQLite 的 placement 临界窗口，对 token 的订阅持有
+  引用计数；初始 book 触发撮合时即使账本尚无 LIVE 订单也不得退订。并发 placement 全部
+  结束且确实没有 LIVE 订单后才可退订；
+- 同一 binary market 的消息可能顺带携带未订阅的对手 token 盘口。该偶得盘口不代表
+  对手 token 已订阅；若之后要在该 token 下单，必须清掉偶得快照、显式订阅并等待新的
+  初始 book；
 - BUY 在 `best ask <= limit`、SELL 在 `best bid >= limit` 时全量成交；
 - 提交当下已交叉记为 taker，成交价取当时真实对手 best quote；
 - 已驻留订单被后续任一帧触及时记为 maker，成交价固定为该订单自己的 limit；即使下一帧
@@ -166,6 +175,8 @@ session 映射回填，不匹配的字段仍留空。导出读取 SQLite 一致�
 离线用例覆盖：真实 `py_clob_client_v2.ClobClient` 的 submit/open-orders/cancel/order/trades
 协议往返、
 可成交单的账本/USER WS/REST trade schema、驻留单由 WS 后续瞬时交叉且按自身限价成交、
+初始 book 到订单落账期间不误退订、缺少可选 best quote 的逐档增量仍能触发成交、删除最优档
+后正确切换下一档、偶得对手 token 盘口不冒充有效订阅、
 FAK 未成交撤单、资金与仓位预留、并发预占、重试幂等、paper 路由、共享 PM proxy 下的
 localhost 直连、异常交叉帧丢弃、paper USER WS 无业务消息不触发 idle 重连、其它 venue
 execution 保持注册、settlement 强制关闭。

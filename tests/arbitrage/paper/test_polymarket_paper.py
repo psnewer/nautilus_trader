@@ -52,6 +52,23 @@ class _Exchange(PolymarketPaperExchange):
         self.events.append(payload)
 
 
+class _MarketWebSocket:
+    def __init__(self):
+        self.closed = False
+        self.messages = []
+
+    async def send_json(self, payload):
+        self.messages.append(payload)
+
+
+class _SubscribedExchange(PolymarketPaperExchange):
+    async def resolve_market(self, token_id: str) -> str:
+        return "0xcondition"
+
+    async def broadcast(self, payload):
+        return None
+
+
 def _payload(*, side="BUY", price=0.5, size=5.0, order_type="GTC"):
     if side == "BUY":
         maker_amount = round(price * size * 1_000_000)
@@ -151,6 +168,144 @@ def test_resting_gtc_fills_only_after_later_price_cross(tmp_path):
         # 下一帧立即回撤也不能抹掉上一帧已经发生的成交。
         await exchange._on_market_prices("123", 0.39, 0.60)
         assert len(store.trades()) == 1
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_resting_gtc_uses_incremental_book_when_best_prices_are_omitted(tmp_path):
+    async def scenario():
+        store = PaperStore(str(tmp_path / "paper.sqlite3"), 100.0)
+        exchange = _Exchange(
+            PaperServerConfig(database_path=str(tmp_path / "paper.sqlite3")),
+            store,
+            ask=0.60,
+        )
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "book",
+            "market": "0xcondition",
+            "asset_id": "123",
+            "bids": [{"price": "0.39", "size": "5"}],
+            "asks": [{"price": "0.60", "size": "5"}],
+            "timestamp": "1",
+        }))
+        response = await exchange.place(_payload(price=0.5))
+        await asyncio.sleep(0.03)
+        assert store.order(response["orderID"])["status"] == "LIVE"
+
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "price_change",
+            "market": "0xcondition",
+            "price_changes": [{
+                "asset_id": "123",
+                "price": "0.49",
+                "side": "SELL",
+                "size": "1",
+                "hash": "change-without-top-of-book",
+            }],
+            "timestamp": "2",
+        }))
+
+        assert store.order(response["orderID"])["status"] == "MATCHED"
+        assert exchange.events[-1]["trader_side"] == "MAKER"
+        assert exchange.events[-1]["price"] == "0.5"
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_incremental_book_delete_reveals_next_best_level(tmp_path):
+    async def scenario():
+        store = PaperStore(str(tmp_path / "paper.sqlite3"), 100.0)
+        exchange = _Exchange(
+            PaperServerConfig(database_path=str(tmp_path / "paper.sqlite3")),
+            store,
+        )
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "book",
+            "market": "0xcondition",
+            "asset_id": "123",
+            "bids": [{"price": "0.39", "size": "5"}],
+            "asks": [
+                {"price": "0.60", "size": "5"},
+                {"price": "0.49", "size": "1"},
+            ],
+            "timestamp": "1",
+        }))
+        assert exchange._market_books["123"] == (0.39, 0.49)
+
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "price_change",
+            "market": "0xcondition",
+            "price_changes": [{
+                "asset_id": "123",
+                "price": "0.49",
+                "side": "SELL",
+                "size": "0",
+                "hash": "delete-best-ask",
+            }],
+            "timestamp": "2",
+        }))
+
+        assert exchange._market_books["123"] == (0.39, 0.60)
+        store.close()
+
+    asyncio.run(scenario())
+
+
+def test_incidental_opposite_token_book_does_not_count_as_subscription(tmp_path):
+    async def scenario():
+        store = PaperStore(str(tmp_path / "paper.sqlite3"), 100.0)
+        exchange = _SubscribedExchange(
+            PaperServerConfig(database_path=str(tmp_path / "paper.sqlite3")),
+            store,
+        )
+        exchange._market_ws = _MarketWebSocket()
+        exchange._market_books["123"] = (0.19, 0.40)
+        exchange._market_levels["123"] = {
+            "BUY": {0.19: 5.0},
+            "SELL": {0.40: 5.0},
+        }
+        exchange._market_ready["123"] = asyncio.Event()
+        exchange._market_ready["123"].set()
+
+        placing = asyncio.create_task(exchange.place(_payload(price=0.3)))
+        await asyncio.sleep(0)
+        assert not placing.done()
+        assert exchange._market_ws.messages == [{
+            "assets_ids": ["123"],
+            "operation": "subscribe",
+        }]
+
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "book",
+            "market": "0xcondition",
+            "asset_id": "123",
+            "bids": [{"price": "0.20", "size": "5"}],
+            "asks": [{"price": "0.41", "size": "5"}],
+            "timestamp": "2",
+        }))
+        response = await placing
+        assert response["success"]
+        assert exchange._market_books["123"] == (0.20, 0.41)
+        assert "123" in exchange._market_subscriptions
+        assert store.order(response["orderID"])["status"] == "LIVE"
+
+        await exchange._handle_market_ws_payload(json.dumps({
+            "event_type": "price_change",
+            "market": "0xcondition",
+            "price_changes": [{
+                "asset_id": "123",
+                "price": "0.29",
+                "side": "SELL",
+                "size": "1",
+                "hash": "cross-resting-order",
+            }],
+            "timestamp": "3",
+        }))
+        assert store.order(response["orderID"])["status"] == "MATCHED"
+        assert "123" not in exchange._market_subscriptions
+        assert "123" not in exchange._market_levels
         store.close()
 
     asyncio.run(scenario())

@@ -16,8 +16,13 @@ schema 解码。
 **输入**：未交叉 GTC，后续交叉；未交叉 FAK；超过现金/仓位的第二笔单。
 **期望**：GTC 由后续 Market WS 帧交叉后立即以 maker 成交，成交价是订单 limit 而非
 触发帧 quote；触价后一帧立刻回撤也不漏成交。FAK 自动撤单；未成交名义额与 SELL 数量
-均被预留，不得超用；`bid >= ask` 的异常帧不发布也不撮合。
+均被预留，不得超用；`bid >= ask` 的异常帧不发布也不撮合。下单等待初始 book 时订阅不得
+因订单尚未落账而提前释放；`price_change` 缺少可选 `best_bid/best_ask` 时仍按逐档增量重建
+best quote，删除最优档后切到下一档；同一市场顺带收到的对手 token 盘口不能冒充其订阅。
 **验收**：`test_resting_gtc_fills_only_after_later_price_cross` /
+`test_resting_gtc_uses_incremental_book_when_best_prices_are_omitted` /
+`test_incremental_book_delete_reveals_next_best_level` /
+`test_incidental_opposite_token_book_does_not_count_as_subscription` /
 `test_crossed_market_frame_is_not_published_or_matched` /
 `test_unmatched_ioc_is_canceled` / `test_open_orders_reserve_balance_and_position`。
 
