@@ -63,3 +63,11 @@ Excel 包含“订单明细/Pair汇总/类型汇总/说明”，并以 `origin/i
 **验收**：`test_existing_database_is_migrated_and_order_metadata_is_persisted` /
 `test_http_and_user_ws_protocol_round_trip` / `test_export_workbook_writes_detail_pair_and_type_sheets` /
 `test_export_workbook_merges_cancel_score_and_quotes_from_log_audit`。
+
+## paper-6：按运行重置账本
+
+**前置**：已有包含历史订单、余额及 WAL/SHM sidecar 的 paper SQLite。
+**输入**：以 `reset=true` 创建 `PaperStore`。
+**期望**：建立连接前清除旧主库与 sidecar；新账本无历史订单，余额等于本次
+`starting_balance`。`reset=false` 仍保留原持久化语义。
+**验收**：`test_reset_recreates_empty_ledger_with_starting_balance`；launcher 测试钉住配置透传。

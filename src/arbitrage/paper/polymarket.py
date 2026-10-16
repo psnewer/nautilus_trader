@@ -56,6 +56,7 @@ class PaperServerConfig:
     port: int = 8765
     database_path: str = "var/polymarket-paper.sqlite3"
     starting_balance: float = 10_000.0
+    reset: bool = False
     market_http_url: str = "https://clob.polymarket.com"
     market_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     market_proxy_url: str | None = None
@@ -64,9 +65,16 @@ class PaperServerConfig:
 class PaperStore:
     """小型 SQLite 权威账本；每次状态变更在同一事务内提交。"""
 
-    def __init__(self, path: str, starting_balance: float) -> None:
+    def __init__(self, path: str, starting_balance: float, reset: bool = False) -> None:
         db_path = Path(path).expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        if reset:
+            # 建库前删三件套(主库 + WAL + SHM),保证账本只含当次运行、不跨运行累积。
+            for suffix in ("", "-wal", "-shm"):
+                removed = Path(f"{db_path}{suffix}")
+                if removed.exists():
+                    removed.unlink()
+                    _LOG.info("PaperStore reset: removed %s", removed)
         self._db = sqlite3.connect(db_path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(
@@ -286,7 +294,11 @@ class PolymarketPaperExchange:
 
     def __init__(self, config: PaperServerConfig, store: PaperStore | None = None) -> None:
         self.config = config
-        self.store = store or PaperStore(config.database_path, config.starting_balance)
+        self.store = store or PaperStore(
+            config.database_path,
+            config.starting_balance,
+            reset=config.reset,
+        )
         self._session: ClientSession | None = None
         self._websockets: set[web.WebSocketResponse] = set()
         self._market_ws: ClientWebSocketResponse | None = None

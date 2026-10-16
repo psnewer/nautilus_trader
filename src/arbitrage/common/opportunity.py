@@ -27,6 +27,7 @@ class OpportunityMeta:
     venue_required_balance: float | None = None
     enable_timeout: bool | None = None
     market: bool | None = None
+    magic: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +60,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         tags.append(f"{TAG_PREFIX}enable_timeout={str(meta.enable_timeout).lower()}")
     if meta.market is not None:
         tags.append(f"{TAG_PREFIX}market={str(meta.market).lower()}")
+    if meta.magic is not None:
+        tags.append(f"{TAG_PREFIX}magic={meta.magic}")
     return tags
 
 
@@ -106,6 +109,7 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
             if values.get("market", "").lower() in {"true", "false"}
             else None
         ),
+        magic=values.get("magic"),
     )
 
 
@@ -127,6 +131,11 @@ def order_intent(order) -> str:
 def order_origin(order) -> str | None:
     """返回订单冻结的策略阶段来源。"""
     return _tag_values(getattr(order, "tags", None) or []).get("origin")
+
+
+def order_magic(order) -> str | None:
+    """返回订单的策略类型标记；未设置时返回 None。"""
+    return _tag_values(getattr(order, "tags", None) or []).get("magic")
 
 
 def order_score(order) -> str:

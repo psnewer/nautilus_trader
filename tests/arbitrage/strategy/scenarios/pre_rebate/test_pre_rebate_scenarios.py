@@ -5,7 +5,7 @@ pre_rebate 全配置场景:通过正式配置 loader/dispatcher 加载真实 arb
 是否针对仓位,逐分支构造上下文,断言配置实际路由到预期分支并产出预期计划。
 
 验证策略树路由、Check 产出及命中分支的完整 Action 链(最终 execution_plan、撤单计划、
-min_set 运行时写入)。不启动 TradingNode,不进入 Risk / Execution / barrier。赛中 one_side
+TP/SL 盘数门槛运行时写入)。不启动 TradingNode,不进入 Risk / Execution / barrier。赛中 one_side
 场景使用真实配置连续评估两次,覆盖趋势、连续触发、比分、venue_replace、share/commission
 门控及最终 place_bets 参数。
 
@@ -24,6 +24,7 @@ from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
 from src.arbitrage.strategy.condition import evaluate_tree
+from src.arbitrage.strategy.condition import evaluate_tree_to_plan
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from tests.arbitrage.strategy._live_state import live_context
@@ -96,10 +97,13 @@ def _order(
     price=0.40,
     origin="pre_game",
     intent="arbitrage",
+    magic=None,
     score="0-0",
     ts=1,
 ):
     tags = [f"arb:origin={origin}", f"arb:intent={intent}"]
+    if magic is not None:
+        tags.append(f"arb:magic={magic}")
     if score is not None:
         tags.append(f"arb:order_score={score}")
     return SimpleNamespace(
@@ -382,9 +386,16 @@ def test_in_game_set_three_skips_configured_convert(trees):
 # ───────────────────────── 补偿树:撤单 ─────────────────────────
 
 
-def test_lower_pre_game_position_order_cancel_on_price_drift(trees):
+def test_lower_pre_game_position_hit_order_cancel_on_price_drift(trees):
     _, comp_tree = trees
-    order = _order("O-posp", side="SELL", origin="pre_game", price=0.40)
+    order = _order(
+        "O-posp",
+        side="SELL",
+        origin="in_game",
+        intent="recovery",
+        magic="in_game_close_pre_game_position_hit",
+        price=0.40,
+    )
     ctx = _ctx(
         tier="lower",
         phase="in",
@@ -422,10 +433,17 @@ def test_lower_pre_game_nonposition_order_cancel_on_game_drift(trees):
     assert ctx.scratch["execution_plan"].cancel_order_ids == ("O-prebuy",)
 
 
-def test_lower_in_game_position_order_cancel_bumps_min_set(trees):
+def test_lower_in_game_position_order_cancel_bumps_min_sl_set(trees):
     _, comp_tree = trees
     store = InGamePositionRuntimeStore()
-    order = _order("O-ingpos", side="SELL", origin="in_game", intent="recovery", price=0.40)
+    order = _order(
+        "O-ingpos",
+        side="SELL",
+        origin="in_game",
+        intent="recovery",
+        magic="in_game_close_in_game_position_sl",
+        price=0.40,
+    )
     ctx = _ctx(
         tier="lower",
         phase="in",
@@ -440,17 +458,19 @@ def test_lower_in_game_position_order_cancel_bumps_min_set(trees):
 
     assert result.hit is True
     assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["O-ingpos"]
-    # 跑该分支的 pending actions(place_bets 生成撤单计划 + advance_min_set 写盘数)。
+    # 跑该分支的 pending actions(place_bets 生成撤单计划 + advance_min_sl_set 写盘数)。
     for action in result.pending_actions:
         _run(action.execute(ctx))
-    assert store.min_set(_PAIR) == 3  # current_set S2 + offset 1
+    assert store.min_sl_set(_PAIR) == 3  # current_set S2 + offset 1
+    assert store.min_tp_set(_PAIR) is None
 
-    # 同一盘再出现针对仓位的恢复挂单,即使价格/比分都未漂移,也会被运行时 min_set=3 撤销。
+    # 同一盘再出现 SL 恢复挂单，即使价格/比分都未漂移，也会被运行时 min_sl_set=3 撤销。
     follow_up = _order(
         "O-ingpos-next",
         side="SELL",
         origin="in_game",
         intent="recovery",
+        magic="in_game_close_in_game_position_sl",
         price=0.46,
     )
     follow_up_ctx = _ctx(
@@ -464,7 +484,7 @@ def test_lower_in_game_position_order_cancel_bumps_min_set(trees):
     )
     follow_up_result = evaluate_tree(comp_tree, follow_up_ctx)
     assert follow_up_result.hit is True
-    assert follow_up_ctx.scratch["cancel_pair_orders"]["min_set"] == 3
+    assert follow_up_ctx.scratch["cancel_pair_orders"]["min_sl_set"] == 3
     assert follow_up_ctx.scratch["cancel_pair_orders"]["client_order_ids"] == [
         "O-ingpos-next",
     ]
@@ -592,6 +612,28 @@ def test_lower_pre_game_position_close_emits_sell_at_bid(trees):
     # 配置 limit=true 后 SELL 先取 ask=0.45,再应用 spread=0.03。
     assert order["price"] == pytest.approx(0.48)
     assert order["intent"] == "recovery"
+    assert order["magic"] == "pre_game_close_pre_game_position"
+
+
+def test_lower_pre_game_position_close_skips_duplicate_initialized_magic_order(trees):
+    _, comp_tree = trees
+    opening = _order("O-open", side="BUY", origin="pre_game")
+    duplicate = _order("O-close-initialized", side="SELL", origin="pre_game", ts=0)
+    duplicate.tags.append("arb:magic=pre_game_close_pre_game_position")
+    ctx = _ctx(
+        tier="lower",
+        phase="pre",
+        tree_kind="compensation",
+        orders=[],  # INITIALIZED 尚不在 orders_open，但已存在于完整订单历史。
+        order_history=[opening, duplicate],
+        positions=[_position(opening_order_id="O-open")],
+    )
+
+    result = evaluate_tree(comp_tree, ctx)
+
+    assert result.hit is True
+    _fire(result, ctx)
+    assert "execution_plan" not in ctx.scratch
 
 
 def test_lower_in_game_position_close_routes_to_in_game_position_branch(trees):
@@ -621,6 +663,50 @@ def test_lower_in_game_position_close_routes_to_in_game_position_branch(trees):
     assert order["price"] == pytest.approx(0.52)
 
 
+def test_lower_in_game_position_stop_loss_requires_two_games_and_opening_set(trees):
+    _, comp_tree = trees
+    opening = _order(
+        "O-open-sl",
+        side="BUY",
+        origin="in_game",
+        score="0-0",
+    )
+    ctx = _ctx(
+        tier="lower",
+        phase="in",
+        tree_kind="compensation",
+        score="1-3",
+        period="S1",
+        orders=[],
+        order_history=[opening],
+        positions=[_position(opening_order_id="O-open-sl")],
+    )
+
+    result = _run(evaluate_tree_to_plan(comp_tree, ctx))
+
+    assert result.hit is True
+    order = ctx.scratch["execution_plan"].orders[0].spec
+    assert order["magic"] == "in_game_close_in_game_position_sl"
+    assert order["side"] == "SELL"
+    assert order["price"] == pytest.approx(0.45)
+
+    ctx = _ctx(
+        tier="lower",
+        phase="in",
+        tree_kind="compensation",
+        score="3-6, 0-2",
+        period="S2",
+        orders=[],
+        order_history=[opening],
+        positions=[_position(opening_order_id="O-open-sl")],
+    )
+
+    result = _run(evaluate_tree_to_plan(comp_tree, ctx))
+
+    assert result.hit is False
+    assert "execution_plan" not in ctx.scratch
+
+
 def test_lower_pre_game_position_closes_in_game_only_when_score_allows(trees):
     _, comp_tree = trees
     opening = _order("O-open-pre", side="BUY", origin="pre_game")
@@ -634,18 +720,22 @@ def test_lower_pre_game_position_closes_in_game_only_when_score_allows(trees):
         positions=[_position(opening_order_id="O-open-pre")],
     )
 
-    result = evaluate_tree(comp_tree, ctx)
+    result = _run(evaluate_tree_to_plan(comp_tree, ctx))
     assert result.hit is True
-    _fire(result, ctx)
 
     order = ctx.scratch["execution_plan"].orders[0].spec
     assert order["side"] == "SELL"
+    assert order["magic"] == "in_game_close_pre_game_position_hit"
     assert order["price"] == pytest.approx(0.43)  # limit=false,保留 position_close 的 bid
     assert order["intent"] == "recovery"
 
 
-@pytest.mark.parametrize("origin", ["pre_game", "in_game"])
-def test_lower_in_game_position_close_is_blocked_while_position_is_losing(trees, origin):
+@pytest.mark.parametrize(("origin", "expect_default"), [("pre_game", True), ("in_game", False)])
+def test_lower_in_game_position_close_while_position_is_losing(
+    trees,
+    origin,
+    expect_default,
+):
     _, comp_tree = trees
     opening = _order("O-open-lose", side="BUY", origin=origin)
     ctx = _ctx(
@@ -658,12 +748,15 @@ def test_lower_in_game_position_close_is_blocked_while_position_is_losing(trees,
         positions=[_position(opening_order_id="O-open-lose")],
     )
 
-    result = evaluate_tree(comp_tree, ctx)
-    assert result.hit is True
-    _fire(result, ctx)
+    result = _run(evaluate_tree_to_plan(comp_tree, ctx))
 
-    assert ctx.scratch["legs"] == []
-    assert "execution_plan" not in ctx.scratch
+    assert result.hit is expect_default
+    if expect_default:
+        order = ctx.scratch["execution_plan"].orders[0].spec
+        assert order["magic"] == "in_game_close_pre_game_position_default"
+        assert order["price"] == pytest.approx(0.59)
+    else:
+        assert "execution_plan" not in ctx.scratch
 
 
 def test_regular_position_has_no_compensation_branch(trees):

@@ -20,17 +20,22 @@ class _SportsStore:
 def test_store_is_sparse_and_deletes_pair_override():
     store = InGamePositionRuntimeStore()
 
-    assert store.min_set("p") is None
-    store.set_min_set("p", 4)
-    assert store.min_set("p") == 4
+    assert store.min_tp_set("p") is None
+    assert store.min_sl_set("p") is None
+    store.set_min_tp_set("p", 4)
+    store.set_min_sl_set("p", 2)
+    assert store.min_tp_set("p") == 4
+    assert store.min_sl_set("p") == 2
     store.delete_pair("p")
-    assert store.min_set("p") is None
+    assert store.min_tp_set("p") is None
+    assert store.min_sl_set("p") is None
 
 
+@pytest.mark.parametrize("setter", ["set_min_tp_set", "set_min_sl_set"])
 @pytest.mark.parametrize("value", [0, -1, True, 2.5])
-def test_store_rejects_invalid_min_set(value):
+def test_store_rejects_invalid_min_set(setter, value):
     with pytest.raises(ValueError, match="positive integer"):
-        InGamePositionRuntimeStore().set_min_set("p", value)
+        getattr(InGamePositionRuntimeStore(), setter)("p", value)
 
 
 @pytest.mark.parametrize(("period", "expected"), [("S3", 3), ("s12", 12), ("SET3", 0), ("", 0)])

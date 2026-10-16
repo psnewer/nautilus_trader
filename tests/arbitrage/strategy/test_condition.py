@@ -1,5 +1,7 @@
 """Condition / EvalResult / evaluate_tree —— 嵌套树求值算法。"""
 
+import asyncio
+
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import AndCheckExpr
@@ -10,6 +12,9 @@ from src.arbitrage.strategy.condition import EvalResult
 from src.arbitrage.strategy.condition import NotCheckExpr
 from src.arbitrage.strategy.condition import OrCheckExpr
 from src.arbitrage.strategy.condition import evaluate_tree
+from src.arbitrage.strategy.condition import evaluate_tree_to_plan
+from src.arbitrage.strategy.execution_plan import ExecutionPlan
+from src.arbitrage.strategy.execution_plan import PreparedOrder
 
 
 class _ConstantQuery(StateQuery):
@@ -17,6 +22,16 @@ class _ConstantQuery(StateQuery):
         self.value = value
 
     def matches(self, ctx: EvalContext) -> bool:
+        return self.value
+
+
+class _RecordingQuery(StateQuery):
+    def __init__(self, value: bool, label: str) -> None:
+        self.value = value
+        self.label = label
+
+    def matches(self, ctx: EvalContext) -> bool:
+        ctx.scratch["query_selected"] = self.label
         return self.value
 
 
@@ -39,6 +54,42 @@ class _NeverExecutedAction(Action):
 
     async def execute(self, ctx):
         self.calls += 1
+
+
+class _NoPlanAction(Action):
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.calls = 0
+
+    async def execute(self, ctx):
+        self.calls += 1
+        ctx.scratch["discarded_action"] = self.label
+
+
+class _PlanAction(Action):
+    def __init__(self, *, cancel: bool = False) -> None:
+        self.cancel = cancel
+        self.calls = 0
+
+    async def execute(self, ctx):
+        self.calls += 1
+        if self.cancel:
+            ctx.scratch["execution_plan"] = ExecutionPlan.cancel_pair(
+                ctx.pair_id,
+                "test",
+                ["O-1"],
+            )
+            return
+        ctx.scratch["execution_plan"] = ExecutionPlan.submit(
+            ctx.pair_id,
+            [
+                PreparedOrder(
+                    spec={"instrument_id": "Y.POLYMARKET"},
+                    venue="POLYMARKET",
+                    role="yes",
+                ),
+            ],
+        )
 
 
 def _ctx() -> EvalContext:
@@ -166,3 +217,81 @@ def test_nested_two_levels_inner_sub_hits():
     root = Condition(self_hits=_ConstantQuery(True), sub_conditions=[inner])
     res = evaluate_tree(root, _ctx())
     assert res.hit and res.pending_actions == [action]
+
+
+def test_parent_query_output_rolls_back_when_all_children_miss():
+    ctx = _ctx()
+    ctx.scratch["baseline"] = True
+    root = Condition(
+        self_hits=_RecordingQuery(True, "parent"),
+        sub_conditions=[_leaf(False), _leaf(False)],
+    )
+
+    assert evaluate_tree(root, ctx).hit is False
+    assert ctx.scratch == {"baseline": True}
+
+
+def test_runtime_continues_to_sibling_when_actions_produce_no_plan():
+    ctx = _ctx()
+    ctx.scratch["baseline"] = True
+    no_plan = _NoPlanAction("first")
+    plan = _PlanAction()
+    second_check = _RecordingCheck(True, label="second")
+    root = Condition(
+        self_hits=_ConstantQuery(True),
+        sub_conditions=[
+            _leaf(True, [_RecordingCheck(True, label="first")], no_plan),
+            _leaf(True, [second_check], plan),
+        ],
+    )
+
+    result = asyncio.run(evaluate_tree_to_plan(root, ctx))
+
+    assert result.hit is True
+    assert result.pending_actions == [plan]
+    assert no_plan.calls == 1
+    assert plan.calls == 1
+    assert second_check.calls == 1
+    assert "discarded_action" not in ctx.scratch
+    assert ctx.scratch["selected"] == "second"
+    assert ctx.scratch["execution_plan"].kind == "submit"
+
+
+def test_runtime_cancel_plan_is_final_and_stops_siblings():
+    ctx = _ctx()
+    cancel = _PlanAction(cancel=True)
+    skipped_check = _RecordingCheck(True)
+    root = Condition(
+        self_hits=_ConstantQuery(True),
+        sub_conditions=[
+            _leaf(True, action=cancel),
+            _leaf(True, [skipped_check], _PlanAction()),
+        ],
+    )
+
+    result = asyncio.run(evaluate_tree_to_plan(root, ctx))
+
+    assert result.hit is True
+    assert ctx.scratch["execution_plan"].kind == "cancel_pair"
+    assert skipped_check.calls == 0
+
+
+def test_runtime_all_no_plan_branches_miss_and_restore_scratch():
+    ctx = _ctx()
+    ctx.scratch["baseline"] = True
+    first = _NoPlanAction("first")
+    second = _NoPlanAction("second")
+    root = Condition(
+        self_hits=_RecordingQuery(True, "parent"),
+        sub_conditions=[
+            _leaf(True, action=first),
+            _leaf(True, action=second),
+        ],
+    )
+
+    result = asyncio.run(evaluate_tree_to_plan(root, ctx))
+
+    assert result == EvalResult(hit=False, pending_actions=[])
+    assert first.calls == 1
+    assert second.calls == 1
+    assert ctx.scratch == {"baseline": True}

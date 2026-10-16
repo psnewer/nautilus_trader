@@ -18,13 +18,16 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
-from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSlSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinTpSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
+from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.same_set import SameSetAction
 from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
@@ -93,7 +96,18 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
     assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)
-    assert isinstance(build_action({"type": "advance_min_set"}), AdvanceMinSetAction)
+    assert isinstance(build_action({"type": "advance_min_tp_set"}), AdvanceMinTpSetAction)
+    assert isinstance(build_action({"type": "advance_min_sl_set"}), AdvanceMinSlSetAction)
+    assert isinstance(
+        build_action({
+            "type": "magic_order_gate",
+            "params": {
+                "magic": "position_close",
+                "conflicts": ["other_close"],
+            },
+        }),
+        MagicOrderGateAction,
+    )
     assert isinstance(
         build_check({"type": "pre_game_order", "params": {"offset": 0.2}}),
         PreGameOrderCheck,
@@ -110,7 +124,7 @@ def test_register_builtin_checks_and_actions_registers_current_types():
                 "book_side": "ask",
                 "price_drift": 0.05,
                 "game_drift": 1,
-                "min_set": 1,
+                "min_tp_set": 1,
             },
         }),
         OrderCancelCheck,
@@ -118,7 +132,7 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(
         build_check({
             "type": "position_close",
-            "params": {"min_set": 3, "origin": "in_game"},
+            "params": {"min_sl_set": 3, "origin": "in_game"},
         }),
         PositionCloseCheck,
     )
@@ -149,10 +163,14 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         build_action(
             {
                 "type": "current_set_game_selection",
-                "params": {"standing": "win|draw", "tier_only": True},
+                "params": {"standing": "lose", "tier_only": True, "min": 2},
             },
         ),
         CurrentSetGameSelectionAction,
+    )
+    assert isinstance(
+        build_action({"type": "same_set", "params": {"limit": True}}),
+        SameSetAction,
     )
     assert isinstance(
         build_action({"type": "commission_gate", "params": {"commission": 1.02}}),

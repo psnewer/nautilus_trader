@@ -109,6 +109,13 @@ def test_explicit_origin_overrides_phase_derivation():
     assert spec["origin"] == "pre_game"
 
 
+def test_magic_gate_scratch_is_copied_to_submit_spec():
+    ctx = _derive_ctx(phase=PHASE_PRE)
+    ctx.scratch["order_magic"] = "pre_game_position_close"
+
+    assert _first_spec(PlaceBetsAction(), ctx)["magic"] == "pre_game_position_close"
+
+
 def test_pm_size_equals_share():
     assert _compute_size("POLYMARKET", 22.5, 0.40) == 22.5
 

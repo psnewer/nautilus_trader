@@ -134,9 +134,12 @@ SQLite 事务内更新。当前 paper 成交回执费率为 0；NT 仍会按 ins
 3. 确认服务已启动后，另一进程启动
    `.venv/bin/python launchers/arb_node.py --config arb_config.json`。
 
-SQLite 文件是可恢复账本；`starting_balance` 只在新数据库第一次创建时生效。
-需要新账户时应在两个进程停止后显式换一个新 `database_path`，不由启动器
-自动清空历史。
+SQLite 文件默认是可恢复账本；`starting_balance` 只在新数据库第一次创建时生效。
+`execution.paper.reset=false`（默认）时，服务重启继续使用原账本。设为 `true` 时，paper
+server 每次启动、建立 SQLite 连接前删除 `database_path` 及其 `-wal/-shm`，随后以
+`starting_balance` 创建空账本；该模式用于让一次运行与一次审计数据严格对齐。启动前必须
+先停止旧 paper server，避免两个进程分别持有被删除前后的账本。该开关只影响 paper
+本地账本，不改变真实 PM 行情、OE/SE execution 或 arb node。
 
 回溯分析使用 `scripts/arbitrage_audit/export_paper_execution.py`，输出“订单明细”、
 “Pair汇总”、“类型汇总”和“说明”四个 sheet；订单类型统一展示为 `origin/intent`。
@@ -151,6 +154,7 @@ session 映射回填，不匹配的字段仍留空。导出读取 SQLite 一致�
 
 - `execution.mode` 只允许 `live|paper`，paper 要求 PM venue enabled。
 - paper host 只允许 localhost，端口/初始余额 fail-fast 校验。
+- `paper.reset` 默认关闭；显式开启时每次 paper server 启动都会永久清空旧本地账本。
 - paper node 保留全部 enabled venue 的 ExecutionClient 与 DataClient，只替换 PM 私有执行端点。
 - paper 跳过 geoblock 检查，但仅因私有执行目标是 localhost；公开数据路径不变。
 - paper 无条件禁用 `PolymarketSettlement`，即使 cleanup 和真实链上凭证都存在。

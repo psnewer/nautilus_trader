@@ -8,8 +8,8 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
   输出调整后的 candidate 数组,供后续 `CandiSelectAction` 选择。
 
 可选 `current_position_gate=True` 时,先按 Portfolio 跨 venue 聚合的当前持仓 outcome 筛腿。
-可选 `current_order_gate={"enable": true}` 时,只要当前 pair 存在任意 open order 就清空输出；
-`ignore_start_price=true` 时忽略 `arb:intent=start_game` 的已提交 open order。
+可选 `current_order_gate={"enable": true}` 时,只要当前 pair 存在任意非终态订单就清空输出；
+`ignore_start_price=true` 时忽略 `arb:intent=start_game` 的已提交活动订单。
 
 复用原公式,按 Venue Registry odds_model 分支:
   - probability venue: remaining = max - current[role]（单腿独立检查）
@@ -134,26 +134,27 @@ class ShareLimitModification(Action):
         try:
             instrument_ids = pair_instrument_ids(ctx)
             for instrument_id in instrument_ids:
-                open_orders = ctx.cache.orders_open(instrument_id=instrument_id) or ()
+                orders = ctx.cache.orders(instrument_id=instrument_id) or ()
                 blocking = next(
                     (
                         order
-                        for order in open_orders
-                        if not self._is_ignored_start_price_order(order)
+                        for order in orders
+                        if _is_active_order(order)
+                        and not self._is_ignored_start_price_order(order)
                     ),
                     None,
                 )
                 if blocking is not None:
                     _LOG.info(
                         f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
-                        f"open order exists on instrument={instrument_id}, clear output",
+                        f"active order exists on instrument={instrument_id}, clear output",
                     )
                     self._clear_all_outputs(ctx)
                     return False
         except (AttributeError, TypeError, ValueError) as exc:
             _LOG.error(
                 f"ShareLimitModification[current_order_gate]: pair={ctx.pair_id} "
-                f"cannot read open orders: {exc}",
+                f"cannot read active orders: {exc}",
             )
             self._clear_all_outputs(ctx)
             return False
@@ -406,6 +407,26 @@ def _normalize_current_order_gate(raw: dict | None) -> dict[str, bool]:
 
 def _was_submitted(order) -> bool:
     return int(getattr(order, "ts_submitted", 0) or 0) > 0
+
+
+_CLOSED_ORDER_STATUSES = {
+    "CANCELED",
+    "DENIED",
+    "EXPIRED",
+    "FILLED",
+    "REJECTED",
+}
+
+
+def _is_active_order(order) -> bool:
+    closed = getattr(order, "is_closed", None)
+    if callable(closed):
+        closed = closed()
+    if isinstance(closed, bool):
+        return not closed
+    status = getattr(order, "status", None)
+    status_name = str(getattr(status, "name", status) or "").upper()
+    return status_name not in _CLOSED_ORDER_STATUSES
 
 
 def _candidate_base_share(candidate: dict) -> float:

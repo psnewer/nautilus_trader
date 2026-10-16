@@ -200,6 +200,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "positions_digest": "positions-1",
         "enable_timeout": False,
         "market": True,
+        "magic": "pre_game_position_close",
     }))
 
     assert submitted[0].tags == [
@@ -211,6 +212,7 @@ def test_submit_writes_opportunity_metadata_tags():
         "arb:positions_digest=positions-1",
         "arb:enable_timeout=false",
         "arb:market=true",
+        "arb:magic=pre_game_position_close",
     ]
 
 

@@ -3,6 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.condition import EvalContext
@@ -442,12 +444,14 @@ def test_current_order_gate_can_ignore_submitted_start_game_open_order():
         instrument_id="Y.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=123,
+        status="SUBMITTED",
         tags=["arb:intent=start_game"],
     )
     historical_view = SimpleNamespace(
         instrument_id="Y.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=123,
+        status="SUBMITTED",
         tags=["arb:intent=start_game"],
     )
     ctx = live_context(
@@ -501,12 +505,14 @@ def test_current_order_gate_ignores_start_game_order_even_with_other_history():
         instrument_id="Y.POLYMARKET",
         client_order_id="O-2",
         ts_submitted=200,
+        status="SUBMITTED",
         tags=["arb:intent=start_game"],
     )
     denied = SimpleNamespace(
         instrument_id="N.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=0,
+        status="DENIED",
     )
     ctx = live_context(
         instrument_ids=["Y.POLYMARKET", "N.POLYMARKET"],
@@ -533,12 +539,14 @@ def test_current_order_gate_blocks_submitted_non_start_game_order():
         instrument_id="Y.POLYMARKET",
         client_order_id="O-2",
         ts_submitted=200,
+        status="SUBMITTED",
         tags=["arb:intent=arbitrage"],
     )
     prior = SimpleNamespace(
         instrument_id="N.POLYMARKET",
         client_order_id="O-1",
         ts_submitted=100,
+        status="SUBMITTED",
         tags=["arb:intent=start_game"],
     )
     ctx = live_context(
@@ -559,6 +567,54 @@ def test_current_order_gate_blocks_submitted_non_start_game_order():
     ).execute(ctx))
 
     assert ctx.scratch["legs"] == []
+
+
+@pytest.mark.parametrize("status", ["INITIALIZED", "SUBMITTED"])
+def test_current_order_gate_blocks_inflight_order_missing_from_orders_open(status):
+    order = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-inflight",
+        status=status,
+        ts_submitted=0 if status == "INITIALIZED" else 123,
+        tags=["arb:intent=arbitrage"],
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[],
+        order_history=[order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+@pytest.mark.parametrize("status", ["DENIED", "REJECTED", "CANCELED", "EXPIRED", "FILLED"])
+def test_current_order_gate_ignores_terminal_order_history(status):
+    order = SimpleNamespace(
+        instrument_id="Y.POLYMARKET",
+        client_order_id="O-terminal",
+        status=status,
+        ts_submitted=123,
+        tags=["arb:intent=arbitrage"],
+    )
+    ctx = live_context(
+        instrument_ids=["Y.POLYMARKET"],
+        orders=[],
+        order_history=[order],
+        portfolio=_Portfolio(pm={"yes": 0.0}),
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(ShareLimitModification(current_order_gate={"enable": True}).execute(ctx))
+
+    assert ctx.scratch["legs"]
 
 
 def test_current_order_gate_rejects_removed_spread_param():

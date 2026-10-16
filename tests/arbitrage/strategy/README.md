@@ -5,7 +5,7 @@
 **Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节)；所需策略语义已落到当前 Check / Action，迁移前 services 实现已删除。
 
 **测试结构**:
-- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 无外部执行副作用,可全单测；StateQuery 只读当前上下文
+- 框架层(本 README §"strategy-4.framework.x"):`StateQuery` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 无外部执行副作用,可全单测；StateQuery 可向命中分支提交 per-eval scratch
 - 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 已挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
@@ -169,7 +169,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 详设见 `architectures/strategy/architecture.md §3.8`(slice 9 落地段)+ `_cross-cutting/configuration.md §10`(slice 9 ✅)。
 
 **当前框架边界**:
-- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由只读当前状态的 `StateQuery` 与 AND/OR/NOT 组成
+- ✅ `test_bool_expr.py` / `test_json_loader.py`:self_hits 由当前状态 `StateQuery` 与 AND/OR/NOT 组成；命中分支可提交 per-eval scratch，失败/未采用分支回滚
 - ✅ `test_evaluator.py`:Evaluator 注入 live cache、PMS `sports_store` 与 position digest（#317:open_orders_digest 已删）
 - ✅ `test_eval_context_strategy_defaults_read_arbitrage_params`:每轮从 live `ArbitrageParams` 读取 `share/max_leg_share`；`fx` 不进入 Strategy defaults
 
@@ -181,7 +181,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx)，并保留 `share_if_wins=missing` 供后续 `venue_replace` 重算 PM 数量 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
-- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_order_gate` 使用 `{enable,ignore_start_price}`，默认关闭，开启后任一 pair open order 默认清空全部输出；开启 ignore 后仅忽略已 SUBMITTED 且 `arb:intent=start_game` 的当前挂单，不依赖价格或历史 submitted 数量；未提交或其它 intent 挂单仍拦，并覆盖缺 live 状态、旧 spread 字段及非法对象参数；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
+- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底；`current_order_gate` 使用 `{enable,ignore_start_price}`，默认关闭，开启后任一 pair 非终态订单（含 INITIALIZED/SUBMITTED）默认清空全部输出，终态历史不拦；开启 ignore 后仅忽略已 SUBMITTED 且 `arb:intent=start_game` 的活动订单，不依赖价格或历史 submitted 数量；未提交或其它 intent 活动单仍拦，并覆盖缺 live 状态、旧 spread 字段及非法对象参数；`current_position_gate` 默认关闭，开启后跨 venue 聚合当前持仓 outcome，无仓不筛、单边仓只留同 outcome、双边仓保留两边，并覆盖 candidates 逐腿过滤、空 candidate 淘汰及非法参数
 - ✅ `test_action_venue_replace.py`:`legs/candidates/selected_candidate`(candidate 即包了元数据的 legs 数组,三种输入都支持)中的非 PM 腿按同 outcome 替换为 PM 路由腿;逐腿 `share_if_wins` 不变。`tier_ignore=True` 只读取 pair 中 OE instrument 的原始 `competition_name`，Challenger、WTA 125K、普通 WTA、UTR 与 ITF 均判为低级别并清空三种输出，阻止该 pair 下单；归并后的 `info["competition"]` 不参与判级，缺原始 OE 名称或 ATP 非低级别名称沿用旧路径，缺失/`False` 完全兼容旧路径，非法非 boolean fail-fast。tier 拦截优先于 `set_exempt` 且不读 start_price；旧 `tier_convert` pre/post 反转已删除。可选正整数 `set_exempt` 在 Sports state `period=S<N>` 与 N 相等时仅豁免 `convert/attitude/deviate_convert`，非 PM 腿仍默认同方向替换，缺/坏 period 或盘号不等时不豁免。`pm_price` 只控制未反转的非 PM 输入腿：默认/`True` 用 PM 实时 ask，`False` 保留原 order prob。`convert` 仅原生 PM 腿直接反转；再未命中时，`attitude=True` 以原 outcome PM bid 命中 `bid<=start_price`，`deviate_convert=True` 命中 `bid>=1.2×start_price` 且不设上限，动态反转共同要求当前 outcome 有有效 start、完整 PM ask commission 位于 `[0.98,1.02]`。缺当前 outcome start 只跳过动态反转，不要求 pair start 完整，也不拦截原生 PM 保持或非 PM 默认同方向替换。任何实际反转始终使用最终 PM token 实时 ask并忽略 `pm_price`；PM `qty=share` 不随价变,合成 decimal NO 执行字段不残留;撤单计划不改写;`venue_replace -> share_limit` 时额度查询落到最终 PM venue/outcome
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`:只在本树 candidate 中做最小下注门控和 max-share 选择；覆盖 `min_quantity/min_notional/min_buy_notional`、整 candidate 淘汰及 legs-only 包装，不承担树间优先级
@@ -405,12 +405,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.pre_rebate.3: 低级别赛前低 ask 偏移挂单与分类撤单
 - 低级别赛事、`pre_game` 为真且 `pre_game_order` 命中 → arb 树出 submit plan；
   `UNKNOWN/IN_PLAY/POST` 均不进入该分支。
-- `pre_game_order + pre_game` 补偿分支先按订单性质拆开：针对仓位的订单经
-  `select_orders(origin=pre_game,position_order=true) → order_cancel(ask,price_drift=0.05)`；
-  普通订单经 `select_orders(origin=pre_game,position_order=false) → pre_game_reverse`。
-- 仓位单价格漂移恰好等于 `0.05` 时也撤；浮点边界用绝对容差比较。
-- `pre_game_reverse` 缺 selector 输出 fail-closed，只检查候选普通订单；混合窗口中不会读取或撤销
-  position order。仓位单价格漂移不命中时继续评估普通单反转分支。
+- `pre_game_order + pre_game` 补偿分支由
+  `exposure_source(source=pre_game_order,position_order=false)` 直接选择普通订单，再执行
+  `pre_game_reverse`；针对已有仓位的订单不会进入该反转 Check。
+- `pre_game_reverse` 缺 condition 输出 fail-closed，只检查候选普通订单；混合窗口中不会读取或撤销
+  position order。
 - 非低级别赛事:套利树赛前无子条件(留空),不产生赛前挂单。
 
 ### strategy-4.pre_rebate.4: 赛前按率补 vs 开赛强补
@@ -457,7 +456,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.pre_rebate.8: current_order_gate 按 start_game intent 忽略挂单（#418）
 - `enable=true,ignore_start_price=true` 时，只忽略 `ts_submitted > 0` 且带
-  `arb:intent=start_game` 的 open order；未 submitted 或其它 intent 挂单拦截。
+  `arb:intent=start_game` 的非终态订单；未 submitted 或其它 intent 活动单拦截。
+- gate 使用 `cache.orders()` 而非 `orders_open()`：`INITIALIZED/SUBMITTED` 窗口同样受控；
+  `DENIED/REJECTED/CANCELED/EXPIRED/FILLED` 历史订单不阻断。
 - 不比较订单价与 `start_price-spread`，不根据 pair 历史 submitted 数量猜测来源；
   验证存在其它历史订单时 start_game 挂单仍放行，以及旧 boolean/`spread` 配置 fail-fast。
 - 验收：`test_action_share_limit.py`。
@@ -488,43 +489,61 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 ### strategy-4.pre_rebate.12: 低级别开赛后统一撤赛前挂单
 - 仅 `lower_tier` 的 `pre_game_order` 来源分支运行;本 pair 无 open `origin=pre_game` 挂单
   或挂单 origin 不是 pre_game → 不撤。
-- 赛中以两个顺序叶运行 `select_orders → order_cancel`：两叶都先筛 `origin=pre_game`，仓位目标单再筛选 `position_order=true`，配置
-  `ask/0.05/1`；普通单筛选 `position_order=false`，只配置 `game_drift=1`。普通单缺/坏下单比分
+- 赛中以两个顺序叶运行 `exposure_source(position_order=true|false) → order_cancel`：两叶都按
+  `source=pre_game_order` 筛来源；仓位目标单与普通单当前均配置 `ask/0.05/1`。普通单缺/坏下单比分
   按 0 局处理，当前比分累计局数达到 1 即撤；不再读取 start_price 或价格漂移。
 - 混合窗口中仓位叶命中时先只撤该子集，普通单留待后续评估；仓位叶未满足撤单条件时会回滚筛选
   scratch，继续评估普通叶。缺筛选结果时统一撤单 Check fail-closed，不退化为撤全部订单。
-- 验收：`test_check_select_orders.py`、`test_check_order_cancel.py`;launcher
+- 验收：`test_query_exposure_source.py`、`test_check_order_cancel.py`;launcher
   `test_arb_node.py` 覆盖 query/check 注册装配。
 
 ### strategy-4.pre_rebate.13: 低级别 pre_game 成交仓分阶段平仓(B1P/B1M)
-- `pre_game_position + pre_game` 不看比分：`position_close(origin=pre_game)` 固定输出真实 PM LONG
+- `pre_game_position + pre_game` 不看比分：`exposure_source` 先输出 pre_game position-id 子集，
+  `position_close` 固定输出该子集的真实 PM LONG
   仓的全量 SELL@bid，随后 `place_bets(limit=true,spread=0.03)` 转到 ask 后应用 spread；
   验收最终价格先按 SELL limit 取当前 ask 与计划价较高者，再按概率口径上移 `0.03`。
 - `pre_game_position + in_game` 不再使用 `mean_rebate_recovery/min_repaired_rebate`；同一
-  `position_close(origin=pre_game)` 未配置 `min_set`，因此完全不读取盘数或 in_game 运行时覆盖。
-- Action 先后执行 `score_selection(win|draw)` 和
-  `current_set_game_selection(win|draw)`，只有持仓方比赛级、当前盘局分均非落后才保留；当前盘
-  `0-0` 不算 draw，任一比分不可判定均 fail-closed。
-- 保留的 SELL@bid 腿经 `place_bets(limit=false,intent=recovery,origin=in_game)` 提交并透传
-  position_id；`origin=in_game`
-  保证未成交平仓单进入 in_game_order 撤单分支，而不被 pre_game_order 的开赛撤单逻辑立即撤销。
+  `position_close` 未配置 `min_tp_set/min_sl_set`，因此完全不读取盘数或 in_game 运行时覆盖。
+- 同一仓位的两个子分支按 hit → default 排序：hit 先经
+  `current_set_game_selection(win|draw)`，命中时把 SELL@bid 腿交给 `place_bets(limit=false)`；
+  未命中才回落 default，以 `place_bets(limit=true,spread=0.14)` 挂 SELL ask+spread。
+  生产异步求值必须验证 hit 已形成计划时 default 不再执行，落后时则可回落 default。
+- 两类平仓单均透传 position_id，并在赛中自动写 `origin=in_game`。
+- hit 平仓挂单的撤单分支必须以 `exposure_source(source=in_game_order,magic=in_game_close_pre_game_position_hit)`
+  取交集；价格或局数漂移命中后只定向撤该类订单，不能按赛前仓位来源误写成 `pre_game_order`。
 - 验收：`test_check_position_close.py` 覆盖无盘数门槛、运行时覆盖隔离、SELL 报价和下单；
-  `test_action_score_selection.py` 覆盖 SELL 不反转目标腿比分；实际 `arb_config.json` 经 builtin registry
-  完整装配。
+  场景测试覆盖 hit 优先及 default 回落；实际 `arb_config.json` 经 builtin registry 完整装配。
 
 ### strategy-4.pre_rebate.14: 补偿树订单/仓位来源分流（#438）
 - 初始 pre_game/in_game 下单分别写 `arb:origin=pre_game/in_game`；`arb:intent` 继续表达
   `arbitrage/recovery`，不再使用 `intent=pre_game`。
-- pair 有 open order 时只匹配 order 类，position 类全部不命中；任一 open order 的 origin 匹配即命中
-  对应 `pre_game_order/in_game_order`，混合来源不会令两支都失配。Query 只返回布尔结果，不输出子集；
-  后续 `select_orders(origin=...,position_order=...)` 逐单取交集，缺 origin 的订单不会进入指定来源子集。
-- 无 open order 时，逐个 Position 用 `opening_order_id` 从 Cache 取 opening Order；任一仓位来源匹配即
-  命中对应 position 分支，实际 position-close Check 再用同一个 `origin` 逐仓筛选。opening
-  Order/origin 缺失的仓位不会进入指定来源子集。
+- order source 与 position source 独立匹配；存在 open order 不再阻止 position source 命中。Query 按每张订单 origin 匹配
+  `pre_game_order/in_game_order`，并可用 `position_order=true|false` 继续取交集，把目标
+  client-order-id 写入 `cancel_candidates`。混合来源不会令两支都失配，缺 origin 的订单不进入子集。
+- position source 无论是否同时存在 open order，均逐个 Position 用 `opening_order_id` 从 Cache 取 opening Order；同源 position-id
+  写入 `position_candidates`，`position_close` 只消费该子集。opening Order/origin 缺失的仓位不会进入。
+- Query/AND/OR/NOT 与整个 condition 节点具有 scratch 事务语义；筛选为空、后续子树全 miss 或未采用
+  分支都会回滚候选集合，不污染后续兄弟分支。
 - pre_game recovery 单保持 `intent=recovery` 并写 `origin=pre_game`，因此新开/重开的 Position
   仍可沿 opening order 稳定归入 pre_game 来源。
 - 验收：`test_query_exposure_source.py`、`test_opportunity.py::test_opportunity_meta_round_trips_origin`、
   `test_submitter.py::test_submit_keeps_origin_separate_from_intent`，以及实际配置 registry 装配。
+
+### strategy-4.pre_rebate.14b: magic 订单类型与同类活动单去重（#470）
+
+- `magic_order_gate(magic=...)` 扫描 pair 全量订单历史；相同 `arb:magic` 的非终态订单（包括尚未
+  submitted 的 `INITIALIZED`）存在时清空本分支 legs，使该叶不形成执行计划；不同 magic 与同 magic
+  的终态订单不阻塞。
+- 可选 `conflicts=[...]` 增加互斥 magic；主 `magic` 无需在列表中重复配置，始终自动加入冲突集合。
+  任一附加 magic 的活动订单都拦截，但放行后的新订单仍只写主 `magic`。省略 `conflicts` 保持原逻辑；
+  非列表、空字符串或非字符串成员均在配置构造时 fail-fast。
+- 放行时 magic 经 scratch → `PlaceBetsAction` submit spec → submitter 固化为 `arb:magic`；不复用或
+  改写 `arb:intent/arb:origin`。当前 pre_game position 平仓分支使用
+  `magic=pre_game_close_pre_game_position`，避免重复生成同类型平仓单。
+- `exposure_source(...,magic=...)` 仅对 order source 生效，与 source/position_order 取交集并只输出
+  匹配订单 ID；position source 配 magic fail-fast。
+- 验收：`test_action_magic_order_gate.py`、`test_query_exposure_source.py`、`test_action_place_bets.py`、
+  `test_submitter.py`、`test_opportunity.py` 与 launcher registry 测试。
 
 ### strategy-4.pre_rebate.15: 低级别赛中 one-side 单路径（#439，后简化）
 - `lower_tier → in_game` 现只保留一条 one-side 叶子(原 `consecutive_trigger_game_gap` fallback
@@ -611,10 +630,27 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `standing=draw` 或 `win|draw` 也 fail-closed，不产出执行腿。
 - 数据源在盘间短暂只提供刚结束比分时（如 `6-7(1-7), 7-5`，下一盘 `0-0` 尚未到达），
   最新一段完整盘不作为当前盘；`6-4`、`7-5`、`7-6` 等均 fail-closed，避免在盘间窗口误平仓。
+- `min/max` 均缺失时保持旧逻辑；正整数 `min` 要求当前盘绝对局差 `>= min`，`max` 要求
+  `<= max`，边界均放通；两者并存时 `min>max` 构造失败。`standing=lose,min=2` 因而只保留当前盘
+  至少落后两局的目标腿。
 - 逐 candidate 筛腿、淘汰空 candidate，撤单候选保留；比分/映射无效时 fail-closed，
   非法 standing 构造失败。
 - **验收**：`test_action_current_set_game_selection.py` 与
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`。
+
+## strategy-4.same-set：仓位初始下单盘筛选
+
+- `same_set(limit=true)` 只处理带 `position_id` 的仓位腿，逐腿沿
+  `Position.opening_order_id → Cache.order → arb:order_score` 读取仓位初始订单的下单比分。
+- 初始比分与当前 Sports 比分必须处于同一盘：比分段数量相同，且当前盘之前的完整盘比分全部一致；
+  同盘内局数可继续推进。已经进入下一盘、position/opening order/任一比分缺失或格式非法均删除该腿。
+- Action 一经配置，`limit` 缺失/`None` 即默认启用；显式 `false` no-op，非 boolean fail-fast。
+  支持 selected candidate、候选池和 legs-only，撤单候选不受影响。
+- 当前低级别 `in_game_position` 止损分支依次执行
+  `magic_order_gate(in_game_close_in_game_position_sl) → current_set_game_selection(lose,min=2) →
+  same_set → place_bets(limit=true)`。前置 TP sibling 若已形成最终计划，按树顺序
+  不再执行该 SL sibling。
+- **验收**：`test_action_same_set.py`、`test_action_current_set_game_selection.py` 与 launcher registry 测试。
 
 ## strategy-4.40：commission_gate PM 盘口概率和门控
 
@@ -659,41 +695,43 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ## strategy-4.pre_rebate.16：低级别 in_game 订单撤单与仓位平仓补偿
 
-- **订单分支**：`exposure_source=in_game_order + in_game` 下以两个叶分别串联
-  `select_orders(origin=in_game,position_order=true|false) → order_cancel`。构造同 pair 混合
+- **订单分支**：补偿树先进入 `in_game`，再在其下以 `exposure_source=in_game_order` 的两个叶分别由
+  `exposure_source(position_order=true|false)` 输出目标 client-order-id，再执行 `order_cancel`。构造同 pair 混合
   `origin=pre_game/in_game` 的挂单、下单比分 tag、当前比分与 PM 盘口。
   `book_side=ask|bid` 分别读取对应盘口；价格绝对概率差或累计常规局数推进任一达到或超过阈值时
   只撤命中的订单，等于阈值即撤。跨盘累计普通局，括号内抢七小分不计；非 in_game 来源忽略，
-  单个信号缺失时另一信号仍可触发，两者均缺失则 fail-closed。筛选 Check 输出 client-order-id
+  单个信号缺失时另一信号仍可触发，两者均缺失则 fail-closed。condition 输出 client-order-id
   子集，撤单 Check 只消费该子集；缺输入 fail-closed，混合窗口不会串用另一类订单的阈值。
   另构造 `intent=recovery + origin=in_game + position_id` 的平仓挂单与普通入场挂单：运行时
-  `min_set` 覆盖优先、配置值兜底，
+  TP/SL 分别使用 `min_tp_set` / `min_sl_set` 覆盖优先、配置值兜底，
   当前盘明确小于阈值时只撤平仓挂单；普通入场挂单不受该信号影响。缺 period 时盘数信号
-  fail-closed，价格/局数信号仍可独立触发。未配置 `min_set` 时第三条完全关闭，即使运行时 Store
+  fail-closed，价格/局数信号仍可独立触发。未配置对应盘数参数时第三条完全关闭，即使运行时 Store
   已有覆盖值也不启用。
-- **仓位分支**：构造可由 `opening_order_id` 归为 `in_game_position` 的 PM LONG Position。
-  当前 `period` 达 `min_set` 后直接输出带全量 qty/position_id 的同 token SELL@bid；
+- **仓位分支**：构造可由 `opening_order_id` 归为 `in_game_position` 的 PM LONG Position；
+  `exposure_source` 写入目标 position-id，`position_close` 只能消费该子集。
+  当前 `period` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；
   `score_selection(win|draw)` 忽略订单 side，按 instrument 对应持仓方筛选打平/领先腿。
   `place_bets(limit=false,intent=recovery,origin=in_game)` 必须保持价格并透传 position_id。
   低于盘数、持仓方落后、缺 period/outcome/position_id 或缺 ask 均不产出平仓计划。
-- **动态盘数覆盖（#452：显式 Action）**：运行时 `min_set` 覆盖由补偿树里的 `advance_min_set`
-  Action 写入(挂在针对仓位挂单的 `select_orders(position_order=true) → order_cancel(min_set=1)` 撤单分支
-  action 链),命中撤单时写 `current_set+offset`(默认 1);盘号不可判定不写。订单身份由分支
-  `exposure_source`/`select_orders` 保证,Action 不自判定。**时序为撤单决策时写(先写后撤)**,
-  已移除 actor `OrderCanceled` 回调里的硬编码写入。`advance_min_set` 验收见
-  `test_action_advance_min_set.py`(current_set+offset、offset 可配、盘号未知不写、无 store 不抛、
-  非法 offset)。仓位 Check 优先使用覆盖值，没有条目才使用配置默认值；比赛 ended /
+- **动态盘数覆盖（#475）**：运行时门槛拆成互不影响的 `min_tp_set` 与 `min_sl_set`；对应撤单分支
+  分别由 `advance_min_tp_set` / `advance_min_sl_set` 写 `current_set+offset`（默认 1）；盘号不可判定不写。订单身份由 magic 分支
+  `exposure_source` 保证,Action 不自判定。**时序为撤单决策时写(先写后撤)**,
+  已移除 actor `OrderCanceled` 回调里的硬编码写入。两个 Action 验收见
+  `test_action_advance_min_set.py`（current_set+offset、offset 可配、盘号未知不写、无 store 不抛、
+  非法 offset、TP/SL 相互独立）。仓位 Check 只读取本分支对应覆盖，没有条目才使用配置默认值；比赛 ended /
   `PairEvicted` 清理条目。验证同盘被覆盖值拦截、下一盘放通及默认值兼容。
-- **配置验收**：低级别补偿树的 `in_game_order` 与 `in_game_position` 均再受 `in_game` 阶段约束；
-  in_game 普通/仓位订单支当前分别为 `ask/0.14/2` 与 `ask/0.05/1/min_set=1`，仓位分支为
-  `min_set=1 + win|draw + SELL@bid`，随后由 `place_bets(limit=true,spread=0.07)` 转到 ask 并应用 spread。
-- **验收**：`test_check_select_orders.py`、`test_check_order_cancel.py`、`test_check_position_close.py`、
+- **配置验收**：低级别补偿树以 `pre_game/in_game` 为阶段节点，阶段节点下再按精确
+  `exposure_source` 分流；不得恢复为 exposure 外层再重复嵌套阶段与 exposure。`in_game_order` 与
+  `in_game_position` 均受同一个 `in_game` 父节点约束；
+  TP 平仓挂单撤单支使用 `min_tp_set=1` 并执行 `advance_min_tp_set`，SL 支使用 `min_sl_set=1`
+  并执行 `advance_min_sl_set`；TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支对应 `min_sl_set=1`。
+- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`、`test_check_position_close.py`、
   `test_in_game_positions.py`、`test_evaluator.py` 的撤单写入/eviction 清理用例、
   `test_opportunity.py::test_order_score_reads_frozen_order_tag`，以及
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`。
 
 - **非低级别配置验收**：in_game `place_bets` 不再配置 IOC；补偿树使用
-  `exposure_source=in_game_order + in_game + select_orders(origin=in_game,position_order=false)` 选择赛中普通订单，
+  `in_game → exposure_source(source=in_game_order,position_order=false)` 选择赛中普通订单，
   `order_cancel` 配置 `ask/0.01/1`，只启用价格与累计局数两个撤单条件。
 
 ## 策略内组合场景
@@ -736,15 +774,18 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 新框架的纯逻辑件,可全单测。落地顺序见 `architectures/strategy/architecture.md §7`。
 
-### strategy-4.framework.expr.{1-6}:BoolExpr (AND/OR/NOT) + StateQuery 求值
+### strategy-4.framework.expr.{1-9}:BoolExpr (AND/OR/NOT) + StateQuery 求值
 - **.1**:`StateQuery.matches(ctx)` 读取当前 `EvalContext`，同一 query 对不同上下文得到对应结果
 - **.2**:`AndExpr(a, b)` 全 True 才 True;任一 False → False
 - **.3**:`OrExpr(a, b)` 任一 True 即 True
 - **.4**:`NotExpr(a)` 取反
 - **.5**:嵌套 `AND(a, OR(b, NOT(c)))` 求值正确
 - **.6**:空 AND=True，空 OR=False
+- **.7**:StateQuery 可在命中时写 `ctx.scratch`；AND 后项失败时回滚前项输出
+- **.8**:OR 每个候选分支从同一 scratch 快照开始，只提交首个成功分支输出
+- **.9**:NOT 只反转结果，子查询写入永不提交
 
-### strategy-4.framework.cond.{1-9}:Condition 树评估(EvalResult)
+### strategy-4.framework.cond.{1-13}:Condition 树评估(EvalResult)
 - **.1**:self_hits=False → `EvalResult(hit=False, action=None)`
 - **.2**:self_hits=True、有 sub_conditions、第一个 sub 命中 → 返该 sub 的 EvalResult(后续不跑)
 - **.3**:self_hits=True、有 sub_conditions、全没命中 → `EvalResult(hit=False)`
@@ -754,6 +795,12 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.7**:checktion OR 按配置顺序短路，只提交首个成功分支的 `scratch`
 - **.8**:checktion AND 后项失败，回滚前项已写入的 `scratch`
 - **.9**:checktion NOT 只反转结果，不提交子表达式的 `scratch`
+- **.10**:父 condition 的 StateQuery 已写 scratch、但所有子 condition 均未命中时，父节点输出整体回滚；兄弟分支看不到污染
+- **.11**:运行时 `evaluate_tree_to_plan` 中，第一个叶子 checktion 通过但 Action 链未形成
+  `ExecutionPlan` → 回滚该叶 scratch 并继续第二个 sibling；第二叶生成 submit plan 后才返回 hit
+- **.12**:叶子生成 cancel_pair plan → 视为最终命中并停止，后续 sibling 不执行
+- **.13**:所有叶子的 Action 均未形成计划 → 返回 miss，并恢复进入该 condition 前的 scratch；
+  专用跨轮 Store 写入仍遵循各 Action 自身契约，不承诺随 scratch 回滚
 
 ### strategy-4.framework.check-expr.{1-5}:CheckExpr JSON
 - **.1**:单个 `{"type": ...}` 解析为 Check 叶子
@@ -777,6 +824,8 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.4a**(`test_arb_and_comp_evaluation_scratch_is_isolated`):两树 scratch 不共享，禁止跨树
   candidate 注入；补偿计划不得继承套利参数
 - **.5**:补偿树没有生成有效 plan 时，同轮可回退并分发套利 plan
+- **.6**:同一树首叶 checktion 通过但 Action 无 plan 时，生产 evaluator 继续下一 sibling，
+  并实际分发下一叶形成的 submit plan；证明新语义已接入运行路径而非仅存在辅助函数
 
 ### strategy-4.framework.order-terminal.{1-5}:订单成交终态触发树
 
@@ -1052,7 +1101,7 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 `pre_rebate` 策略(当前 `sport:Tennis` binding),对 registry 解析出的
 arbitrage/compensation 两棵树逐分支构造
 上下文。除断言 Check 的 `legs/cancel_pair_orders` 外,还顺序执行命中叶子的全部 Action,断言
-最终 `execution_plan`、订单 metadata、limit/spread 后价格及运行时 `min_set`。不启动
+最终 `execution_plan`、订单 metadata、limit/spread 后价格及运行时 TP/SL 盘数门槛。不启动
 TradingNode,不进入 Risk / Execution / barrier。`arb_config.json` 被 `.gitignore` 忽略,
 缺失时整组 skip,因此这组是本地配置回归而非脱离配置文件即可运行的 CI fixture。
 
@@ -1064,7 +1113,7 @@ TradingNode,不进入 Risk / Execution / barrier。`arb_config.json` 被 `.gitig
   差异化 current-order gate。
 - **补偿树撤单**:覆盖 pre-game/in-game、普通单/针对仓位订单、低级别/非低级别分支;
   对配置的 `0.05/0.14/0.01` price-drift 做命中边界和边界下方反例。针对仓位的 in-game
-  恢复单撤销后执行 `advance_min_set`,并验证后续同盘恢复单由运行时 min_set 再次撤销。
+  SL 恢复单撤销后执行 `advance_min_sl_set`，并验证后续同盘 SL 恢复单由运行时 `min_sl_set` 再次撤销且不污染 TP。
   `pre_game_reverse` 同样执行到最终 cancel execution plan。
 - **补偿树平仓**:覆盖低级别 pre-game position 的赛前及赛中平仓、in-game position 平仓;
   验证 `SELL@bid` 经各分支 `limit/spread` 后的最终价格、recovery intent、比分落后时 Action

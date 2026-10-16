@@ -93,7 +93,7 @@ def build_action(spec: dict) -> Action:
 
 
 def build_state_query(spec: dict) -> StateQuery:
-    """`{"type": "<name>", "params": {...}}` → 无状态查询实例。"""
+    """`{"type": "<name>", "params": {...}}` → condition 状态查询实例。"""
     if not isinstance(spec, dict) or "type" not in spec:
         raise StrategyConfigError(f"state query spec must have 'type' key: {spec!r}")
     name = spec["type"]

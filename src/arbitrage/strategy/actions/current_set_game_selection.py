@@ -16,14 +16,20 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         self,
         standing: str | None = None,
         tier_only: bool | None = None,
+        min: int | None = None,
         max: int | None = None,
     ) -> None:
         if tier_only is not None and not isinstance(tier_only, bool):
             raise ValueError("current_set_game_selection: tier_only must be a boolean")
+        if min is not None and (isinstance(min, bool) or not isinstance(min, int) or min <= 0):
+            raise ValueError("current_set_game_selection: min must be a positive integer")
         if max is not None and (isinstance(max, bool) or not isinstance(max, int) or max <= 0):
             raise ValueError("current_set_game_selection: max must be a positive integer")
+        if min is not None and max is not None and min > max:
+            raise ValueError("current_set_game_selection: min must be <= max")
         super().__init__(standing=standing)
         self._tier_only = bool(tier_only)
+        self._min = min
         self._max = max
 
     async def execute(self, ctx: EvalContext) -> None:
@@ -58,7 +64,10 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
             return {}
         left_games = int(left)
         right_games = int(right)
-        if self._max is not None and abs(left_games - right_games) > self._max:
+        game_gap = abs(left_games - right_games)
+        if self._min is not None and game_gap < self._min:
+            return {}
+        if self._max is not None and game_gap > self._max:
             return {}
         if left_games > right_games:
             return {"home": "win", "away": "lose"}

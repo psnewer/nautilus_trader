@@ -6,13 +6,13 @@ from src.arbitrage.common.opportunity import order_origin
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.checks.quote_legs import pm_ask_by_outcome
-from src.arbitrage.strategy.checks.select_orders import CANCEL_CANDIDATES
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.queries.exposure_source import CANCEL_CANDIDATES
 
 
 class PreGameReverseCheck(Check):
-    """订单经济方向不再是 PM ask 最低方向时,生成定向撤单请求。"""
+    """消费 condition 筛出的普通赛前订单;方向不再最低时生成定向撤单请求。"""
 
     def passes(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:

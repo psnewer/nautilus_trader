@@ -15,6 +15,17 @@ class _ValueQuery(StateQuery):
         return bool(ctx.strategy_defaults.get(self.key))
 
 
+class _WritingQuery(StateQuery):
+    def __init__(self, key: str, value: str, result: bool) -> None:
+        self.key = key
+        self.value = value
+        self.result = result
+
+    def matches(self, ctx: EvalContext) -> bool:
+        ctx.scratch[self.key] = self.value
+        return self.result
+
+
 def _ctx(**values) -> EvalContext:
     return EvalContext(pair_id="match_X", strategy_defaults=values)
 
@@ -57,3 +68,32 @@ def test_empty_and_is_true_empty_or_is_false():
     ctx = _ctx()
     assert AndExpr().eval(ctx) is True
     assert OrExpr().eval(ctx) is False
+
+
+def test_and_failure_rolls_back_prior_query_output():
+    ctx = _ctx()
+    expr = AndExpr(
+        _WritingQuery("first", "kept-only-on-hit", True),
+        _WritingQuery("failed", "discarded", False),
+    )
+
+    assert expr.eval(ctx) is False
+    assert ctx.scratch == {}
+
+
+def test_or_commits_only_successful_query_output():
+    ctx = _ctx()
+    expr = OrExpr(
+        _WritingQuery("failed", "discarded", False),
+        _WritingQuery("selected", "committed", True),
+    )
+
+    assert expr.eval(ctx) is True
+    assert ctx.scratch == {"selected": "committed"}
+
+
+def test_not_never_commits_child_query_output():
+    ctx = _ctx()
+
+    assert NotExpr(_WritingQuery("discarded", "value", False)).eval(ctx) is True
+    assert ctx.scratch == {}

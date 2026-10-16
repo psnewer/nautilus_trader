@@ -2,14 +2,15 @@
 统一 cancel 判定:对候选订单按价格漂移 / 累计局数漂移 / 仓位盘数三条 opt-in 条件撤单。
 
 合并原 position_order_cancel / in_game_cancel / in_game_order_cancel。只关注"撤单判定",
-不做订单分类:候选集必须由前置 `select_orders` 写入 `scratch["cancel_candidates"]`；缺失或为空
-均 fail-closed。三条触发均 opt-in——对应参数未配置就不跑该条校验:
+不做订单分类:候选集必须由前置 condition `exposure_source`(兼容旧 `select_orders`)写入
+`scratch["cancel_candidates"]`;缺失或为空均 fail-closed。三条触发均 opt-in——对应参数未配置
+就不跑该条校验:
 
 - `price_drift`:当前盘口(`book_side`)与**订单自身价**的概率绝对差 `>= price_drift`。
 - `game_drift`:`当前局数 − baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
-- `min_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,`current_set < 有效min_set` 时撤
-  (有效阈值:pair 运行时覆盖优先,否则配置值)。普通单天然不受此条影响。
+- `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单，当前盘低于
+  对应止盈/止损有效阈值时撤（pair 运行时覆盖优先，否则配置值）。两者互斥。
 
 命中任一即把该订单计入定向撤单;全不命中返回 False。
 """
@@ -25,10 +26,10 @@ from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.checks.quote_legs import venue_of
-from src.arbitrage.strategy.checks.select_orders import CANCEL_CANDIDATES
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.in_game_positions import current_set_number
+from src.arbitrage.strategy.queries.exposure_source import CANCEL_CANDIDATES
 
 
 class OrderCancelCheck(Check):
@@ -39,7 +40,8 @@ class OrderCancelCheck(Check):
         book_side: str = "ask",
         price_drift: float | None = None,
         game_drift: int | None = None,
-        min_set: int | None = None,
+        min_tp_set: int | None = None,
+        min_sl_set: int | None = None,
     ) -> None:
         self._book_side = str(book_side).lower()
         if self._book_side not in {"ask", "bid"}:
@@ -54,14 +56,17 @@ class OrderCancelCheck(Check):
         ):
             raise ValueError("order_cancel: game_drift must be a non-negative integer")
         self._game_drift = game_drift
-        if min_set is not None and (
-            isinstance(min_set, bool) or not isinstance(min_set, int) or min_set <= 0
-        ):
-            raise ValueError("order_cancel: min_set must be a positive integer")
-        self._min_set = min_set
-        if price_drift is None and game_drift is None and min_set is None:
+        _validate_min_set("min_tp_set", min_tp_set)
+        _validate_min_set("min_sl_set", min_sl_set)
+        if min_tp_set is not None and min_sl_set is not None:
+            raise ValueError("order_cancel: min_tp_set and min_sl_set are mutually exclusive")
+        self._min_set_kind = (
+            "tp" if min_tp_set is not None else "sl" if min_sl_set is not None else None
+        )
+        self._configured_min_set = min_tp_set if min_tp_set is not None else min_sl_set
+        if price_drift is None and game_drift is None and self._min_set_kind is None:
             raise ValueError(
-                "order_cancel: at least one of price_drift/game_drift/min_set required",
+                "order_cancel: at least one drift or min_tp_set/min_sl_set is required",
             )
 
     def passes(self, ctx: EvalContext) -> bool:
@@ -73,12 +78,15 @@ class OrderCancelCheck(Check):
         candidate_ids = set(candidates)
 
         current_games = _total_games(_current_score(ctx))
-        runtime_min_set = (
-            ctx.in_game_position_store.min_set(ctx.pair_id)
-            if self._min_set is not None and ctx.in_game_position_store is not None
-            else None
+        runtime_min_set = None
+        if self._min_set_kind is not None and ctx.in_game_position_store is not None:
+            getter = getattr(ctx.in_game_position_store, f"min_{self._min_set_kind}_set")
+            runtime_min_set = getter(ctx.pair_id)
+        min_set = (
+            runtime_min_set
+            if runtime_min_set is not None
+            else self._configured_min_set
         )
-        min_set = runtime_min_set if runtime_min_set is not None else self._min_set
         current_set = current_set_number(
             pair_id=ctx.pair_id,
             pair_registry=ctx.pair_registry,
@@ -131,7 +139,7 @@ class OrderCancelCheck(Check):
                     game_hit = current_games - baseline >= self._game_drift
 
                 below_min_set = False
-                if self._min_set is not None and min_set is not None and current_set > 0:
+                if self._min_set_kind is not None and min_set is not None and current_set > 0:
                     position_id = (
                         position_id_fn(raw_client_order_id) if callable(position_id_fn) else None
                     )
@@ -152,9 +160,17 @@ class OrderCancelCheck(Check):
             "book_side": self._book_side,
             "price_drift": self._price_drift,
             "game_drift": self._game_drift,
-            "min_set": min_set,
+            "min_tp_set": min_set if self._min_set_kind == "tp" else None,
+            "min_sl_set": min_set if self._min_set_kind == "sl" else None,
         }
         return True
+
+
+def _validate_min_set(name: str, value: int | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ):
+        raise ValueError(f"order_cancel: {name} must be a positive integer")
 
 
 def _current_score(ctx: EvalContext) -> str:

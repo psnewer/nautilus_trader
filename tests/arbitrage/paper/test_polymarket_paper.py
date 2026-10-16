@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -249,6 +250,38 @@ def test_existing_database_is_migrated_and_order_metadata_is_persisted(tmp_path)
     }
     assert {"client_order_id", "pair_id", "origin", "intent", "order_score"} <= columns
     store.close()
+
+
+def test_reset_recreates_empty_ledger_with_starting_balance(tmp_path):
+    database_path = tmp_path / "paper.sqlite3"
+    store = PaperStore(str(database_path), 100.0)
+    store.insert_order(
+        {
+            "id": "old-order",
+            "market": "0xcondition",
+            "asset_id": "123",
+            "side": "BUY",
+            "price": 0.4,
+            "original_size": 5.0,
+            "order_type": "GTC",
+            "post_only": False,
+            "maker_address": "paper",
+            "owner": "paper",
+            "expiration": "0",
+            "created_at": 1_700_000_000,
+        },
+    )
+    store.close()
+    Path(f"{database_path}-wal").write_bytes(b"stale wal")
+    Path(f"{database_path}-shm").write_bytes(b"stale shm")
+
+    reset_store = PaperStore(str(database_path), 250.0, reset=True)
+
+    assert reset_store.orders() == []
+    assert reset_store.available_balance() == 250.0
+    assert Path(f"{database_path}-wal").read_bytes() != b"stale wal"
+    assert Path(f"{database_path}-shm").read_bytes() != b"stale shm"
+    reset_store.close()
 
 
 def test_export_workbook_writes_detail_pair_and_type_sheets(tmp_path):
@@ -560,6 +593,7 @@ def test_paper_server_launcher_passes_public_pm_proxy(monkeypatch):
                 port=8765,
                 database_path="paper.sqlite3",
                 starting_balance=100.0,
+                reset=True,
             ),
         ),
         venues=SimpleNamespace(
@@ -577,6 +611,7 @@ def test_paper_server_launcher_passes_public_pm_proxy(monkeypatch):
     assert polymarket_paper_server.main(["--config", "unused.json"]) == 0
     assert captured[0].market_proxy_url == "http://pm-proxy:7890"
     assert captured[0].market_ws_url == "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    assert captured[0].reset is True
 
 
 def test_public_market_query_uses_configured_proxy(tmp_path):

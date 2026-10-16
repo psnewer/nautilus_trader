@@ -28,15 +28,18 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.execution.mode != "paper":
         parser.error("execution.mode must be 'paper' to start the paper server")
     paper = cfg.execution.paper
-    run_server(PaperServerConfig(
-        host=paper.host,
-        port=paper.port,
-        database_path=paper.database_path,
-        starting_balance=paper.starting_balance,
-        market_http_url=cfg.venues.polymarket.clob_url,
-        market_ws_url=cfg.venues.polymarket.ws_url.rstrip("/") + "/market",
-        market_proxy_url=cfg.venues.polymarket.proxy_url,
-    ))
+    run_server(
+        PaperServerConfig(
+            host=paper.host,
+            port=paper.port,
+            database_path=paper.database_path,
+            starting_balance=paper.starting_balance,
+            reset=paper.reset,
+            market_http_url=cfg.venues.polymarket.clob_url,
+            market_ws_url=cfg.venues.polymarket.ws_url.rstrip("/") + "/market",
+            market_proxy_url=cfg.venues.polymarket.proxy_url,
+        ),
+    )
     return 0
 
 

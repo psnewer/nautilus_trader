@@ -1,4 +1,4 @@
-"""order_cancel：只对 select_orders 产出的候选执行 opt-in 撤单判定。"""
+"""order_cancel:只对 condition/兼容 selector 产出的候选执行 opt-in 撤单判定。"""
 
 from types import SimpleNamespace
 
@@ -8,7 +8,10 @@ from src.arbitrage.strategy.checks.order_cancel import OrderCancelCheck
 from src.arbitrage.strategy.checks.select_orders import CANCEL_CANDIDATES
 from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.condition import AndCheckExpr
+from src.arbitrage.strategy.condition import Condition
+from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
+from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -21,6 +24,7 @@ def _order(
     side: str = "BUY",
 ):
     tags = [f"arb:intent={intent}"]
+    tags.append("arb:origin=in_game")
     if score is not None:
         tags.append(f"arb:order_score={score}")
     return SimpleNamespace(
@@ -89,15 +93,31 @@ def test_game_drift_includes_threshold():
     assert OrderCancelCheck(game_drift=1).eval(ctx) is False
 
 
-def test_min_set_only_applies_to_recovery_order_bound_to_position():
+def test_min_tp_set_only_applies_to_recovery_order_bound_to_position():
     recovery = _order("recovery", intent="recovery")
     ordinary = _order("ordinary", intent="arbitrage")
     ctx = _ctx(orders=[recovery, ordinary], period="S1")
     ctx.cache.position_id = lambda order_id: "P-1" if str(order_id) == "recovery" else None
     ctx.scratch[CANCEL_CANDIDATES] = ["recovery", "ordinary"]
 
-    assert OrderCancelCheck(min_set=2).eval(ctx) is True
+    assert OrderCancelCheck(min_tp_set=2).eval(ctx) is True
     assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["recovery"]
+
+
+def test_runtime_tp_and_sl_thresholds_are_independent():
+    recovery = _order("recovery", intent="recovery")
+    ctx = _ctx(orders=[recovery], period="S2")
+    ctx.cache.position_id = lambda order_id: "P-1"
+    ctx.in_game_position_store.set_min_tp_set(ctx.pair_id, 3)
+    ctx.in_game_position_store.set_min_sl_set(ctx.pair_id, 2)
+
+    ctx.scratch[CANCEL_CANDIDATES] = ["recovery"]
+    assert OrderCancelCheck(min_tp_set=1).eval(ctx) is True
+    assert ctx.scratch["cancel_pair_orders"]["min_tp_set"] == 3
+
+    ctx.scratch.pop("cancel_pair_orders")
+    ctx.scratch[CANCEL_CANDIDATES] = ["recovery"]
+    assert OrderCancelCheck(min_sl_set=1).eval(ctx) is False
 
 
 def test_and_chain_keeps_position_and_ordinary_orders_separate():
@@ -121,6 +141,21 @@ def test_and_chain_keeps_position_and_ordinary_orders_separate():
     assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["ordinary"]
 
 
+def test_condition_exposure_source_feeds_order_cancel_without_select_check():
+    position = _order("position", side="SELL", intent="recovery")
+    ordinary = _order("ordinary")
+    ctx = _ctx(orders=[position, ordinary], ask=0.46)
+    ctx.cache.position_id = lambda order_id: "P-1" if str(order_id) == "position" else None
+    branch = Condition(
+        self_hits=ExposureSourceQuery("in_game_order", position_order=False),
+        checktion=OrderCancelCheck(price_drift=0.05),
+    )
+
+    assert evaluate_tree(branch, ctx).hit is True
+    assert ctx.scratch[CANCEL_CANDIDATES] == ["ordinary"]
+    assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["ordinary"]
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -130,8 +165,9 @@ def test_and_chain_keeps_position_and_ordinary_orders_separate():
         {"price_drift": 1.0},
         {"game_drift": -1},
         {"game_drift": True},
-        {"min_set": 0},
-        {"min_set": True},
+        {"min_tp_set": 0},
+        {"min_sl_set": True},
+        {"min_tp_set": 1, "min_sl_set": 1},
     ],
 )
 def test_rejects_invalid_configuration(kwargs):

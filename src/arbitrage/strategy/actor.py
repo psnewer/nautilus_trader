@@ -12,7 +12,8 @@ StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 
   并行 evaluate + 补偿候选优先 fire(actions 走 `await`,异常落进本 task)
 - `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口,**无条件释放**(#261)
 
-**evaluate 无副作用 / fire 在顶层**:`evaluate_tree` 返 EvalResult,本类决定 fire arb 还是 comp。
+**规划无外部执行副作用 / fire 在顶层**:`evaluate_tree_to_plan` 只生成 ExecutionPlan，
+本类决定 fire arb 还是 comp。
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ from src.arbitrage.matching.events import PairEvicted
 from src.arbitrage.strategy.checks.quote_legs import best_ask
 from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outcome
 from src.arbitrage.strategy.condition import EvalContext
-from src.arbitrage.strategy.condition import evaluate_tree
+from src.arbitrage.strategy.condition import evaluate_tree_to_plan
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
@@ -114,6 +115,8 @@ def make_submitter(*, cache, order_factory, submit_order, log, score_snapshot=No
         tags = [f"arb:intent={spec.get('intent', 'arbitrage')}"]
         if spec.get("origin") is not None:
             tags.append(f"arb:origin={spec['origin']}")
+        if spec.get("magic") is not None:
+            tags.append(f"arb:magic={spec['magic']}")
         if all(k in spec for k in ("opportunity_id", "pair_id", "leg_key", "expected_legs")):
             tags = tags_from_meta(OpportunityMeta(
                 opportunity_id=str(spec["opportunity_id"]),
@@ -126,6 +129,7 @@ def make_submitter(*, cache, order_factory, submit_order, log, score_snapshot=No
                 venue_required_balance=spec.get("venue_required_balance"),
                 enable_timeout=spec.get("enable_timeout"),
                 market=spec.get("market"),
+                magic=spec.get("magic"),
             ))
         tags.extend(_score_tags(score_snapshot, spec, log))
         # PM 下单量统一保留到 order_size_increment 网格：SELL 向下取整保证不超卖，
@@ -842,7 +846,7 @@ class StrategyEvaluator(Strategy):
         }
         arb_ctx = EvalContext(**base_ctx, tree_kind="arbitrage")
         comp_ctx = EvalContext(**base_ctx, tree_kind="compensation")
-        # 并行 evaluate;各树 scratch 独立,顶层等两树都返回后再决定 fire
+        # 两树并行求值到最终计划；各树 scratch 独立，树内无计划叶会继续兄弟分支。
         arb_res, comp_res = await asyncio.gather(
             self._aevaluate(strategy.arbitrage_tree, arb_ctx),
             self._aevaluate(strategy.compensation_tree, comp_ctx),
@@ -856,12 +860,7 @@ class StrategyEvaluator(Strategy):
                 f"comp_hit={comp_res.hit}, "
                 f"comp_actions={comp_actions_str}",
             )
-        # 两树 Action 链只在各自 ctx 中生成 execution_plan，不产生下单/撤单副作用。
-        # 等两边都规划完毕后，Evaluator 才按补偿 > 套利选择唯一计划统一分发。
-        await asyncio.gather(
-            self._prepare_actions(arb_res, arb_ctx),
-            self._prepare_actions(comp_res, comp_ctx),
-        )
+        # 两树只生成 execution_plan，不产生下单/撤单副作用；顶层仍按补偿 > 套利统一分发。
         arb_plan = arb_ctx.scratch.get("execution_plan")
         comp_plan = comp_ctx.scratch.get("execution_plan")
         plan = comp_plan or arb_plan
@@ -906,8 +905,7 @@ class StrategyEvaluator(Strategy):
             trigger_order=order,
             ts_now_ns=self.clock.timestamp_ns(),
         )
-        result = await self._aevaluate(strategy.order_filled_tree, ctx)
-        await self._prepare_actions(result, ctx)
+        await self._aevaluate(strategy.order_filled_tree, ctx)
         plan = ctx.scratch.get("execution_plan")
         if plan is None:
             return
@@ -918,11 +916,6 @@ class StrategyEvaluator(Strategy):
             log=self._log,
             source="order_filled",
         )
-
-    async def _prepare_actions(self, result, ctx) -> None:
-        if not result.hit or not result.pending_actions:
-            return
-        await self._execute_actions(result.pending_actions, ctx)
 
     def _get_sports_store(self):
         """#250:lazy 建 SportsGameStateStore，供状态查询读取 PMS Cache。"""
@@ -972,14 +965,8 @@ class StrategyEvaluator(Strategy):
         return self._registered_task_loop
 
     async def _aevaluate(self, tree, ctx):
-        """async 包 sync 的 `evaluate_tree`,使 `asyncio.gather` 模式可用。
-        Check 实现层若需要 async I/O(查外部服务),可演进为真正 async 求值;现框架是 sync。"""
-        return evaluate_tree(tree, ctx)
-
-    async def _execute_actions(self, actions: list, ctx) -> None:
-        """依次执行 actions(串行,保证顺序;如 ShareLimitModification → PlaceBetsAction)。"""
-        for action in actions:
-            await action.execute(ctx)
+        """求值到最终计划；无计划叶回滚 scratch 后继续兄弟分支。"""
+        return await evaluate_tree_to_plan(tree, ctx)
 
     def _strategy_defaults(self) -> dict:
         params = self._arbitrage_params

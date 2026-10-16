@@ -41,6 +41,7 @@ from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.strategy.actions.magic_order_gate import ORDER_MAGIC_SCRATCH
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.execution_plan import ExecutionPlan
@@ -114,6 +115,7 @@ class PlaceBetsAction(Action):
         rate = selected.get("rate", mean_rate)
         intent = str(selected.get("intent") or self._intent or _default_intent(ctx))
         origin = self._origin if self._origin is not None else _derive_origin(ctx)
+        magic = ctx.scratch.get(ORDER_MAGIC_SCRATCH)
         _LOG.info(
             f"PlaceBets[prepare]: pair={ctx.pair_id} legs={len(legs)} "
             f"strategy={strategy} rate={rate}",
@@ -189,6 +191,8 @@ class PlaceBetsAction(Action):
             }
             if origin is not None:
                 spec["origin"] = origin
+            if magic is not None:
+                spec["magic"] = magic
             if draft.get("position_id") is not None:
                 spec["position_id"] = draft["position_id"]
             if self._enable_timeout is not None:

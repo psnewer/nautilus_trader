@@ -12,18 +12,31 @@ class InGamePositionRuntimeStore:
     """仅在需要覆盖配置阈值时，为对应 pair 分配状态。"""
 
     def __init__(self) -> None:
-        self._min_set_by_pair: dict[str, int] = {}
+        self._min_tp_set_by_pair: dict[str, int] = {}
+        self._min_sl_set_by_pair: dict[str, int] = {}
 
-    def min_set(self, pair_id: str) -> int | None:
-        return self._min_set_by_pair.get(pair_id)
+    def min_tp_set(self, pair_id: str) -> int | None:
+        return self._min_tp_set_by_pair.get(pair_id)
 
-    def set_min_set(self, pair_id: str, min_set: int) -> None:
-        if isinstance(min_set, bool) or not isinstance(min_set, int) or min_set <= 0:
-            raise ValueError("in_game position min_set must be a positive integer")
-        self._min_set_by_pair[pair_id] = min_set
+    def set_min_tp_set(self, pair_id: str, min_tp_set: int) -> None:
+        _validate_min_set("min_tp_set", min_tp_set)
+        self._min_tp_set_by_pair[pair_id] = min_tp_set
+
+    def min_sl_set(self, pair_id: str) -> int | None:
+        return self._min_sl_set_by_pair.get(pair_id)
+
+    def set_min_sl_set(self, pair_id: str, min_sl_set: int) -> None:
+        _validate_min_set("min_sl_set", min_sl_set)
+        self._min_sl_set_by_pair[pair_id] = min_sl_set
 
     def delete_pair(self, pair_id: str) -> None:
-        self._min_set_by_pair.pop(pair_id, None)
+        self._min_tp_set_by_pair.pop(pair_id, None)
+        self._min_sl_set_by_pair.pop(pair_id, None)
+
+
+def _validate_min_set(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"in_game position {name} must be a positive integer")
 
 
 def current_set_number(*, pair_id: str, pair_registry, sports_store) -> int:

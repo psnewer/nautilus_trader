@@ -77,15 +77,18 @@ from src.arbitrage.strategy.actor import _RuntimeDeps as StrategyDeps
 from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
-from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSlSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinTpSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
+from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.same_set import SameSetAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
@@ -162,10 +165,13 @@ def register_builtin_checks_and_actions() -> None:
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)
+    register_action("same_set", SameSetAction)
     register_action("trend_gate", TrendGateAction)
     register_action("place_bets", PlaceBetsAction)
+    register_action("magic_order_gate", MagicOrderGateAction)
     register_action("pm_quote_legs", PmQuoteLegsAction)
-    register_action("advance_min_set", AdvanceMinSetAction)
+    register_action("advance_min_tp_set", AdvanceMinTpSetAction)
+    register_action("advance_min_sl_set", AdvanceMinSlSetAction)
 
 
 def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:

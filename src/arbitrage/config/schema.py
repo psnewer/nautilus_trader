@@ -201,6 +201,8 @@ class PaperExecutionConfig(ConfigStruct):
     port: int = 8765
     database_path: str = "var/polymarket-paper.sqlite3"
     starting_balance: float = 10_000.0
+    # reset=True:paper server 建库前删旧 SQLite(含 -wal/-shm),账本只含当次运行。
+    reset: bool = False
 
 
 class ExecutionSectionConfig(ConfigStruct):

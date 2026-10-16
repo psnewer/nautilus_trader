@@ -160,6 +160,19 @@ def test_max_keeps_loser_at_boundary_and_drops_over_limit():
     assert over_limit.scratch["legs"] == []
 
 
+def test_min_keeps_loser_at_boundary_and_drops_under_limit():
+    boundary = _ctx("6-4, 1-3")
+    _run(CurrentSetGameSelectionAction(standing="lose", min=2).execute(boundary))
+    assert boundary.scratch["legs"] == [
+        {"instrument_id": "H.POLYMARKET", "side": "BUY"},
+        {"instrument_id": "H.POLYMARKET", "side": "SELL"},
+    ]
+
+    under_limit = _ctx("6-4, 2-3")
+    _run(CurrentSetGameSelectionAction(standing="lose", min=2).execute(under_limit))
+    assert under_limit.scratch["legs"] == []
+
+
 def test_tier_only_filters_lower_tier_competition():
     ctx = _tier_ctx("6-4, 2-3", "WTA Beijing")
 
@@ -209,6 +222,17 @@ def test_invalid_tier_only_is_rejected(tier_only):
 def test_invalid_max_is_rejected(value):
     with pytest.raises(ValueError, match="max must be a positive integer"):
         CurrentSetGameSelectionAction(standing="lose", max=value)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.0, True, "1"])
+def test_invalid_min_is_rejected(value):
+    with pytest.raises(ValueError, match="min must be a positive integer"):
+        CurrentSetGameSelectionAction(standing="lose", min=value)
+
+
+def test_min_cannot_exceed_max():
+    with pytest.raises(ValueError, match="min must be <= max"):
+        CurrentSetGameSelectionAction(standing="lose", min=2, max=1)
 
 
 @pytest.mark.parametrize("standing", ["", "win||lose", "ahead", True])

@@ -1,14 +1,14 @@
 """
 Condition / CheckExpr / Check / Action / EvalResult —— condition 嵌套树的核心类型(Q21)。
 
-evaluate 流程(`StrategyEvaluator._evaluate_tree`):
+同步结构求值 `evaluate_tree`：
   1. `self_hits.eval(ctx)` False → 返 EvalResult(hit=False)
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
   3. 叶子(sub_conditions 空)→ checktion.eval(ctx) → 返 (hit=True, pending_actions=actions)
 
-**evaluate 不执行 Action**:返 `EvalResult { hit, pending_actions }`。顶层让套利/补偿 Action
-链在各自上下文内生成执行计划，再统一选择和分发。Check 可向本树独占的 `ctx.scratch`
-写派生结果；actions 依次串行执行。
+同步 `evaluate_tree` 只做结构求值并返回 pending actions，供纯逻辑测试和兼容调用。
+生产 `StrategyEvaluator` 使用异步 `evaluate_tree_to_plan`：叶子 checktion 通过后立即串行执行
+Action；只有形成最终 `ExecutionPlan` 才真正命中，否则回滚该分支 scratch 并继续兄弟分支。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from dataclasses import field
 
 from src.arbitrage.strategy.bool_expr import BoolExpr
+from src.arbitrage.strategy.execution_plan import ExecutionPlan
 
 
 @dataclass
@@ -166,15 +167,17 @@ class Condition:
     self_hits: BoolExpr
     sub_conditions: list[Condition] = field(default_factory=list)
     checktion: CheckExpr = field(default_factory=AndCheckExpr)  # 空 AND = 默认通过
-    actions: list[Action] = field(default_factory=list)       # 依次执行; 空 list = no-op(仍 hit=True)
+    # 运行时依次执行；空 actions 不能形成最终计划，因此 evaluate_tree_to_plan 不命中。
+    actions: list[Action] = field(default_factory=list)
 
 
 @dataclass
 class EvalResult:
-    """evaluate 返回(无副作用,fire 由顶层做)。"""
+    """树求值结果；运行时 hit=True 表示已经形成最终执行计划。"""
 
     hit: bool
-    pending_actions: list[Action] = field(default_factory=list)  # hit=True 且非 sub_conditions 路径时才非空
+    # 同步结构求值表示待执行 Action；运行时表示形成最终计划的已执行 Action 链。
+    pending_actions: list[Action] = field(default_factory=list)
 
 
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
@@ -188,16 +191,70 @@ def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
     3. 叶子(`sub_conditions` 空)→ `checktion.eval(ctx)`(空 AND 默认通过)
        → `EvalResult(hit=True, pending_actions=actions)`(空 actions 时上层不执行)
     """
-    if not cond.self_hits.eval(ctx):
-        return EvalResult(hit=False)
+    before = deepcopy(ctx.scratch)
+    try:
+        if not cond.self_hits.eval(ctx):
+            _restore_scratch(ctx, before)
+            return EvalResult(hit=False)
 
-    if cond.sub_conditions:
-        for sub in cond.sub_conditions:
-            res = evaluate_tree(sub, ctx)
-            if res.hit:
-                return res                            # 互斥:命中即停
-        return EvalResult(hit=False)
+        if cond.sub_conditions:
+            for sub in cond.sub_conditions:
+                res = evaluate_tree(sub, ctx)
+                if res.hit:
+                    return res                        # 互斥:命中即停
+            _restore_scratch(ctx, before)
+            return EvalResult(hit=False)
 
-    if cond.checktion.eval(ctx):
-        return EvalResult(hit=True, pending_actions=cond.actions)
-    return EvalResult(hit=False)
+        if cond.checktion.eval(ctx):
+            return EvalResult(hit=True, pending_actions=cond.actions)
+        _restore_scratch(ctx, before)
+        return EvalResult(hit=False)
+    except Exception:
+        _restore_scratch(ctx, before)
+        raise
+
+
+async def evaluate_tree_to_plan(cond: Condition, ctx: EvalContext) -> EvalResult:
+    """运行时求值树；Action 形成最终执行计划后才算命中。
+
+    checktion 通过但完整 Action 链未形成 submit/cancel 计划时，本候选分支 scratch 回滚，
+    随后继续求值下一个兄弟分支。Action 对专用运行时 Store 的显式写入不属于 scratch
+    事务，例如连续触发 observation 仍按其自身契约保留。
+    """
+    before = deepcopy(ctx.scratch)
+    try:
+        if not cond.self_hits.eval(ctx):
+            _restore_scratch(ctx, before)
+            return EvalResult(hit=False)
+
+        if cond.sub_conditions:
+            for sub in cond.sub_conditions:
+                result = await evaluate_tree_to_plan(sub, ctx)
+                if result.hit:
+                    return result
+            _restore_scratch(ctx, before)
+            return EvalResult(hit=False)
+
+        if not cond.checktion.eval(ctx):
+            _restore_scratch(ctx, before)
+            return EvalResult(hit=False)
+
+        for action in cond.actions:
+            await action.execute(ctx)
+        if _has_final_plan(ctx):
+            return EvalResult(hit=True, pending_actions=cond.actions)
+
+        _restore_scratch(ctx, before)
+        return EvalResult(hit=False)
+    except Exception:
+        _restore_scratch(ctx, before)
+        raise
+
+
+def _has_final_plan(ctx: EvalContext) -> bool:
+    plan = ctx.scratch.get("execution_plan")
+    if not isinstance(plan, ExecutionPlan):
+        return False
+    if plan.kind == "submit":
+        return bool(plan.orders)
+    return plan.kind == "cancel_pair"

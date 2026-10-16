@@ -1,11 +1,12 @@
-"""advance_min_set: 命中撤平仓单分支时把 pair 运行时 min_set 推进到 current_set+offset。"""
+"""止盈/止损平仓门槛分别推进到 current_set+offset。"""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinSlSetAction
+from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinTpSetAction
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -29,32 +30,40 @@ def _ctx(*, period="S2", store=True, with_registry=True):
     return ctx
 
 
-def test_advance_sets_current_set_plus_offset():
+def test_advance_tp_and_sl_independently():
     ctx = _ctx(period="S2")
-    _run(AdvanceMinSetAction().execute(ctx))
-    assert ctx.in_game_position_store.min_set(ctx.pair_id) == 3  # S2 → 2 + 1
+    _run(AdvanceMinTpSetAction().execute(ctx))
+    assert ctx.in_game_position_store.min_tp_set(ctx.pair_id) == 3
+    assert ctx.in_game_position_store.min_sl_set(ctx.pair_id) is None
+
+    _run(AdvanceMinSlSetAction(offset=2).execute(ctx))
+    assert ctx.in_game_position_store.min_tp_set(ctx.pair_id) == 3
+    assert ctx.in_game_position_store.min_sl_set(ctx.pair_id) == 4
 
 
 def test_offset_is_configurable():
     ctx = _ctx(period="S2")
-    _run(AdvanceMinSetAction(offset=2).execute(ctx))
-    assert ctx.in_game_position_store.min_set(ctx.pair_id) == 4  # 2 + 2
+    _run(AdvanceMinTpSetAction(offset=2).execute(ctx))
+    assert ctx.in_game_position_store.min_tp_set(ctx.pair_id) == 4
 
 
 @pytest.mark.parametrize("period", ["", "foo", None])
 def test_no_write_when_current_set_unknown(period):
     ctx = _ctx(period=period)
-    _run(AdvanceMinSetAction().execute(ctx))
-    assert ctx.in_game_position_store.min_set(ctx.pair_id) is None
+    _run(AdvanceMinTpSetAction().execute(ctx))
+    _run(AdvanceMinSlSetAction().execute(ctx))
+    assert ctx.in_game_position_store.min_tp_set(ctx.pair_id) is None
+    assert ctx.in_game_position_store.min_sl_set(ctx.pair_id) is None
 
 
 def test_no_write_without_store():
     ctx = _ctx(store=False)
     # 无 store 不应抛错
-    _run(AdvanceMinSetAction().execute(ctx))
+    _run(AdvanceMinTpSetAction().execute(ctx))
 
 
+@pytest.mark.parametrize("action", [AdvanceMinTpSetAction, AdvanceMinSlSetAction])
 @pytest.mark.parametrize("offset", [0, -1, 1.5, True, float("nan")])
-def test_rejects_invalid_offset(offset):
+def test_rejects_invalid_offset(action, offset):
     with pytest.raises(ValueError, match="offset must be a positive integer"):
-        AdvanceMinSetAction(offset=offset)
+        action(offset=offset)

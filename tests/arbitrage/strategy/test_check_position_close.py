@@ -8,6 +8,7 @@ import pytest
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
+from src.arbitrage.strategy.queries.exposure_source import POSITION_CANDIDATES
 from tests.arbitrage.strategy._live_state import live_context
 
 
@@ -59,7 +60,8 @@ def _ctx(*, period="S3", positions=None, history=None):
 def test_without_min_set_ignores_period_and_runtime_override():
     ctx = _ctx(period="")
     store = InGamePositionRuntimeStore()
-    store.set_min_set(ctx.pair_id, 5)
+    store.set_min_tp_set(ctx.pair_id, 5)
+    store.set_min_sl_set(ctx.pair_id, 5)
     ctx.in_game_position_store = store
 
     assert PositionCloseCheck().passes(ctx) is True
@@ -76,28 +78,30 @@ def test_without_min_set_ignores_period_and_runtime_override():
     }]
 
 
-def test_emits_sell_leg_at_or_after_min_set():
+def test_emits_sell_leg_at_or_after_min_tp_set():
     ctx = _ctx(period="S3")
 
-    assert PositionCloseCheck(min_set=3).passes(ctx) is True
+    assert PositionCloseCheck(min_tp_set=3).passes(ctx) is True
     assert ctx.scratch["legs"][0]["position_id"] == "P-1"
 
 
-def test_runtime_min_set_overrides_configured_default():
+def test_runtime_tp_and_sl_overrides_are_independent():
     store = InGamePositionRuntimeStore()
-    store.set_min_set("p", 4)
+    store.set_min_tp_set("p", 4)
+    store.set_min_sl_set("p", 2)
     ctx = _ctx(period="S3")
     ctx.in_game_position_store = store
 
-    assert PositionCloseCheck(min_set=3).passes(ctx) is False
+    assert PositionCloseCheck(min_tp_set=3).passes(ctx) is False
+    assert PositionCloseCheck(min_sl_set=3).passes(ctx) is True
 
     ctx.sports_store = _SportsStore("S4")
-    assert PositionCloseCheck(min_set=3).passes(ctx) is True
+    assert PositionCloseCheck(min_tp_set=3).passes(ctx) is True
 
 
 @pytest.mark.parametrize("period", ["S2", "", "SET3"])
 def test_before_min_set_or_unknown_period_fails_closed(period):
-    assert PositionCloseCheck(min_set=3).passes(_ctx(period=period)) is False
+    assert PositionCloseCheck(min_sl_set=3).passes(_ctx(period=period)) is False
 
 
 @pytest.mark.parametrize(
@@ -131,10 +135,27 @@ def test_origin_filters_positions_by_opening_order():
     assert [leg["position_id"] for leg in ctx.scratch["legs"]] == ["P-IN"]
 
 
-@pytest.mark.parametrize("min_set", [0, -1, True])
-def test_rejects_invalid_min_set(min_set):
+def test_consumes_position_candidates_selected_by_condition():
+    ctx = _ctx(positions=[
+        _position(position_id="P-YES"),
+        _position(instrument_id="N.POLYMARKET", position_id="P-NO"),
+    ])
+    ctx.scratch[POSITION_CANDIDATES] = ["P-NO"]
+
+    assert PositionCloseCheck().passes(ctx) is True
+    assert [leg["position_id"] for leg in ctx.scratch["legs"]] == ["P-NO"]
+
+
+@pytest.mark.parametrize("name", ["min_tp_set", "min_sl_set"])
+@pytest.mark.parametrize("min_value", [0, -1, True])
+def test_rejects_invalid_min_set(name, min_value):
     with pytest.raises(ValueError, match="positive integer"):
-        PositionCloseCheck(min_set=min_set)
+        PositionCloseCheck(**{name: min_value})
+
+
+def test_rejects_both_min_set_kinds():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        PositionCloseCheck(min_tp_set=1, min_sl_set=1)
 
 
 def test_rejects_invalid_origin():

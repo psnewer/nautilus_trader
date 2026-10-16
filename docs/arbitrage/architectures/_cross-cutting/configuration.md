@@ -199,6 +199,7 @@ class PaperExecutionConfig(ConfigStruct):
     port:               int = 8765
     database_path:      str = "var/polymarket-paper.sqlite3"
     starting_balance:   float = 10_000.0
+    reset:              bool = False
 
 
 class DebugSectionConfig(ConfigStruct):
@@ -256,7 +257,8 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
       "host": "127.0.0.1",
       "port": 8765,
       "database_path": "var/polymarket-paper.sqlite3",
-      "starting_balance": 10000
+      "starting_balance": 10000,
+      "reset": false
     },
     "tracking_timeout_sec": 30
   },
@@ -318,6 +320,8 @@ instrument 的原生字段中，不参与该分组覆盖。
 starting balance 不得为负。Paper matcher 直接消费 `venues.polymarket.ws_url` 对应的真实
 Market WS，不提供轮询周期配置。本地服务协议、撮合与
 持久化语义见 [`../paper/architecture.md`](../paper/architecture.md)。
+`paper.reset` 默认 `false`；设为 `true` 时，paper server 每次启动前清空 SQLite 主库及
+WAL/SHM，并按 `starting_balance` 建立空账本。
 
 ---
 

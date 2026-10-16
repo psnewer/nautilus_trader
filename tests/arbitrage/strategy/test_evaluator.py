@@ -319,6 +319,44 @@ def test_matched_pair_routes_directly_with_embedded_pair_id():
     assert arb_action.calls == 1
 
 
+def test_runtime_falls_through_no_plan_leaf_and_dispatches_next_plan():
+    actor, _, _, strat_reg, loop, _ = _harness()
+    submitted = []
+    no_plan = _RecordingAction("no-plan")
+
+    async def fake_submitter(spec):
+        submitted.append(spec)
+
+    actor._make_submitter = lambda: fake_submitter
+    arb_tree = Condition(
+        self_hits=_ConstantQuery(True),
+        sub_conditions=[
+            Condition(
+                self_hits=_ConstantQuery(True),
+                checktion=AndCheckExpr(_StubCheck(True)),
+                actions=[no_plan],
+            ),
+            Condition(
+                self_hits=_ConstantQuery(True),
+                checktion=AndCheckExpr(_StubCheck(True)),
+                actions=[_SetSubmitPlanAction()],
+            ),
+        ],
+    )
+    comp_tree = Condition(self_hits=_ConstantQuery(False))
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
+
+    actor.on_data(_mp())
+    _run(_drain(loop))
+
+    assert no_plan.calls == 1
+    assert len(submitted) == 1
+    assert submitted[0]["instrument_id"] == "H.POLYMARKET"
+
+
 def test_eval_context_strategy_defaults_read_arbitrage_params():
     actor, store, pair_reg, strat_reg, loop, _ = _harness(
         arbitrage_params=ArbitrageParams(share=40.0, max_leg_share=100.0, fx=1.33),
@@ -1482,7 +1520,8 @@ def test_ended_deletes_pair_prices_after_last_evaluation_finishes():
 
 def test_pair_evicted_deletes_in_game_position_override():
     actor, _, _, _, _, _ = _harness()
-    actor._in_game_position_store.set_min_set("match_X", 4)
+    actor._in_game_position_store.set_min_tp_set("match_X", 4)
+    actor._in_game_position_store.set_min_sl_set("match_X", 2)
 
     actor.on_data(PairEvicted(
         ts_event=1,
@@ -1491,7 +1530,8 @@ def test_pair_evicted_deletes_in_game_position_override():
         reason="test",
     ))
 
-    assert actor._in_game_position_store.min_set("match_X") is None
+    assert actor._in_game_position_store.min_tp_set("match_X") is None
+    assert actor._in_game_position_store.min_sl_set("match_X") is None
 
 # ── #260:pair 闸的唯一出口 = `_on_eval_done`(加锁/释放同层对称)──────
 class _RaisingAction(Action):
