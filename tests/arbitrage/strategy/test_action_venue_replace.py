@@ -198,6 +198,105 @@ def test_invalid_set_exempt_param_raises(value):
         VenueReplaceAction(set_exempt=value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [True, -0.01, 1.01, float("nan"), float("inf"), "0.5"],
+)
+def test_invalid_random_convert_param_raises(value):
+    with pytest.raises(ValueError, match=r"random_convert must be a finite number in \[0, 1\]"):
+        VenueReplaceAction(random_convert=value)
+
+
+def test_random_convert_zero_keeps_existing_behavior(monkeypatch):
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actions.venue_replace._RANDOM",
+        SimpleNamespace(random=lambda: pytest.fail("random_convert=0 must not sample")),
+    )
+
+    _run(VenueReplaceAction(random_convert=0).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
+def test_random_convert_one_flips_final_leg_using_opposite_pm_live_price():
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+
+    _run(VenueReplaceAction(pm_price=False, random_convert=1).execute(ctx))
+
+    assert ctx.scratch["legs"] == [{
+        "instrument_id": "N.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "price": 0.55,
+        "prob": 0.55,
+        "role": "no",
+        "claim": "no",
+        "qty": 80.0,
+        "share_if_wins": 80.0,
+        "cost": 44.0,
+    }]
+
+
+@pytest.mark.parametrize(
+    ("sample", "expected_instrument"),
+    [(0.24, "N.POLYMARKET"), (0.25, "Y.POLYMARKET")],
+)
+def test_random_convert_uses_strict_probability_boundary(
+    monkeypatch,
+    sample,
+    expected_instrument,
+):
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actions.venue_replace._RANDOM",
+        SimpleNamespace(random=lambda: sample),
+    )
+
+    _run(VenueReplaceAction(random_convert=0.25).execute(ctx))
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == expected_instrument
+
+
+def test_convert_hit_is_exempt_from_random_convert(monkeypatch):
+    ctx = _ctx()
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actions.venue_replace._RANDOM",
+        SimpleNamespace(random=lambda: pytest.fail("convert hit must not sample")),
+    )
+
+    _run(VenueReplaceAction(convert=True, random_convert=1).execute(ctx))
+
+    leg = ctx.scratch["legs"][0]
+    assert leg["instrument_id"] == "N.POLYMARKET"
+    assert leg["price"] == 0.55
+    assert leg["prob"] == 0.55
+    assert leg["qty"] == 80.0
+    assert leg["cost"] == 44.0
+
+
+def test_set_exempt_disables_random_convert(monkeypatch):
+    ctx = _with_period(_ctx(), "S2")
+    pm_yes, _ = _mixed_candidate()
+    ctx.scratch["legs"] = [pm_yes]
+    monkeypatch.setattr(
+        "src.arbitrage.strategy.actions.venue_replace._RANDOM",
+        SimpleNamespace(random=lambda: pytest.fail("set_exempt hit must not sample")),
+    )
+
+    _run(VenueReplaceAction(random_convert=1, set_exempt=2).execute(ctx))
+
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
 def test_tier_ignore_precedes_set_exempt_and_blocks_lower_tier():
     ctx = _with_period(_ctx(), "S2")
     ctx.cache.instrument("Y.ORBITEXCH").competition_name = "WTA Beijing"

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import math
+import random
 import re
 from copy import deepcopy
+from numbers import Real
 
 from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.pair_prices import PairPriceStore
@@ -19,6 +22,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 _LOG = logging.getLogger(__name__)
+_RANDOM = random.SystemRandom()
 
 
 class VenueReplaceAction(Action):
@@ -42,6 +46,8 @@ class VenueReplaceAction(Action):
     两者均仅在原 outcome 存在 start_price 且完整 PM ask 向量概率和位于 `[0.98,1.02]` 时生效。
     `set_exempt=N` 且当前 sports period 明确为 `SN` 时,上述三种反转都不命中;
     非 PM 腿仍默认替换为同 outcome PM 腿。
+    `random_convert=P` 在上述处理完成后,对未命中 `convert` 的最终腿独立按概率 P
+    再反转一次;缺失或 0 不增加随机反转,命中 `set_exempt` 时同样豁免。
     缺 start_price 只是不触发动态反转,不阻止后续默认同方向替换。
     PM 是 probability venue,qty=share(不随价缩放);price/prob/cost 按所选价重算。
     """
@@ -54,6 +60,7 @@ class VenueReplaceAction(Action):
         attitude: bool | None = None,
         tier_ignore: bool | None = None,
         set_exempt: int | None = None,
+        random_convert: float | None = None,
     ) -> None:
         if pm_price is not None and not isinstance(pm_price, bool):
             raise ValueError("pm_price must be a boolean")
@@ -69,6 +76,13 @@ class VenueReplaceAction(Action):
             isinstance(set_exempt, bool) or not isinstance(set_exempt, int) or set_exempt <= 0
         ):
             raise ValueError("set_exempt must be a positive integer")
+        if random_convert is not None and (
+            isinstance(random_convert, bool)
+            or not isinstance(random_convert, Real)
+            or not math.isfinite(float(random_convert))
+            or not 0 <= float(random_convert) <= 1
+        ):
+            raise ValueError("random_convert must be a finite number in [0, 1]")
         # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
         self._use_pm_price = pm_price is None or pm_price
         self._convert = bool(convert)
@@ -76,6 +90,7 @@ class VenueReplaceAction(Action):
         self._deviate_convert = bool(deviate_convert)
         self._attitude = bool(attitude)
         self._set_exempt = set_exempt
+        self._random_convert = float(random_convert or 0.0)
 
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.scratch.get("cancel_pair_orders"):
@@ -96,10 +111,11 @@ class VenueReplaceAction(Action):
         convert = self._convert and not set_exempt_hit
         deviate_convert = self._deviate_convert and not set_exempt_hit
         attitude = self._attitude and not set_exempt_hit
+        random_convert = self._random_convert if not set_exempt_hit else 0.0
         if set_exempt_hit:
             _LOG.info(
                 f"VenueReplace: pair={ctx.pair_id} set_exempt={self._set_exempt} hit; "
-                "skip convert/attitude/deviate_convert",
+                "skip convert/attitude/deviate_convert/random_convert",
             )
 
         pm_legs = _polymarket_legs_by_outcome(ctx)
@@ -124,6 +140,7 @@ class VenueReplaceAction(Action):
                 attitude,
                 pm_bids,
                 start_prices,
+                random_convert,
             )
             if replaced is None:
                 ctx.scratch["selected_candidate"] = {}
@@ -144,6 +161,7 @@ class VenueReplaceAction(Action):
                 attitude,
                 pm_bids,
                 start_prices,
+                random_convert,
             )
             return
 
@@ -160,6 +178,7 @@ class VenueReplaceAction(Action):
             attitude,
             pm_bids,
             start_prices,
+            random_convert,
         )
         ctx.scratch["legs"] = replaced or []
 
@@ -242,6 +261,7 @@ def _replace_candidate(
     attitude: bool,
     pm_bids: dict[str, float],
     start_prices: dict[str, float],
+    random_convert: float,
 ) -> dict | None:
     if candidate.get("cancel_pair_orders"):
         return deepcopy(candidate)
@@ -255,6 +275,7 @@ def _replace_candidate(
         attitude,
         pm_bids,
         start_prices,
+        random_convert,
     )
     if replaced_legs is None:
         return None
@@ -273,6 +294,7 @@ def _replace_candidates(
     attitude: bool,
     pm_bids: dict[str, float],
     start_prices: dict[str, float],
+    random_convert: float,
 ) -> list[dict]:
     if not isinstance(candidates, list):
         _LOG.warning(f"VenueReplace: pair={pair_id} candidates is not list, clear")
@@ -291,6 +313,7 @@ def _replace_candidates(
             attitude,
             pm_bids,
             start_prices,
+            random_convert,
         )
         if replaced is not None:
             result.append(replaced)
@@ -307,6 +330,7 @@ def _replace_legs(
     attitude: bool,
     pm_bids: dict[str, float],
     start_prices: dict[str, float],
+    random_convert: float,
 ) -> list[dict] | None:
     if not legs:
         return None
@@ -326,9 +350,19 @@ def _replace_legs(
                 attitude=attitude,
             )
         )
-        flip_target = convert_target_leg or dynamic_convert
-        outcome = _opposite_outcome(source_outcome) if flip_target else source_outcome
-        if venue == POLYMARKET and not flip_target:
+        existing_flip = convert_target_leg or dynamic_convert
+        outcome = _opposite_outcome(source_outcome) if existing_flip else source_outcome
+        random_flip = False
+        if not convert_target_leg and random_convert > 0 and outcome in VALID_OUTCOMES:
+            sample = _RANDOM.random()
+            random_flip = sample < random_convert
+            final_outcome = _opposite_outcome(outcome) if random_flip else outcome
+            _LOG.info(
+                f"VenueReplace random_convert: pair={pair_id} probability={random_convert} "
+                f"sample={sample} hit={random_flip} outcome={outcome}->{final_outcome}",
+            )
+            outcome = final_outcome
+        if venue == POLYMARKET and not existing_flip and not random_flip:
             result.append(deepcopy(leg))
             continue
 
@@ -344,7 +378,7 @@ def _replace_legs(
         replacement = deepcopy(pm_leg)
         # use_pm_price=True(默认):用 PM 报价腿概率(PM 实时 ask);False:用原腿共享 `prob`。
         # PM 是 probability venue,price 即概率;qty=share(不缩放),cost=share×prob。
-        prob = _order_prob(leg, pm_leg, pair_id, use_pm_price or flip_target)
+        prob = _order_prob(leg, pm_leg, pair_id, use_pm_price or existing_flip or random_flip)
         qty = qty_from_share(POLYMARKET, share, prob)
         replacement["price"] = prob
         replacement["prob"] = prob
