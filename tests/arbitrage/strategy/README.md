@@ -616,6 +616,21 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_score_selection.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
+## strategy-4.set-selection：已完成盘胜数筛选
+
+- `set_selection` 是独立 Action；`standing` 接受与 `score_selection` 相同的
+  `win/draw/lose` 单值或 `|` 组合，但只统计双方已完成盘胜数，当前未完成盘局分不参与。
+- `6-4, 2-3` 判主方盘数领先、客方盘数落后；`6-4, 2-6, 5-0` 判双方盘数打平；首盘进行中
+  尚无已完成盘时双方为 `draw`。最新一段已经完盘时立即计入，不等待下一盘 `0-0` 到达。
+- 普通执行腿沿用目标 instrument 与 BUY/SELL 无关的筛选语义。`order_cancel` 已写
+  `cancel_pair_orders` 时，逐个 `client_order_id` 回查 open Order 的 instrument，仅保留其参赛方
+  standing 命中的撤单 ID；全部不命中、比分/订单映射证据缺失时删除撤单请求，本叶不形成计划。
+- `standing` 缺失时严格 no-op；比分缺失、格式非法、出现非末段未完成盘或目标参赛方不可映射时
+  fail-closed。非法 standing 构造失败。
+- **验收**：`test_action_set_selection.py` 覆盖已完成盘统计、忽略当前盘、盘间完成帧、无已完成盘、
+  缺失/坏比分、撤单 ID 定向过滤、空结果删除撤单请求、缺参数 no-op 与非法参数；launcher 注册由
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
+
 ## strategy-4.current-set-game-selection：当前盘局分筛选
 
 - `current_set_game_selection` 注册为 Action，沿用 `score_selection` 的 `win|draw|lose` 组合、
@@ -713,9 +728,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `score_selection(win|draw)` 忽略订单 side，按 instrument 对应持仓方筛选打平/领先腿。
   `place_bets(limit=false,intent=recovery,origin=in_game)` 必须保持价格并透传 position_id。
   低于盘数、持仓方落后、缺 period/outcome/position_id 或缺 ask 均不产出平仓计划。
-- **动态盘数覆盖（#475）**：运行时门槛拆成互不影响的 `min_tp_set` 与 `min_sl_set`；对应撤单分支
-  分别由 `advance_min_tp_set` / `advance_min_sl_set` 写 `current_set+offset`（默认 1）；盘号不可判定不写。订单身份由 magic 分支
-  `exposure_source` 保证,Action 不自判定。**时序为撤单决策时写(先写后撤)**,
+- **动态盘数覆盖（#475/#478）**：运行时门槛保留互不影响的 `min_tp_set` 与 `min_sl_set`；当前只有
+  SL 撤单分支由 `advance_min_sl_set` 写 `current_set+offset`（默认 1），TP 撤单分支不再推进门槛。
+  盘号不可判定不写。订单身份由 magic 分支 `exposure_source` 保证,Action 不自判定。
+  **时序为撤单决策时写(先写后撤)**,
   已移除 actor `OrderCanceled` 回调里的硬编码写入。两个 Action 验收见
   `test_action_advance_min_set.py`（current_set+offset、offset 可配、盘号未知不写、无 store 不抛、
   非法 offset、TP/SL 相互独立）。仓位 Check 只读取本分支对应覆盖，没有条目才使用配置默认值；比赛 ended /
@@ -723,9 +739,12 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **配置验收**：低级别补偿树以 `pre_game/in_game` 为阶段节点，阶段节点下再按精确
   `exposure_source` 分流；不得恢复为 exposure 外层再重复嵌套阶段与 exposure。`in_game_order` 与
   `in_game_position` 均受同一个 `in_game` 父节点约束；
-  TP 平仓挂单撤单支使用 `min_tp_set=1` 并执行 `advance_min_tp_set`，SL 支使用 `min_sl_set=1`
-  并执行 `advance_min_sl_set`；TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支对应 `min_sl_set=1`。
-- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`、`test_check_position_close.py`、
+  TP 平仓挂单撤单支使用 `order_cancel(game_drift=0) → set_selection(standing=lose) → place_bets`，
+  只撤对应参赛方已赢盘数落后的 TP 挂单，不配置 `min_tp_set`、不执行 `advance_min_tp_set`；SL 撤单支
+  仍使用 `min_sl_set=1` 并执行 `advance_min_sl_set`。TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支
+  对应 `min_sl_set=1`。
+- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`、`test_action_set_selection.py`、`test_check_position_close.py`、
+  `test_pre_rebate_scenarios.py::test_lower_in_game_tp_order_cancel_filters_by_completed_set_standing`、
   `test_in_game_positions.py`、`test_evaluator.py` 的撤单写入/eviction 清理用例、
   `test_opportunity.py::test_order_score_reads_frozen_order_tag`，以及
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`。

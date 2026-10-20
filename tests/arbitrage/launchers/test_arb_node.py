@@ -26,8 +26,9 @@ from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSet
 from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
-from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.same_set import SameSetAction
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.set_selection import SetSelectionAction
 from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
 from src.arbitrage.strategy.check_action_registry import build_action
@@ -96,6 +97,10 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
     assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)
+    assert isinstance(
+        build_action({"type": "set_selection", "params": {"standing": "lose"}}),
+        SetSelectionAction,
+    )
     assert isinstance(build_action({"type": "advance_min_tp_set"}), AdvanceMinTpSetAction)
     assert isinstance(build_action({"type": "advance_min_sl_set"}), AdvanceMinSlSetAction)
     assert isinstance(

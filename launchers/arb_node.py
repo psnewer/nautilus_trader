@@ -87,8 +87,9 @@ from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
-from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.same_set import SameSetAction
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.set_selection import SetSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
@@ -164,6 +165,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("price_gate", PriceGateAction)
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
+    register_action("set_selection", SetSelectionAction)
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)
     register_action("same_set", SameSetAction)
     register_action("trend_gate", TrendGateAction)

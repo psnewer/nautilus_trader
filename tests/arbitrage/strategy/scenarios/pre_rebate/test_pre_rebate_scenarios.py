@@ -490,6 +490,47 @@ def test_lower_in_game_position_order_cancel_bumps_min_sl_set(trees):
     ]
 
 
+@pytest.mark.parametrize(
+    ("score", "expected_hit"),
+    [
+        ("3-6, 2-1", True),
+        ("6-3, 0-1", False),
+    ],
+)
+def test_lower_in_game_tp_order_cancel_filters_by_completed_set_standing(
+    trees,
+    score,
+    expected_hit,
+):
+    _, comp_tree = trees
+    store = InGamePositionRuntimeStore()
+    order = _order(
+        "O-ingpos-tp",
+        side="SELL",
+        origin="in_game",
+        intent="recovery",
+        magic="in_game_close_in_game_position_tp",
+    )
+    ctx = _ctx(
+        tier="lower",
+        phase="in",
+        score=score,
+        period="S2",
+        orders=[order],
+        position_ids={"O-ingpos-tp": "P-9"},
+        min_set_store=store,
+    )
+
+    result = _run(evaluate_tree_to_plan(comp_tree, ctx))
+
+    assert result.hit is expected_hit
+    if expected_hit:
+        assert ctx.scratch["execution_plan"].cancel_order_ids == ("O-ingpos-tp",)
+    else:
+        assert "execution_plan" not in ctx.scratch
+    assert store.min_tp_set(_PAIR) is None
+
+
 def test_lower_in_game_nonposition_order_cancel_on_price_drift(trees):
     _, comp_tree = trees
     order = _order("O-ingbuy", side="BUY", origin="in_game", price=0.40)
