@@ -30,8 +30,9 @@ def _ctx(*, period="S2", store=True, with_registry=True):
     return ctx
 
 
-def test_advance_tp_and_sl_independently():
-    ctx = _ctx(period="S2")
+@pytest.mark.parametrize("period", ["S2", "TB2"])
+def test_advance_tp_and_sl_independently(period):
+    ctx = _ctx(period=period)
     _run(AdvanceMinTpSetAction().execute(ctx))
     assert ctx.in_game_position_store.min_tp_set(ctx.pair_id) == 3
     assert ctx.in_game_position_store.min_sl_set(ctx.pair_id) is None

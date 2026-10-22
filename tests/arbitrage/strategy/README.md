@@ -713,7 +713,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **订单分支**：补偿树先进入 `in_game`，再在其下以 `exposure_source=in_game_order` 的两个叶分别由
   `exposure_source(position_order=true|false)` 输出目标 client-order-id，再执行 `order_cancel`。构造同 pair 混合
   `origin=pre_game/in_game` 的挂单、下单比分 tag、当前比分与 PM 盘口。
-  `book_side=ask|bid` 分别读取对应盘口；价格绝对概率差或累计常规局数推进任一达到或超过阈值时
+  `book_side=ask|bid` 分别读取对应盘口，并要求完整 PM yes/no 在同一侧的概率和位于 commission 闭区间
+  `[0.98,1.02]`：ask 合格时不受 bid 向量影响，bid 合格时不受 ask 向量影响；所选侧缺腿、缺报价或
+  commission 越界只关闭价格信号。价格绝对概率差或累计常规局数推进任一达到或超过阈值时
   只撤命中的订单，等于阈值即撤。跨盘累计普通局，括号内抢七小分不计；非 in_game 来源忽略，
   单个信号缺失时另一信号仍可触发，两者均缺失则 fail-closed。condition 输出 client-order-id
   子集，撤单 Check 只消费该子集；缺输入 fail-closed，混合窗口不会串用另一类订单的阈值。
@@ -724,13 +726,14 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   已有覆盖值也不启用。
 - **仓位分支**：构造可由 `opening_order_id` 归为 `in_game_position` 的 PM LONG Position；
   `exposure_source` 写入目标 position-id，`position_close` 只能消费该子集。
-  当前 `period` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；
-  `score_selection(win|draw)` 忽略订单 side，按 instrument 对应持仓方筛选打平/领先腿。
+  当前 `period=S<N>` 或抢七阶段 `period=TB<N>` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；
+  `score_selection(win|draw)` 忽略订单 side，按 instrument 对应持仓方筛选打平/领先腿；`tie_break`
+  默认启用，故 `6-6(x-y)` 比较抢七小分、裸 `6-6` 按 `0-0`，显式 `false` 才 fail-closed。
   `place_bets(limit=false,intent=recovery,origin=in_game)` 必须保持价格并透传 position_id。
   低于盘数、持仓方落后、缺 period/outcome/position_id 或缺 ask 均不产出平仓计划。
 - **动态盘数覆盖（#475/#478）**：运行时门槛保留互不影响的 `min_tp_set` 与 `min_sl_set`；当前只有
   SL 撤单分支由 `advance_min_sl_set` 写 `current_set+offset`（默认 1），TP 撤单分支不再推进门槛。
-  盘号不可判定不写。订单身份由 magic 分支 `exposure_source` 保证,Action 不自判定。
+  `S<N>` / `TB<N>` 均以 N 为当前盘；其它盘号不可判定不写。订单身份由 magic 分支 `exposure_source` 保证,Action 不自判定。
   **时序为撤单决策时写(先写后撤)**,
   已移除 actor `OrderCanceled` 回调里的硬编码写入。两个 Action 验收见
   `test_action_advance_min_set.py`（current_set+offset、offset 可配、盘号未知不写、无 store 不抛、
@@ -743,7 +746,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   只撤对应参赛方已赢盘数落后的 TP 挂单，不配置 `min_tp_set`、不执行 `advance_min_tp_set`；SL 撤单支
   仍使用 `min_sl_set=1` 并执行 `advance_min_sl_set`。TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支
   对应 `min_sl_set=1`。
-- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`、`test_action_set_selection.py`、`test_check_position_close.py`、
+- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`（含 ask/bid 各自 commission、所选侧越界 fail-closed、其它 OR 信号不受阻）、`test_action_set_selection.py`、`test_check_position_close.py`、
   `test_pre_rebate_scenarios.py::test_lower_in_game_tp_order_cancel_filters_by_completed_set_standing`、
   `test_in_game_positions.py`、`test_evaluator.py` 的撤单写入/eviction 清理用例、
   `test_opportunity.py::test_order_score_reads_frozen_order_tag`，以及

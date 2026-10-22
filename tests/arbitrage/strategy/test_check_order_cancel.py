@@ -36,17 +36,39 @@ def _order(
     )
 
 
-def _ctx(*, orders, ask=0.40, score="0-0", period="S1"):
+def _ctx(
+    *,
+    orders,
+    ask=0.40,
+    bid=None,
+    other_ask=None,
+    other_bid=None,
+    score="0-0",
+    period="S1",
+):
+    bid = ask - 0.01 if bid is None else bid
+    other_ask = 1.0 - ask if other_ask is None else other_ask
+    other_bid = 1.0 - bid if other_bid is None else other_bid
     ctx = live_context(
-        books={"Y.POLYMARKET": {"bid": ask - 0.01, "ask": ask}},
-        infos={"Y.POLYMARKET": {"claim": "yes"}},
+        books={
+            "Y.POLYMARKET": {"bid": bid, "ask": ask},
+            "N.POLYMARKET": {"bid": other_bid, "ask": other_ask},
+        },
+        infos={
+            "Y.POLYMARKET": {"claim": "yes"},
+            "N.POLYMARKET": {"claim": "no"},
+        },
         orders=orders,
         sports_store=SimpleNamespace(
             get=lambda game_id: SimpleNamespace(score=score, period=period),
         ),
         in_game_position_store=InGamePositionRuntimeStore(),
     )
-    ctx.pair_registry.register(ctx.pair_id, ["Y.POLYMARKET"], game_id=42)
+    ctx.pair_registry.register(
+        ctx.pair_id,
+        ["Y.POLYMARKET", "N.POLYMARKET"],
+        game_id=42,
+    )
     ctx.cache.position_id = lambda order_id: None
     return ctx
 
@@ -71,6 +93,75 @@ def test_price_drift_includes_threshold_with_float_tolerance():
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(book_side="ask", price_drift=0.05).eval(ctx) is True
+
+
+@pytest.mark.parametrize(
+    ("book_side", "ask", "bid", "other_ask", "other_bid"),
+    [
+        ("ask", 0.46, 0.10, 0.54, 0.10),
+        ("bid", 0.80, 0.46, 0.80, 0.54),
+    ],
+)
+def test_price_drift_commission_uses_configured_book_side(
+    book_side,
+    ask,
+    bid,
+    other_ask,
+    other_bid,
+):
+    ctx = _ctx(
+        orders=[_order("o1")],
+        ask=ask,
+        bid=bid,
+        other_ask=other_ask,
+        other_bid=other_bid,
+    )
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(book_side=book_side, price_drift=0.05).eval(ctx) is True
+
+
+@pytest.mark.parametrize(
+    ("book_side", "ask", "bid", "other_ask", "other_bid"),
+    [
+        ("ask", 0.46, 0.46, 0.60, 0.54),
+        ("bid", 0.46, 0.46, 0.54, 0.60),
+    ],
+)
+def test_price_drift_fails_closed_when_selected_side_commission_is_invalid(
+    book_side,
+    ask,
+    bid,
+    other_ask,
+    other_bid,
+):
+    ctx = _ctx(
+        orders=[_order("o1")],
+        ask=ask,
+        bid=bid,
+        other_ask=other_ask,
+        other_bid=other_bid,
+    )
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(book_side=book_side, price_drift=0.05).eval(ctx) is False
+    assert "cancel_pair_orders" not in ctx.scratch
+
+
+def test_invalid_commission_only_disables_price_drift_signal():
+    ctx = _ctx(
+        orders=[_order("o1", score="0-0")],
+        ask=0.46,
+        other_ask=0.60,
+        score="1-0",
+    )
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(
+        book_side="ask",
+        price_drift=0.05,
+        game_drift=1,
+    ).eval(ctx) is True
 
 
 def test_missing_order_score_uses_zero_game_baseline():

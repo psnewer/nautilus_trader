@@ -401,7 +401,10 @@ def test_lower_pre_game_position_hit_order_cancel_on_price_drift(trees):
         phase="in",
         orders=[order],
         position_ids={"O-posp": "P-1"},
-        books={"Y.POLYMARKET": {"ask": 0.46, "bid": 0.44}},  # drift 0.06 >= 0.05
+        books={
+            "Y.POLYMARKET": {"ask": 0.46, "bid": 0.44},
+            "N.POLYMARKET": {"ask": 0.54, "bid": 0.56},
+        },  # ask commission=1.00,drift 0.06 >= 0.05
     )
 
     result = evaluate_tree(comp_tree, ctx)
@@ -451,7 +454,10 @@ def test_lower_in_game_position_order_cancel_bumps_min_sl_set(trees):
         orders=[order],
         position_ids={"O-ingpos": "P-9"},
         min_set_store=store,
-        books={"Y.POLYMARKET": {"ask": 0.46, "bid": 0.44}},  # drift 0.06 >= 0.05
+        books={
+            "Y.POLYMARKET": {"ask": 0.46, "bid": 0.44},
+            "N.POLYMARKET": {"ask": 0.54, "bid": 0.56},
+        },  # ask commission=1.00,drift 0.06 >= 0.05
     )
 
     result = evaluate_tree(comp_tree, ctx)
@@ -538,7 +544,10 @@ def test_lower_in_game_nonposition_order_cancel_on_price_drift(trees):
         tier="lower",
         phase="in",
         orders=[order],
-        books={"Y.POLYMARKET": {"ask": 0.55, "bid": 0.53}},  # drift 0.15 >= 0.14
+        books={
+            "Y.POLYMARKET": {"ask": 0.55, "bid": 0.53},
+            "N.POLYMARKET": {"ask": 0.45, "bid": 0.47},
+        },  # bid commission=1.00,drift=0.13
     )
 
     result = evaluate_tree(comp_tree, ctx)
@@ -556,7 +565,10 @@ def test_regular_in_game_nonposition_order_cancel(trees):
         tier="regular",
         phase="in",
         orders=[order],
-        books={"Y.POLYMARKET": {"ask": 0.42, "bid": 0.40}},  # drift 0.02 >= 0.01
+        books={
+            "Y.POLYMARKET": {"ask": 0.42, "bid": 0.40},
+            "N.POLYMARKET": {"ask": 0.58, "bid": 0.60},
+        },  # ask commission=1.00,drift 0.02 >= 0.01
     )
 
     result = evaluate_tree(comp_tree, ctx)
@@ -598,7 +610,13 @@ def test_order_cancel_uses_exact_configured_price_drift_boundaries(
         phase="in",
         orders=[order],
         position_ids={"O-boundary": "P-1"} if position_order else {},
-        books={"Y.POLYMARKET": {"ask": ask, "bid": ask - 0.02}},
+        books={
+            "Y.POLYMARKET": {"ask": ask, "bid": ask - 0.02},
+            "N.POLYMARKET": {
+                "ask": 1.0 - ask,
+                "bid": 1.0 - (ask - 0.02),
+            },
+        },
     )
 
     result = evaluate_tree(comp_tree, ctx)

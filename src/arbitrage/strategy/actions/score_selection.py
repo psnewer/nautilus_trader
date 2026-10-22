@@ -22,7 +22,7 @@ class ScoreSelectionAction(Action):
     组合。BUY/SELL 不改变目标参赛方；比分或主客方映射未知时 fail-closed。
     """
 
-    def __init__(self, standing: str | None = None, tie_break: bool = False) -> None:
+    def __init__(self, standing: str | None = None, tie_break: bool = True) -> None:
         if not isinstance(tie_break, bool):
             raise ValueError(
                 f"score_selection: tie_break must be a boolean, got {tie_break!r}",
@@ -133,7 +133,7 @@ def _standings(ctx: EvalContext, *, tie_break: bool) -> dict[str, str]:
     return {"home": "draw", "away": "draw"}
 
 
-def _compare_score(score: str, *, tie_break: bool = False) -> int | None:
+def _compare_score(score: str, *, tie_break: bool = True) -> int | None:
     """返回主方相对客方的比赛级领先关系：1 / 0 / -1。"""
     parts = [part.strip() for part in str(score or "").split(",") if part.strip()]
     parsed = []

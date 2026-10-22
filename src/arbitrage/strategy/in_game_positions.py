@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 
-_SET_RE = re.compile(r"S([1-9]\d*)", re.IGNORECASE)
+_SET_RE = re.compile(r"(?:S|TB)([1-9]\d*)", re.IGNORECASE)
 
 
 class InGamePositionRuntimeStore:
@@ -40,7 +40,7 @@ def _validate_min_set(name: str, value: int) -> None:
 
 
 def current_set_number(*, pair_id: str, pair_registry, sports_store) -> int:
-    """读取 pair 当前盘数；状态不完整时 fail-close 为 0。"""
+    """从 S<N>/TB<N> 读取 pair 当前盘数；状态不完整时 fail-close 为 0。"""
     if pair_registry is None or sports_store is None:
         return 0
     game_id = pair_registry.game_id_for_pair(pair_id)

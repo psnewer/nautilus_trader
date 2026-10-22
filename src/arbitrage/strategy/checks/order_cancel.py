@@ -6,7 +6,8 @@
 `scratch["cancel_candidates"]`;缺失或为空均 fail-closed。三条触发均 opt-in——对应参数未配置
 就不跑该条校验:
 
-- `price_drift`:当前盘口(`book_side`)与**订单自身价**的概率绝对差 `>= price_drift`。
+- `price_drift`:完整 PM yes/no 在 `book_side` 对应方向的 commission 概率和位于
+  `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。
 - `game_drift`:`当前局数 − baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
 - `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单，当前盘低于
@@ -21,8 +22,10 @@ import math
 
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.opportunity import order_score
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
+from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.checks.quote_legs import venue_of
@@ -93,6 +96,10 @@ class OrderCancelCheck(Check):
             sports_store=ctx.sports_store,
         )
         position_id_fn = getattr(ctx.cache, "position_id", None)
+        price_drift_enabled = self._price_drift is not None and _side_satisfies_commission(
+            ctx,
+            self._book_side,
+        )
 
         triggers = []
         for instrument_id in pair_instrument_ids(ctx):
@@ -110,7 +117,7 @@ class OrderCancelCheck(Check):
                     continue
 
                 price_hit = False
-                if self._price_drift is not None and current_probability is not None:
+                if price_drift_enabled and current_probability is not None:
                     order_price = _number(getattr(order, "price", None))
                     if order_price is not None:
                         try:
@@ -206,6 +213,26 @@ def _book_probability(book, side: str) -> float | None:
         return None
     value = _number(value)
     return value if value is not None and math.isfinite(value) and 0 < value < 1 else None
+
+
+def _side_satisfies_commission(ctx: EvalContext, side: str) -> bool:
+    """完整 PM 二元盘口的指定侧概率和须位于 commission 闭区间。"""
+    probabilities: dict[str, float] = {}
+    for instrument_id in pair_instrument_ids(ctx):
+        if venue_of(instrument_id) != POLYMARKET:
+            continue
+        info = instrument_info(ctx, instrument_id)
+        outcome = str(info.get("claim") or info.get("selection_role") or "").lower()
+        if outcome not in VALID_OUTCOMES or outcome in probabilities:
+            return False
+        probability = _book_probability(ctx.cache.order_book(instrument_id), side)
+        if probability is None:
+            return False
+        probabilities[outcome] = probability
+    return (
+        set(probabilities) == set(VALID_OUTCOMES)
+        and 0.98 <= sum(probabilities.values()) <= 1.02
+    )
 
 
 def _number(value) -> float | None:

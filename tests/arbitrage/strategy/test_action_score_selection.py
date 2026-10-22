@@ -134,22 +134,18 @@ def test_standing_accepts_single_values_and_combinations(standing, expected):
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == expected
 
 
-@pytest.mark.parametrize("tie_break", [False, None])
-def test_tie_break_disabled_cannot_classify_six_all(tie_break):
+def test_tie_break_explicitly_disabled_cannot_classify_six_all():
     ctx = _ctx("6-6(3-4)")
-    params = {"standing": "win|draw"}
-    if tie_break is not None:
-        params["tie_break"] = tie_break
 
-    _run(ScoreSelectionAction(**params).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw", tie_break=False).execute(ctx))
 
     assert ctx.scratch["legs"] == []
 
 
-def test_tie_break_enabled_uses_tie_break_points():
+def test_tie_break_defaults_to_enabled_and_uses_tie_break_points():
     ctx = _ctx("6-6(3-4)")
 
-    _run(ScoreSelectionAction(standing="win|draw", tie_break=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("A.POLYMARKET", "BUY"),
@@ -157,10 +153,10 @@ def test_tie_break_enabled_uses_tie_break_points():
     ]
 
 
-def test_tie_break_enabled_treats_bare_six_all_as_zero_all():
+def test_tie_break_default_treats_bare_six_all_as_zero_all():
     ctx = _ctx("6-6")
 
-    _run(ScoreSelectionAction(standing="win|draw", tie_break=True).execute(ctx))
+    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
 
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
         ("H.POLYMARKET", "BUY"),
@@ -321,15 +317,15 @@ def test_compare_score_uses_completed_units_then_current_unit(score, expected):
 
 @pytest.mark.parametrize("score", ["6-6", "6-6(1-2)", "6-4, 6-6(4-3)"])
 def test_compare_score_rejects_tie_break_when_disabled(score):
-    assert _compare_score(score) is None
+    assert _compare_score(score, tie_break=False) is None
 
 
 @pytest.mark.parametrize(
     ("score", "expected"),
     [("6-6", 0), ("6-6(1-2)", -1), ("6-4, 6-6(4-3)", 1)],
 )
-def test_compare_score_uses_tie_break_when_enabled(score, expected):
-    assert _compare_score(score, tie_break=True) == expected
+def test_compare_score_uses_tie_break_by_default(score, expected):
+    assert _compare_score(score) == expected
 
 
 def test_noop_without_selected_candidate_and_for_cancel_candidate():

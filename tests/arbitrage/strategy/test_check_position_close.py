@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
+from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from src.arbitrage.strategy.queries.exposure_source import POSITION_CANDIDATES
@@ -19,8 +20,8 @@ _INFOS = {
 
 
 class _SportsStore:
-    def __init__(self, period):
-        self._state = SimpleNamespace(period=period)
+    def __init__(self, period, score=""):
+        self._state = SimpleNamespace(period=period, score=score)
 
     def get(self, game_id):
         return self._state
@@ -78,11 +79,22 @@ def test_without_min_set_ignores_period_and_runtime_override():
     }]
 
 
-def test_emits_sell_leg_at_or_after_min_tp_set():
-    ctx = _ctx(period="S3")
+@pytest.mark.parametrize("period", ["S3", "TB3"])
+def test_emits_sell_leg_at_or_after_min_tp_set(period):
+    ctx = _ctx(period=period)
 
     assert PositionCloseCheck(min_tp_set=3).passes(ctx) is True
     assert ctx.scratch["legs"][0]["position_id"] == "P-1"
+
+
+def test_tie_break_period_and_default_score_selection_keep_close_leg():
+    ctx = _ctx(period="TB3")
+    ctx.sports_store = _SportsStore("TB3", score="6-6")
+
+    assert PositionCloseCheck(min_tp_set=1).passes(ctx) is True
+    asyncio.run(ScoreSelectionAction(standing="win|draw").execute(ctx))
+
+    assert [leg["position_id"] for leg in ctx.scratch["legs"]] == ["P-1"]
 
 
 def test_runtime_tp_and_sl_overrides_are_independent():

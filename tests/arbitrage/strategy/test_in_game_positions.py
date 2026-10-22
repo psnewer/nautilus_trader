@@ -38,7 +38,10 @@ def test_store_rejects_invalid_min_set(setter, value):
         getattr(InGamePositionRuntimeStore(), setter)("p", value)
 
 
-@pytest.mark.parametrize(("period", "expected"), [("S3", 3), ("s12", 12), ("SET3", 0), ("", 0)])
+@pytest.mark.parametrize(
+    ("period", "expected"),
+    [("S3", 3), ("s12", 12), ("TB3", 3), ("tb12", 12), ("SET3", 0), ("", 0)],
+)
 def test_current_set_number_fails_closed(period, expected):
     registry = PairRegistry()
     registry.register("p", ["Y.POLYMARKET"], game_id=42)
