@@ -135,6 +135,10 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         OrderCancelCheck,
     )
     assert isinstance(
+        build_check({"type": "order_cancel", "params": {"force": True}}),
+        OrderCancelCheck,
+    )
+    assert isinstance(
         build_check({
             "type": "position_close",
             "params": {"min_sl_set": 3, "origin": "in_game"},

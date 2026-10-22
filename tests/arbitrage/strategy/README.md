@@ -691,12 +691,13 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `[0,1]` 时删除该腿。
 - 支持裸 `legs`、`selected_candidate`、候选池三种输入；候选元数据与撤单 candidate
   保留，已选 candidate 的 legs 与 scratch legs 同步。
-- `pre_rebate` 赛前套利支配置 `price=0.5`，置于 `share_limit` 与 `place_bets` 之间，比较的是
-  `pre_move` 报价腿概率，而不是 `place_bets(limit=true)` 改写后的最终挂单价。
+- `pre_rebate` 赛前套利支配置 `price=0.33`，置于 `share_limit` 与 `commission_gate` 之间，比较
+  `pre_game_order(offset=0.2)` 已生成的 PM 挂单价格；因此价格 `<0.33` 被过滤，`0.33` 边界放通。
 - **验收**：`test_action_price_gate.py` 覆盖 PM probability price、OE decimal yes/no 换算、
   `prob` 优先级、边界、双方向、非法概率和三类输入；
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types`
-  覆盖注册；配置验收确认 `pre_game` 支链顺序为 `share_limit -> price_gate(0.5) -> place_bets`。
+  覆盖注册；配置验收确认 `pre_game` 支链顺序为
+  `share_limit -> price_gate(0.33) -> commission_gate -> place_bets`。
 
 ## strategy-4.42：venue_select 执行 venue 过滤
 
@@ -724,6 +725,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   当前盘明确小于阈值时只撤平仓挂单；普通入场挂单不受该信号影响。缺 period 时盘数信号
   fail-closed，价格/局数信号仍可独立触发。未配置对应盘数参数时第三条完全关闭，即使运行时 Store
   已有覆盖值也不启用。
+  `order_cancel(force=true)` 可不配置上述任一条件，直接撤销 `exposure_source` 选中的活动订单；
+  它不读取盘口、commission、比分或盘数，候选为空/已终态仍 fail-closed，且不会扩大成撤整个 pair。
 - **仓位分支**：构造可由 `opening_order_id` 归为 `in_game_position` 的 PM LONG Position；
   `exposure_source` 写入目标 position-id，`position_close` 只能消费该子集。
   当前 `period=S<N>` 或抢七阶段 `period=TB<N>` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；

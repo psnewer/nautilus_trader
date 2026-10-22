@@ -1,5 +1,6 @@
 """
-统一 cancel 判定:对候选订单按价格漂移 / 累计局数漂移 / 仓位盘数三条 opt-in 条件撤单。
+统一 cancel 判定:对候选订单强制撤单,或按价格漂移 / 累计局数漂移 / 仓位盘数三条
+opt-in 条件撤单。
 
 合并原 position_order_cancel / in_game_cancel / in_game_order_cancel。只关注"撤单判定",
 不做订单分类:候选集必须由前置 condition `exposure_source`(兼容旧 `select_orders`)写入
@@ -8,10 +9,12 @@
 
 - `price_drift`:完整 PM yes/no 在 `book_side` 对应方向的 commission 概率和位于
   `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。
-- `game_drift`:`当前局数 − baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
+- `game_drift`:`当前局数 - baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
-- `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单，当前盘低于
-  对应止盈/止损有效阈值时撤（pair 运行时覆盖优先，否则配置值）。两者互斥。
+- `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,当前盘低于
+  对应止盈/止损有效阈值时撤(pair 运行时覆盖优先,否则配置值)。两者互斥。
+
+- `force=true`:跳过全部漂移、盘数与 commission 判定,无条件撤销候选活动订单。
 
 命中任一即把该订单计入定向撤单;全不命中返回 False。
 """
@@ -36,7 +39,7 @@ from src.arbitrage.strategy.queries.exposure_source import CANCEL_CANDIDATES
 
 
 class OrderCancelCheck(Check):
-    """按价格 / 累计局数 / 仓位盘数三条 opt-in 条件撤销候选订单。"""
+    """强制撤单,或按价格 / 累计局数 / 仓位盘数条件撤销候选订单。"""
 
     def __init__(
         self,
@@ -45,7 +48,11 @@ class OrderCancelCheck(Check):
         game_drift: int | None = None,
         min_tp_set: int | None = None,
         min_sl_set: int | None = None,
+        force: bool = False,
     ) -> None:
+        if not isinstance(force, bool):
+            raise ValueError("order_cancel: force must be a boolean")
+        self._force = force
         self._book_side = str(book_side).lower()
         if self._book_side not in {"ask", "bid"}:
             raise ValueError("order_cancel: book_side must be ask or bid")
@@ -67,18 +74,26 @@ class OrderCancelCheck(Check):
             "tp" if min_tp_set is not None else "sl" if min_sl_set is not None else None
         )
         self._configured_min_set = min_tp_set if min_tp_set is not None else min_sl_set
-        if price_drift is None and game_drift is None and self._min_set_kind is None:
+        if (
+            not force
+            and price_drift is None
+            and game_drift is None
+            and self._min_set_kind is None
+        ):
             raise ValueError(
-                "order_cancel: at least one drift or min_tp_set/min_sl_set is required",
+                "order_cancel: force or at least one drift/min-set condition is required",
             )
 
-    def passes(self, ctx: EvalContext) -> bool:
+    def passes(self, ctx: EvalContext) -> bool:  # noqa: C901 - 保持非 force 原路径不变
         if ctx.cache is None or ctx.pair_registry is None:
             return False
         candidates = ctx.scratch.get(CANCEL_CANDIDATES)
         if not isinstance(candidates, list) or not candidates:
             return False
         candidate_ids = set(candidates)
+
+        if self._force:
+            return self._force_cancel(ctx, candidate_ids)
 
         current_games = _total_games(_current_score(ctx))
         runtime_min_set = None
@@ -169,6 +184,27 @@ class OrderCancelCheck(Check):
             "game_drift": self._game_drift,
             "min_tp_set": min_set if self._min_set_kind == "tp" else None,
             "min_sl_set": min_set if self._min_set_kind == "sl" else None,
+        }
+        return True
+
+    def _force_cancel(self, ctx: EvalContext, candidate_ids: set[str]) -> bool:
+        triggers = []
+        for instrument_id in pair_instrument_ids(ctx):
+            for order in ctx.cache.orders_open(instrument_id=instrument_id) or ():
+                client_order_id = str(getattr(order, "client_order_id", None) or "")
+                if client_order_id and client_order_id in candidate_ids:
+                    triggers.append(client_order_id)
+        if not triggers:
+            return False
+        ctx.scratch["cancel_pair_orders"] = {
+            "reason": "order_cancel",
+            "client_order_ids": sorted(set(triggers)),
+            "force": True,
+            "book_side": self._book_side,
+            "price_drift": self._price_drift,
+            "game_drift": self._game_drift,
+            "min_tp_set": None,
+            "min_sl_set": None,
         }
         return True
 

@@ -88,6 +88,29 @@ def test_price_drift_only_cancels_selected_order():
     assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["selected"]
 
 
+def test_force_cancels_only_selected_open_orders_without_other_conditions():
+    ctx = _ctx(
+        orders=[_order("selected"), _order("other")],
+        ask=0.46,
+        other_ask=0.60,
+    )
+    ctx.sports_store = None
+    ctx.scratch[CANCEL_CANDIDATES] = ["selected", "missing"]
+
+    assert OrderCancelCheck(force=True).eval(ctx) is True
+    request = ctx.scratch["cancel_pair_orders"]
+    assert request["client_order_ids"] == ["selected"]
+    assert request["force"] is True
+
+
+def test_force_requires_selected_active_order():
+    ctx = _ctx(orders=[_order("other")])
+    ctx.scratch[CANCEL_CANDIDATES] = ["missing"]
+
+    assert OrderCancelCheck(force=True).eval(ctx) is False
+    assert "cancel_pair_orders" not in ctx.scratch
+
+
 def test_price_drift_includes_threshold_with_float_tolerance():
     ctx = _ctx(orders=[_order("o1")], ask=0.45)
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
@@ -259,6 +282,7 @@ def test_condition_exposure_source_feeds_order_cancel_without_select_check():
         {"min_tp_set": 0},
         {"min_sl_set": True},
         {"min_tp_set": 1, "min_sl_set": 1},
+        {"force": 1},
     ],
 )
 def test_rejects_invalid_configuration(kwargs):
