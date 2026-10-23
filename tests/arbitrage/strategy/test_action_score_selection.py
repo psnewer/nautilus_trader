@@ -134,23 +134,25 @@ def test_standing_accepts_single_values_and_combinations(standing, expected):
     assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == expected
 
 
+def test_tie_break_enabled_ignores_tie_break_points():
+    ctx = _ctx("6-6(3-4)")
+
+    _run(ScoreSelectionAction(standing="win|draw", tie_break=True).execute(ctx))
+
+    assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
+        ("H.POLYMARKET", "BUY"),
+        ("A.POLYMARKET", "BUY"),
+        ("H.POLYMARKET", "SELL"),
+        ("A.POLYMARKET", "SELL"),
+    ]
+
+
 def test_tie_break_explicitly_disabled_cannot_classify_six_all():
     ctx = _ctx("6-6(3-4)")
 
     _run(ScoreSelectionAction(standing="win|draw", tie_break=False).execute(ctx))
 
     assert ctx.scratch["legs"] == []
-
-
-def test_tie_break_defaults_to_enabled_and_uses_tie_break_points():
-    ctx = _ctx("6-6(3-4)")
-
-    _run(ScoreSelectionAction(standing="win|draw").execute(ctx))
-
-    assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
-        ("A.POLYMARKET", "BUY"),
-        ("A.POLYMARKET", "SELL"),
-    ]
 
 
 def test_tie_break_default_treats_bare_six_all_as_zero_all():
@@ -322,9 +324,9 @@ def test_compare_score_rejects_tie_break_when_disabled(score):
 
 @pytest.mark.parametrize(
     ("score", "expected"),
-    [("6-6", 0), ("6-6(1-2)", -1), ("6-4, 6-6(4-3)", 1)],
+    [("6-6", 0), ("6-6(1-2)", 0), ("6-4, 6-6(4-3)", 1)],
 )
-def test_compare_score_uses_tie_break_by_default(score, expected):
+def test_compare_score_ignores_tie_break_points_by_default(score, expected):
     assert _compare_score(score) == expected
 
 

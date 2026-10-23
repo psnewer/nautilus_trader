@@ -19,7 +19,8 @@ class ScoreSelectionAction(Action):
     """按 instrument 对应参赛方的比赛状态保留执行腿。
 
     `standing=None` 时完全放通；显式配置时接受以 ``|`` 分隔的 ``win/draw/lose``
-    组合。BUY/SELL 不改变目标参赛方；比分或主客方映射未知时 fail-closed。
+    组合。`tie_break=True` 时忽略括号内抢七小分。BUY/SELL 不改变目标参赛方；
+    比分或主客方映射未知时 fail-closed。
     """
 
     def __init__(self, standing: str | None = None, tie_break: bool = True) -> None:
@@ -146,7 +147,7 @@ def _compare_score(score: str, *, tie_break: bool = True) -> int | None:
     if not parsed:
         return None
 
-    # 6-6 起已进入抢七。未启用抢七比较时，不能把未知抢七态误判成普通平分。
+    # false 保持既有语义：进入抢七后不使用小分，也不把 6-6 降级成普通平分。
     if parsed[-1][0] == parsed[-1][1] == 6 and not tie_break:
         return None
 
@@ -159,11 +160,9 @@ def _compare_score(score: str, *, tie_break: bool = True) -> int | None:
     if len(completed) == len(parsed):
         return 0
 
-    left, right, tie_left, tie_right = parsed[-1]
+    left, right, _, _ = parsed[-1]
     if left != right:
         return 1 if left > right else -1
-    if tie_break and tie_left is not None and tie_right is not None and tie_left != tie_right:
-        return 1 if tie_left > tie_right else -1
     return 0
 
 

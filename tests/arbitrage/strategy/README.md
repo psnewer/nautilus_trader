@@ -609,10 +609,9 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   fail-closed；3-way role pair 的 `claim=no` 不误映射成相反参赛方。
 - 无 `selected_candidate/candidates/legs` 输入时 no-op；撤单 candidate 原样保留；`standing` 非字符串、
   含空段或未知值，以及 `tie_break` 非 boolean 时构造失败。
-- `tie_break` 缺失/`false` 时，当前盘一到 `6-6`（包括 `6-6(x-y)`）即判为抢七态，
-  但不比较抢七小分，因此本轮无法判定并 fail-closed；不能把它降级成普通平分。
-- `tie_break=true` 时使用括号内抢七小分；裸 `6-6` 表示已进入抢七但尚为 `0-0`，双方
-  仍是非落后。覆盖抢七领先/落后、裸 6-6、默认关闭和参数类型错误。
+- `tie_break` 缺失/`true` 时忽略括号内抢七小分；`6-6(x-y)` 与裸 `6-6` 都只按常规局分
+  `6-6` 判断为 draw。显式 `false` 保持既有语义：抢七阶段无法判定并 fail-closed。
+- 覆盖忽略抢七小分、显式关闭后的 fail-closed、裸 `6-6` 和参数类型错误。
 - **验收**：`test_action_score_selection.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
@@ -731,7 +730,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `exposure_source` 写入目标 position-id，`position_close` 只能消费该子集。
   当前 `period=S<N>` 或抢七阶段 `period=TB<N>` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；
   `score_selection(win|draw)` 忽略订单 side，按 instrument 对应持仓方筛选打平/领先腿；`tie_break`
-  默认启用，故 `6-6(x-y)` 比较抢七小分、裸 `6-6` 按 `0-0`，显式 `false` 才 fail-closed。
+  默认启用时忽略抢七小分，故 `6-6(x-y)` 与裸 `6-6` 都按常规局分 draw；显式 `false` 保持
+  抢七阶段 fail-closed。
   `place_bets(limit=false,intent=recovery,origin=in_game)` 必须保持价格并透传 position_id。
   低于盘数、持仓方落后、缺 period/outcome/position_id 或缺 ask 均不产出平仓计划。
 - **动态盘数覆盖（#475/#478）**：运行时门槛保留互不影响的 `min_tp_set` 与 `min_sl_set`；当前只有
