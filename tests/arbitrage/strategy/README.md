@@ -615,6 +615,21 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_score_selection.py`；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
+## strategy-4.latest-score：最近得分方筛腿（#482）
+
+- `latest_score` 是无参数 Action；读取 `SportsGameStateStore.score_history`，倒序比较相邻的不同
+  比分快照，只保留最近一次可唯一归因的比分增量所属 instrument。BUY/SELL 不改变目标参赛方。
+- 当前 `arb_config.json` 将其紧接在 `current_set_game_selection(standing=draw)` 后；因此该入场链
+  在当前盘打平时只保留刚刚得分、将比分追平的一方，再进入 `venue_replace`。
+- 常规局分增加与抢七括号小分增加均可识别；完成抢七时括号小分消失但常规局分增加，仍按常规局分
+  判定。盘间新增 `0-0` 只是结构变化，不覆盖上一位真实得分方。
+- 首帧没有前态、比分缺失/格式非法、双方同时增加、比分回退/修正，以及无法映射 home/away 时
+  fail-closed。跳帧仅有一方增加时，最后得分方仍可唯一确定；双方都增加时不猜测。
+- 沿用 `score_selection` 的 `selected_candidate`、候选池、legs-only、撤单候选与严格 Cache ID 边界。
+- **验收**：`test_action_latest_score.py` 覆盖主/客常规局、抢七小分、抢七完成、盘间 `0-0`、
+  首帧/双方跳分/回退/坏格式 fail-closed；`test_sports.py` 覆盖历史持久化、去重、兼容读取和回收；
+  launcher 注册由 `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
+
 ## strategy-4.set-selection：已完成盘胜数筛选
 
 - `set_selection` 是独立 Action；`standing` 接受与 `score_selection` 相同的
@@ -726,6 +741,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   已有覆盖值也不启用。
   `order_cancel(force=true)` 可不配置上述任一条件，直接撤销 `exposure_source` 选中的活动订单；
   它不读取盘口、commission、比分或盘数，候选为空/已终态仍 fail-closed，且不会扩大成撤整个 pair。
+  `order_cancel(tie_break=true)` 同样可单独配置：当前盘比分到 `6-6`（含括号抢七小分）时立即撤销
+  候选活动订单，不等待 PMS period 切换；`period=TB<N>` 也独立触发，并与价格、局数及盘数信号保持 OR。
 - **仓位分支**：构造可由 `opening_order_id` 归为 `in_game_position` 的 PM LONG Position；
   `exposure_source` 写入目标 position-id，`position_close` 只能消费该子集。
   当前 `period=S<N>` 或抢七阶段 `period=TB<N>` 达该分支的 `min_tp_set` 或 `min_sl_set` 后输出带全量 qty/position_id 的 SELL@bid；
@@ -749,7 +766,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   只撤对应参赛方已赢盘数落后的 TP 挂单，不配置 `min_tp_set`、不执行 `advance_min_tp_set`；SL 撤单支
   仍使用 `min_sl_set=1` 并执行 `advance_min_sl_set`。TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支
   对应 `min_sl_set=1`。
-- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`（含 ask/bid 各自 commission、所选侧越界 fail-closed、其它 OR 信号不受阻）、`test_action_set_selection.py`、`test_check_position_close.py`、
+- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`（含 ask/bid 各自 commission、所选侧越界 fail-closed、其它 OR 信号不受阻、`6-6`/`6-6(x-y)` 立即撤及 `TB<N>` 独立兜底）、`test_action_set_selection.py`、`test_check_position_close.py`、
   `test_pre_rebate_scenarios.py::test_lower_in_game_tp_order_cancel_filters_by_completed_set_standing`、
   `test_in_game_positions.py`、`test_evaluator.py` 的撤单写入/eviction 清理用例、
   `test_opportunity.py::test_order_score_reads_frozen_order_tag`，以及
@@ -1093,9 +1110,10 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 - 每条历史保存不可变的原始腿、候选 id/rate、原始及规范化比分，不因后续 Action 修改 candidate 而漂移。
 - 每条有效历史还冻结该次 gate 的 `passed`；后续 Check 可取最近真正通过的 observation，同时未通过的
   原始 observation 仍完整保留，不会被覆盖或删除。
-- 实盘 Action 顺序为 `trend_gate → consecutive_trigger_gate → score_selection → current_set_game_selection`：
+- 实盘 Action 顺序为 `trend_gate → consecutive_trigger_gate → set_selection(draw) → current_set_game_selection(draw) → latest_score`：
   落后、打平或当前盘未领先的趋势腿照常写连续触发历史，但比分 Action 仍清空本轮执行腿；后续该方向
-  满足比分条件时，可以使用此前不同比分的同方向历史完成连续计数。
+  满足比分条件时，可以使用此前不同比分的同方向历史完成连续计数；当前盘打平后再由 `latest_score`
+  只留下刚刚追平的一方。
 - `test_evaluator.py::test_ended_deletes_pair_prices_after_last_evaluation_finishes` 同时验证：ended 到达时若有
   在途评估，价格与连续触发历史都延后回收；最后一个 task 完成后该 pair 的全部 history key 一并删除。
 

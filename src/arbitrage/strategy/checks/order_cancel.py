@@ -1,5 +1,5 @@
 """
-统一 cancel 判定:对候选订单强制撤单,或按价格漂移 / 累计局数漂移 / 仓位盘数三条
+统一 cancel 判定:对候选订单强制撤单,或按价格漂移 / 累计局数漂移 / 仓位盘数 / 抢七阶段四条
 opt-in 条件撤单。
 
 合并原 position_order_cancel / in_game_cancel / in_game_order_cancel。只关注"撤单判定",
@@ -13,6 +13,7 @@ opt-in 条件撤单。
   空/不可解析按 **0**。
 - `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,当前盘低于
   对应止盈/止损有效阈值时撤(pair 运行时覆盖优先,否则配置值)。两者互斥。
+- `tie_break=true`:当前盘比分到 `6-6`(含括号抢七小分)或 PMS period 为 `TB<N>` 时撤。
 
 - `force=true`:跳过全部漂移、盘数与 commission 判定,无条件撤销候选活动订单。
 
@@ -22,6 +23,7 @@ opt-in 条件撤单。
 from __future__ import annotations
 
 import math
+import re
 
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.opportunity import order_score
@@ -38,6 +40,9 @@ from src.arbitrage.strategy.in_game_positions import current_set_number
 from src.arbitrage.strategy.queries.exposure_source import CANCEL_CANDIDATES
 
 
+_TIE_BREAK_PERIOD = re.compile(r"TB[1-9]\d*", re.IGNORECASE)
+
+
 class OrderCancelCheck(Check):
     """强制撤单,或按价格 / 累计局数 / 仓位盘数条件撤销候选订单。"""
 
@@ -48,11 +53,15 @@ class OrderCancelCheck(Check):
         game_drift: int | None = None,
         min_tp_set: int | None = None,
         min_sl_set: int | None = None,
+        tie_break: bool = False,
         force: bool = False,
     ) -> None:
         if not isinstance(force, bool):
             raise ValueError("order_cancel: force must be a boolean")
+        if not isinstance(tie_break, bool):
+            raise ValueError("order_cancel: tie_break must be a boolean")
         self._force = force
+        self._tie_break = tie_break
         self._book_side = str(book_side).lower()
         if self._book_side not in {"ask", "bid"}:
             raise ValueError("order_cancel: book_side must be ask or bid")
@@ -79,6 +88,7 @@ class OrderCancelCheck(Check):
             and price_drift is None
             and game_drift is None
             and self._min_set_kind is None
+            and not tie_break
         ):
             raise ValueError(
                 "order_cancel: force or at least one drift/min-set condition is required",
@@ -115,6 +125,7 @@ class OrderCancelCheck(Check):
             ctx,
             self._book_side,
         )
+        tie_break_hit = self._tie_break and _tie_break_in_progress(ctx)
 
         triggers = []
         for instrument_id in pair_instrument_ids(ctx):
@@ -171,7 +182,7 @@ class OrderCancelCheck(Check):
                         and current_set < min_set
                     )
 
-                if price_hit or game_hit or below_min_set:
+                if price_hit or game_hit or below_min_set or tie_break_hit:
                     triggers.append(client_order_id)
 
         if not triggers:
@@ -182,6 +193,7 @@ class OrderCancelCheck(Check):
             "book_side": self._book_side,
             "price_drift": self._price_drift,
             "game_drift": self._game_drift,
+            "tie_break": self._tie_break,
             "min_tp_set": min_set if self._min_set_kind == "tp" else None,
             "min_sl_set": min_set if self._min_set_kind == "sl" else None,
         }
@@ -203,6 +215,7 @@ class OrderCancelCheck(Check):
             "book_side": self._book_side,
             "price_drift": self._price_drift,
             "game_drift": self._game_drift,
+            "tie_break": self._tie_break,
             "min_tp_set": None,
             "min_sl_set": None,
         }
@@ -222,6 +235,23 @@ def _current_score(ctx: EvalContext) -> str:
     game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
     state = ctx.sports_store.get(game_id) if game_id is not None else None
     return str(getattr(state, "score", "") or "")
+
+
+def _tie_break_in_progress(ctx: EvalContext) -> bool:
+    if ctx.sports_store is None or ctx.pair_registry is None:
+        return False
+    game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
+    state = ctx.sports_store.get(game_id) if game_id is not None else None
+    period = str(getattr(state, "period", "") or "")
+    if _TIE_BREAK_PERIOD.fullmatch(period) is not None:
+        return True
+    score = str(getattr(state, "score", "") or "")
+    parts = [part.strip() for part in score.split(",") if part.strip()]
+    matches = [_SCORE_PART.match(part) for part in parts]
+    if not matches or any(match is None for match in matches):
+        return False
+    current = matches[-1]
+    return current is not None and int(current.group(1)) == int(current.group(2)) == 6
 
 
 def _total_games(score: str) -> int | None:

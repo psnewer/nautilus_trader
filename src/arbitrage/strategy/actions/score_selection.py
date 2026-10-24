@@ -23,6 +23,8 @@ class ScoreSelectionAction(Action):
     比分或主客方映射未知时 fail-closed。
     """
 
+    _log_name = "ScoreSelection"
+
     def __init__(self, standing: str | None = None, tie_break: bool = True) -> None:
         if not isinstance(tie_break, bool):
             raise ValueError(
@@ -104,7 +106,7 @@ class ScoreSelectionAction(Action):
                 kept.append(leg)
                 continue
             _LOG.info(
-                f"ScoreSelection: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
+                f"{self._log_name}: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
                 f"side={side} side_role={side_role} standing={standing} "
                 f"allowed_standings={sorted(self._standings)} tie_break={self._tie_break}",
             )

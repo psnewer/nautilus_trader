@@ -23,6 +23,7 @@ from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinTpSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
+from src.arbitrage.strategy.actions.latest_score import LatestScoreAction
 from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
@@ -168,6 +169,7 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         }),
         ScoreSelectionAction,
     )
+    assert isinstance(build_action({"type": "latest_score"}), LatestScoreAction)
     assert isinstance(
         build_action(
             {

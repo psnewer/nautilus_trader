@@ -207,6 +207,33 @@ def test_game_drift_includes_threshold():
     assert OrderCancelCheck(game_drift=1).eval(ctx) is False
 
 
+@pytest.mark.parametrize(
+    ("score", "period"),
+    [
+        ("6-6", "S1"),
+        ("6-6(3-4)", "S1"),
+        ("", "TB1"),
+        ("5-5", "tb3"),
+    ],
+)
+def test_tie_break_cancels_selected_order(score, period):
+    ctx = _ctx(orders=[_order("o1")], score=score, period=period)
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(tie_break=True).eval(ctx) is True
+    request = ctx.scratch["cancel_pair_orders"]
+    assert request["client_order_ids"] == ["o1"]
+    assert request["tie_break"] is True
+
+
+def test_tie_break_does_not_trigger_before_six_all_or_tb_period():
+    ctx = _ctx(orders=[_order("o1")], score="5-5", period="S1")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(tie_break=True).eval(ctx) is False
+    assert "cancel_pair_orders" not in ctx.scratch
+
+
 def test_min_tp_set_only_applies_to_recovery_order_bound_to_position():
     recovery = _order("recovery", intent="recovery")
     ordinary = _order("ordinary", intent="arbitrage")
@@ -282,6 +309,7 @@ def test_condition_exposure_source_feeds_order_cancel_without_select_check():
         {"min_tp_set": 0},
         {"min_sl_set": True},
         {"min_tp_set": 1, "min_sl_set": 1},
+        {"tie_break": 1},
         {"force": 1},
     ],
 )

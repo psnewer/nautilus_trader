@@ -660,7 +660,9 @@ matching/strategy README 的接线用例(经 NT per-(game,channel) topic 路由�
 `test_store_roundtrip_and_delete`。
 **期望/验收**:phase 与 score 均未变的帧只刷时戳不发布(#322 逐通道"只存不发");`ts_event` 倒退丢弃;
 ended 在 `phase` 通道放行一次后该场帧全拒(终态,覆盖退订异步小窗);Store codec roundtrip 正确,
-`delete` 真删除(归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,不写 `Instrument.info`。
+不同比分帧按到达顺序追加、相同比分刷新不重复追加，旧版 latest-only value 可兼容读取并作为历史起点；
+`delete` 同时删除最新状态和历史(归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,
+不写 `Instrument.info`。
 
 ### pm-adapter-sports.state.8:#322 逐通道分发 + 多通道 Store 回收
 

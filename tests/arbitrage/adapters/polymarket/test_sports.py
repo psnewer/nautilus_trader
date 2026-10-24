@@ -5,6 +5,7 @@ WS 连接(`PolymarketSportsDataClient._run_ws`)经 /live-test 验(公开 firehos
 """
 
 import asyncio
+import json
 import logging
 from unittest.mock import MagicMock
 
@@ -355,16 +356,39 @@ def test_processor_rejects_frames_after_ended_terminal_state():
 
 
 def test_store_roundtrip_and_delete():
-    """Store codec roundtrip + 归零回收 delete(真删除,依赖 NT `Cache.delete`)。"""
+    """Store codec roundtrip + 不同比分历史 + 归零回收 delete。"""
     store = SportsGameStateStore(_MemCache())
+    first = _update(game_id=9, ts=3, score="1-1")
+    same_score = _update(game_id=9, ts=4, score="1-1")
     u = _update(game_id=9, ts=5, score="2-1", live=False, ended=True, finished_ts="2026-07-17T00:00:00Z")
+    store.put(first)
+    store.put(same_score)
     store.put(u)
     got = store.get(9)
     assert got.score == "2-1" and got.ended is True and got.finished_ts == u.finished_ts
     assert got is not u   # 反序列化重建,天然私有副本
+    assert [(item.ts_event, item.score) for item in store.score_history(9)] == [
+        (3, "1-1"),
+        (5, "2-1"),
+    ]
 
     store.delete(9)
     assert store.get(9) is None
+    assert store.score_history(9) == ()
+
+
+def test_store_reads_legacy_latest_only_value_as_one_history_item():
+    """升级前 value 没有 envelope 时仍可读最新状态，并以其作为历史起点。"""
+    cache = _MemCache()
+    old = _update(game_id=9, ts=3, score="0-0")
+    cache.add("pmsports:game:9", json.dumps(old.to_dict()).encode("utf-8"))
+    store = SportsGameStateStore(cache)
+
+    assert store.get(9).score == "0-0"
+    assert [item.score for item in store.score_history(9)] == ["0-0"]
+
+    store.put(_update(game_id=9, ts=4, score="1-0"))
+    assert [item.score for item in store.score_history(9)] == ["0-0", "1-0"]
 
 
 def test_per_game_channel_data_types_route_to_distinct_topics():
@@ -414,6 +438,7 @@ def test_processor_logs_score_after_store_write_even_without_score_subscription(
     proc.process(_update(game_id=7, ts=200, score="2-1", live=True))
 
     assert store.get(7).score == "2-1"
+    assert [item.score for item in store.score_history(7)] == ["1-0", "2-1"]
     log.info.assert_called_once_with(
         "Sports score updated: game=7 A vs B score=1-0->2-1 "
         "period=Q1 elapsed= status=InProgress",

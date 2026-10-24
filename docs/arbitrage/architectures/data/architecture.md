@@ -317,8 +317,9 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
   channel 的比赛先写 `SportsGameStateStore` 与 `SportsPhaseStore`，再按变化通道以
   `CustomData(sports_data_type(game_id, channel), update)` 交给 DataEngine，路由到该场该通道的 topic。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
-- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 收到该场更新后触发评估；
-  比分等详情查询 `SportsGameStateStore`，阶段查询 `SportsPhaseStore`。详见 strategy §3.8.1。
+- 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 用 phase 通知维护生命周期，
+  不由 sports 帧触发机会评估；比分详情与逐次变化查询 `SportsGameStateStore`，阶段查询
+  `SportsPhaseStore`。详见 strategy §3.8.1。
 
 #### 3.4.1 CustomData 状态管线(#250,已落地)
 
@@ -353,8 +354,10 @@ sports_data_type(game_id, "phase")
 5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串；无已订阅通道发生变化时只刷新 Cache 时戳。
 6. **比分日志**:Store 成功写入后，首个比分或比分字符串变化时记录比赛、旧比分→新比分、
    `period/elapsed/status`；该日志不要求订阅 `score` 通道，也不改变逐通道发布语义。
-7. **先写 Store**：完整 PMS payload 写 `SportsGameStateStore`；归一阶段再单调推进
-   `SportsPhaseStore`。phase Store 写失败时不得发布 phase 通道，score 通道不受影响。
+7. **先写 Store**：完整 PMS payload 写 `SportsGameStateStore`；Store 在同一 Cache value 中原子保存
+   最新完整帧与按到达顺序追加的不同比分帧，相同比分的钟表/状态刷新只替换最新帧、不重复追加。
+   旧版仅含最新帧的 value 可兼容读取并作为历史起点。归一阶段再单调推进 `SportsPhaseStore`。
+   phase Store 写失败时不得发布 phase 通道，score 通道不受影响。
 8. 对发生变化且已订阅的通道发布 `CustomData(sports_data_type(gid, channel), update)`
    → DataEngine → per-(game,channel) topic。
 
@@ -369,7 +372,7 @@ sports_data_type(game_id, "phase")
 
 双侧退订汇合 → msgbus 订阅数归零 → engine 转发 unsubscribe → client `_unsubscribe`:
 移出对应 channel；该场全部 channel 归零后才回收详细状态与 phase 两个 Store 条目。
-Store 条目生命周期 = 该场所有通道订阅的并集生命周期；进程重启即清(纯内存)。
+Store 条目（含比分历史）生命周期 = 该场所有通道订阅的并集生命周期；进程重启即清(纯内存)。
 
 **本轮 NT Cython 核心修补**(#250 定夺;升级合并时需保留):
 

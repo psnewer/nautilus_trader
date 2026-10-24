@@ -395,10 +395,12 @@ def channel_of_data_type(data_type: DataType) -> str | None:
 
 
 class SportsGameStateStore:
-    """最新赛事状态真理源(#250)。
+    """赛事状态真理源(#250)。
 
     物理存储 = NT Cache 通用对象区(`cache.add/get(key, bytes)`),key/codec 为 Store 私有,
     调用方不得自行拼 key 或解释 bytes。写者:PMSPORTS processor(put)+ client 归零回收(delete)。
+    除最新完整帧外，还按到达顺序保存比分字符串发生变化时的完整帧；相同比分的钟表/状态刷新
+    不重复追加。历史与最新状态写在同一个 Cache value 中，保证一次 `put` 原子替换。
     条目生命周期 = 订阅生命周期:该场订阅数归零时 client `_unsubscribe` 调 `delete`
     真删除(依赖 #250 新增的 NT `Cache.delete` API);`ended=True` 条目在删除前充当终态标记。
     """
@@ -414,10 +416,37 @@ class SportsGameStateStore:
         raw = self._cache.get(self._key(game_id))
         if not raw:
             return None
-        return SportsGameUpdate.from_dict(json.loads(raw.decode("utf-8")))
+        payload = json.loads(raw.decode("utf-8"))
+        latest = payload.get("latest") if "latest" in payload else payload
+        return SportsGameUpdate.from_dict(latest)
+
+    def score_history(self, game_id) -> tuple[SportsGameUpdate, ...]:
+        """返回该场所有不同比分帧的只读快照；兼容升级前仅含最新帧的 value。"""
+        raw = self._cache.get(self._key(game_id))
+        if not raw:
+            return ()
+        payload = json.loads(raw.decode("utf-8"))
+        if "latest" not in payload:
+            score = str(payload.get("score") or "")
+            return (SportsGameUpdate.from_dict(payload),) if score else ()
+        return tuple(
+            SportsGameUpdate.from_dict(item)
+            for item in payload.get("score_history", [])
+        )
 
     def put(self, update: SportsGameUpdate) -> None:
-        raw = json.dumps(update.to_dict()).encode("utf-8")
+        existing_raw = self._cache.get(self._key(update.game_id))
+        history: list[dict[str, Any]] = []
+        if existing_raw:
+            existing = json.loads(existing_raw.decode("utf-8"))
+            if "latest" in existing:
+                history = list(existing.get("score_history", []))
+            elif existing.get("score"):
+                history = [existing]
+        if update.score and (not history or history[-1].get("score") != update.score):
+            history.append(update.to_dict())
+        payload = {"latest": update.to_dict(), "score_history": history}
+        raw = json.dumps(payload).encode("utf-8")
         self._cache.add(self._key(update.game_id), raw)
 
     def delete(self, game_id) -> None:
