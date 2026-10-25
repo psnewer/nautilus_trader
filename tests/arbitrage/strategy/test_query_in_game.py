@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from nautilus_trader.model.identifiers import InstrumentId
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.queries.in_game import InGameQuery
@@ -16,15 +17,37 @@ class _SportsStore:
         return self._state
 
 
+class _Cache:
+    def __init__(self, start_ns):
+        self._instrument = SimpleNamespace(
+            market_start_time=SimpleNamespace(value=start_ns),
+        )
+
+    def instrument(self, instrument_id):
+        assert instrument_id == InstrumentId.from_str("OE.ORBITEXCH")
+        return self._instrument
+
+
 def _state(phase):
     return SimpleNamespace(phase=phase)
 
 
-def _ctx(state, *, game_id=42, phase_store="default"):
+def _ctx(state, *, game_id=42, phase_store="default", start_ns=None, now_ns=None):
     registry = PairRegistry()
-    registry.register("p", ["Y.POLYMARKET"], game_id=game_id)
+    instrument_ids = ["Y.POLYMARKET"]
+    cache = None
+    if start_ns is not None:
+        instrument_ids.append("OE.ORBITEXCH")
+        cache = _Cache(start_ns)
+    registry.register("p", instrument_ids, game_id=game_id)
     store = _SportsStore(state) if phase_store == "default" else phase_store
-    return EvalContext(pair_id="p", pair_registry=registry, phase_store=store)
+    return EvalContext(
+        pair_id="p",
+        cache=cache,
+        pair_registry=registry,
+        phase_store=store,
+        ts_now_ns=now_ns,
+    )
 
 
 def test_live_not_ended_is_in_game():
@@ -41,9 +64,32 @@ def test_explicit_pre_is_pre_game_only():
     assert PreGameQuery().matches(_ctx(_state("PRE"))) is True
 
 
+def test_oe_start_time_promotes_pre_phase_to_in_game():
+    ctx = _ctx(_state("PRE"), start_ns=100, now_ns=100)
+
+    assert InGameQuery().matches(ctx) is True
+    assert PreGameQuery().matches(ctx) is False
+
+
+def test_oe_start_time_promotes_unknown_phase_to_in_game():
+    ctx = _ctx(None, start_ns=100, now_ns=101)
+
+    assert InGameQuery().matches(ctx) is True
+    assert PreGameQuery().matches(ctx) is False
+
+
+def test_explicit_pre_remains_pre_game_before_oe_start_time():
+    ctx = _ctx(_state("PRE"), start_ns=100, now_ns=99)
+
+    assert InGameQuery().matches(ctx) is False
+    assert PreGameQuery().matches(ctx) is True
+
+
 def test_ended_is_neither_in_game_nor_pre_game():
-    assert InGameQuery().matches(_ctx(_state("POST"))) is False
-    assert PreGameQuery().matches(_ctx(_state("POST"))) is False
+    ctx = _ctx(_state("POST"), start_ns=100, now_ns=101)
+
+    assert InGameQuery().matches(ctx) is False
+    assert PreGameQuery().matches(ctx) is False
 
 
 def test_missing_game_id_fail_closed():

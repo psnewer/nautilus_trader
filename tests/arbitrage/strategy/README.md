@@ -389,9 +389,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.pre_rebate.1: in_game / pre_game StateQuery 判态
 - phase `IN_PLAY` → `in_game` True，`pre_game` False。
-- phase `PRE`(包括明确 `inPlay=false` 建立的状态)→ `pre_game` True，`in_game` False。
-- Store 无记录(`None`)、缺 game_id 或缺 phase_store → UNKNOWN，两个 query 都是 False。
-- phase `POST` → 两个 query 都是 False，不得落入赛前支。
+- phase `PRE` 且当前时间早于 pair 中 OE `market_start_time` → `pre_game` True，`in_game` False。
+- phase 为 `PRE` 或 UNKNOWN，但当前时间达到 OE `market_start_time` → `in_game` True，
+  `pre_game` False；`start_game` 与 `place_bets` 自动 origin 使用同一口径。
+- 缺 phase 且缺 OE 开始时间 → UNKNOWN，两个 query 都是 False；时间未到不能把 UNKNOWN 反推为赛前。
+- phase `POST` 优先于时间兜底，两个 query 都是 False，不得重新落入赛中或赛前支。
 
 ### strategy-4.pre_rebate.2: pre_move 追腿能力（当前配置未接入）
 - #437 后 `pre_move` 组件仍保留，但 `arb_config.json` 不再引用(非低级别 `pre_game` 套利留空,

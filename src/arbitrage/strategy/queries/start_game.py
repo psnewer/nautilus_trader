@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from src.arbitrage.common.opportunity import order_intent
-from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
 from src.arbitrage.strategy.bool_expr import StateQuery
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.queries.in_game import game_stage
 
 
 class StartGameQuery(StateQuery):
-    """明确 IN_PLAY 且 NT Cache 中该 pair 没有阻断提交历史。"""
+    """已判定赛中且 NT Cache 中该 pair 没有阻断提交历史。"""
 
     def __init__(self, repeat_after_cancel: bool = False) -> None:
         if not isinstance(repeat_after_cancel, bool):
@@ -18,13 +18,7 @@ class StartGameQuery(StateQuery):
         self._repeat_after_cancel = repeat_after_cancel
 
     def matches(self, ctx: EvalContext) -> bool:
-        if ctx.cache is None or ctx.pair_registry is None or ctx.phase_store is None:
-            return False
-        game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
-        if game_id is None:
-            return False
-        state = ctx.phase_store.get(game_id)
-        if state is None or getattr(state, "phase", None) != PHASE_IN_PLAY:
+        if ctx.cache is None or ctx.pair_registry is None or game_stage(ctx) != "in_game":
             return False
         try:
             instrument_ids = pair_instrument_ids(ctx)

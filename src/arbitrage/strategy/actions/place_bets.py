@@ -12,8 +12,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - intent 未显式配置时按树推导:补偿树 `"recovery"`、套利树(及 None)`"arbitrage"`;
     优先级为 胜出 candidate 标记 > Action 显式配置 > 按树推导。经 submitter 写入 order tags
     供 Risk 判定(`intent=="recovery"` 豁免 TP/SL 止盈止损硬停)。
-  - origin 未显式配置时按当前 phase 推导 `"pre_game"` / `"in_game"`(与 InGame/PreGameQuery
-    同口径,UNKNOWN 不写);显式配置优先覆盖,非法显式值构造即 ValueError。与 intent 正交,
+  - origin 未显式配置时按统一比赛阶段推导 `"pre_game"` / `"in_game"`(与
+    InGame/PreGameQuery 同口径,UNKNOWN 不写);显式配置优先覆盖,非法显式值构造即 ValueError。与 intent 正交,
     写入 order tags;补偿树按它分类订单,仓位则通过 `opening_order_id` 反查 opening order 的 origin。
   - enable_timeout=false 时经 opportunity metadata 通知 submit session 在 ACK 后结束追踪；
     cancel session 收到正常撤单响应即结束，不消费该参数。
@@ -35,8 +35,6 @@ import logging
 import math
 
 from src.arbitrage.common.opportunity import new_opportunity_id
-from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
-from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import price_from_probability
@@ -50,6 +48,7 @@ from src.arbitrage.strategy.leg_plan import as_instrument_id as _as_instrument_i
 from src.arbitrage.strategy.leg_plan import compute_leg_size as _compute_leg_size
 from src.arbitrage.strategy.leg_plan import instrument_constraints
 from src.arbitrage.strategy.leg_plan import resolve_side_and_price as _resolve_side_and_price
+from src.arbitrage.strategy.queries.in_game import game_stage
 
 
 _LOG = logging.getLogger(__name__)
@@ -244,21 +243,8 @@ def _default_intent(ctx: EvalContext) -> str:
 
 
 def _derive_origin(ctx: EvalContext) -> str | None:
-    """未显式配置 origin 时按当前 phase 推导;与 InGame/PreGameQuery 同口径,UNKNOWN 返 None。"""
-    pair_registry = getattr(ctx, "pair_registry", None)
-    phase_store = getattr(ctx, "phase_store", None)
-    if pair_registry is None or phase_store is None:
-        return None
-    game_id = pair_registry.game_id_for_pair(ctx.pair_id)
-    if game_id is None:
-        return None
-    state = phase_store.get(game_id)
-    phase = getattr(state, "phase", None) if state is not None else None
-    if phase == PHASE_IN_PLAY:
-        return "in_game"
-    if phase == PHASE_PRE:
-        return "pre_game"
-    return None
+    """未显式配置 origin 时复用赛前/赛中 StateQuery 的统一阶段判定。"""
+    return game_stage(ctx)
 
 
 def _normalize_spread(value: float | None) -> float:

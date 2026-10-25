@@ -31,8 +31,26 @@ def _ctx(phase="IN_PLAY", orders=()):
     return ctx
 
 
+def _ctx_after_oe_start(phase="PRE"):
+    ctx = _ctx(phase=phase)
+    ctx.cache._instruments["OE.ORBITEXCH"] = SimpleNamespace(
+        market_start_time=SimpleNamespace(value=100),
+    )
+    ctx.pair_registry.register(
+        "p",
+        ["Y.POLYMARKET", "N.POLYMARKET", "OE.ORBITEXCH"],
+        game_id=42,
+    )
+    ctx.ts_now_ns = 100
+    return ctx
+
+
 def test_start_game_matches_in_play_pair_without_any_order_history():
     assert StartGameQuery().matches(_ctx()) is True
+
+
+def test_start_game_matches_after_oe_market_start_time():
+    assert StartGameQuery().matches(_ctx_after_oe_start()) is True
 
 
 def test_start_game_allows_initialized_or_risk_denied_order_without_submission():

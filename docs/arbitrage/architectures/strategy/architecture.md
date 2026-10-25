@@ -794,8 +794,10 @@ score 显式绕过该闸，不增加 pending/replay 队列；
   OR 分支**(它们从此一并豁免 TP/SL profit gate,修正了"recovery 单却按普通单受 TP/SL 拦"的
   不一致)。B5 的 `"start_game"` 等特殊 intent 仍须显式配置(显式覆盖按树推导;当前配置未接入 B5)。
   submitter 写入 `arb:intent=<intent>`。Risk 仅对 `recovery` 跳过单场 profit gates(详见 risk §3.1)。
-- `origin` 未显式配置时**按当前 phase 推导**:`phase_store` 该 game 为 `IN_PLAY`→`"in_game"`、
-  `PRE`→`"pre_game"`、UNKNOWN(缺 game_id/phase_store/状态)→不写(与 `InGame`/`PreGameQuery` 同口径)。
+- `origin` 未显式配置时**按统一比赛阶段推导**：`phase_store` 该 game 为 `IN_PLAY`，或
+  `ctx.ts_now_ns >= pair 中 OE BettingInstrument.market_start_time`→`"in_game"`；明确 `PRE` 且尚未到
+  OE 开始时间→`"pre_game"`；UNKNOWN→不写。`POST` 优先于时间兜底，始终不推导 origin。该口径与
+  `InGame`/`PreGameQuery` 一致。
   显式配置优先覆盖;显式非法值(非 `pre_game`/`in_game`)构造即 `ValueError`(抓 typo)。因下单分支本就被
   `self_hits` 的 phase 门控,推导值与分支语义一致,配置可省略 `origin`。写入 `arb:origin=<origin>`;
   订单分支直接读该标签,仓位按 `Position.opening_order_id → Cache.order → arb:origin` 追溯。详见 common §1。
@@ -1124,17 +1126,19 @@ order/position digests，但不能共享 `scratch`，也不能跨树搬运 candi
 
 **已注册 StateQuery**:
 - `InGameQuery` / `PreGameQuery`(`src/arbitrage/strategy/queries/in_game.py`,注册名
-  `in_game` / `pre_game`):经 `ctx.pair_registry.game_id_for_pair(pair_id)` →
-  `ctx.phase_store.get(gid)` 只分别命中明确 `IN_PLAY` / `PRE`。Store 无记录、缺 game_id 或
-  phase_store 均为 UNKNOWN，两者都不命中；POST 也不命中。赛前门必须显式用
+  `in_game` / `pre_game`)：阶段解析优先级固定为 `POST > IN_PLAY > OE market_start_time > PRE`。
+  `POST` 两者都不命中；明确 `IN_PLAY`，或本轮 `ctx.ts_now_ns` 已达到 pair 中 OE
+  `BettingInstrument.market_start_time`，命中 `in_game`；明确 `PRE` 且尚未到开始时间才命中
+  `pre_game`。缺 phase 但已有 OE 开始时间时，到点仍可进入赛中；缺开始时间不会由 UNKNOWN
+  反推赛前。赛前门必须显式用
   `{"type":"pre_game"}`，禁止用 `NOT in_game` 反推 PRE。注册经 §3.7
   `register_state_query`,JSON 走 `bool_expr_from_json`(支持叶子 + `AND/OR/NOT`)。
 - `StartGameQuery(repeat_after_cancel=False)`(`src/arbitrage/strategy/queries/start_game.py`,注册名
-  `start_game`)：先按 `in_game` 同口径要求明确 `IN_PLAY`，再经 PairRegistry 枚举 pair 全部
+  `start_game`)：先复用上述 `in_game` 统一口径，再经 PairRegistry 枚举 pair 全部
   tradable instruments。默认值保持历史语义：任一 `ts_submitted > 0` 即阻断。显式
   `repeat_after_cancel=true` 时，仅忽略 `arb:intent=start_game`、`status=CANCELED` 且
   `filled_qty=0` 的历史单；open、部分/全部成交及其它 intent 历史仍阻断。缺
-  Cache/PairRegistry/phase/game/instrument 或订单查询异常均 fail-closed。
+  Cache/PairRegistry/instrument 或订单查询异常均 fail-closed。
 
 ### 4.4 scope 优先级查找(Q3 / Q6)
 

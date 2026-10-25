@@ -63,6 +63,20 @@ def _derive_ctx(*, tree_kind=None, phase=None):
     return ctx
 
 
+def _derive_ctx_with_oe_start(*, phase, start_ns, now_ns):
+    ctx = _derive_ctx(phase=phase)
+    ctx.cache._instruments["OE.ORBITEXCH"] = SimpleNamespace(
+        market_start_time=SimpleNamespace(value=start_ns),
+    )
+    ctx.pair_registry.register(
+        ctx.pair_id,
+        ["Y.POLYMARKET", "OE.ORBITEXCH"],
+        game_id=7,
+    )
+    ctx.ts_now_ns = now_ns
+    return ctx
+
+
 def _first_spec(action, ctx):
     _run(action.execute(ctx))
     return ctx.scratch["execution_plan"].orders[0].spec
@@ -102,6 +116,12 @@ def test_origin_derived_from_phase(phase, expected):
 def test_origin_absent_when_phase_unknown():
     spec = _first_spec(PlaceBetsAction(), _derive_ctx(phase=None))
     assert "origin" not in spec
+
+
+def test_origin_derived_as_in_game_after_oe_start_time():
+    ctx = _derive_ctx_with_oe_start(phase=PHASE_PRE, start_ns=100, now_ns=100)
+
+    assert _first_spec(PlaceBetsAction(), ctx)["origin"] == "in_game"
 
 
 def test_explicit_origin_overrides_phase_derivation():
