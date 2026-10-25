@@ -456,7 +456,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | 类 | 文件 | 用 |
 |---|---|---|
 | `MeanRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 从 live Cache 按 canonical `claim=yes/no` 分组并校验完整性；每个 outcome 取跨 venue 最低隐含概率后求 rate。decimal 概率换算与执行字段语义不变 |
-| `OneSideRebateCheck(min_rate, share=None, one_side=True)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 从 live Cache 按固定 `yes/no` outcome 收集所有可买 leg 并枚举 venue 组合；达阈值时写 `ctx.scratch["candidates"]`。`one_side` 缺失/`True` 时再按 target outcome 枚举定向 candidate，使用 `(1-total_prob)/target_prob` 与剩余预算分配；`False` 表示取消 target，每个 venue 组合只生成一个无 `target_role` candidate，使用 `1-total_prob` 门控，两个 outcome 都以 `arbitrage.share` 作为 `share_if_wins`，decimal qty 仍由 Venue Registry 按赔率反算。 |
+| `OneSideRebateCheck(min_rate, share=None, one_side=True)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 从 live Cache 按固定 `yes/no` outcome 收集所有可买 leg 并枚举 venue 组合；始终按 target outcome 计算定向 `(1-total_prob)/target_prob` 门槛。`one_side` 缺失/`True` 时每个达标 target 生成定向 candidate 并做剩余预算分配；`False` 时某个 target 首次达标便停止该组合的 target 枚举，只生成一个无 `target_role` candidate，两个 outcome 都以 `arbitrage.share` 作为 `share_if_wins`，decimal qty 仍由 Venue Registry 按赔率反算。 |
 | `OneSideRecoveryCheck(min_rate=0.01, min_repaired_rebate=-0.05, force=False, less=False, current_position=False)` | `src/arbitrage/strategy/checks/one_side_recovery.py` | 原子组合门：先按 `OneSideRebateCheck` 的全量 venue/target candidate 口径判断当前盘口是否存在满足比较方向的定向返水机会，命中后再执行 `MeanRebateRecoveryCheck`，把各 outcome 补到当前最大实际 share。`less` 缺失/`False` 保持原判据 `rate >= min_rate`；`True` 改为严格 `rate < min_rate`，等号不命中。`current_position` 缺失/`False` 时任一 target candidate 满足即通过；`True` 时只比较当前最大持仓 outcome 对应 candidate 的 one-side rate，rate 仍完全使用当前两边盘口，不以开仓成本替换持仓方向价格。前置单冲检查使用隔离 scratch，只提交“命中”事实与满足方向的 candidate 数，不向 action 链泄漏 `candidates`；最终只输出 recovery `legs`。`min_repaired_rebate/force` 沿用 mean recovery 语义；`force` 只旁路 recovery 的当前率/补后率门，不旁路 `min_rate/less/current_position` 比较。补救腿固定采用 mean recovery 默认的跨 venue 最优价选择；费率默认包含 realizedPNL，不开放 `venue_select/pnl` 参数。 |
 | `NegRebateCheck(max_rate=0.0)` | `src/arbitrage/strategy/checks/neg_rebate.py` | one_side_rebate 之后的候选方向门控：读取 Portfolio 的 `outcome_exposures/outcome_shares`，以各 outcome 聚合后的最大 share 为共同分母计算当前 rebate；按每个 candidate 的 `target_role` 过滤，只保留该 outcome 满足 `net_profit / max_share <= max_rate` 的 candidate。默认阈值为 0；无仓位时各 outcome rebate 视为 0，因此默认可通过。缺 candidates、Portfolio、完整 yes/no outcome 或经济投影异常时 fail-closed。只判断当前仓位，不预测加入 candidate 后的结果 |
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
@@ -534,10 +534,11 @@ legs-only 的 Check(`mean_rebate` / `mean_rebate_recovery`)不必改写 candidat
 例如 home=0.45、away=0.50、share=100 时,target=home → away 买到 100 share,home 用剩余 50
 买到 111.11 share,rate=11.11%。`candi_select` 后续只看 share-limit 调整后的 candidate 内最大
 `share_if_wins`,不依赖 `target_role`。
-`one_side=False` 表示取消 target outcome：每个 venue 组合只生成一个 candidate，不写
-`target_role`，并以 mean rebate `rate=1-total_prob` 执行 `min_rate` 门控；每个 outcome 都买到
-`share`，即各腿 `share_if_wins=share`、`cost=share×prob`。PM qty 等于 share，decimal venue qty
-继续由 Venue Registry 反算，不能直接把 share 当 stake。
+`one_side=False` 只取消输出 candidate 的 target outcome，不改变 `one_side_rebate` 的定向率门：
+仍按固定 role 顺序计算 `(1-total_prob)/target_prob`，首个 target 达到 `min_rate` 后便停止该 venue
+组合的 target 枚举，因此同一组合不会因 yes/no 都达标而生成两份数量相同的 candidate。输出不写
+`target_role`，每个 outcome 都买到 `share`，即各腿 `share_if_wins=share`、`cost=share×prob`。PM qty
+等于 share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 share 当 stake。
 
 #### 3.8.1 PMSPORTS phase 状态消费与 live 状态读取(#250/#266/#387,已落地)
 

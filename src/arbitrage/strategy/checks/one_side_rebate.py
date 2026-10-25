@@ -4,8 +4,8 @@ OneSideRebateCheck —— 返水候选生成。
 算法:
   1. 按 outcome role 收集所有可买 leg(PM/OE/SE 都保留,不提前取最优)。
   2. 枚举每个 role 选一条 leg 的笛卡尔积。
-  3. `one_side=True` 时枚举 target role，计算定向 rate；False 时不设 target，
-     每个组合只计算一次 `rate = 1 - total_prob`。
+  3. 枚举 target role，计算定向 `rate = (1 - total_prob) / target_prob`。
+     `one_side=False` 时首个 target 达标即停止枚举，并生成无 target 的等 share candidate。
   4. `rate >= min_rate` 时生成 candidate,写入 `ctx.scratch["candidates"]`。
 
 后续 action 链:
@@ -53,20 +53,6 @@ class OneSideRebateCheck(Check):
         candidates = []
         for combo in product(*(legs_by_role[role] for role in roles)):
             total_prob = sum(leg["prob"] for leg in combo)
-            if not self._one_side:
-                rate = 1.0 - total_prob
-                if rate >= self._min_rate:
-                    candidates.append(
-                        self._build_candidate(
-                            combo=combo,
-                            roles=roles,
-                            target_role=None,
-                            share=share,
-                            total_prob=total_prob,
-                            rate=rate,
-                        )
-                    )
-                continue
             for target_role in roles:
                 target = _leg_for_role(combo, target_role)
                 if target is None or target["prob"] <= 0:
@@ -77,13 +63,15 @@ class OneSideRebateCheck(Check):
                 candidate = self._build_candidate(
                     combo=combo,
                     roles=roles,
-                    target_role=target_role,
+                    target_role=target_role if self._one_side else None,
                     share=share,
                     total_prob=total_prob,
                     rate=rate,
                 )
                 if candidate is not None:
                     candidates.append(candidate)
+                if not self._one_side:
+                    break
 
         if not candidates:
             return False
