@@ -136,6 +136,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 - **per-pair:同一 pair 同时只有 1 笔套利在「评估 → 执行」生命周期内**(不同 pair 互不影响,可并发);
 - 推论:per-pair 不同时评估多个机会、不同时执行多个机会。
+- score 是独立触发源，不受本评估闸门控，也不建立 pending/replay 队列；执行并发仍由既有 barrier 管理。
 
 ### 7.3 机制 —— 同步 per-pair 闸(`PairInFlightGate`)
 
@@ -144,7 +145,8 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 | 时机 | 组件 | 动作 |
 |---|---|---|
 | OBD 回调 `_dispatch_eval`(**同步**,`create_task` 之前) | Strategy | `try_enter(pair)`:已在飞 → **直接放弃**(`return`,不 create_task);否则置位 |
-| 评估 task 完成(`_on_eval_done`,done-callback) | Strategy | **无条件** `release(pair)` —— 正常返回 / 抛异常 / 被取消都释放(#261)。加锁与释放同层对称 |
+| 取得闸的评估 task 完成(`_on_eval_done`,done-callback) | Strategy | **无条件** `release(pair)` —— 正常返回 / 抛异常 / 被取消都释放(#261)。加锁与释放同层对称 |
+| score 回调 `_dispatch_eval` | Strategy | 不取得 pair 闸；done-callback 也不释放其它任务持有的闸 |
 
 **#261:execution 侧两行已删除。** `_begin_session`/`_end_session` 不再参与本闸;
 全局 ≤1 执行由 barrier 判定(§7.5)。
@@ -153,7 +155,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 跨组件交接是持有型 token 的根源,已删除;执行期间的互斥改由 barrier 读派生态实现(§7.5)。
 
 **置位一定有出口(#261 后极简)**:闸只在评估 task 存活期间持有,出口只有一个 ——
-`_on_eval_done`(该 task 的 done-callback),**无条件** `release`:正常返回 / 抛异常 / 被取消都释放。
+`_on_eval_done`(该 task 的 done-callback),取得闸后**无条件** `release`:正常返回 / 抛异常 / 被取消都释放。
 `_dispatch_eval` 里排程失败(`_create_task` 抛)的分支也在同层 `release`(协程从未排程,释放安全)。
 
 > **为什么不再需要出口枚举表**:#260 之前闸跨 strategy → barrier → session 传递所有权,
@@ -229,7 +231,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 - [x] `src/arbitrage/common/pair_inflight.py`:`PairInFlightGate`(**#261 后只剩** `try_enter` / `release` / `is_in_flight`;无 max-hold、无 `clear_all`、无 exec 记账)
 - [x] `ArbContext` + launcher 注入(StrategyEvaluator deps + execution session `_init_arb_session`)
-- [x] Strategy `_dispatch_eval` 同步 `try_enter`(create_task 前)+ `_on_eval_done` done-callback **无条件** `release`(#261)
+- [x] Strategy 非 score `_dispatch_eval` 同步 `try_enter`(create_task 前)+ 对应 `_on_eval_done` done-callback **无条件** `release`(#261/#484)
 - [x] ~~execution `_begin_session` `exec_started` / `_end_session` `exec_finished`~~ —— **#261 删除**(execution 不再参与本闸);改为 `submit_order` 同步建 session 供 barrier 读派生态(§7.5)
 - [x] **Strategy 订 `health_check.*` → `_hc_running` per-venue 集合 + `_route_eval` 互斥 pre-check**(`finished` 仅移除 source,**不再 `clear_all`**)
 - [x] 测试:`test_pair_inflight.py`(try_enter / 无条件 release / 执行段 API 已删除守卫)+ `test_evaluator.py` eval.15-16 + gate.1-5 + `test_session.py`(watchdog 原子、`submit_order` 同步建 session)+ `test_engine_barrier.py`(全局 ≤1,#261)
@@ -394,7 +396,7 @@ BASELINE_DENIED / DENIED / TIMED_OUT
 
 **统一出口**:
 - opportunity context 的统一 finish outlet 只负责清 pending、取消 timer,并为尚未 release 的订单生成本地终态。
-- `PairInFlightGate` 自 #261 起只属于 Strategy evaluation task:`_dispatch_eval` 进入,`_on_eval_done` 无条件释放。barrier 与 execution session 均不接管或释放该闸。
+- `PairInFlightGate` 自 #261 起只属于取得该闸的 Strategy evaluation task；score 不取得也不释放。barrier 与 execution session 均不接管或释放该闸。
 - pass 路径 release 后,各 venue session 独立跟踪 accepted/fill/cancel/timeout;barrier 不等待或汇总 session。全局“同时至多一个 execution”由 barrier contexts 与各 client 的 `_execution_active` 派生。
 
 **timeout**:
@@ -498,7 +500,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 |---|---|---|
 | `leg_settled` / `LegSettledRegistry` | **退役** | 由 `VenueExecutionLiveness` + Risk gate 取代;Portfolio 不再读取执行健康状态 |
 | `VenueExecutionLiveness` | **已落地** | execution/reconciliation 写 `venue_order_alive`/`venue_position_alive`;Risk 按 opportunity required venues 读;Strategy/Portfolio 不读 |
-| `PairInFlightGate`(per-pair) | **保留但 #261 收窄为评估串行** | strategy `_dispatch_eval` `try_enter` / `_on_eval_done` 无条件 `release`;execution 不再参与 |
+| `PairInFlightGate`(per-pair) | **保留但 #261 收窄为评估串行** | strategy 非 score `_dispatch_eval` `try_enter` / 对应 `_on_eval_done` 无条件 `release`;score 与 execution 不参与 |
 | opportunity execution barrier | **已落地代码,待 live 验证** | Risk pass 后暂存 legs;Risk deny / timeout / 全 pass 都走 execution context 统一出口 |
 | per-session 超时 watchdog | **保留**(pair_inflight 主防线) | `_begin_session` 挂 NT clock alert |
 | `execution.started/finished` 消息 | **退役** | 旧消费者(OE DataClient 互斥)随迁移消失;strategy 改直读 callable → 无消费者 |

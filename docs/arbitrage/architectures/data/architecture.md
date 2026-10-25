@@ -318,7 +318,7 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
   `CustomData(sports_data_type(game_id, channel), update)` 交给 DataEngine，路由到该场该通道的 topic。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
 - 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 用 phase 通知维护生命周期，
-  不由 sports 帧触发机会评估；比分详情与逐次变化查询 `SportsGameStateStore`，阶段查询
+  用 score 变化触发策略评估；比分详情与逐次变化查询 `SportsGameStateStore`，阶段查询
   `SportsPhaseStore`。详见 strategy §3.8.1。
 
 #### 3.4.1 CustomData 状态管线(#250,已落地)
@@ -342,6 +342,7 @@ sports_data_type(game_id, "phase")
   订阅注册表**(`subscribed_custom_data()`,engine 首订转发/归零退订时同步更新;
   对标 OE `_market_to_instruments` 路由表),不另建集合。
 - 当前通道为 `phase` / `score`，payload 均为完整 `SportsGameUpdate`；通道只决定变化时唤醒谁。
+  `phase` 只比较三态；`score` 比较比分或三态，供 Strategy 以单一订阅同时消费两类变化。
   逐通道变化判据及 payload 契约见 §3.4.2。
 
 **数据面固定顺序**(`SportsGameDataProcessor.process`):
@@ -351,7 +352,7 @@ sports_data_type(game_id, "phase")
 3. **终态拒收**:Store 旧状态 `ended=True` 即终态,后续任何帧丢弃;ended 帧本身放行恰好一次
    (eviction 依赖),覆盖退订命令异步生效前的小窗。
 4. **过期拒收**:`ts_event` 倒退整体丢弃,Store 不回退。
-5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串；无已订阅通道发生变化时只刷新 Cache 时戳。
+5. **逐通道 diff**:`phase` 比较三态，`score` 比较比分字符串或三态；无已订阅通道发生变化时只刷新 Cache 时戳。
 6. **比分日志**:Store 成功写入后，首个比分或比分字符串变化时记录比赛、旧比分→新比分、
    `period/elapsed/status`；该日志不要求订阅 `score` 通道，也不改变逐通道发布语义。
 7. **先写 Store**：完整 PMS payload 写 `SportsGameStateStore`；Store 在同一 Cache value 中原子保存
@@ -396,9 +397,10 @@ ended 的发布只有一次,无重复帧兜底(会话内 matching 订阅早于 W
 > 承 §3.4.1。本节记录从旧“单通道整帧广播”演进到按语义分通道 + 每通道变化才发的
 > 具体契约；§3.4.1 已回写为当前总流程。代码:`adapters/polymarket/sports.py`
 > (`sports_data_type(game_id, channel)` / `sports_phase` / `SportsGameDataProcessor` 逐通道 diff)；
-> 消费端 matching/strategy 当前均订 `phase` 通道。**live-unvalidated**(单元测试覆盖,实盘未验)。
+> matching 订 `phase`；strategy 只订 `score`。**live-unvalidated**(单元测试覆盖,实盘未验)。
 
-**动机**:strategy 对 sports **只消费 `ended`**(唤醒+定位靠 game_id,状态判断从 Store 读,strategy §3.8.1);`score`/`elapsed`/`period` 帧对它是纯噪声唤醒。未来若有比分/阶段消费者,又需各订各的、互不惊动。
+**动机**:matching 只消费 `ended`；strategy 用单一 score 通道在比分或 phase 变化时各唤醒一次，
+同时不被 `elapsed/period` 噪声唤醒。树内消费边界由 strategy 的 `event` Check 定义。
 
 **通道 = DataType metadata 再加一个 `channel` 键**(复用 §3.4.1 那个"NT 泛型 SubscribeData 唯一参数槽",零新机制、零新 Cython 补丁):
 ```python
@@ -411,10 +413,13 @@ engine 逐 `(game, channel)` 转发 sub/unsub,client 基类 `subscribed_custom_d
 
 | 通道 | 判据(new vs prev) | 语义 |
 |---|---|---|
-| score | `new.score != prev.score` | 比分变 |
+| score | `new.score != prev.score or phase(new) != phase(prev)` | 比分或三态变，Strategy 单一入口 |
 | phase | `phase(new) != phase(prev)` | 三态跃迁 |
 
-prev/new 同源(同一 Store 读),两 diff 独立;都不变 = 全不发(退化回 §3.4.1 的"只存不发")。**"只发不存"仍禁止**、Store 仍是 publish 前置(§3.4.1 错误边界不变)。
+prev/new 同源(同一 Store 读)；首帧 `prev=None` 对已订通道视为变化，因此从空状态到 `0-0`
+也发布一次。两通道都订阅且仅 phase 变化时会各自发布，但 Strategy 只订 score，因此每个变化帧
+只收到一次。都不变 = 全不发(退化回 §3.4.1 的"只存不发")。**"只发不存"仍禁止**、Store
+仍是 publish 前置(§3.4.1 错误边界不变)。
 
 **phase 三态在 sport-agnostic 层派生**(关键:躲开跨 sport 格式差异):
 ```
@@ -432,7 +437,8 @@ POST    = ended
 - [x] **B(赛前帧)—— 已核实 2026-08-05(75s / 9 league / 64 帧)**:**0 帧赛前**(63 IN_PLAY + 1 POST),无一帧 `Scheduled`/`not_started`。窗口窄(仅电竞/网球/足球在打),非铁证但强烈倾向:**firehose 只推进行中比赛,赛前不作 live tick 推**。故 **PRE→IN_PLAY 跃迁基本不作为事件发生,一场比赛首帧即 IN_PLAY**;phase 通道有意义的事件 = 首帧(进 IN_PLAY)+ IN_PLAY→POST(ended)。PRE 订不订都基本收不到 tick,不必为它单开通道。
 - [ ] 细粒度 phase per-league 归一模块(有消费者再上)。
 
-**分期建议**:先落 agnostic 双通道 + 变化才发(strategy 改订 phase-only,甚至 ended-only);score 通道等真有消费者、细粒度 phase 等有需求再上。
+**当前消费**:matching 只订 phase；Strategy 只订合并比分/三态变化的 score。细粒度 phase
+per-league 归一仍等有消费者再上。
 
 #### 3.4.3 OE/SE `inPlay` 聚合到赛事 phase(#365,已落地 · live-unvalidated)
 

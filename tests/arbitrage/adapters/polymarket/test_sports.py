@@ -446,15 +446,36 @@ def test_processor_logs_score_after_store_write_even_without_score_subscription(
     assert [c for c in calls if c[0] == "publish"] == []
 
 
-def test_processor_phase_change_only_publishes_phase_channel():
-    """#322:比分不变、phase 跃迁(IN_PLAY→POST)→ 只发 phase 通道,不发 score。"""
+def test_processor_phase_change_publishes_phase_and_score_channels_once_each():
+    """比分不变、phase 跃迁时，phase/score 各自只发布一次。"""
     proc, store, calls = _processor()
     proc.process(_update(game_id=7, ts=100, score="1-0", live=True))   # 首帧发 phase+score
     calls.clear()
 
     proc.process(_update(game_id=7, ts=200, score="1-0", live=False, ended=True,
                          finished_ts="2026-07-17T00:00:00Z"))          # score 同,phase 变
-    assert [c for c in calls if c[0] == "publish"] == [("publish", 7, SPORTS_CHANNEL_PHASE)]
+    assert [c for c in calls if c[0] == "publish"] == [
+        ("publish", 7, SPORTS_CHANNEL_PHASE),
+        ("publish", 7, SPORTS_CHANNEL_SCORE),
+    ]
+
+
+def test_score_only_subscription_publishes_once_for_initial_zero_and_phase_change():
+    """Strategy 单订 score：首帧 0-0、后续 phase 跃迁各收到一条消息。"""
+    proc, store, calls = _processor(
+        subscribed_channels=lambda gid: {SPORTS_CHANNEL_SCORE},
+    )
+
+    proc.process(_update(game_id=7, ts=100, score="0-0", live=True))
+    assert [c for c in calls if c[0] == "publish"] == [
+        ("publish", 7, SPORTS_CHANNEL_SCORE),
+    ]
+
+    calls.clear()
+    proc.process(_update(game_id=7, ts=200, score="0-0", live=False, ended=True))
+    assert [c for c in calls if c[0] == "publish"] == [
+        ("publish", 7, SPORTS_CHANNEL_SCORE),
+    ]
 
 
 def test_processor_advances_shared_phase_store_from_pms_state():

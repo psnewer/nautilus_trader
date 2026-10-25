@@ -1219,8 +1219,8 @@ def _store_sports_update(actor, update):
     )
 
 
-def test_sports_update_does_not_trigger_evaluation():
-    """strategy-4.sports.2:phase 只更新状态，不触发同场 pair 的机会评估。"""
+def test_sports_score_update_triggers_each_registered_pair_once():
+    """strategy-4.sports.2:比分变化按 game 扇出同场全部 pair。"""
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
@@ -1231,7 +1231,24 @@ def test_sports_update_does_not_trigger_evaluation():
     actor.on_data(_sports_update(888))
     _run(_drain(loop))
 
-    assert a1.calls == 0 and a2.calls == 0
+    assert a1.calls == 1 and a2.calls == 1
+
+
+def test_sports_score_update_evaluates_both_trees():
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    arb_action = _RecordingAction("arb")
+    comp_action = _RecordingAction("comp")
+    strat_reg.register_pair(
+        "m1",
+        _strategy(True, True, arb_action=arb_action, comp_action=comp_action),
+    )
+    pair_reg.register("m1", ["H1.PM"], game_id=888)
+
+    actor.on_data(_sports_update(888))
+    _run(_drain(loop))
+
+    assert arb_action.calls == 1
+    assert comp_action.calls == 1
 
 
 def test_sports_update_unregistered_game_is_noop():
@@ -1241,29 +1258,28 @@ def test_sports_update_unregistered_game_is_noop():
     assert loop.tasks == []
 
 
-def test_sports_update_does_not_touch_pair_inflight_gate():
-    """strategy-4.sports.2 补:phase 不进入评估管道，也不占用或释放 pair gate。"""
+def test_sports_score_update_bypasses_pair_inflight_gate():
+    """score 不被 OBD 的 pair-in-flight 门丢弃，也不释放 OBD 持有的闸。"""
     from src.arbitrage.common.pair_inflight import PairInFlightGate
 
     gate = PairInFlightGate()
     actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
-    a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
+    a1 = _RecordingAction("m1")
     strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
-    strat_reg.register_pair("m2", _strategy(True, False, arb_action=a2))
     pair_reg.register("m1", ["H1.PM"], game_id=888)
-    pair_reg.register("m2", ["A1.PM"], game_id=888)
 
     assert gate.try_enter("m1")            # m1 已在飞
     actor.on_data(_sports_update(888))
     _run(_drain(loop))
 
-    assert a1.calls == 0 and a2.calls == 0
-    assert not gate.try_enter("m1")
+    assert a1.calls == 1
+    assert gate.is_in_flight("m1") is True
 
 
-def test_matched_pair_subscribes_per_game_topic_without_phase_evaluation():
-    """strategy-4.sports.1:MatchedPair 按场订阅 phase；topic 发布不触发机会评估。"""
+def test_matched_pair_subscribes_only_score_channel():
+    """strategy-4.sports.1:只消费合并了 score/phase 变化的 score 通道。"""
     from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
     from nautilus_trader.adapters.polymarket.sports import sports_data_type
 
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
@@ -1277,13 +1293,15 @@ def test_matched_pair_subscribes_per_game_topic_without_phase_evaluation():
     _run(_drain(loop))
     calls_after_mp = action.calls
 
+    actor.msgbus.publish(topic=f"data.{sports_data_type(888, SPORTS_CHANNEL_PHASE).topic}", msg=_sports_update(888))
+    _run(_drain(loop))  # 未订 phase，不触发
     actor.msgbus.publish(
-        topic=f"data.{sports_data_type(888, SPORTS_CHANNEL_PHASE).topic}",
+        topic=f"data.{sports_data_type(888, SPORTS_CHANNEL_SCORE).topic}",
         msg=_sports_update(888),
     )
     _run(_drain(loop))
 
-    assert action.calls == calls_after_mp
+    assert action.calls == calls_after_mp + 1
 
 
 def test_ended_releases_sports_and_obd_subscriptions(monkeypatch):

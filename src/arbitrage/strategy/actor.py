@@ -10,7 +10,7 @@ StrategyEvaluator —— NT Strategy,唯一运行时策略(Q21):订触发事件 
   其它 event 经 PairRegistry + instrument.info 反查
 - `_evaluate_and_fire(strategy, pair_id)` —— Q19 让路检查 + 挂单基线 + asyncio.gather
   并行 evaluate + 补偿候选优先 fire(actions 走 `await`,异常落进本 task)
-- `_on_eval_done(pair_id, task)` —— 评估 task 的唯一 pair 闸出口,**无条件释放**(#261)
+- `_on_eval_done(pair_id, task)` —— 取得 pair 闸的评估 task 的唯一释放出口(#261)
 
 **规划无外部执行副作用 / fire 在顶层**:`evaluate_tree_to_plan` 只生成 ExecutionPlan，
 本类决定 fire arb 还是 comp。
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from functools import partial
 
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
@@ -300,10 +300,12 @@ class StrategyEvaluator(Strategy):
             self._initialize_pair_prices(data)
             self._ensure_obd_subscribed(data)
             self._ensure_sports_subscribed(data)
-        # 2. sports phase 只维护开赛价/生命周期；行情等其它事件进入机会评估路由。
+        # 2. sports score 通道在比分或 phase 变化时到达：维护开赛价/生命周期并按 game 扇出评估。
         if isinstance(data, SportsGameUpdate):
             self._capture_start_prices(data)
             self._handle_sports_lifecycle(data)
+            if not data.ended:
+                self._route_sports_score_update(data)
             return
         if isinstance(data, MarketOrderBookDeltas):
             self._route_eval_market(data)
@@ -466,6 +468,18 @@ class StrategyEvaluator(Strategy):
                 self._delete_pair_price(pair_id)
         self._release_game_subscriptions(update.game_id)
 
+    def _route_sports_score_update(self, update: SportsGameUpdate) -> None:
+        """score 通道消息按 game 扇出；变化过滤由 Sports DataClient 负责。"""
+        game_id = int(update.game_id)
+        for pair_id in sorted(self._pair_registry.pair_ids_for_game(game_id)):
+            sport, competition = self._pair_scope(pair_id)
+            self._dispatch_eval(
+                pair_id,
+                sport,
+                competition,
+                event_name="SportsGameUpdate",
+            )
+
     def _ensure_sports_subscribed(self, mp: MatchedPair) -> None:
         """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态。
 
@@ -479,8 +493,11 @@ class StrategyEvaluator(Strategy):
             return
         self._sports_subscribed.add(gid)
         try:
-            # #322:strategy 只用 ended → 订 phase 通道(不再被比分/钟表帧噪声唤醒)。
-            self.subscribe_data(sports_data_type(gid, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
+            # score 通道在比分或 phase 变化时各发布一次，同时承载评估与 ended 生命周期。
+            self.subscribe_data(
+                sports_data_type(gid, SPORTS_CHANNEL_SCORE),
+                client_id=ClientId(SPORTS_CLIENT),
+            )
         except Exception as e:  # noqa: BLE001 — 订阅失败不挡 OBD 主链路;同场下个 MatchedPair 重试
             self._sports_subscribed.discard(gid)
             self._log.warning(f"sports subscribe game {gid} failed: {e!r}")
@@ -491,9 +508,14 @@ class StrategyEvaluator(Strategy):
         if game_id in self._sports_subscribed:
             self._sports_subscribed.discard(game_id)
             try:
-                self.unsubscribe_data(sports_data_type(game_id, SPORTS_CHANNEL_PHASE), client_id=ClientId(SPORTS_CLIENT))
+                self.unsubscribe_data(
+                    sports_data_type(game_id, SPORTS_CHANNEL_SCORE),
+                    client_id=ClientId(SPORTS_CLIENT),
+                )
             except Exception as e:  # noqa: BLE001
-                self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
+                self._log.warning(
+                    f"sports unsubscribe game {game_id} channel {SPORTS_CHANNEL_SCORE} failed: {e!r}",
+                )
         for key in sorted(self._game_market_obd.pop(game_id, set())):
             subscription = self._market_obd_subscribed.pop(key, None)
             if subscription is None:
@@ -545,12 +567,13 @@ class StrategyEvaluator(Strategy):
             )
         # §6.10 §7:per-pair 串行 —— 同步 acquire(`create_task` 前,首个 await 前)。
         # 同 pair 已在飞(评估中/执行中)→ 直接放弃,不派发评估。单 loop 串行保证同突发后到的评估立刻看到。
-        if self._pair_inflight is not None and not self._pair_inflight.try_enter(pair_id):
+        use_pair_gate = event_name != "SportsGameUpdate" and self._pair_inflight is not None
+        if use_pair_gate and not self._pair_inflight.try_enter(pair_id):
             if self._log_evaluations:
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
             return self._eval_tasks_by_pair.get(pair_id, 0) > 0
         # acquire 与 release 同层对称 —— 闸在此置位,由本次 task 的 done-callback 唯一释放。
-        # #261:闸只管"同 pair 不并发评估";全局 ≤1 执行由 barrier 判定,strategy 不参与。
+        # #261/#484:闸只管同 pair 非 score 评估；全局 ≤1 执行由 barrier 判定。
         coro = self._evaluate_and_fire(
             strategy,
             pair_id,
@@ -562,11 +585,11 @@ class StrategyEvaluator(Strategy):
             # 排程失败 → 协程**从未被排程**,一定不会跑、不会下单 → 此处释放闸是安全的。
             # (对比:若协程已排程仅回调挂不上,释放才会造成"闸放了但还在下单",故不在别处这么做。)
             coro.close()
-            if self._pair_inflight is not None:
+            if use_pair_gate:
                 self._pair_inflight.release(pair_id)
             raise                                     # 不吞:排程失败是真故障,要响亮暴露
         self._eval_tasks_by_pair[pair_id] = self._eval_tasks_by_pair.get(pair_id, 0) + 1
-        task.add_done_callback(partial(self._on_eval_done, pair_id))
+        task.add_done_callback(partial(self._on_eval_done, pair_id, release_pair_gate=use_pair_gate))
         return True
 
     def _pair_order_book_values(self, pair_id: str) -> list[dict]:
@@ -586,11 +609,11 @@ class StrategyEvaluator(Strategy):
             })
         return values
 
-    def _on_eval_done(self, pair_id: str, task) -> None:
-        """评估 task 的**唯一**闸出口(#261:无条件释放)。
+    def _on_eval_done(self, pair_id: str, task, *, release_pair_gate: bool = True) -> None:
+        """取得 pair 闸的评估 task 的唯一释放出口。
 
-        闸只保证"同一 pair 不并发评估",生命周期 = 本 task 的生命周期,故正常返回 / 抛异常 /
-        被取消都释放,没有"已 fire 就交给执行"的例外 —— 那条例外正是 #260 泄漏的根源
+        对取得闸的任务，正常返回 / 抛异常 / 被取消都释放；score 未取得闸，因此不释放。
+        没有"已 fire 就交给执行"的例外 —— 那条例外正是 #260 泄漏的根源
         (跨组件交接需要判据,判据会漏)。全局 ≤1 执行由 barrier 用派生态另行保证。
         """
         if not task.cancelled() and (exc := task.exception()) is not None:
@@ -599,14 +622,14 @@ class StrategyEvaluator(Strategy):
             # 深处(见 `web/actor.py:_on_serve_done` 的 `{exc!r}`:那里失败点唯一,这里需要栈定位)。
             tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             self._log.error(f"Strategy evaluate failed: pair_id={pair_id}\n{tb}")
-        if self._pair_inflight is not None:
+        if release_pair_gate and self._pair_inflight is not None:
             self._pair_inflight.release(pair_id)
         remaining = self._eval_tasks_by_pair.get(pair_id, 0) - 1
         if remaining > 0:
             self._eval_tasks_by_pair[pair_id] = remaining
         else:
             self._eval_tasks_by_pair.pop(pair_id, None)
-            self._cleanup_pair_price_if_ready(pair_id)
+        self._cleanup_pair_price_if_ready(pair_id)
 
     def _on_order_filled_eval_done(self, pair_id: str, task) -> None:
         """成交终态树 task 收口；只记录异常和维护生命周期，不释放行情 pair 闸。"""
@@ -814,7 +837,7 @@ class StrategyEvaluator(Strategy):
         *,
         event_name: str | None = None,
     ) -> None:
-        """本方法**不碰 pair 闸** —— 闸由 `_dispatch_eval` 置位、`_on_eval_done` 无条件释放。"""
+        """本方法不碰 pair 闸；取得/释放均由 `_dispatch_eval` 与回调配对。"""
         # §7.5(#316):本 pair 执行在飞 → 直接让路(策略前置 pre-check 放弃本 pair 机会;
         # 跨 pair 不再互相饿死,recovery 树不被无关 pair 的执行活动挡住)。
         if self._is_pair_executing(pair_id):

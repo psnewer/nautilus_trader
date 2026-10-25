@@ -23,6 +23,7 @@ from src.arbitrage.strategy.actions.advance_min_set import AdvanceMinTpSetAction
 from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
+from src.arbitrage.strategy.actions.latest_consecutive_trigger import LatestConsecutiveTriggerAction
 from src.arbitrage.strategy.actions.latest_score import LatestScoreAction
 from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
@@ -36,6 +37,7 @@ from src.arbitrage.strategy.check_action_registry import build_action
 from src.arbitrage.strategy.check_action_registry import build_check
 from src.arbitrage.strategy.check_action_registry import build_state_query
 from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
+from src.arbitrage.strategy.checks.event import EventCheck
 from src.arbitrage.strategy.checks.one_side_recovery import OneSideRecoveryCheck
 from src.arbitrage.strategy.checks.order_cancel import OrderCancelCheck
 from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
@@ -96,11 +98,19 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         OneSideRecoveryCheck,
     )
     assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
+    assert isinstance(build_check({"type": "event", "params": {"event": "score"}}), EventCheck)
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
     assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)
     assert isinstance(
         build_action({"type": "set_selection", "params": {"standing": "lose"}}),
         SetSelectionAction,
+    )
+    assert isinstance(
+        build_action({
+            "type": "latest_consecutive_trigger",
+            "params": {"history_key": "pre_rebate"},
+        }),
+        LatestConsecutiveTriggerAction,
     )
     assert isinstance(build_action({"type": "advance_min_tp_set"}), AdvanceMinTpSetAction)
     assert isinstance(build_action({"type": "advance_min_sl_set"}), AdvanceMinSlSetAction)

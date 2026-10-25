@@ -310,11 +310,21 @@
                   "sub_conditions": [
                     {
                       "checktion": {
-                        "type": "one_side_rebate",
-                        "params": {
-                          "min_rate": 0.08,
-                          "one_side": false
-                        }
+                        "AND": [
+                          {
+                            "type": "event",
+                            "params": {
+                              "event": "obd"
+                            }
+                          },
+                          {
+                            "type": "one_side_rebate",
+                            "params": {
+                              "min_rate": 0.08,
+                              "one_side": false
+                            }
+                          }
+                        ]
                       },
                       "actions": [
                         {
@@ -332,6 +342,22 @@
                             "required_hits": 2,
                             "limit": true,
                             "cross_set": false
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "checktion": {
+                        "type": "event",
+                        "params": {
+                          "event": "score"
+                        }
+                      },
+                      "actions": [
+                        {
+                          "type": "latest_consecutive_trigger",
+                          "params": {
+                            "history_key": "pre_rebate_original_leg"
                           }
                         },
                         {
@@ -401,79 +427,109 @@
                   "self_hits": {
                     "type": "in_game"
                   },
-                  "checktion": {
-                    "type": "one_side_rebate",
-                    "params": {
-                      "min_rate": 0.08,
-                      "one_side": false
-                    }
-                  },
-                  "actions": [
+                  "sub_conditions": [
                     {
-                      "type": "trend_gate",
-                      "params": {
-                        "up": true,
-                        "complement": true,
-                        "enable_flat": true
-                      }
-                    },
-                    {
-                      "type": "consecutive_trigger_gate",
-                      "params": {
-                        "history_key": "pre_rebate_original_leg",
-                        "required_hits": 2,
-                        "limit": true,
-                        "cross_set": false
-                      }
-                    },
-                    {
-                      "type": "score_selection",
-                      "params": {
-                        "standing": "win|draw",
-                        "tie_break": false
-                      }
-                    },
-                    {
-                      "type": "current_set_game_selection",
-                      "params": {
-                        "standing": "draw"
-                      }
-                    },
-                    {
-                      "type": "venue_replace",
-                      "params": {
-                        "pm_price": true,
-                        "convert": true,
-                        "deviate_convert": false,
-                        "set_exempt": 3
-                      }
-                    },
-                    {
-                      "type": "share_limit",
-                      "params": {
-                        "current_position_gate": true,
-                        "current_order_gate": {
-                          "enable": true
+                      "checktion": {
+                        "AND": [
+                          {
+                            "type": "event",
+                            "params": {
+                              "event": "obd"
+                            }
+                          },
+                          {
+                            "type": "one_side_rebate",
+                            "params": {
+                              "min_rate": 0.08,
+                              "one_side": false
+                            }
+                          }
+                        ]
+                      },
+                      "actions": [
+                        {
+                          "type": "trend_gate",
+                          "params": {
+                            "up": true,
+                            "complement": true,
+                            "enable_flat": true
+                          }
+                        },
+                        {
+                          "type": "consecutive_trigger_gate",
+                          "params": {
+                            "history_key": "pre_rebate_original_leg",
+                            "required_hits": 2,
+                            "limit": true,
+                            "cross_set": false
+                          }
                         }
-                      }
+                      ]
                     },
                     {
-                      "type": "candi_select"
-                    },
-                    {
-                      "type": "commission_gate",
-                      "params": {
-                        "min_commission": 0.98,
-                        "max_commission": 1.02
-                      }
-                    },
-                    {
-                      "type": "place_bets",
-                      "params": {
-                        "limit": false,
-                        "post_only": false,
-                        "enable_timeout": false
-                      }
+                      "checktion": {
+                        "type": "event",
+                        "params": {
+                          "event": "score"
+                        }
+                      },
+                      "actions": [
+                        {
+                          "type": "latest_consecutive_trigger",
+                          "params": {
+                            "history_key": "pre_rebate_original_leg"
+                          }
+                        },
+                        {
+                          "type": "score_selection",
+                          "params": {
+                            "standing": "win|draw",
+                            "tie_break": false
+                          }
+                        },
+                        {
+                          "type": "current_set_game_selection",
+                          "params": {
+                            "standing": "draw"
+                          }
+                        },
+                        {
+                          "type": "venue_replace",
+                          "params": {
+                            "pm_price": true,
+                            "convert": true,
+                            "deviate_convert": false,
+                            "set_exempt": 3
+                          }
+                        },
+                        {
+                          "type": "share_limit",
+                          "params": {
+                            "current_position_gate": true,
+                            "current_order_gate": {
+                              "enable": true
+                            }
+                          }
+                        },
+                        {
+                          "type": "candi_select"
+                        },
+                        {
+                          "type": "commission_gate",
+                          "params": {
+                            "min_commission": 0.98,
+                            "max_commission": 1.02
+                          }
+                        },
+                        {
+                          "type": "place_bets",
+                          "params": {
+                            "limit": false,
+                            "post_only": false,
+                            "enable_timeout": false
+                          }
+                        }
+                      ]
                     }
                   ]
                 }

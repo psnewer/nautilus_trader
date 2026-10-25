@@ -621,7 +621,8 @@ FILLED，不重放 cancel；重复 trade 不再生成任何事件。
 ## #250/#322:PMSPORTS CustomData 状态管线(已落地,`test_sports.py`)
 
 > #322(2026-08-05,live-unvalidated):单通道整帧广播 → **按语义分通道(phase/score)+ 每通道变化才发**。
-> phase 从统一布尔 `live`/`ended` 派生(PRE/IN_PLAY/POST),score 从 `score` 串 diff;matching/strategy 均只订 `phase`。
+> phase 从统一布尔 `live`/`ended` 派生(PRE/IN_PLAY/POST)；score 在比分或 phase 变化时发布。
+> matching 只订 `phase`，Strategy 只订 `score`。
 > 见 data §3.4.2、refactor #322。
 
 ### pm-adapter-sports.state.1:准入更新先写 Cache 再发布
@@ -667,10 +668,12 @@ ended 在 `phase` 通道放行一次后该场帧全拒(终态,覆盖退订异步
 ### pm-adapter-sports.state.8:#322 逐通道分发 + 多通道 Store 回收
 
 **用例**:`test_processor_score_change_only_publishes_score_channel` /
-`test_processor_phase_change_only_publishes_phase_channel` /
+`test_processor_phase_change_publishes_phase_and_score_channels_once_each` /
+`test_score_only_subscription_publishes_once_for_initial_zero_and_phase_change` /
 `test_processor_only_publishes_subscribed_channels` /
 `test_multichannel_store_reclaim_waits_for_all_channels`。
-**期望/验收**:phase 不变只比分变 → 只发 `score`;比分不变 phase 跃迁 → 只发 `phase`;
+**期望/验收**:phase 不变只比分变 → 只发 `score`;比分不变 phase 跃迁 → `phase`/`score` 各发一次，
+Strategy 因只订 score 而只收到一次；首帧从空状态到 `0-0` 同样发布一次 score；
 未订阅的通道其字段变化不发布(但仍写 Store);同场订了 phase+score 时退订其一 Store 不回收,
 两通道全归零才 `delete`(依赖基类先 `_remove_subscription` 再调 `_unsubscribe` 的时序)。
 

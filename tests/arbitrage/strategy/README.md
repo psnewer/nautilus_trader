@@ -175,9 +175,9 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；`one_side` 缺失/`True` 保持定向剩余预算分配，`False` 时两 outcome 均以 `arbitrage.share` 为 `share_if_wins`（decimal qty 仍按赔率反算）；缺 live state、缺 claim、缺 order book、非正价格、非正 share 及非法 `one_side` 均 fail-fast
+- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue 同 outcome 全部参与笛卡尔积枚举；`one_side` 缺失/`True` 时继续枚举 target、按定向 rate 门控并做剩余预算分配；`False` 时取消 target，每个 venue 组合只产生一个无 `target_role` candidate，以 `1-total_prob` 门控，两个 outcome 均以 `arbitrage.share` 为 `share_if_wins`（decimal qty 仍按赔率反算）；缺 live state、缺 claim、缺 order book、非正价格、非正 share 及非法 `one_side` 均 fail-fast
 - ✅ `test_check_one_side_recovery.py`:先以 `min_rate` 命中 one-side 盘口，再以当前最大实际 share 为目标生成 mean recovery 缺口腿；`less` 缺失/`False` 保持 `rate >= min_rate`，`True` 使用严格 `rate < min_rate`（等号不命中）；`current_position` 缺失/`False` 时任一 target candidate 达标即可，`True` 时只比较当前最大持仓 outcome 的 candidate，且 rate 仍使用两边当前盘口、不使用开仓价。覆盖两个比较方向、边界、非法参数、`min_repaired_rebate` 与 `force` 双向率门、默认跨 venue 最优价选择，以及内部 one-side candidates 不泄漏到 action scratch
-- ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:one_side_rebate 生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
+- ✅ `test_check_neg_rebate.py` + `scenarios/one_side_rebate`:定向模式（`one_side=True`）生成 candidates 后读取当前 Portfolio outcome 净利润/share，以最大 outcome share 为共同分母；按 candidate 的 `target_role` 只保留当前 rebate `<= max_rate` 的方向。覆盖默认阈值 0、等号边界、单方向筛选、全部淘汰后的 scratch 回滚、空仓按 0、非法 target、outcome 不完整、缺 Portfolio/candidates 与经济投影异常
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`:已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 当前率已达标不触发 / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx)，并保留 `share_if_wins=missing` 供后续 `venue_replace` 重算 PM 数量 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery / `venue_select=True` 时即便 OE 赔率更优也只选 PM 补救腿、缺口 outcome 无 PM 报价则 fail-closed 不补 / **#321 费率分母 = 配置的意向 share**(判别性:同一失衡仓位 `share=1`→触发补救、`share=20`→前置门判已达标不补,证明分母取配置 share 非 max 在场 share;补单目标位仍 max 在场 share=10)/ 配置 share 缺失或 ≤0 时 fail-closed 不补
 - ✅ `test_action_place_bets.py`:基础 size/override/spread/fail-closed 行为；PM 互斥仓位和 constraints 从 live Cache 读取，识别到互斥 LONG 后不再要求 SELL 限价与 best bid 交叉（缺 bid/非交叉/spread 后非交叉仍优先减仓，可能形成挂单）；Strategy 始终保留计划价，`market=true` 只写订单 metadata，市价转换留给 Execution adapter 的最终提交边界
@@ -892,7 +892,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
 
 ### strategy-4.framework.eval.gate.{1-4}:pair 闸出口(#260 引入,#261 收窄)
-> 设计 = synchronization §7.3(#261 后闸只作用于 strategy,出口只剩 `_on_eval_done` 一处无条件释放)。
+> 设计 = synchronization §7.3(#261 后闸只作用于 strategy；#484 后 score 不取得该闸，取得闸的 task 仍由 `_on_eval_done` 无条件释放)。
 > **全局 ≤1 执行不在本组** —— 由 barrier 保证,见 `tests/arbitrage/execution/test_engine_barrier.py`。
 
 - **.gate.1**(`test_gate_released_even_when_actions_submit`):action 提交了单 → 闸**照样释放**。
@@ -958,23 +958,24 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   产生补单。
 - target share 仍只取 open positions，不用 realized PnL 虚增 share。
 
-## PMSPORTS phase 状态消费（#250/#322/#387，已落地，`test_evaluator.py`）
+## PMSPORTS score 消费（#250/#322/#387/#484，已落地，`test_evaluator.py`）
 
-> Strategy 订 **`phase` 通道**(`sports_data_type(gid, SPORTS_CHANNEL_PHASE)`)以维护开赛价与 ended
-> 回收；phase 和比分/钟表帧均不触发机会评估。见 strategy §3.8.1、data §3.4.2。
+> Strategy 按场只订 `score`：比分或 phase 变化均向该通道发布一次，用于维护开赛价、ended 回收及策略评估；
+> 分支消费范围由 `event` Check 决定。见 strategy §3.8.1、data §3.4.2。
 
-### strategy-4.sports.1:MatchedPair 按场订阅 phase，但 phase 不触发评估
+### strategy-4.sports.1:MatchedPair 按场只订阅 score
 
-**用例**:`test_matched_pair_subscribes_per_game_topic_without_phase_evaluation`。
-**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场 `phase` 通道；该 topic 发布
-经 NT 路由到 `on_data`，但 Action 调用次数不增加。
+**用例**:`test_matched_pair_subscribes_only_score_channel`。
+**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并只订阅 score 通道；phase topic
+不直接进入 Strategy，score topic 每条消息扇出一次评估，且 Strategy 不记录上次路由比分。
 
-### strategy-4.sports.2:phase 不扇出机会评估
+### strategy-4.sports.2:score 扇出且绕过 pair-in-flight
 
-**用例**:`test_sports_update_does_not_trigger_evaluation` /
-`test_sports_update_does_not_touch_pair_inflight_gate`。
-**期望/验收**:同 game 注册多个 pair 时，phase 不为任何 pair 创建评估 task，也不占用或释放
-`PairInFlightGate`。
+**用例**:`test_sports_score_update_triggers_each_registered_pair_once` /
+`test_sports_score_update_evaluates_both_trees` /
+`test_sports_score_update_bypasses_pair_inflight_gate`。
+**期望/验收**:同 game 注册多个 pair 时，score 为每个 pair 创建一次评估；套利与补偿树照常求值；
+已有 OBD task 持有 pair 闸时 score 仍执行，且不得释放该闸。
 
 ### strategy-4.sports.3:未注册 game no-op
 
@@ -987,11 +988,11 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 **期望/验收**:Evaluator 把 Cache-backed `SportsGameStateStore` 注入 `EvalContext`；
 状态查询可按需读取，不派生 signal。
 
-### strategy-4.sports.5:SportsGameUpdate 只负责状态和生命周期定位
+### strategy-4.sports.5:SportsGameUpdate 提供状态、生命周期与 score 唤醒
 
-**用例**:`test_sports_update_does_not_trigger_evaluation`。
-**期望/验收**:事件到达前状态已写入 Store；Evaluator 不复制 sports 状态、不保存 signal，也不调用
-`_dispatch_eval`。
+**用例**:`test_sports_score_update_triggers_each_registered_pair_once`。
+**期望/验收**:事件到达前状态已写入 Store；Evaluator 不复制 sports 状态，score 仅作为唤醒源，
+具体业务 sibling 由 `event` Check 选择。
 
 ### strategy-4.sports.6:ended 释放本场全部订阅
 
@@ -1098,7 +1099,7 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 - **验收**:`test_action_place_bets.py::test_action_logs_each_leg`、
   `test_action_place_bets.py::test_action_summary_logs_selected_one_side_rebate_candidate`。
 
-## strategy-4.43：原始腿连续触发历史门（#421/#423）
+## strategy-4.43：原始腿连续触发历史门与 score 消费（#421/#423/#484）
 
 - `test_action_consecutive_trigger_gate.py`：第一条不同比分触发只记录不放行；同 outcome 第二个不同
   比分放行；同比分重复全部追加但不计数；相反 outcome 打断最近连续序列；`required_hits>2` 从历史尾部
@@ -1110,10 +1111,13 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 - 每条历史保存不可变的原始腿、候选 id/rate、原始及规范化比分，不因后续 Action 修改 candidate 而漂移。
 - 每条有效历史还冻结该次 gate 的 `passed`；后续 Check 可取最近真正通过的 observation，同时未通过的
   原始 observation 仍完整保留，不会被覆盖或删除。
-- 实盘 Action 顺序为 `trend_gate → consecutive_trigger_gate → set_selection(draw) → current_set_game_selection(draw) → latest_score`：
-  落后、打平或当前盘未领先的趋势腿照常写连续触发历史，但比分 Action 仍清空本轮执行腿；后续该方向
-  满足比分条件时，可以使用此前不同比分的同方向历史完成连续计数；当前盘打平后再由 `latest_score`
-  只留下刚刚追平的一方。
+- `test_check_event.py`：省略参数不筛触发源；`obd` 接受两种 OBD 事件名；`score` 只接受
+  `SportsGameUpdate`；未知值 fail-fast。
+- `test_action_latest_consecutive_trigger.py`：只读历史尾部；尾部 `passed=true` 时只取 `outcome`，
+  忽略历史 TriggerLeg/价格/venue/candidate，并从本轮 live Cache 确定性选择唯一当前报价腿；
+  历史腿重复或陈旧都不会进入新腿，当前报价缺失 fail-closed；较新的未通过记录构成打断，不向前
+  找旧记录；历史对象保持不变；生成腿可直接进入既有 `venue_replace` 链并形成完整 PM 腿。
+- 实盘拆为 OBD 记录 sibling 与 score 消费 sibling；前者在连续门后结束，后者查询历史后执行比分链。
 - `test_evaluator.py::test_ended_deletes_pair_prices_after_last_evaluation_finishes` 同时验证：ended 到达时若有
   在途评估，价格与连续触发历史都延后回收；最后一个 task 完成后该 pair 的全部 history key 一并删除。
 

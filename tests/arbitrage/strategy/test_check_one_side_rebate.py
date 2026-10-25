@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
@@ -29,8 +31,8 @@ def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.POLYMARKET": _fake_book(0.50),
-        "H.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),   # prob=0.50
-        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),   # prob=0.50
+        "H.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),  # prob=0.50
+        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),  # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -76,11 +78,14 @@ def test_candidate_quantities_put_rebate_on_one_side():
     assert by_role["no"]["cost"] == 50.0
 
     explicit_true_ctx = _ctx(books=books, infos=infos)
-    assert OneSideRebateCheck(
-        min_rate=0.10,
-        share=100.0,
-        one_side=True,
-    ).passes(explicit_true_ctx) is True
+    assert (
+        OneSideRebateCheck(
+            min_rate=0.10,
+            share=100.0,
+            one_side=True,
+        ).passes(explicit_true_ctx)
+        is True
+    )
     assert explicit_true_ctx.scratch["candidates"] == ctx.scratch["candidates"]
 
 
@@ -95,13 +100,19 @@ def test_one_side_false_buys_configured_share_on_both_outcomes():
     }
     ctx = _ctx(books=books, infos=infos)
 
-    assert OneSideRebateCheck(
-        min_rate=0.10,
-        share=100.0,
-        one_side=False,
-    ).passes(ctx) is True
+    assert (
+        OneSideRebateCheck(
+            min_rate=0.04,
+            share=100.0,
+            one_side=False,
+        ).passes(ctx)
+        is True
+    )
 
+    assert len(ctx.scratch["candidates"]) == 1
     candidate = ctx.scratch["candidates"][0]
+    assert "target_role" not in candidate
+    assert candidate["rate"] == pytest.approx(0.05)
     by_role = {leg["role"]: leg for leg in candidate["legs"]}
     assert by_role["yes"]["share_if_wins"] == 100.0
     assert by_role["yes"]["qty"] == 100.0
@@ -109,6 +120,29 @@ def test_one_side_false_buys_configured_share_on_both_outcomes():
     assert by_role["no"]["share_if_wins"] == 100.0
     assert by_role["no"]["qty"] == 100.0
     assert by_role["no"]["cost"] == 50.0
+
+
+def test_one_side_false_uses_mean_rate_threshold_without_target_enumeration():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    # mean rate 只有 5%；旧的 target 定向公式会错误地以约 10%/11% 通过。
+    assert (
+        OneSideRebateCheck(
+            min_rate=0.06,
+            share=100.0,
+            one_side=False,
+        ).passes(ctx)
+        is False
+    )
+    assert "candidates" not in ctx.scratch
 
 
 def test_one_side_false_keeps_decimal_qty_conversion():
@@ -122,11 +156,14 @@ def test_one_side_false_keeps_decimal_qty_conversion():
     }
     ctx = _ctx(books=books, infos=infos)
 
-    assert OneSideRebateCheck(
-        min_rate=0.10,
-        share=100.0,
-        one_side=False,
-    ).passes(ctx) is True
+    assert (
+        OneSideRebateCheck(
+            min_rate=0.04,
+            share=100.0,
+            one_side=False,
+        ).passes(ctx)
+        is True
+    )
 
     candidate = ctx.scratch["candidates"][0]
     no_leg = next(leg for leg in candidate["legs"] if leg["role"] == "no")
@@ -147,7 +184,7 @@ def test_one_side_must_be_boolean():
 def test_sharpexch_candidate_uses_decimal_odds_qty():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
-        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),   # prob=0.50
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),  # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -170,14 +207,19 @@ def test_3way_split_pair_yes_no_generates_candidates():
     books = {
         "HY.POLYMARKET": _fake_book(0.20),
         "HN.POLYMARKET": _fake_book(0.30),
-        "HNO.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.5, "no")),   # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
+        "HNO.ORBITEXCH": _fake_book(
+            probability_from_price(ORBITEXCH, 2.5, "no")
+        ),  # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
     }
     infos = {
         "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
         "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
-        "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
-                          "quote_claim": "no",
-                          "exec_instrument_id": "H.ORBITEXCH"},
+        "HNO.ORBITEXCH": {
+            "selection_role": "home",
+            "claim": "no",
+            "quote_claim": "no",
+            "exec_instrument_id": "H.ORBITEXCH",
+        },
     }
     ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
 
@@ -189,8 +231,7 @@ def test_3way_split_pair_yes_no_generates_candidates():
     assert all(len(c["legs"]) == 2 for c in candidates)
     # 含 OE 合成 no 腿的 candidate,其 no leg 带 claim(place_bets 转 SELL@lay)
     oe_no_candidates = [
-        c for c in candidates
-        if any(leg["instrument_id"] == "HNO.ORBITEXCH" for leg in c["legs"])
+        c for c in candidates if any(leg["instrument_id"] == "HNO.ORBITEXCH" for leg in c["legs"])
     ]
     assert oe_no_candidates
     for c in oe_no_candidates:
@@ -201,7 +242,7 @@ def test_3way_split_pair_yes_no_generates_candidates():
 def test_decimal_odds_target_qty_share_and_cost():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
-        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),   # prob=0.50
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),  # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},

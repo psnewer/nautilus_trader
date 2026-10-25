@@ -1,10 +1,11 @@
 """
-OneSideRebateCheck —— 定向返水候选生成。
+OneSideRebateCheck —— 返水候选生成。
 
 算法:
   1. 按 outcome role 收集所有可买 leg(PM/OE/SE 都保留,不提前取最优)。
   2. 枚举每个 role 选一条 leg 的笛卡尔积。
-  3. 对每个组合枚举 target role,计算 `rate = (1 - total_prob) / target_prob`。
+  3. `one_side=True` 时枚举 target role，计算定向 rate；False 时不设 target，
+     每个组合只计算一次 `rate = 1 - total_prob`。
   4. `rate >= min_rate` 时生成 candidate,写入 `ctx.scratch["candidates"]`。
 
 后续 action 链:
@@ -23,7 +24,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 class OneSideRebateCheck(Check):
-    """枚举所有定向返水 candidate。"""
+    """枚举返水 candidate；非单边模式不枚举 target。"""
 
     def __init__(
         self,
@@ -52,6 +53,20 @@ class OneSideRebateCheck(Check):
         candidates = []
         for combo in product(*(legs_by_role[role] for role in roles)):
             total_prob = sum(leg["prob"] for leg in combo)
+            if not self._one_side:
+                rate = 1.0 - total_prob
+                if rate >= self._min_rate:
+                    candidates.append(
+                        self._build_candidate(
+                            combo=combo,
+                            roles=roles,
+                            target_role=None,
+                            share=share,
+                            total_prob=total_prob,
+                            rate=rate,
+                        )
+                    )
+                continue
             for target_role in roles:
                 target = _leg_for_role(combo, target_role)
                 if target is None or target["prob"] <= 0:
@@ -85,13 +100,14 @@ class OneSideRebateCheck(Check):
         *,
         combo: tuple[dict, ...],
         roles: tuple[str, ...],
-        target_role: str,
+        target_role: str | None,
         share: float,
         total_prob: float,
         rate: float,
     ) -> dict | None:
         target_cost = None
         if self._one_side:
+            assert target_role is not None
             non_target_prob = sum(leg["prob"] for leg in combo if leg["role"] != target_role)
             target_cost = share * (1.0 - non_target_prob)
             if target_cost <= 0:
@@ -131,16 +147,18 @@ class OneSideRebateCheck(Check):
             candidate_legs.append(candidate_leg)
 
         combo_key = ",".join(f"{leg['venue'].lower()}:{leg['role']}" for leg in combo)
-        return {
-            "candidate_id": f"one_side:{target_role}:{combo_key}",
+        candidate = {
+            "candidate_id": f"one_side:{target_role or 'all'}:{combo_key}",
             "strategy": "one_side_rebate",
-            "target_role": target_role,
             "roles": roles,
             "rate": rate,
             "total_prob": total_prob,
             "base_share": share,
             "legs": candidate_legs,
         }
+        if target_role is not None:
+            candidate["target_role"] = target_role
+        return candidate
 
     def _configured_share(self, ctx: EvalContext) -> float:
         if self._share is not None:

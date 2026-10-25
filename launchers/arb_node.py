@@ -83,6 +83,7 @@ from src.arbitrage.strategy.actions.commission_gate import CommissionGateAction
 from src.arbitrage.strategy.actions.consecutive_trigger_gate import ConsecutiveTriggerGateAction
 from src.arbitrage.strategy.actions.current_set_game_selection import CurrentSetGameSelectionAction
 from src.arbitrage.strategy.actions.dash_gate import DashGateAction
+from src.arbitrage.strategy.actions.latest_consecutive_trigger import LatestConsecutiveTriggerAction
 from src.arbitrage.strategy.actions.latest_score import LatestScoreAction
 from src.arbitrage.strategy.actions.magic_order_gate import MagicOrderGateAction
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
@@ -99,6 +100,7 @@ from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.check_action_registry import register_state_query
 from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
+from src.arbitrage.strategy.checks.event import EventCheck
 from src.arbitrage.strategy.checks.lower_tier import LowerTierCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
@@ -141,6 +143,7 @@ def register_builtin_checks_and_actions() -> None:
     register_check("one_side_rebate", OneSideRebateCheck)
     register_check("one_side_recovery", OneSideRecoveryCheck)
     register_check("neg_rebate", NegRebateCheck)
+    register_check("event", EventCheck)
     register_check("price_change_recovery", PriceChangeRecoveryCheck)
     register_check("spread_cancel_recovery", SpreadCancelRecoveryCheck)
     register_check("require_cross_venue", RequireCrossVenueCheck)
@@ -167,6 +170,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
     register_action("latest_score", LatestScoreAction)
+    register_action("latest_consecutive_trigger", LatestConsecutiveTriggerAction)
     register_action("set_selection", SetSelectionAction)
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)
     register_action("same_set", SameSetAction)

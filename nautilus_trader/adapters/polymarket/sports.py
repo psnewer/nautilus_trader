@@ -471,7 +471,11 @@ def _channel_changed(channel: str, previous, update: SportsGameUpdate) -> bool:
     if channel == SPORTS_CHANNEL_PHASE:
         return sports_phase(previous) != sports_phase(update)
     if channel == SPORTS_CHANNEL_SCORE:
-        return previous.score != update.score
+        # Strategy 只订此通道：比分或生命周期阶段变化都唤醒一次。
+        return (
+            previous.score != update.score
+            or sports_phase(previous) != sports_phase(update)
+        )
     return False
 
 
