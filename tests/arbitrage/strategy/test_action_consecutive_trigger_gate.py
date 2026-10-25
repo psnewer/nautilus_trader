@@ -29,18 +29,22 @@ def _ctx(*, score="0-1", outcome="yes", store=None, event_name="MarketOrderBookD
         ts_now_ns=123,
     )
     ctx.pair_registry.register("p", ["A.POLYMARKET"], game_id=7)
-    ctx.scratch["candidates"] = [{
-        "candidate_id": f"one_side:{outcome}",
-        "rate": 0.12,
-        "legs": [{
-            "instrument_id": "A.POLYMARKET",
-            "venue": "POLYMARKET",
-            "side": "BUY",
-            "claim": outcome,
-            "price": 0.42,
-            "prob": 0.42,
-        }],
-    }]
+    ctx.scratch["candidates"] = [
+        {
+            "candidate_id": f"one_side:{outcome}",
+            "rate": 0.12,
+            "legs": [
+                {
+                    "instrument_id": "A.POLYMARKET",
+                    "venue": "POLYMARKET",
+                    "side": "BUY",
+                    "claim": outcome,
+                    "price": 0.42,
+                    "prob": 0.42,
+                }
+            ],
+        }
+    ]
     return ctx
 
 
@@ -87,6 +91,23 @@ def test_same_score_duplicates_are_saved_but_do_not_count():
     _run(changed)
     assert changed.scratch["candidates"]
     assert len(store.history("p", "pre_rebate")) == 3
+
+
+def test_duplicate_candidates_for_same_outcome_do_not_change_continuity():
+    store = ConsecutiveTriggerStore()
+    first = _ctx(score="0-1", store=store)
+    first.scratch["candidates"] *= 2
+    _run(first)
+
+    second = _ctx(score="0-2", store=store)
+    second.scratch["candidates"] *= 2
+    original = second.scratch["candidates"]
+    _run(second)
+
+    assert second.scratch["candidates"] == original
+    history = store.history("p", "pre_rebate")
+    assert [value.outcome for value in history] == ["yes", "yes"]
+    assert [value.passed for value in history] == [False, True]
 
 
 def test_opposite_direction_breaks_recent_sequence():

@@ -1,11 +1,10 @@
 """
-OneSideRebateCheck —— 返水候选生成。
+OneSideRebateCheck —— 定向返水候选生成。
 
 算法:
   1. 按 outcome role 收集所有可买 leg(PM/OE/SE 都保留,不提前取最优)。
   2. 枚举每个 role 选一条 leg 的笛卡尔积。
-  3. 枚举 target role，计算定向 `rate = (1 - total_prob) / target_prob`。
-     `one_side=False` 时首个 target 达标即停止枚举，并生成无 target 的等 share candidate。
+  3. 对每个组合枚举 target role,计算 `rate = (1 - total_prob) / target_prob`。
   4. `rate >= min_rate` 时生成 candidate,写入 `ctx.scratch["candidates"]`。
 
 后续 action 链:
@@ -24,7 +23,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 class OneSideRebateCheck(Check):
-    """枚举返水 candidate；非单边模式不枚举 target。"""
+    """枚举所有定向返水 candidate。"""
 
     def __init__(
         self,
@@ -63,15 +62,13 @@ class OneSideRebateCheck(Check):
                 candidate = self._build_candidate(
                     combo=combo,
                     roles=roles,
-                    target_role=target_role if self._one_side else None,
+                    target_role=target_role,
                     share=share,
                     total_prob=total_prob,
                     rate=rate,
                 )
                 if candidate is not None:
                     candidates.append(candidate)
-                if not self._one_side:
-                    break
 
         if not candidates:
             return False
@@ -88,14 +85,13 @@ class OneSideRebateCheck(Check):
         *,
         combo: tuple[dict, ...],
         roles: tuple[str, ...],
-        target_role: str | None,
+        target_role: str,
         share: float,
         total_prob: float,
         rate: float,
     ) -> dict | None:
         target_cost = None
         if self._one_side:
-            assert target_role is not None
             non_target_prob = sum(leg["prob"] for leg in combo if leg["role"] != target_role)
             target_cost = share * (1.0 - non_target_prob)
             if target_cost <= 0:
@@ -135,18 +131,16 @@ class OneSideRebateCheck(Check):
             candidate_legs.append(candidate_leg)
 
         combo_key = ",".join(f"{leg['venue'].lower()}:{leg['role']}" for leg in combo)
-        candidate = {
-            "candidate_id": f"one_side:{target_role or 'all'}:{combo_key}",
+        return {
+            "candidate_id": f"one_side:{target_role}:{combo_key}",
             "strategy": "one_side_rebate",
+            "target_role": target_role,
             "roles": roles,
             "rate": rate,
             "total_prob": total_prob,
             "base_share": share,
             "legs": candidate_legs,
         }
-        if target_role is not None:
-            candidate["target_role"] = target_role
-        return candidate
 
     def _configured_share(self, ctx: EvalContext) -> float:
         if self._share is not None:

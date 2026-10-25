@@ -184,7 +184,12 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         build_action(
             {
                 "type": "current_set_game_selection",
-                "params": {"standing": "lose", "tier_only": True, "min": 2},
+                "params": {
+                    "standing": "lose",
+                    "tie_break": False,
+                    "tier_only": True,
+                    "min": 2,
+                },
             },
         ),
         CurrentSetGameSelectionAction,

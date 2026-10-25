@@ -15,6 +15,7 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
     def __init__(
         self,
         standing: str | None = None,
+        tie_break: bool = True,
         tier_only: bool | None = None,
         min: int | None = None,
         max: int | None = None,
@@ -27,7 +28,7 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
             raise ValueError("current_set_game_selection: max must be a positive integer")
         if min is not None and max is not None and min > max:
             raise ValueError("current_set_game_selection: min must be <= max")
-        super().__init__(standing=standing)
+        super().__init__(standing=standing, tie_break=tie_break)
         self._tier_only = bool(tier_only)
         self._min = min
         self._max = max
@@ -61,6 +62,8 @@ class CurrentSetGameSelectionAction(ScoreSelectionAction):
         if _unit_is_complete(latest):
             return {}
         if int(left) == 0 and int(right) == 0:
+            return {}
+        if int(left) == int(right) == 6 and not self._tie_break:
             return {}
         left_games = int(left)
         right_games = int(right)

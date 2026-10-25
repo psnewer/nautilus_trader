@@ -85,6 +85,26 @@ def test_nonzero_tied_games_are_draw_and_tie_break_points_are_ignored(score):
     assert len(ctx.scratch["legs"]) == 4
 
 
+@pytest.mark.parametrize("score", ["6-6", "6-4, 6-6(3-4)"])
+def test_tie_break_explicitly_disabled_fails_closed(score):
+    ctx = _ctx(score)
+
+    _run(CurrentSetGameSelectionAction(standing="draw", tie_break=False).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_tie_break_disabled_keeps_regular_game_comparison():
+    ctx = _ctx("6-4, 2-3")
+
+    _run(CurrentSetGameSelectionAction(standing="win", tie_break=False).execute(ctx))
+
+    assert [(leg["instrument_id"], leg["side"]) for leg in ctx.scratch["legs"]] == [
+        ("A.POLYMARKET", "BUY"),
+        ("A.POLYMARKET", "SELL"),
+    ]
+
+
 @pytest.mark.parametrize("score", ["0-0", "6-4, 0-0"])
 @pytest.mark.parametrize("standing", ["draw", "win|draw"])
 def test_zero_all_is_not_treated_as_draw(score, standing):
@@ -216,6 +236,12 @@ def test_tier_only_disabled_keeps_existing_filtering(tier_only):
 def test_invalid_tier_only_is_rejected(tier_only):
     with pytest.raises(ValueError, match="tier_only must be a boolean"):
         CurrentSetGameSelectionAction(standing="win", tier_only=tier_only)
+
+
+@pytest.mark.parametrize("tie_break", [None, 0, 1, "false", {}, []])
+def test_invalid_tie_break_is_rejected(tie_break):
+    with pytest.raises(ValueError, match="tie_break must be a boolean"):
+        CurrentSetGameSelectionAction(standing="draw", tie_break=tie_break)
 
 
 @pytest.mark.parametrize("value", [0, -1, 1.0, True, "1"])

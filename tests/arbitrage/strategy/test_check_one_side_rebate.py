@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import probability_from_price
@@ -102,17 +100,16 @@ def test_one_side_false_buys_configured_share_on_both_outcomes():
 
     assert (
         OneSideRebateCheck(
-            min_rate=0.04,
+            min_rate=0.10,
             share=100.0,
             one_side=False,
         ).passes(ctx)
         is True
     )
 
-    assert len(ctx.scratch["candidates"]) == 1
+    assert len(ctx.scratch["candidates"]) == 2
+    assert {value["target_role"] for value in ctx.scratch["candidates"]} == {"yes", "no"}
     candidate = ctx.scratch["candidates"][0]
-    assert "target_role" not in candidate
-    assert candidate["rate"] == pytest.approx((1.0 - 0.95) / 0.45)
     by_role = {leg["role"]: leg for leg in candidate["legs"]}
     assert by_role["yes"]["share_if_wins"] == 100.0
     assert by_role["yes"]["qty"] == 100.0
@@ -120,32 +117,6 @@ def test_one_side_false_buys_configured_share_on_both_outcomes():
     assert by_role["no"]["share_if_wins"] == 100.0
     assert by_role["no"]["qty"] == 100.0
     assert by_role["no"]["cost"] == 50.0
-
-
-def test_one_side_false_keeps_directional_rate_threshold_without_duplicate_target_candidate():
-    books = {
-        "H.POLYMARKET": _fake_book(0.45),
-        "A.POLYMARKET": _fake_book(0.50),
-    }
-    infos = {
-        "H.POLYMARKET": {"selection_role": "home"},
-        "A.POLYMARKET": {"selection_role": "away"},
-    }
-    ctx = _ctx(books=books, infos=infos)
-
-    # mean rate 只有 5%，但 yes 的定向 rate 约 11.11%，仍应通过。
-    assert (
-        OneSideRebateCheck(
-            min_rate=0.105,
-            share=100.0,
-            one_side=False,
-        ).passes(ctx)
-        is True
-    )
-    candidates = ctx.scratch["candidates"]
-    assert len(candidates) == 1
-    assert "target_role" not in candidates[0]
-    assert candidates[0]["rate"] == pytest.approx((1.0 - 0.95) / 0.45)
 
 
 def test_one_side_false_keeps_decimal_qty_conversion():
