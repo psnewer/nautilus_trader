@@ -1116,10 +1116,11 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
   原始 observation 仍完整保留，不会被覆盖或删除。
 - `test_check_event.py`：省略参数不筛触发源；`obd` 接受两种 OBD 事件名；`score` 只接受
   `SportsGameUpdate`；未知值 fail-fast。
-- `test_action_latest_consecutive_trigger.py`：只读历史尾部；尾部 `passed=true` 时只取 `outcome`，
+- `test_action_latest_consecutive_trigger.py`：`limit` 缺失/`true` 时只读历史尾部，较新的未通过记录构成打断；
+  `limit=false` 时允许打断，倒序取最近一条 `passed=true` observation；命中后只取 `outcome`，
   忽略历史 TriggerLeg/价格/venue/candidate，并从本轮 live Cache 确定性选择唯一当前报价腿；
-  历史腿重复或陈旧都不会进入新腿，当前报价缺失 fail-closed；较新的未通过记录构成打断，不向前
-  找旧记录；历史对象保持不变；生成腿可直接进入既有 `venue_replace` 链并形成完整 PM 腿。
+  历史腿重复或陈旧都不会进入新腿，当前报价缺失 fail-closed；历史对象保持不变；非 boolean
+  `limit` fail-fast；生成腿可直接进入既有 `venue_replace` 链并形成完整 PM 腿。
 - 实盘拆为 OBD 记录 sibling 与 score 消费 sibling；前者在连续门后结束，后者查询历史后执行比分链。
 - `test_evaluator.py::test_ended_deletes_pair_prices_after_last_evaluation_finishes` 同时验证：ended 到达时若有
   在途评估，价格与连续触发历史都延后回收；最后一个 task 完成后该 pair 的全部 history key 一并删除。

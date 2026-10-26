@@ -28,8 +28,8 @@ def _observation(*, passed: bool, price: float = 2.0) -> TriggerObservation:
     )
 
 
-def _run(ctx):
-    asyncio.run(LatestConsecutiveTriggerAction("history").execute(ctx))
+def _run(ctx, *, limit=True):
+    asyncio.run(LatestConsecutiveTriggerAction("history", limit=limit).execute(ctx))
 
 
 def _book(ask):
@@ -111,6 +111,25 @@ def test_newer_failed_observation_interrupts_older_passed_trigger():
     assert ctx.scratch["legs"] == []
 
 
+def test_limit_false_skips_newer_failed_observation():
+    store = ConsecutiveTriggerStore()
+    passed = _observation(passed=True)
+    failed = _observation(passed=False, price=2.1)
+    store.append("p", "history", passed)
+    store.append("p", "history", failed)
+    ctx = live_context(
+        pair_id="p",
+        **_current_quotes(),
+        consecutive_trigger_store=store,
+        strategy_defaults={"share": 5.0},
+    )
+
+    _run(ctx, limit=False)
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+    assert store.history("p", "history") == (passed, failed)
+
+
 def test_missing_current_quote_fails_closed_even_when_history_contains_a_leg():
     store = ConsecutiveTriggerStore()
     store.append("p", "history", _observation(passed=True))
@@ -172,3 +191,9 @@ def test_missing_or_non_positive_share_fails_closed(share):
 def test_invalid_history_key_fails_fast(history_key):
     with pytest.raises(ValueError, match="history_key"):
         LatestConsecutiveTriggerAction(history_key)
+
+
+@pytest.mark.parametrize("limit", [None, 0, 1, "false"])
+def test_invalid_limit_fails_fast(limit):
+    with pytest.raises(ValueError, match="limit"):
+        LatestConsecutiveTriggerAction("history", limit=limit)
