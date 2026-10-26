@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,12 +15,21 @@ from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
 from tests.arbitrage.strategy._live_state import live_context
 
 
-def _observation(*, passed: bool, price: float = 2.0) -> TriggerObservation:
+def _observation(
+    *,
+    passed: bool,
+    price: float = 2.0,
+    score="1-1",
+) -> TriggerObservation:
+    parts = tuple(
+        (int(left), int(right), None, None)
+        for left, right in (part.strip().split("-") for part in score.split(","))
+    )
     return TriggerObservation(
         ts_ns=1,
         event_name="MarketOrderBookDeltas",
-        score_raw="1-1",
-        score_key=((1, 1, None, None),),
+        score_raw=score,
+        score_key=parts,
         outcome="yes",
         legs=(TriggerLeg("H.ORBITEXCH", "ORBITEXCH", "BUY", "yes", price, 0.5),),
         candidate_ids=("one_side:yes",),
@@ -28,8 +38,33 @@ def _observation(*, passed: bool, price: float = 2.0) -> TriggerObservation:
     )
 
 
-def _run(ctx, *, limit=True):
-    asyncio.run(LatestConsecutiveTriggerAction("history", limit=limit).execute(ctx))
+def _run(ctx, *, limit=True, current_set=False):
+    asyncio.run(
+        LatestConsecutiveTriggerAction(
+            "history",
+            limit=limit,
+            current_set=current_set,
+        ).execute(ctx),
+    )
+
+
+class _SportsStore:
+    def __init__(self, score):
+        self._state = SimpleNamespace(score=score)
+
+    def get(self, game_id):
+        assert game_id == 42
+        return self._state
+
+
+def _with_current_score(ctx, score):
+    ctx.sports_store = _SportsStore(score)
+    ctx.pair_registry.register(
+        ctx.pair_id,
+        ctx.pair_registry.instrument_ids_for_pair(ctx.pair_id),
+        game_id=42,
+    )
+    return ctx
 
 
 def _book(ask):
@@ -130,6 +165,98 @@ def test_limit_false_skips_newer_failed_observation():
     assert store.history("p", "history") == (passed, failed)
 
 
+def test_current_set_true_keeps_passed_observation_in_current_set():
+    store = ConsecutiveTriggerStore()
+    store.append("p", "history", _observation(passed=True, score="6-4, 1-2"))
+    ctx = _with_current_score(
+        live_context(
+            pair_id="p",
+            **_current_quotes(),
+            consecutive_trigger_store=store,
+            strategy_defaults={"share": 5.0},
+        ),
+        "6-4, 2-2",
+    )
+
+    _run(ctx, current_set=True)
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+
+
+def test_current_set_true_rejects_passed_observation_from_previous_set():
+    store = ConsecutiveTriggerStore()
+    store.append("p", "history", _observation(passed=True, score="5-4"))
+    ctx = _with_current_score(
+        live_context(
+            pair_id="p",
+            **_current_quotes(),
+            consecutive_trigger_store=store,
+            strategy_defaults={"share": 5.0},
+        ),
+        "6-4, 0-0",
+    )
+
+    _run(ctx, current_set=True)
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_limit_false_current_set_skips_passed_observation_from_previous_set():
+    store = ConsecutiveTriggerStore()
+    store.append("p", "history", _observation(passed=True, score="5-4"))
+    store.append("p", "history", _observation(passed=False, score="6-4, 0-1"))
+    ctx = _with_current_score(
+        live_context(
+            pair_id="p",
+            **_current_quotes(),
+            consecutive_trigger_store=store,
+            strategy_defaults={"share": 5.0},
+        ),
+        "6-4, 0-2",
+    )
+
+    _run(ctx, limit=False, current_set=True)
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_limit_false_current_set_skips_failure_and_keeps_same_set_pass():
+    store = ConsecutiveTriggerStore()
+    store.append("p", "history", _observation(passed=True, score="6-4, 0-1"))
+    store.append("p", "history", _observation(passed=False, score="6-4, 0-2"))
+    ctx = _with_current_score(
+        live_context(
+            pair_id="p",
+            **_current_quotes(),
+            consecutive_trigger_store=store,
+            strategy_defaults={"share": 5.0},
+        ),
+        "6-4, 0-3",
+    )
+
+    _run(ctx, limit=False, current_set=True)
+
+    assert ctx.scratch["legs"][0]["instrument_id"] == "Y.POLYMARKET"
+
+
+@pytest.mark.parametrize("score", [None, "", "bad"])
+def test_current_set_true_fails_closed_without_valid_current_score(score):
+    store = ConsecutiveTriggerStore()
+    store.append("p", "history", _observation(passed=True))
+    ctx = live_context(
+        pair_id="p",
+        **_current_quotes(),
+        consecutive_trigger_store=store,
+        strategy_defaults={"share": 5.0},
+    )
+    if score is not None:
+        _with_current_score(ctx, score)
+
+    _run(ctx, current_set=True)
+
+    assert ctx.scratch["legs"] == []
+
+
 def test_missing_current_quote_fails_closed_even_when_history_contains_a_leg():
     store = ConsecutiveTriggerStore()
     store.append("p", "history", _observation(passed=True))
@@ -197,3 +324,9 @@ def test_invalid_history_key_fails_fast(history_key):
 def test_invalid_limit_fails_fast(limit):
     with pytest.raises(ValueError, match="limit"):
         LatestConsecutiveTriggerAction("history", limit=limit)
+
+
+@pytest.mark.parametrize("current_set", [None, 0, 1, "true"])
+def test_invalid_current_set_fails_fast(current_set):
+    with pytest.raises(ValueError, match="current_set"):
+        LatestConsecutiveTriggerAction("history", current_set=current_set)
