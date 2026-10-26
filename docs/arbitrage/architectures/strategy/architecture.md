@@ -479,7 +479,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 每棵树独立执行：本树 `candidates` 优先，缺失时把本树 `legs` 包成单 candidate；逐腿按共享 `leg_plan` 做最小下注门控，再在本树幸存者中选择最大 leg share 最高者。它不读取另一棵树的 candidate，也不承担树间优先级 |
 | `CommissionGateAction(commission | min_commission+max_commission)` | `src/arbitrage/strategy/actions/commission_gate.py` | 按 PM 二元盘口 commission 门控下单：commission 定义为当前 PM `yes/no` 两个 best-ask 隐含概率之和。旧单阈值口径保持为实际值 `< commission` 放通；闭区间口径在 `[min_commission,max_commission]`（含边界）内放通。两种配置互斥，缺任一 PM outcome/有效概率或超出范围时 fail-closed。支持 `selected_candidate`、`candidates`、legs-only 三种输入，候选池中撤单 candidate 原样保留，纯撤单输入 no-op。当前 `pre_rebate.in_game` 的 taker 路径（`place_bets.limit=false`）在 `candi_select` 后配置 `[0.98,1.02]` 范围门控。非 PM 报价不参与计算。 |
 | `PriceGateAction(price, below=False)` | `src/arbitrage/strategy/actions/price_gate.py` | 按执行腿的统一隐含概率逐腿筛选；优先读取 Check 已写入的 `leg.prob`，缺失时经 Venue Registry `probability_from_price(venue, leg.price, claim/role)` 将 PM probability price 或 OE/SE decimal odds 转为 `0–1` 概率。默认删除概率 `< price` 的腿，`below=true` 时删除概率 `> price` 的腿，等于阈值均放通；无法得到有限且位于 `[0,1]` 的概率时 fail-closed。比较发生在 `place_bets(limit=true)` 改写最终限价之前；`venue_replace(pm_price=true)` 会把概率来源改成 PM 实时价，因此 Action 前后位置仍决定比较原候选概率还是替换后的 PM 概率。支持 `selected_candidate`、`candidates`、legs-only 输入，保留撤单 candidate；阈值必填且有限，`below` 必须为 boolean。 |
-| `ConsecutiveTriggerGateAction(history_key, required_hits=2, limit=False, cross_set=False)` | `src/arbitrage/strategy/actions/consecutive_trigger_gate.py` | 仅接受 `OrderBookDeltas/MarketOrderBookDeltas`。从前序筛选后的腿提取唯一 canonical outcome 并读取完整比分；每次有效触发先按 `(pair_id, history_key)` 的旧历史判断，再无条件追加不可变事实快照，并记录本次门判定的 `passed`。同方向、相邻不同比分累计一次；同比分重复保留但不计数；最近出现相反方向即中断。当前盘为 `6-6` 或 `6-6(x-y)`（含 `0-0`）表示抢七进行中，本轮 fail-closed 且不写历史。达到 `required_hits` 放通，否则清空执行候选。`limit` 缺失/`None`/`False` 保持该既有逻辑；`True` 时增加经过局数约束。`cross_set` 缺失/`None`/`False` 时只扫描当前盘；`True` 时允许跨盘扫描并累计各盘常规局数。两种模式均不计抢七决胜局，并要求经过局数 `>= required_hits`。当前放在 `trend_gate` 后、比分筛选与 `price_gate/venue_replace` 前，因此历史表示趋势筛选后的原始价格信号，不因当时落后、打平或当前盘未领先而丢失；比分筛选仍决定本轮能否实际下单。参数 `history_key` 必须非空，`required_hits` 必须为整数且 `>=2`，`limit/cross_set` 非 boolean 时 fail-fast。详见 §3.8.4。 |
+| `ConsecutiveTriggerGateAction(history_key, required_hits=2, cross_set=False)` | `src/arbitrage/strategy/actions/consecutive_trigger_gate.py` | 仅接受 `OrderBookDeltas/MarketOrderBookDeltas`。从前序筛选后的腿提取唯一 canonical outcome 并读取完整比分；每次有效触发先按 `(pair_id, history_key)` 的旧历史判断，再无条件追加不可变事实快照，并记录本次门判定的 `passed`。同方向、相邻不同比分累计一次；同比分重复保留但不计数；最近出现相反方向即中断。`required_hits=1` 时本次有效触发立即通过；更大值按历史累计。`cross_set` 缺失/`None`/`False` 时盘切换中断连续序列，`True` 时允许跨盘累计。当前盘为 `6-6` 或 `6-6(x-y)`（含 `0-0`）表示抢七进行中，本轮 fail-closed 且不写历史。累计达到 `required_hits` 即放通，不再附加经过局数约束。当前放在 `trend_gate` 后、比分筛选与 `price_gate/venue_replace` 前，因此历史表示趋势筛选后的原始价格信号，不因当时落后、打平或当前盘未领先而丢失；比分筛选仍决定本轮能否实际下单。参数 `history_key` 必须非空，`required_hits` 必须为整数且 `>=1`，`cross_set` 非 boolean 时 fail-fast。详见 §3.8.4。 |
 | `LatestConsecutiveTriggerAction(history_key, limit=True, current_set=False)` | `src/arbitrage/strategy/actions/latest_consecutive_trigger.py` | 只读查询 `(pair_id, history_key)` 的历史，不参与触发判定或写历史。`limit` 缺失/`true` 时仅查尾部：尾部未通过即表示发生打断，不向前搜索。`limit=false` 时允许中间存在未通过记录，倒序查找最近的 `passed=true` observation。`current_set=false` 保持原行为；`true` 时还要求 observation 的完整比分与本轮 Sports state 最新比分处于同一盘，缺失/非法最新比分或跨盘均 fail-closed。命中时只读取 observation 的 `outcome`，不读取历史 `TriggerLeg`/价格/venue/candidate；从本轮 live Cache 中该 outcome 的报价腿按最低隐含概率、venue 偏好、instrument id 确定性选择一条，补 `strategy_defaults.share` 后生成当前腿。当前报价缺失时 fail-closed。 |
 | `DashGateAction()` | `src/arbitrage/strategy/actions/dash_gate.py` | 只处理 `candi_select` 已选出的 `selected_candidate`：读取 `PairPriceStore.start_price`，按腿的 `claim`（缺失时 `role`）找到对应 outcome；若腿为 BUY 且 `leg.prob < 0.5 × start_price[outcome]`，从 candidate 中删除该腿，其余腿和 candidate 元数据保持不变，并同步写回 `selected_candidate["legs"]` 与 `scratch["legs"]`。等于阈值、SELL、缺 pair price、缺 outcome 或缺有效 `prob` 均保留，不凭不完整数据误删。撤单 candidate 不处理 |
 | `TrendGateAction(up=True, complement=False, enable_flat=True)` | `src/arbitrage/strategy/actions/trend_gate.py` | 读取 live `PairPriceStore.trend_price` 与当前各 outcome 跨 venue 最低 best-ask 隐含概率，逐 outcome 直接比较：`current > baseline` 为 up，`current < baseline` 为 down，相等为 flat。`up` 缺失/`True` 留 up，`False` 留 down。`enable_flat` 缺失/`True` 时，某个 flat outcome 仅在其余所有 outcome 均为同一个非 flat 方向时推断成该方向的反面；二元 flat/down 因而视为 up/down，多 outcome 的对手方向不一致或仍含 flat 时不推断。显式 `False` 时只要完整趋势向量含 flat 就全删。`complement` 缺失/`False` 时各 outcome 独立过滤；显式 `True` 时，完整二元 outcome 的有效方向同为 up 或同为 down 会使本轮全删。它不恢复相邻帧 momentum、各 venue 同向或要求严格一 up 一 down，也无 `steps/trend` 参数。输入按 `selected_candidate` → `candidates` → legs-only 处理：已选 candidate 同步回写其 legs 与 `scratch["legs"]`；未选择的候选池逐 candidate 过滤 legs、淘汰空 candidate，并保留 rate 等元数据，供后续 `candi_select` 对过滤结果做门控与选择；mean/recovery 的 legs-only 则直接回写 `scratch["legs"]`，不凭空构造 candidate。基准、当前完整向量或 outcome 缺失时 fail-closed 全删。撤单 candidate 不处理。详见 §3.8.3 |
@@ -665,16 +665,11 @@ Store 缺失，或当前盘处于裸 `6-6` / `6-6(x-y)` 抢七（包括 `6-6(0-0
 candidate 数量不参与连续 hit 计数，因此无需修改 `one_side_rebate` 的原 candidate 枚举。
 有效触发先扫描最近连续尾部：同 outcome 的同比分记录跳过，
 每遇到一次比分变化增加一次 hit，遇到相反 outcome 立即停止；满足 `required_hits` 后放通本轮。
-可选 `limit` 缺失/`None`/`False` 时不增加约束；显式 `True` 时增加经过局数约束。此时
-`cross_set` 缺失/`None`/`False` 保持现有同盘语义：只扫描当前盘内最近连续同 outcome 历史，
-遇到相反 outcome 或盘切换即停止，并以该盘 `(左局数 + 右局数)` 之差计算经过局数。
-`cross_set=True` 时不因盘切换停止，取最近连续同 outcome 的最早不同比分触发，以完整比分中
-各盘 `(左局数 + 右局数)` 总和之差累计跨盘经过局数。两种模式都要求该值 `>= required_hits`。因此
-`required_hits=2` 时同盘 `4-3 → 4-4` 只有1局而不放行，`3-3 → 4-4` 已过2局而放行；
-默认情况下第一盘 `5-4` 不能与第二盘 `0-1` 合并计数；开启 `cross_set` 后，`5-4 → 6-4, 1-0`
-按2个常规局计算并放行。无论 `cross_set` 取值如何，抢七进行中的比分不产生触发历史，且
-`6-6 → 7-6` 的抢七决胜局不计经过局数；总局数倒退视为不可比较并 fail-closed。`cross_set` 在
-`limit` 未开启时不改变既有 hit 逻辑。
+`required_hits` 接受整数 `>=1`；等于 1 时当前有效 observation 自身即满足条件，无需历史。
+`cross_set` 独立控制盘边界：缺失/`None`/`False` 时只扫描当前盘内最近连续同 outcome 历史，
+遇到盘切换即停止；`True` 时不因盘切换停止。因此默认情况下第一盘 `5-4` 不能与第二盘
+`0-1` 合并计数，开启后两条不同比分可共同满足 `required_hits=2`。不再计算最早触发到当前
+比分的经过局数，也没有 `limit` 参数。无论 `cross_set` 取值如何，抢七进行中的比分不产生触发历史。
 判定完成后无论通过与否都追加本轮并冻结 `passed`。本次改动不修改连续门、`TriggerLeg` 或 Store：
 OBD sibling 在连续门后结束，因此只留下既有历史，不形成执行计划。
 
@@ -699,7 +694,7 @@ outcome 报价中按最低隐含概率、venue 偏好、instrument id 选择唯�
 连续门配置保持原样：
 
 ```json
-{"type":"consecutive_trigger_gate","params":{"history_key":"pre_rebate_original_leg","required_hits":2,"limit":true,"cross_set":true}}
+{"type":"consecutive_trigger_gate","params":{"history_key":"pre_rebate_original_leg","required_hits":2,"cross_set":false}}
 ```
 
 `StrategyEvaluator` 持有唯一 Store 并经 `EvalContext` 注入。OBD 等原入口仍经 per-pair 评估闸；

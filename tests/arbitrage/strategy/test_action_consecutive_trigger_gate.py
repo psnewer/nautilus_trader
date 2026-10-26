@@ -48,27 +48,25 @@ def _ctx(*, score="0-1", outcome="yes", store=None, event_name="MarketOrderBookD
     return ctx
 
 
-def _run(ctx, *, required_hits=2, limit=None, cross_set=None):
+def _run(ctx, *, required_hits=2, cross_set=None):
     asyncio.run(
         ConsecutiveTriggerGateAction(
             history_key="pre_rebate",
             required_hits=required_hits,
-            limit=limit,
             cross_set=cross_set,
         ).execute(ctx),
     )
 
 
-@pytest.mark.parametrize("limit", [None, False])
-def test_second_same_direction_at_changed_score_passes_and_keeps_both_records(limit):
+def test_second_same_direction_at_changed_score_passes_and_keeps_both_records():
     store = ConsecutiveTriggerStore()
     first = _ctx(score="0-1", store=store)
-    _run(first, limit=limit)
+    _run(first)
     assert first.scratch["candidates"] == []
 
     second = _ctx(score="0-2", store=store)
     original = second.scratch["candidates"]
-    _run(second, limit=limit)
+    _run(second)
 
     assert second.scratch["candidates"] == original
     original[0]["legs"][0]["price"] = 0.99
@@ -131,85 +129,51 @@ def test_required_hits_walks_recent_history_and_ignores_same_score_duplicates():
     assert current.scratch["candidates"]
 
 
-def test_limit_requires_elapsed_games_to_reach_required_hits():
+def test_required_hits_one_passes_first_valid_trigger():
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="0-1", store=store), limit=True)
+    current = _ctx(score="0-1", store=store)
+    original = current.scratch["candidates"]
 
-    one_game_later = _ctx(score="0-2", store=store)
-    _run(one_game_later, limit=True)
-    assert one_game_later.scratch["candidates"] == []
+    _run(current, required_hits=1)
 
-    two_games_later = _ctx(score="0-3", store=store)
-    _run(two_games_later, limit=True)
-    assert two_games_later.scratch["candidates"]
+    assert current.scratch["candidates"] == original
+    history = store.history("p", "pre_rebate")
+    assert len(history) == 1
+    assert history[0].passed is True
 
 
-def test_limit_stops_at_set_boundary_then_counts_within_current_set():
+@pytest.mark.parametrize("cross_set", [None, False])
+def test_cross_set_false_stops_at_boundary_then_counts_within_current_set(cross_set):
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="5-4", store=store), limit=True)
+    _run(_ctx(score="5-4", store=store), cross_set=cross_set)
 
     new_set = _ctx(score="6-4, 0-1", store=store)
-    _run(new_set, limit=True)
+    _run(new_set, cross_set=cross_set)
     assert new_set.scratch["candidates"] == []
 
-    two_games_later = _ctx(score="6-4, 0-3", store=store)
-    _run(two_games_later, limit=True)
-    assert two_games_later.scratch["candidates"]
+    next_score = _ctx(score="6-4, 0-2", store=store)
+    _run(next_score, cross_set=cross_set)
+    assert next_score.scratch["candidates"]
 
 
-def test_limit_cross_set_counts_regular_games_across_set_boundary():
+def test_cross_set_true_counts_changed_score_across_boundary():
     store = ConsecutiveTriggerStore()
-    _run(_ctx(score="5-4", store=store), limit=True, cross_set=True)
+    _run(_ctx(score="5-4", store=store), cross_set=True)
 
-    current = _ctx(score="6-4, 1-0", store=store)
-    _run(current, limit=True, cross_set=True)
+    current = _ctx(score="6-4, 0-1", store=store)
+    _run(current, cross_set=True)
 
     assert current.scratch["candidates"]
-
-
-def test_limit_cross_set_does_not_count_tie_break_game():
-    store = ConsecutiveTriggerStore()
-    _run(_ctx(score="6-5", store=store), limit=True, cross_set=True)
-
-    set_finished = _ctx(score="7-6(7-4), 0-0", store=store)
-    _run(set_finished, limit=True, cross_set=True)
-    assert set_finished.scratch["candidates"] == []
-
-    one_regular_game_later = _ctx(score="7-6(7-4), 1-0", store=store)
-    _run(one_regular_game_later, limit=True, cross_set=True)
-    assert one_regular_game_later.scratch["candidates"]
 
 
 @pytest.mark.parametrize("score", ["6-6", "6-6(0-0)", "6-6(5-4)"])
 def test_tie_break_score_fails_closed_without_record(score):
     store = ConsecutiveTriggerStore()
     current = _ctx(score=score, store=store)
-    _run(current, limit=True)
+    _run(current)
 
     assert current.scratch["candidates"] == []
     assert store.history("p", "pre_rebate") == ()
-
-
-def test_limit_does_not_count_tie_break_game_itself():
-    store = ConsecutiveTriggerStore()
-    _run(_ctx(score="6-5", store=store), limit=True)
-
-    current = _ctx(score="7-6(7-4)", store=store)
-    _run(current, limit=True)
-
-    assert current.scratch["candidates"] == []
-
-
-def test_limit_uses_required_hits_as_minimum_elapsed_games():
-    store = ConsecutiveTriggerStore()
-    for score in ("0-1", "0-2", "0-3"):
-        ctx = _ctx(score=score, store=store)
-        _run(ctx, required_hits=3, limit=True)
-        assert ctx.scratch["candidates"] == []
-
-    current = _ctx(score="0-4", store=store)
-    _run(current, required_hits=3, limit=True)
-    assert current.scratch["candidates"]
 
 
 @pytest.mark.parametrize("score", ["", "bad score"])
@@ -232,22 +196,25 @@ def test_non_obd_event_fails_closed_without_record():
 
 
 @pytest.mark.parametrize(
-    ("history_key", "required_hits", "limit", "cross_set"),
+    ("history_key", "required_hits", "cross_set"),
     [
-        ("", 2, None, None),
-        ("x", 1, None, None),
-        ("x", True, None, None),
-        ("x", 2, 1, None),
-        ("x", 2, "true", None),
-        ("x", 2, None, 1),
-        ("x", 2, None, "true"),
+        ("", 2, None),
+        ("x", 0, None),
+        ("x", -1, None),
+        ("x", True, None),
+        ("x", 2, 1),
+        ("x", 2, "true"),
     ],
 )
-def test_invalid_params_fail_fast(history_key, required_hits, limit, cross_set):
+def test_invalid_params_fail_fast(history_key, required_hits, cross_set):
     with pytest.raises(ValueError):
         ConsecutiveTriggerGateAction(
             history_key=history_key,
             required_hits=required_hits,
-            limit=limit,
             cross_set=cross_set,
         )
+
+
+def test_removed_limit_param_is_rejected():
+    with pytest.raises(TypeError, match="limit"):
+        ConsecutiveTriggerGateAction("pre_rebate", limit=False)

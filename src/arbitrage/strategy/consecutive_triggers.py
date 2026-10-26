@@ -78,23 +78,5 @@ def same_set(previous_score, current_score) -> bool:
     return len(previous_score) == len(current_score) and previous_score[:-1] == current_score[:-1]
 
 
-def elapsed_games_same_set(previous_score, current_score) -> int | None:
-    """返回同一盘内推进的常规局数；跨盘或倒退返回 None。"""
-    if not same_set(previous_score, current_score):
-        return None
-    previous_left, previous_right, _, _ = previous_score[-1]
-    current_left, current_right, _, _ = current_score[-1]
-    elapsed = (
-        regular_games_in_set(current_left, current_right)
-        - regular_games_in_set(previous_left, previous_right)
-    )
-    return elapsed if elapsed >= 0 else None
-
-
-def regular_games_in_set(left: int, right: int) -> int:
-    games = left + right
-    return games - 1 if (left, right) in {(7, 6), (6, 7)} else games
-
-
 def _optional_int(value: str | None) -> int | None:
     return int(value) if value is not None else None

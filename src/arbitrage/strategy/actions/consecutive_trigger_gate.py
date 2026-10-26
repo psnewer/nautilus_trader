@@ -11,8 +11,6 @@ from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.consecutive_triggers import TriggerLeg
 from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
-from src.arbitrage.strategy.consecutive_triggers import elapsed_games_same_set
-from src.arbitrage.strategy.consecutive_triggers import regular_games_in_set
 from src.arbitrage.strategy.consecutive_triggers import same_set
 from src.arbitrage.strategy.consecutive_triggers import score_key
 from src.arbitrage.strategy.consecutive_triggers import tie_break_in_progress
@@ -29,7 +27,6 @@ class ConsecutiveTriggerGateAction(Action):
         self,
         history_key: str,
         required_hits: int = 2,
-        limit: bool | None = None,
         cross_set: bool | None = None,
     ) -> None:
         if not isinstance(history_key, str) or not history_key.strip():
@@ -37,16 +34,13 @@ class ConsecutiveTriggerGateAction(Action):
         if (
             isinstance(required_hits, bool)
             or not isinstance(required_hits, int)
-            or required_hits < 2
+            or required_hits < 1
         ):
-            raise ValueError("consecutive_trigger_gate: required_hits must be an integer >= 2")
-        if limit is not None and not isinstance(limit, bool):
-            raise ValueError("consecutive_trigger_gate: limit must be a boolean")
+            raise ValueError("consecutive_trigger_gate: required_hits must be an integer >= 1")
         if cross_set is not None and not isinstance(cross_set, bool):
             raise ValueError("consecutive_trigger_gate: cross_set must be a boolean")
         self._history_key = history_key.strip()
         self._required_hits = required_hits
-        self._limit = bool(limit)
         self._cross_set = bool(cross_set)
 
     async def execute(self, ctx: EvalContext) -> None:
@@ -60,11 +54,10 @@ class ConsecutiveTriggerGateAction(Action):
             return
 
         recent = store.iter_recent(ctx.pair_id, self._history_key)
-        passed, count, elapsed_games = _matches_recent_sequence(
+        passed, count = _matches_recent_sequence(
             recent,
             observation,
             required_hits=self._required_hits,
-            limit=self._limit,
             cross_set=self._cross_set,
         )
         # 判定读取旧历史；无论是否放行，本次有效触发都在判定后追加且永不覆盖。
@@ -74,7 +67,7 @@ class ConsecutiveTriggerGateAction(Action):
             f"ConsecutiveTriggerGate: pair={ctx.pair_id} history={self._history_key} "
             f"outcome={observation.outcome} score={observation.score_raw!r} "
             f"count={count} required={self._required_hits} passed={passed} "
-            f"limit={self._limit} cross_set={self._cross_set} elapsed_games={elapsed_games}",
+            f"cross_set={self._cross_set}",
         )
         if not passed:
             _clear_outputs(ctx)
@@ -152,45 +145,24 @@ def _matches_recent_sequence(
     current,
     *,
     required_hits: int,
-    limit: bool,
     cross_set: bool,
-) -> tuple[bool, int, int | None]:
+) -> tuple[bool, int]:
     count = 1
+    if count >= required_hits:
+        return True, count
     last_score = current.score_key
-    farthest_score = current.score_key
     for previous in recent:
         if previous.outcome != current.outcome:
             break
-        if limit and not cross_set and not same_set(previous.score_key, current.score_key):
+        if not cross_set and not same_set(previous.score_key, current.score_key):
             break
         if previous.score_key == last_score:
             continue
         count += 1
         last_score = previous.score_key
-        farthest_score = previous.score_key
-        if not limit and count >= required_hits:
-            return True, count, None
-    if count < required_hits:
-        return False, count, None
-    elapsed_games = (
-        _elapsed_games_across_sets(farthest_score, current.score_key)
-        if cross_set
-        else elapsed_games_same_set(farthest_score, current.score_key)
-    )
-    return elapsed_games is not None and elapsed_games >= required_hits, count, elapsed_games
-
-
-def _elapsed_games_across_sets(previous_score, current_score) -> int | None:
-    previous_games = sum(
-        regular_games_in_set(left, right)
-        for left, right, _, _ in previous_score
-    )
-    current_games = sum(
-        regular_games_in_set(left, right)
-        for left, right, _, _ in current_score
-    )
-    elapsed = current_games - previous_games
-    return elapsed if elapsed >= 0 else None
+        if count >= required_hits:
+            return True, count
+    return False, count
 
 
 def _snapshot_leg(leg: dict) -> TriggerLeg:
