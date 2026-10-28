@@ -26,6 +26,8 @@ from src.arbitrage.config.dispatcher import to_strategy_registry
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.condition import evaluate_tree_to_plan
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
+from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
+from src.arbitrage.strategy.consecutive_triggers import score_key
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from tests.arbitrage.strategy._live_state import live_context
 
@@ -381,6 +383,70 @@ def test_in_game_set_three_skips_configured_convert(trees):
     assert len(plan.orders) == 1
     assert plan.orders[0].spec["instrument_id"] == "Y.POLYMARKET"
     assert plan.orders[0].spec["price"] == pytest.approx(0.45)
+
+
+@pytest.mark.parametrize(
+    ("start_price", "expect_plan"),
+    [
+        ({"yes": 0.40, "no": 0.60}, True),
+        ({"yes": 0.60, "no": 0.40}, False),
+    ],
+)
+def test_wta_score_branch_only_keeps_latest_scorer_with_max_start_price(
+    trees,
+    start_price,
+    expect_plan,
+):
+    """真实配置须先命中 OE WTA，再由 start_price_gate 筛最后得分腿。"""
+    arb_tree, _ = trees
+    trigger_store = ConsecutiveTriggerStore()
+    trigger_store.append(
+        _PAIR,
+        "pre_rebate_original_leg",
+        TriggerObservation(
+            ts_ns=1,
+            event_name="MarketOrderBookDeltas",
+            score_raw="1-0",
+            score_key=score_key("1-0"),
+            outcome="no",
+            legs=(),
+            candidate_ids=(),
+            rates=(),
+            passed=True,
+        ),
+    )
+    ctx = _ctx(
+        tier="lower",
+        phase="in",
+        score="1-1",
+        books=_CROSS_VENUE_BOOKS,
+        infos=_CROSS_VENUE_INFOS,
+        portfolio=_EmptyPortfolio(),
+        tree_kind="arbitrage",
+        event_name="SportsGameUpdate",
+        consecutive_trigger_store=trigger_store,
+    )
+    ctx.cache.instrument("N.ORBITEXCH").competition_name = "WTA Tokyo"
+    ctx.sports_store = SimpleNamespace(
+        get=lambda game_id: SimpleNamespace(score="1-1", period="S1"),
+        score_history=lambda game_id: (
+            SimpleNamespace(score="1-0"),
+            SimpleNamespace(score="1-1"),
+        ),
+    )
+    prices = PairPriceStore(ctx.cache)
+    prices.initialize(_PAIR, ["yes", "no"])
+    assert prices.capture_start(_PAIR, start_price) is True
+
+    result = evaluate_tree(arb_tree, ctx)
+    _fire(result, ctx)
+
+    assert result.hit is True
+    assert ("execution_plan" in ctx.scratch) is expect_plan
+    if expect_plan:
+        plan = ctx.scratch["execution_plan"]
+        assert len(plan.orders) == 1
+        assert plan.orders[0].spec["instrument_id"] == "N.POLYMARKET"
 
 
 # ───────────────────────── 补偿树:撤单 ─────────────────────────

@@ -440,6 +440,20 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `test_action_trend_gate.py` 与 `test_action_score_selection.py` 覆盖，树间优先级沿用
   `test_evaluator.py`。
 
+### strategy-4.pre_rebate.6b: WTA 赛事门与最大 start price 得分腿（2026-10-28）
+
+- `competition(include="WTA")` 只读取 pair 中 OE instrument 的原始 `competition_name`，按
+  大小写不敏感子串匹配；归并后的 `info["competition"]` 即使包含 WTA 也不能命中。缺 OE、
+  缺原始名称、ATP/Challenger 均 fail-closed。该 query 位于套利树最外层，因此同时约束赛前与
+  赛中套利；补偿树不受它限制。
+- score 事件已有同盘通过 observation，当前比分平局且最近一局由 away/no 得分，start price
+  `{yes:0.40,no:0.60}`：真实配置完整 action 链应生成唯一 `N.POLYMARKET` 计划；改为
+  `{yes:0.60,no:0.40}` 时，`latest_score` 虽留下 no 腿，`start_price_gate` 仍须清腿且不生成计划。
+- start price 最大值并列时两 outcome 都属于最大集合；缺完整向量或存在 `NaN/±Inf` 时清除下单腿。
+  `selected_candidate` 过滤后必须与 `scratch["legs"]` 同步。
+- 验收：`test_query_competition.py`、`test_action_start_price_gate.py`，以及
+  `scenarios/pre_rebate/test_pre_rebate_scenarios.py::test_wta_score_branch_only_keeps_latest_scorer_with_max_start_price`。
+
 ### strategy-4.pre_rebate.7: 低级别 start_game 最低优先级领先重挂（#413/#420）
 - #434 后这些组件能力仍保留，但当前 `arb_config.json` 的低级别顶层分支为空，不再接入本链。
 - `start_game` 默认仍只在明确 IN_PLAY 且该 pair 无 SUBMITTED 历史时命中；配置
@@ -1150,6 +1164,10 @@ PRE/IN_PLAY/POST；OE/SE IN_PLAY 可在 PMS 首帧前阻止 first_price，但 ph
 
 ## scenarios/pre_rebate:真实配置端到端场景(#453–#460,`scenarios/pre_rebate/test_pre_rebate_scenarios.py`)
 
+> **当前状态（2026-10-28）**：本地 `arb_config.json` 已从本节原有 lower-tier/regular 双分支基线
+> 继续演进，旧断言中仍有 17 项与当前运营配置不一致；新增的 WTA + `start_price_gate` 两个参数化
+> 真实链路用例已通过。旧用例在逐项按当前补偿树重新确认前不得作为“全量配置回归已通过”的依据。
+
 通过正式 `load_arb_config → to_strategy_registry` 链加载本地真实 `arb_config.json` 的
 `pre_rebate` 策略(当前 `sport:Tennis` binding),对 registry 解析出的
 arbitrage/compensation 两棵树逐分支构造
@@ -1164,6 +1182,8 @@ TradingNode,不进入 Risk / Execution / barrier。`arb_config.json` 被 `.gitig
   share_limit → candi_select → commission → place_bets`,分别验证 maker `limit+spread` 与直接
   下单价格、`set_exempt=3`、commission 越界阻断,以及 start_game open order 在两级赛事中的
   差异化 current-order gate。
+- **2026-10-28 当前配置增量**：新增 WTA score 场景，通过正式 loader 验证 OE 原始赛事名门控，
+  并分别以 no 为 start-price 最大/非最大方，证明完整 score action 链只在前者生成订单计划。
 - **补偿树撤单**:覆盖 pre-game/in-game、普通单/针对仓位订单、低级别/非低级别分支;
   对配置的 `0.05/0.14/0.01` price-drift 做命中边界和边界下方反例。针对仓位的 in-game
   SL 恢复单撤销后执行 `advance_min_sl_set`，并验证后续同盘 SL 恢复单由运行时 `min_sl_set` 再次撤销且不污染 TP。

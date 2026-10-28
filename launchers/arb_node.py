@@ -93,6 +93,7 @@ from src.arbitrage.strategy.actions.same_set import SameSetAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
 from src.arbitrage.strategy.actions.set_selection import SetSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
+from src.arbitrage.strategy.actions.start_price_gate import StartPriceGateAction
 from src.arbitrage.strategy.actions.trend_gate import TrendGateAction
 from src.arbitrage.strategy.actions.venue_replace import VenueReplaceAction
 from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
@@ -116,6 +117,7 @@ from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecov
 from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
+from src.arbitrage.strategy.queries.competition import CompetitionIncludeQuery
 from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
@@ -160,6 +162,7 @@ def register_builtin_checks_and_actions() -> None:
     register_state_query("lower_tier", LowerTierQuery)
     register_state_query("exposure_source", ExposureSourceQuery)
     register_state_query("start_game", StartGameQuery)
+    register_state_query("competition", CompetitionIncludeQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
     register_action("venue_select", VenueSelectAction)
@@ -170,6 +173,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
     register_action("latest_score", LatestScoreAction)
+    register_action("start_price_gate", StartPriceGateAction)
     register_action("latest_consecutive_trigger", LatestConsecutiveTriggerAction)
     register_action("set_selection", SetSelectionAction)
     register_action("current_set_game_selection", CurrentSetGameSelectionAction)
