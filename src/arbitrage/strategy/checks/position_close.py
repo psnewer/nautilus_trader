@@ -1,4 +1,4 @@
-"""按可选来源及盘数门输出带实时 bid 的 PM LONG 平仓 SELL 腿。"""
+"""按可选来源、盘数门及盘豁免输出带实时 bid 的 PM LONG 平仓 SELL 腿。"""
 
 from __future__ import annotations
 
@@ -17,18 +17,20 @@ from src.arbitrage.strategy.queries.exposure_source import POSITION_CANDIDATES
 
 
 class PositionCloseCheck(Check):
-    """输出 PM LONG 仓位的全量 SELL@bid 腿；可选止盈或止损盘数门。"""
+    """输出 PM LONG 仓位的全量 SELL@bid 腿；可选盘数门及指定盘豁免。"""
 
     def __init__(
         self,
         origin: str | None = None,
         min_tp_set: int | None = None,
         min_sl_set: int | None = None,
+        set_exempt: int | None = None,
     ) -> None:
         if origin is not None and origin not in {"pre_game", "in_game"}:
             raise ValueError("position_close: origin must be pre_game or in_game")
-        _validate_min_set("min_tp_set", min_tp_set)
-        _validate_min_set("min_sl_set", min_sl_set)
+        _validate_set_number("min_tp_set", min_tp_set)
+        _validate_set_number("min_sl_set", min_sl_set)
+        _validate_set_number("set_exempt", set_exempt)
         if min_tp_set is not None and min_sl_set is not None:
             raise ValueError("position_close: min_tp_set and min_sl_set are mutually exclusive")
         self._origin = origin
@@ -36,8 +38,18 @@ class PositionCloseCheck(Check):
             "tp" if min_tp_set is not None else "sl" if min_sl_set is not None else None
         )
         self._configured_min_set = min_tp_set if min_tp_set is not None else min_sl_set
+        self._set_exempt = set_exempt
 
     def passes(self, ctx: EvalContext) -> bool:
+        current_set = 0
+        if self._set_exempt is not None or self._min_set_kind is not None:
+            current_set = current_set_number(
+                pair_id=ctx.pair_id,
+                pair_registry=ctx.pair_registry,
+                sports_store=ctx.sports_store,
+            )
+        if self._set_exempt is not None and current_set == self._set_exempt:
+            return False
         if self._min_set_kind is not None:
             runtime_min_set = None
             if ctx.in_game_position_store is not None:
@@ -48,11 +60,7 @@ class PositionCloseCheck(Check):
                 if runtime_min_set is not None
                 else self._configured_min_set
             )
-            if current_set_number(
-                pair_id=ctx.pair_id,
-                pair_registry=ctx.pair_registry,
-                sports_store=ctx.sports_store,
-            ) < min_set:
+            if current_set < min_set:
                 return False
         candidate_ids = ctx.scratch.get(POSITION_CANDIDATES)
         legs = _position_close_legs(
@@ -66,7 +74,7 @@ class PositionCloseCheck(Check):
         return True
 
 
-def _validate_min_set(name: str, value: int | None) -> None:
+def _validate_set_number(name: str, value: int | None) -> None:
     if value is not None and (
         isinstance(value, bool) or not isinstance(value, int) or value <= 0
     ):

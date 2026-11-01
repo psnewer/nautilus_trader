@@ -392,12 +392,12 @@ def test_in_game_set_three_skips_configured_convert(trees):
         ({"yes": 0.60, "no": 0.40}, False),
     ],
 )
-def test_wta_score_branch_only_keeps_latest_scorer_with_max_start_price(
+def test_wta_score_branch_keeps_most_triggered_outcome_with_max_start_price(
     trees,
     start_price,
     expect_plan,
 ):
-    """真实配置须先命中 OE WTA，再由 start_price_gate 筛最后得分腿。"""
+    """真实配置须先命中 OE WTA，再筛当前盘触发最多且 start price 最大的腿。"""
     arb_tree, _ = trees
     trigger_store = ConsecutiveTriggerStore()
     trigger_store.append(

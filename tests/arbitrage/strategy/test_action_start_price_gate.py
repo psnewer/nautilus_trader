@@ -25,8 +25,8 @@ def _ctx(start_price=None):
     return ctx
 
 
-def _run(ctx):
-    asyncio.run(StartPriceGateAction().execute(ctx))
+def _run(ctx, value=None):
+    asyncio.run(StartPriceGateAction(value=value).execute(ctx))
 
 
 def _candidate(outcome):
@@ -92,6 +92,43 @@ def test_equal_maximum_keeps_both_outcomes():
         "yes",
         "no",
     ]
+
+
+@pytest.mark.parametrize("start_price", [0.6, 0.7])
+def test_value_keeps_outcome_at_or_above_threshold(start_price):
+    ctx = _ctx(start_price={"yes": start_price, "no": 1.0 - start_price})
+    ctx.scratch["candidates"] = [_candidate("yes"), _candidate("no")]
+
+    _run(ctx, value=0.6)
+
+    assert [candidate["candidate_id"] for candidate in ctx.scratch["candidates"]] == ["yes"]
+
+
+def test_value_drops_all_outcomes_below_threshold():
+    ctx = _ctx(start_price={"yes": 0.55, "no": 0.45})
+    ctx.scratch["candidates"] = [_candidate("yes"), _candidate("no")]
+
+    _run(ctx, value=0.6)
+
+    assert ctx.scratch["candidates"] == []
+
+
+def test_value_filters_each_outcome_without_requiring_pair_maximum():
+    ctx = _ctx(start_price={"yes": 0.6, "no": 0.4})
+    ctx.scratch["candidates"] = [_candidate("yes"), _candidate("no")]
+
+    _run(ctx, value=0.4)
+
+    assert [candidate["candidate_id"] for candidate in ctx.scratch["candidates"]] == [
+        "yes",
+        "no",
+    ]
+
+
+@pytest.mark.parametrize("bad_value", ["bad", math.nan, math.inf, -math.inf])
+def test_invalid_value_fails_fast(bad_value):
+    with pytest.raises(ValueError, match="start_price_gate: value must be finite"):
+        StartPriceGateAction(value=bad_value)
 
 
 @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])

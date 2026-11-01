@@ -446,13 +446,15 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   大小写不敏感子串匹配；归并后的 `info["competition"]` 即使包含 WTA 也不能命中。缺 OE、
   缺原始名称、ATP/Challenger 均 fail-closed。该 query 位于套利树最外层，因此同时约束赛前与
   赛中套利；补偿树不受它限制。
-- score 事件已有同盘通过 observation，当前比分平局且最近一局由 away/no 得分，start price
+- score 事件已有同盘通过 observation，当前比分平局且当前盘 away/no 的去重触发次数唯一最多，start price
   `{yes:0.40,no:0.60}`：真实配置完整 action 链应生成唯一 `N.POLYMARKET` 计划；改为
-  `{yes:0.60,no:0.40}` 时，`latest_score` 虽留下 no 腿，`start_price_gate` 仍须清腿且不生成计划。
-- start price 最大值并列时两 outcome 都属于最大集合；缺完整向量或存在 `NaN/±Inf` 时清除下单腿。
+  `{yes:0.60,no:0.40}` 时，`trigger_count` 虽留下 no 腿，`start_price_gate` 仍须清腿且不生成计划。
+- start price 最大值并列时两 outcome 都属于最大集合；`start_price_gate.value` 缺失时保持原最大值规则，
+  显式配置后逐 outcome 比较其自身 start price，`>= value`（含等号）即通过，不再要求全 pair 最大；
+  非法非有限阈值 fail-fast，缺完整向量或存在 `NaN/±Inf` 时清除下单腿。
   `selected_candidate` 过滤后必须与 `scratch["legs"]` 同步。
-- 验收：`test_query_competition.py`、`test_action_start_price_gate.py`，以及
-  `scenarios/pre_rebate/test_pre_rebate_scenarios.py::test_wta_score_branch_only_keeps_latest_scorer_with_max_start_price`。
+- 验收：`test_query_competition.py`、`test_action_start_price_gate.py`、`test_action_trigger_count.py`，以及
+  `scenarios/pre_rebate/test_pre_rebate_scenarios.py::test_wta_score_branch_keeps_most_triggered_outcome_with_max_start_price`。
 
 ### strategy-4.pre_rebate.7: 低级别 start_game 最低优先级领先重挂（#413/#420）
 - #434 后这些组件能力仍保留，但当前 `arb_config.json` 的低级别顶层分支为空，不再接入本链。
@@ -519,7 +521,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   仓的全量 SELL@bid，随后 `place_bets(limit=true,spread=0.03)` 转到 ask 后应用 spread；
   验收最终价格先按 SELL limit 取当前 ask 与计划价较高者，再按概率口径上移 `0.03`。
 - `pre_game_position + in_game` 不再使用 `mean_rebate_recovery/min_repaired_rebate`；同一
-  `position_close` 未配置 `min_tp_set/min_sl_set`，因此完全不读取盘数或 in_game 运行时覆盖。
+  `position_close` 未配置 `min_tp_set/min_sl_set/set_exempt`，因此完全不读取盘数或 in_game 运行时覆盖。
 - 同一仓位的两个子分支按 hit → default 排序：hit 先经
   `current_set_game_selection(win|draw)`，命中时把 SELL@bid 腿交给 `place_bets(limit=false)`；
   未命中才回落 default，以 `place_bets(limit=true,spread=0.14)` 挂 SELL ask+spread。
@@ -528,6 +530,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - hit 平仓挂单的撤单分支必须以 `exposure_source(source=in_game_order,magic=in_game_close_pre_game_position_hit)`
   取交集；价格或局数漂移命中后只定向撤该类订单，不能按赛前仓位来源误写成 `pre_game_order`。
 - 验收：`test_check_position_close.py` 覆盖无盘数门槛、运行时覆盖隔离、SELL 报价和下单；
+  `set_exempt=N` 对 `S<N>/TB<N>` 均不产腿，对其它盘及缺失/非法 period 不豁免；
   场景测试覆盖 hit 优先及 default 回落；实际 `arb_config.json` 经 builtin registry 完整装配。
 
 ### strategy-4.pre_rebate.14: 补偿树订单/仓位来源分流（#438）
@@ -645,6 +648,21 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_latest_score.py` 覆盖主/客常规局、抢七小分、抢七完成、盘间 `0-0`、
   首帧/双方跳分/回退/坏格式 fail-closed；`test_sports.py` 覆盖历史持久化、去重、兼容读取和回收；
   launcher 注册由 `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
+
+## strategy-4.trigger-count：当前盘触发次数最多方向筛腿（#490）
+
+- `trigger_count(history_key)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘 `passed=true`
+  observation，同一 outcome 在同一完整比分的重复 OBD 只计一次。
+- 仅唯一最高 outcome 的现有腿通过；并列、无通过记录、缺 Store/game/比分或坏比分均 fail-closed。
+  没有上游腿时，Action 不读取历史腿，而是按唯一最高 outcome 从当前 live Cache 选最低隐含概率报价腿，
+  补当前 `share` 后生成一条腿；当前报价/share 缺失同样 fail-closed。历史不被改变；已有腿时支持
+  selected candidate、候选池、legs-only 与撤单候选。
+- 当前 `arb_config.json` 已删除 score 叶中的 `latest_consecutive_trigger` 与 `latest_score`，由本 Action
+  独立完成历史计数和当前报价产腿；它位于 action 链首位，确保后续 `set_selection(draw)` 与
+  `current_set_game_selection(draw)` 能实际筛选已生成的腿，随后才进入 `start_price_gate`。
+- **验收**：`test_action_trigger_count.py` 覆盖当前盘计数、同比分去重、跨盘/未通过排除、并列、
+  无上游腿时按当前报价产腿、selected candidate 同步、缺比分及非法参数；launcher 注册由
+  `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
 ## strategy-4.set-selection：已完成盘胜数筛选
 

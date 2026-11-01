@@ -79,6 +79,19 @@ def test_without_min_set_ignores_period_and_runtime_override():
     }]
 
 
+@pytest.mark.parametrize("period", ["S2", "TB2"])
+def test_set_exempt_skips_matching_regular_or_tie_break_set(period):
+    ctx = _ctx(period=period)
+
+    assert PositionCloseCheck(set_exempt=2).passes(ctx) is False
+    assert "legs" not in ctx.scratch
+
+
+@pytest.mark.parametrize("period", ["S1", "S3", "", "SET2"])
+def test_set_exempt_does_not_skip_other_or_unknown_set(period):
+    assert PositionCloseCheck(set_exempt=2).passes(_ctx(period=period)) is True
+
+
 @pytest.mark.parametrize("period", ["S3", "TB3"])
 def test_emits_sell_leg_at_or_after_min_tp_set(period):
     ctx = _ctx(period=period)
@@ -158,9 +171,9 @@ def test_consumes_position_candidates_selected_by_condition():
     assert [leg["position_id"] for leg in ctx.scratch["legs"]] == ["P-NO"]
 
 
-@pytest.mark.parametrize("name", ["min_tp_set", "min_sl_set"])
+@pytest.mark.parametrize("name", ["min_tp_set", "min_sl_set", "set_exempt"])
 @pytest.mark.parametrize("min_value", [0, -1, True])
-def test_rejects_invalid_min_set(name, min_value):
+def test_rejects_invalid_set_parameter(name, min_value):
     with pytest.raises(ValueError, match="positive integer"):
         PositionCloseCheck(**{name: min_value})
 

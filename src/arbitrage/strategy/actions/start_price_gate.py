@@ -1,4 +1,4 @@
-"""StartPriceGateAction —— 只保留开赛价(start_price)最大的 outcome 对应的执行腿。"""
+"""StartPriceGateAction —— 按最大开赛价或显式阈值过滤 outcome 执行腿。"""
 
 from __future__ import annotations
 
@@ -14,10 +14,24 @@ _LOG = logging.getLogger(__name__)
 
 
 class StartPriceGateAction(Action):
-    """按 pair 的 start_price 最大 outcome 过滤执行腿;无法判定开赛价时 fail-closed。"""
+    """缺省保留最大 start_price；配置 value 后保留大于等于阈值的 outcome。"""
+
+    def __init__(self, value: float | None = None) -> None:
+        if value is None:
+            self._value = None
+            return
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"start_price_gate: value must be finite, got {value!r}",
+            ) from exc
+        if not math.isfinite(threshold):
+            raise ValueError(f"start_price_gate: value must be finite, got {value!r}")
+        self._value = threshold
 
     async def execute(self, ctx: EvalContext) -> None:
-        max_outcomes = _max_start_outcomes(ctx)
+        eligible_outcomes = _eligible_start_outcomes(ctx, self._value)
 
         selected = ctx.scratch.get("selected_candidate")
         if isinstance(selected, dict):
@@ -26,7 +40,7 @@ class StartPriceGateAction(Action):
             legs = selected.get("legs")
             if not isinstance(legs, list) or not legs:
                 return
-            kept = _filter_legs(ctx, legs, max_outcomes)
+            kept = _filter_legs(ctx, legs, eligible_outcomes, self._value)
             filtered = dict(selected)
             filtered["legs"] = kept
             ctx.scratch["selected_candidate"] = filtered
@@ -48,7 +62,7 @@ class StartPriceGateAction(Action):
                 legs = candidate.get("legs")
                 if not isinstance(legs, list) or not legs:
                     continue
-                kept = _filter_legs(ctx, legs, max_outcomes)
+                kept = _filter_legs(ctx, legs, eligible_outcomes, self._value)
                 if not kept:
                     continue
                 filtered = dict(candidate)
@@ -60,24 +74,34 @@ class StartPriceGateAction(Action):
         legs = ctx.scratch.get("legs")
         if not isinstance(legs, list) or not legs:
             return
-        ctx.scratch["legs"] = _filter_legs(ctx, legs, max_outcomes)
+        ctx.scratch["legs"] = _filter_legs(ctx, legs, eligible_outcomes, self._value)
 
 
-def _filter_legs(ctx: EvalContext, legs: list[dict], max_outcomes: set[str] | None) -> list[dict]:
+def _filter_legs(
+    ctx: EvalContext,
+    legs: list[dict],
+    eligible_outcomes: set[str] | None,
+    threshold: float | None,
+) -> list[dict]:
     kept = []
     for leg in legs:
         outcome = _leg_outcome(leg)
-        if max_outcomes is not None and outcome in max_outcomes:
+        if eligible_outcomes is not None and outcome in eligible_outcomes:
             kept.append(leg)
             continue
         _LOG.info(
             f"StartPriceGate: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-            f"outcome={outcome} max_outcomes={sorted(max_outcomes) if max_outcomes else None}",
+            f"outcome={outcome} "
+            f"eligible_outcomes={sorted(eligible_outcomes) if eligible_outcomes else None} "
+            f"threshold={threshold}",
         )
     return kept
 
 
-def _max_start_outcomes(ctx: EvalContext) -> set[str] | None:
+def _eligible_start_outcomes(
+    ctx: EvalContext,
+    threshold: float | None,
+) -> set[str] | None:
     if ctx.cache is None or ctx.pair_registry is None:
         return None
     state = PairPriceStore(ctx.cache).get(ctx.pair_id)
@@ -91,8 +115,14 @@ def _max_start_outcomes(ctx: EvalContext) -> set[str] | None:
         values[outcome] = value
     if not values:
         return None
+    if threshold is not None:
+        return {outcome for outcome, value in values.items() if value >= threshold}
     top = max(values.values())
-    return {outcome for outcome, value in values.items() if math.isclose(value, top, abs_tol=1e-12)}
+    return {
+        outcome
+        for outcome, value in values.items()
+        if math.isclose(value, top, abs_tol=1e-12)
+    }
 
 
 def _leg_outcome(leg: dict) -> str:
