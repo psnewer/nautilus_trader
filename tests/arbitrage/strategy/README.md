@@ -530,7 +530,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - hit 平仓挂单的撤单分支必须以 `exposure_source(source=in_game_order,magic=in_game_close_pre_game_position_hit)`
   取交集；价格或局数漂移命中后只定向撤该类订单，不能按赛前仓位来源误写成 `pre_game_order`。
 - 验收：`test_check_position_close.py` 覆盖无盘数门槛、运行时覆盖隔离、SELL 报价和下单；
-  `set_exempt=N` 对 `S<N>/TB<N>` 均不产腿，对其它盘及缺失/非法 period 不豁免；
+  `set_exempt=N` 逐仓位读取 opening order 冻结的 `arb:origin/arb:order_score`，豁免明确在第 N 盘下单的赛中仓位；
+  同 pair 其它盘仓位仍产腿；赛前订单以及 opening order/origin/下单比分缺失或非法时不豁免；
   场景测试覆盖 hit 优先及 default 回落；实际 `arb_config.json` 经 builtin registry 完整装配。
 
 ### strategy-4.pre_rebate.14: 补偿树订单/仓位来源分流（#438）

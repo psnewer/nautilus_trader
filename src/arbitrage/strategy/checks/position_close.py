@@ -1,23 +1,25 @@
-"""按可选来源、盘数门及盘豁免输出带实时 bid 的 PM LONG 平仓 SELL 腿。"""
+"""按可选来源、盘数门及开仓盘豁免输出带实时 bid 的 PM LONG 平仓 SELL 腿。"""
 
 from __future__ import annotations
 
 import math
 
 from src.arbitrage.common.opportunity import order_origin
+from src.arbitrage.common.opportunity import order_score
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.checks.quote_legs import pair_positions
 from src.arbitrage.strategy.checks.quote_legs import venue_of
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.consecutive_triggers import score_key
 from src.arbitrage.strategy.in_game_positions import current_set_number
 from src.arbitrage.strategy.leg_plan import as_instrument_id
 from src.arbitrage.strategy.queries.exposure_source import POSITION_CANDIDATES
 
 
 class PositionCloseCheck(Check):
-    """输出 PM LONG 仓位的全量 SELL@bid 腿；可选盘数门及指定盘豁免。"""
+    """输出 PM LONG 仓位的全量 SELL@bid 腿；可选盘数门及开仓盘豁免。"""
 
     def __init__(
         self,
@@ -41,16 +43,12 @@ class PositionCloseCheck(Check):
         self._set_exempt = set_exempt
 
     def passes(self, ctx: EvalContext) -> bool:
-        current_set = 0
-        if self._set_exempt is not None or self._min_set_kind is not None:
+        if self._min_set_kind is not None:
             current_set = current_set_number(
                 pair_id=ctx.pair_id,
                 pair_registry=ctx.pair_registry,
                 sports_store=ctx.sports_store,
             )
-        if self._set_exempt is not None and current_set == self._set_exempt:
-            return False
-        if self._min_set_kind is not None:
             runtime_min_set = None
             if ctx.in_game_position_store is not None:
                 getter = getattr(ctx.in_game_position_store, f"min_{self._min_set_kind}_set")
@@ -67,6 +65,7 @@ class PositionCloseCheck(Check):
             ctx,
             origin=self._origin,
             candidate_ids=set(candidate_ids) if isinstance(candidate_ids, list) else None,
+            set_exempt=self._set_exempt,
         )
         if not legs:
             return False
@@ -86,6 +85,7 @@ def _position_close_legs(
     *,
     origin: str | None = None,
     candidate_ids: set[str] | None = None,
+    set_exempt: int | None = None,
 ) -> list[dict]:
     legs = []
     for position in pair_positions(ctx):
@@ -93,6 +93,8 @@ def _position_close_legs(
         if candidate_ids is not None and str(position_id or "") not in candidate_ids:
             continue
         if origin is not None and _position_origin(ctx, position) != origin:
+            continue
+        if set_exempt is not None and _position_opening_set(ctx, position) == set_exempt:
             continue
         instrument_id = getattr(position, "instrument_id", None)
         raw_side = getattr(position, "side", None)
@@ -132,6 +134,19 @@ def _position_origin(ctx: EvalContext, position) -> str | None:
         return None
     opening_order = ctx.cache.order(opening_order_id)
     return order_origin(opening_order) if opening_order is not None else None
+
+
+def _position_opening_set(ctx: EvalContext, position) -> int | None:
+    if ctx.cache is None:
+        return None
+    opening_order_id = getattr(position, "opening_order_id", None)
+    if opening_order_id is None:
+        return None
+    opening_order = ctx.cache.order(opening_order_id)
+    if opening_order is None or order_origin(opening_order) != "in_game":
+        return None
+    opening_score = score_key(order_score(opening_order))
+    return len(opening_score) if opening_score is not None else None
 
 
 def _number(value) -> float | None:

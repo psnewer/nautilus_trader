@@ -79,17 +79,90 @@ def test_without_min_set_ignores_period_and_runtime_override():
     }]
 
 
-@pytest.mark.parametrize("period", ["S2", "TB2"])
-def test_set_exempt_skips_matching_regular_or_tie_break_set(period):
-    ctx = _ctx(period=period)
+@pytest.mark.parametrize("opening_score", ["6-4, 2-1", "6-4, 6-6(3-4)"])
+def test_set_exempt_skips_position_opened_in_matching_set(opening_score):
+    order = SimpleNamespace(
+        client_order_id="OPEN-S2",
+        tags=["arb:origin=in_game", f"arb:order_score={opening_score}"],
+    )
+    ctx = _ctx(
+        period="S3",
+        positions=[_position(opening_order_id="OPEN-S2")],
+        history=[order],
+    )
 
     assert PositionCloseCheck(set_exempt=2).passes(ctx) is False
     assert "legs" not in ctx.scratch
 
 
-@pytest.mark.parametrize("period", ["S1", "S3", "", "SET2"])
-def test_set_exempt_does_not_skip_other_or_unknown_set(period):
-    assert PositionCloseCheck(set_exempt=2).passes(_ctx(period=period)) is True
+def test_set_exempt_uses_opening_set_instead_of_current_set():
+    order = SimpleNamespace(
+        client_order_id="OPEN-S1",
+        tags=["arb:origin=in_game", "arb:order_score=2-1"],
+    )
+    ctx = _ctx(
+        period="S2",
+        positions=[_position(opening_order_id="OPEN-S1")],
+        history=[order],
+    )
+
+    assert PositionCloseCheck(set_exempt=2).passes(ctx) is True
+
+
+def test_set_exempt_filters_each_position_by_its_opening_set():
+    positions = [
+        _position(position_id="P-S1", opening_order_id="OPEN-S1"),
+        _position(
+            instrument_id="N.POLYMARKET",
+            position_id="P-S2",
+            opening_order_id="OPEN-S2",
+        ),
+    ]
+    history = [
+        SimpleNamespace(
+            client_order_id="OPEN-S1",
+            tags=["arb:origin=in_game", "arb:order_score=2-1"],
+        ),
+        SimpleNamespace(
+            client_order_id="OPEN-S2",
+            tags=["arb:origin=in_game", "arb:order_score=6-4, 1-0"],
+        ),
+    ]
+    ctx = _ctx(period="S3", positions=positions, history=history)
+
+    assert PositionCloseCheck(set_exempt=2).passes(ctx) is True
+    assert [leg["position_id"] for leg in ctx.scratch["legs"]] == ["P-S1"]
+
+
+@pytest.mark.parametrize("opening_score", [None, "", "bad"])
+def test_set_exempt_does_not_skip_position_with_unknown_opening_set(opening_score):
+    history = None
+    if opening_score is not None:
+        history = [
+            SimpleNamespace(
+                client_order_id="OPEN",
+                tags=["arb:origin=in_game", f"arb:order_score={opening_score}"],
+            ),
+        ]
+    ctx = _ctx(
+        positions=[_position(opening_order_id="OPEN")],
+        history=history,
+    )
+
+    assert PositionCloseCheck(set_exempt=2).passes(ctx) is True
+
+
+def test_set_exempt_does_not_treat_pre_game_zero_score_as_first_set():
+    order = SimpleNamespace(
+        client_order_id="OPEN-PRE",
+        tags=["arb:origin=pre_game", "arb:order_score=0-0"],
+    )
+    ctx = _ctx(
+        positions=[_position(opening_order_id="OPEN-PRE")],
+        history=[order],
+    )
+
+    assert PositionCloseCheck(set_exempt=1).passes(ctx) is True
 
 
 @pytest.mark.parametrize("period", ["S3", "TB3"])
