@@ -30,6 +30,7 @@ from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.same_set import SameSetAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.set_exempt import SetExemptAction
 from src.arbitrage.strategy.actions.set_selection import SetSelectionAction
 from src.arbitrage.strategy.actions.venue_select import VenueSelectAction
 from src.arbitrage.strategy.check_action_registry import StrategyConfigError
@@ -104,6 +105,10 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(
         build_action({"type": "set_selection", "params": {"standing": "lose"}}),
         SetSelectionAction,
+    )
+    assert isinstance(
+        build_action({"type": "set_exempt", "params": {"set": 3}}),
+        SetExemptAction,
     )
     assert isinstance(
         build_action({

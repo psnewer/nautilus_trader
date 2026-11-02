@@ -25,6 +25,7 @@ from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.condition import evaluate_tree_to_plan
+from src.arbitrage.strategy.actions.set_exempt import SetExemptAction
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
 from src.arbitrage.strategy.consecutive_triggers import TriggerObservation
 from src.arbitrage.strategy.consecutive_triggers import score_key
@@ -364,25 +365,39 @@ def test_in_game_start_game_order_uses_tier_specific_current_order_gate(
     assert ("execution_plan" in ctx.scratch) is expect_plan
 
 
-def test_in_game_set_three_skips_configured_convert(trees):
-    """set_exempt=3 只豁免 convert;同方向 PM 腿仍可生成订单。"""
+def test_in_game_set_three_is_blocked_by_set_exempt(trees):
+    """set_exempt Action 在第三盘清除 trigger_count 生成的腿。"""
     arb_tree, _ = trees
     trigger_store = ConsecutiveTriggerStore()
+    trigger_store.append(
+        _PAIR,
+        "pre_rebate_original_leg",
+        TriggerObservation(
+            ts_ns=1,
+            event_name="MarketOrderBookDeltas",
+            score_raw="1-1",
+            score_key=score_key("1-1"),
+            outcome="yes",
+            legs=(),
+            candidate_ids=(),
+            rates=(),
+            passed=True,
+        ),
+    )
+    ctx = _in_game_opportunity_ctx(
+        tier="regular",
+        score="1-1",
+        period="S3",
+        trigger_store=trigger_store,
+    )
+    ctx.event_name = "SportsGameUpdate"
 
-    for score in ("0-0", "1-1"):
-        ctx = _in_game_opportunity_ctx(
-            tier="regular",
-            score=score,
-            period="S3",
-            trigger_store=trigger_store,
-        )
-        result = evaluate_tree(arb_tree, ctx)
-        _fire(result, ctx)
+    result = evaluate_tree(arb_tree, ctx)
+    assert any(isinstance(action, SetExemptAction) for action in result.pending_actions)
+    _fire(result, ctx)
 
-    plan = ctx.scratch["execution_plan"]
-    assert len(plan.orders) == 1
-    assert plan.orders[0].spec["instrument_id"] == "Y.POLYMARKET"
-    assert plan.orders[0].spec["price"] == pytest.approx(0.45)
+    assert ctx.scratch["legs"] == []
+    assert "execution_plan" not in ctx.scratch
 
 
 @pytest.mark.parametrize(

@@ -665,6 +665,17 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   无上游腿时按当前报价产腿、selected candidate 同步、缺比分及非法参数；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
+## strategy-4.set-exempt：指定当前盘拦截下单腿（#493）
+
+- **前置/输入**：Sports state 提供当前 `period`，Action 配置正整数 `set=N`；输入可为
+  selected candidate、候选池或裸 legs。
+- **步骤/期望**：当前盘为 `S<N>` 或 `TB<N>` 时清除普通下单腿；候选池中的撤单 candidate
+  和独立撤单请求保留。其它盘以及 period/Store/PairRegistry 缺失或非法时 no-op。
+- 当前 score 叶在 `trigger_count` 后配置 `set_exempt(set=3)`，因此第三盘会清除本轮刚生成的腿，
+  不再进入后续比分、价格和下单 Action；第一、二盘行为不变。
+- **验收**：`test_action_set_exempt.py` 覆盖 S/TB 命中、其它/未知盘、三种腿输入、撤单保留和参数校验；
+  `test_in_game_set_three_is_blocked_by_set_exempt` 覆盖真实配置第三盘不形成执行计划；launcher 注册测试覆盖 JSON 装配。
+
 ## strategy-4.set-selection：已完成盘胜数筛选
 
 - `set_selection` 是独立 Action；`standing` 接受与 `score_selection` 相同的
