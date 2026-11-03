@@ -84,12 +84,12 @@ def _paper_order_metadata(order, instrument) -> dict[str, object]:
 def _realized_by_instrument(rows: list[dict]) -> dict[str, float]:
     result: dict[str, float] = {}
     for row in rows:
-        condition_id = str(row.get("conditionId", "") or "")
-        asset_id = str(row.get("asset", "") or "")
+        condition_id = str(row.get("condition_id", "") or "")
+        asset_id = str(row.get("token_id", "") or "")
         if not condition_id or not asset_id:
             continue
         instrument_id = f"{condition_id}-{asset_id}.POLYMARKET"
-        realized_pnl = _optional_float(row.get("realizedPnl", 0.0))
+        realized_pnl = _optional_float(row.get("realized_pnl", 0.0))
         if realized_pnl is None:
             continue
         result[instrument_id] = result.get(instrument_id, 0.0) + realized_pnl
@@ -110,12 +110,11 @@ def _native_realized_for_instrument(cache, instrument_id: str, account_id) -> fl
 
 
 def pm_raw_position_to_settlement(item: dict) -> SettlementPosition:
-    """#110:PM Data API `/positions` **原始 dict** → settlement 视图(纯映射,可单测)。
-    键名按 Data API:`conditionId` / `size` / `negativeRisk` / `redeemable`。"""
+    """#110:PM Data API v2 positions **原始 dict** → settlement 视图(纯映射,可单测)。"""
     return SettlementPosition(
-        condition_id=str(item.get("conditionId", item.get("condition_id", "")) or ""),
-        size=float(item.get("size", 0) or 0),
-        neg_risk=bool(item.get("negativeRisk", False)),
+        condition_id=str(item.get("condition_id", "") or ""),
+        size=float(item.get("current_size", 0) or 0),
+        neg_risk=bool(item.get("negative_risk", False)),
         redeemable=bool(item.get("redeemable", False)),
     )
 
@@ -527,7 +526,8 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
     async def generate_position_status_reports(self, command):
         snapshot = self._capture_reconciliation_state_snapshot(kind="position")
         try:
-            reports = await super().generate_position_status_reports(command)  # 单次拉 /positions,上游 stash raw
+            # 单次拉 v2 positions，上游 stash raw。
+            reports = await super().generate_position_status_reports(command)
         except Exception as e:
             # #259:回归 NT 原生语义 —— **重新抛出**(修订 #122)。返 [] 会让
             # `_query_position_status_reports` 把 PM 当成"查询成功、无持仓",于是
@@ -592,9 +592,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._log.warning(f"PM realized PnL reconcile skipped: closed positions query failed: {exc!r}")
             return None
 
-        # Data API 两个 endpoint 的 `realizedPnl` 都是 per-asset 累计快照,不是可相加的
-        # 交易流水。同一 asset 可能同时出现在 current 与 closed(部分平仓后仍留仓),必须
-        # 按 instrument 去重;current 表达仍在场 asset 的当前快照,故覆盖 closed 的重叠项。
+        # Data API v2 OPEN/CLOSED 视图的 `realized_pnl` 都是 per-asset 累计快照，
+        # 不是可相加的交易流水。同一 asset 可能同时出现在 OPEN 与 CLOSED，必须
+        # 按 instrument 去重；OPEN 表达仍在场 asset 的当前快照，故覆盖 CLOSED 重叠项。
         closed_realized = _realized_by_instrument(closed_positions)
         closed_realized.update(_realized_by_instrument(current_positions))
         return closed_realized
@@ -622,38 +622,17 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         )
 
     async def _fetch_closed_positions(self, *, limit: int = 50) -> list[dict]:
-        base_url = (self._config.base_url_data_api or "https://data-api.polymarket.com").rstrip("/")
-        url = f"{base_url}/closed-positions"
-        results: list[dict] = []
-        offset = 0
-        while True:
-            response: HttpResponse = await self._http_client_async.get(
-                url=url,
-                params={
-                    "user": self._user_address,
-                    "limit": str(limit),
-                    "offset": str(offset),
-                    "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC",
-                },
-            )
-            if response.status >= 400:
-                raise RuntimeError(f"HTTP {response.status}: Failed to fetch closed positions")
-            page = msgspec.json.decode(response.body)
-            if not isinstance(page, list) or not page:
-                break
-            results.extend(page)
-            if len(page) < limit:
-                break
-            offset += limit
-            if offset > 100000:
-                raise RuntimeError("Closed positions offset exceeded 100000")
-        return results
+        return await self._fetch_user_positions(
+            limit=limit,
+            filter_amount=None,
+            status="CLOSED",
+            sort_by="TIMESTAMP",
+        )
 
     async def generate_fill_reports(self, command) -> list:
         """#279:reconcile 不拉 trades API —— 恒返回 `[]`,对齐 OE/SE。
 
-        PM 的 position 对账走 NT 原生 NET(`_reconcile_position_report_netting`:凭 `/positions`
+        PM 的 position 对账走 NT 原生 NET(`_reconcile_position_report_netting`:凭 v2 positions
         权威净仓 + `avg_px_open` 合成 inferred fill,不需要真 fill),因此 reconcile 完全不必碰
         trades API。上游会拉真 trades,但那会:① 启动时超时抛异常连坐掀翻整个 ExecutionMassStatus
         组装(丢弃已到手的权威 position);② 连续对账把持仓拖进"真 fill 挂历史母单(未 cache)→

@@ -138,7 +138,7 @@ def _is_explicit_submit_rejection(retry_manager) -> bool:
 
 
 def _parse_position_avg_price(position: dict[str, Any]) -> Decimal | None:
-    avg_price = position.get("avgPrice", position.get("avg_price"))
+    avg_price = position.get("avg_price")
     if avg_price in (None, ""):
         return None
     try:
@@ -385,52 +385,62 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self,
         *,
         limit: int = 100,
-        size_threshold: int = 0,
+        filter_amount: float | None = 0,
+        status: str = "OPEN",
+        sort_by: str = "TOKENS",
     ) -> list[dict[str, Any]]:
         """
-        Fetch all current positions for the configured user using the Polymarket Data
-        API.
-
-        Implements pagination as the endpoint returns a maximum of 100 entries per
-        request.
+        使用 Polymarket Data API v2 的 cursor 分页拉取用户持仓。
 
         """
         base_url = (self._config.base_url_data_api or "https://data-api.polymarket.com").rstrip("/")
-        base_url = f"{base_url}/positions"
+        url = f"{base_url}/v2/positions"
         results: list[dict[str, Any]] = []
-        offset = 0
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
 
         while True:
             params = {
                 "user": self._user_address,
                 "limit": str(limit),
-                "offset": str(offset),
-                "sizeThreshold": str(size_threshold),
-                "sortBy": "TOKENS",
-                "sortDirection": "DESC",
+                "status": status,
+                "sort_by": sort_by,
+                "sort_direction": "DESC",
             }
+            if filter_amount is not None:
+                params["filter_type"] = "TOKENS"
+                params["filter_amount"] = str(filter_amount)
+            if cursor is not None:
+                params["cursor"] = cursor
             response: HttpResponse = await self._http_client_async.get(
-                url=base_url,
+                url=url,
                 params=params,
             )
 
             if response.status >= 400:
-                raise RuntimeError(f"HTTP {response.status}: Failed to fetch positions")
+                raise RuntimeError(
+                    f"HTTP {response.status}: Failed to fetch {status.lower()} positions",
+                )
 
-            data = msgspec.json.decode(response.body)
-            if not data:
+            payload = msgspec.json.decode(response.body)
+            if not isinstance(payload, dict):
+                raise RuntimeError("Invalid Polymarket v2 positions response envelope")
+            data = payload.get("data")
+            pagination = payload.get("pagination")
+            if not isinstance(data, list) or not isinstance(pagination, dict):
+                raise RuntimeError("Invalid Polymarket v2 positions response envelope")
+            results.extend(data)
+
+            has_more = pagination.get("has_more")
+            if has_more is False:
                 break
-            if isinstance(data, list):
-                results.extend(data)
-                if len(data) < limit:
-                    break
-            else:
-                # Unexpected shape; stop to avoid loop
+            next_cursor = pagination.get("next_cursor")
+            if not next_cursor:
                 break
-            offset += limit
-            if offset > 10000:
-                self._log.warning("Offset exceeded 10000; stopping")
-                break
+            cursor = str(next_cursor)
+            if cursor in seen_cursors:
+                raise RuntimeError("Polymarket v2 positions pagination cursor repeated")
+            seen_cursors.add(cursor)
 
         return results
 
@@ -855,10 +865,11 @@ class PolymarketExecutionClient(LiveExecutionClient):
         # Fetch all user positions once (paginated)
         positions: list[dict[str, Any]] = await self._fetch_user_positions(
             limit=100,
-            size_threshold=0,
+            filter_amount=0,
         )
-        # #110:stash 原始 /positions 响应,供 ArbPolymarketExecutionClient 在同一次拉上跑 merge/redeem
-        # (原始 dict 含 `redeemable`/`negRisk`/`conditionId`,规范化 report 丢了这些;避免二次拉)。
+        # #110:stash 原始 v2 positions 响应,供 ArbPolymarketExecutionClient 在同一次拉上跑
+        # merge/redeem。原始 dict 含 redeemable/negative_risk/condition_id，
+        # 规范化 report 会丢失这些。
         self._last_raw_positions = positions
 
         # Map instrument ID -> (size, avg open price).
@@ -866,9 +877,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         for p in positions:
             instrument_id = InstrumentId.from_str(
-                p.get("conditionId", "") + "-" + str(p.get("asset", "")) + ".POLYMARKET",
+                p.get("condition_id", "") + "-" + str(p.get("token_id", "")) + ".POLYMARKET",
             )
-            size_val = p.get("size", 0) or 0
+            size_val = p.get("current_size", 0) or 0
             try:
                 raw_by_instrument[instrument_id] = (
                     float(size_val),
@@ -2293,7 +2304,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         Schedule an immediate position reconcile for `instrument_id`.
 
         Used when a trade arrives for an already-closed order (cancel/match race), so the
-        real on-chain position is booked now via the authoritative `/positions` net snapshot
+        real on-chain position is booked now via the authoritative v2 positions net snapshot
         instead of waiting for the periodic reconcile cycle.
         """
         self.create_task(self._reconcile_position_now(instrument_id))

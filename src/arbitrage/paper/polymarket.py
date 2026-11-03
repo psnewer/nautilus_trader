@@ -274,12 +274,15 @@ class PaperStore:
             size = float(row["size"])
             cost = float(row["total_cost"])
             result.append({
-                "conditionId": row["market"],
-                "asset": row["asset_id"],
-                "size": size,
-                "avgPrice": cost / size if size else 0.0,
+                "condition_id": row["market"],
+                "token_id": row["asset_id"],
+                "current_size": size,
+                "avg_price": cost / size if size else 0.0,
+                "realized_pnl": 0.0,
+                "status": "OPEN",
                 "redeemable": False,
-                "negRisk": False,
+                "mergeable": False,
+                "negative_risk": False,
             })
         return result
 
@@ -921,13 +924,24 @@ def create_app(exchange: PolymarketPaperExchange) -> web.Application:
     async def balance(_request: web.Request) -> web.Response:
         return web.json_response({"balance": str(exchange.store.balance_units()), "allowances": {}})
 
-    async def positions(request: web.Request) -> web.Response:
-        offset = int(request.query.get("offset", 0))
+    async def positions_v2(request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", 100))
-        return web.json_response(exchange.store.positions()[offset:offset + limit])
-
-    async def closed_positions(_request: web.Request) -> web.Response:
-        return web.json_response([])
+        cursor = int(request.query.get("cursor", 0))
+        status = request.query.get("status", "OPEN").upper()
+        if status not in {"OPEN", "CLOSED"}:
+            return web.json_response({"error": "unsupported status"}, status=400)
+        rows = exchange.store.positions() if status == "OPEN" else []
+        page = rows[cursor:cursor + limit]
+        next_offset = cursor + len(page)
+        has_more = next_offset < len(rows)
+        return web.json_response({
+            "data": page,
+            "pagination": {
+                "has_more": has_more,
+                "limit": limit,
+                "next_cursor": str(next_offset) if has_more else None,
+            },
+        })
 
     async def order_metadata(request: web.Request) -> web.Response:
         payload = await request.json()
@@ -961,8 +975,7 @@ def create_app(exchange: PolymarketPaperExchange) -> web.Application:
     app.router.add_delete("/cancel-all", cancel_all)
     app.router.add_delete("/cancel-market-orders", cancel_market_orders)
     app.router.add_get("/balance-allowance", balance)
-    app.router.add_get("/positions", positions)
-    app.router.add_get("/closed-positions", closed_positions)
+    app.router.add_get("/v2/positions", positions_v2)
     app.router.add_post("/paper/order-metadata", order_metadata)
     app.router.add_get("/ws/user", user_ws)
     return app

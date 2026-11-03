@@ -111,12 +111,15 @@ def test_marketable_order_persists_fill_position_balance_and_decodable_ws(tmp_pa
         order = store.order(response["orderID"])
         assert order["status"] == "MATCHED"
         assert store.positions() == [{
-            "conditionId": "0xcondition",
-            "asset": "123",
-            "size": 5.0,
-            "avgPrice": 0.4,
+            "condition_id": "0xcondition",
+            "token_id": "123",
+            "current_size": 5.0,
+            "avg_price": 0.4,
+            "realized_pnl": 0.0,
+            "status": "OPEN",
             "redeemable": False,
-            "negRisk": False,
+            "mergeable": False,
+            "negative_risk": False,
         }]
         assert store.balance_units() == 98_000_000
         first_event = msgspec.json.decode(
@@ -628,9 +631,13 @@ def test_http_and_user_ws_protocol_round_trip(tmp_path):
                 assert enriched["origin"] == "in_game"
                 assert enriched["intent"] == "arbitrage"
 
-                async with session.get(f"http://127.0.0.1:{port}/positions") as response:
+                async with session.get(
+                    f"http://127.0.0.1:{port}/v2/positions",
+                    params={"user": "0xpaper", "status": "OPEN"},
+                ) as response:
                     positions = await response.json()
-                assert positions[0]["asset"] == "123"
+                assert positions["data"][0]["token_id"] == "123"
+                assert positions["pagination"]["has_more"] is False
         finally:
             await runner.cleanup()
 

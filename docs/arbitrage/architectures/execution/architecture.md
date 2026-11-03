@@ -112,7 +112,7 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 **PM cancel 终态约束(#99/#113/#342,已落地,2026-08-16)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当 `canceled[]` 确实包含目标 venue order ID 时,adapter 立即经 `_generate_cancel_success_event` 生成 `OrderCanceled`,并 ACK/结束 cancel session,不再依赖可能缺失的 USER WS `CANCELLATION`。迟到的 USER WS cancellation 仍走同一 helper 并保持幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply REST 产生的 `OrderCanceled` 时,用有界 `_cancel_terminal_client_ids` 窗口按 `client_order_id` 跳过重复终态,避免向 NT 重放 `CANCELED -> CANCELED`。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(不能从该歧义文本判断撤单还是成交)。覆盖范围:单笔 `_cancel_order`、deferred cancel、batch/cancel-all 与 USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 
-**PM `auto_redeem` USER WS 通知(#382/#383,2026-09-06)**:`auto_redeem` 是结算通知,不是 order/trade 状态事件。adapter 在严格 order/trade schema 解码失败路径识别该类型,记录 `condition_id` / `amount` / `txn_hash` 后结束处理;不伪造缺少成交价的 `FillReport`。后续周期 position reconciliation 看到 venue 仓位减少时按 §4.6 的归属规则关闭原 strategy NETTING 仓位；realized PnL 仍以 `/closed-positions` 快照为权威。
+**PM `auto_redeem` USER WS 通知(#382/#383,2026-09-06)**:`auto_redeem` 是结算通知,不是 order/trade 状态事件。adapter 在严格 order/trade schema 解码失败路径识别该类型,记录 `condition_id` / `amount` / `txn_hash` 后结束处理;不伪造缺少成交价的 `FillReport`。后续周期 position reconciliation 看到 venue 仓位减少时按 §4.6 的归属规则关闭原 strategy NETTING 仓位；realized PnL 仍以 Data API v2 `status=CLOSED` 快照为权威。
 
 **PM cancel/match 竞态的迟到成交(#381,已落地,2026-09-06)**:真实 trade 的撮合时间可能早于
 撤单确认，但 `MATCHED/MINED/CONFIRMED` WS 消息晚于 `OrderCanceled` 才到。若该
@@ -180,7 +180,7 @@ venue enablement 注册 OE/SE ExecClient，保证它们的登录、发现依赖�
 `_make_pm_settlement` 无条件返回 `None`。完整协议、撮合模型和启动步骤见
 [`../paper/architecture.md`](../paper/architecture.md)。
 
-**PM 持仓成本映射约束(#100,已落地)**:`generate_position_status_reports` 的数据源是 PM Data API `/positions`。该接口返回的是按 token 聚合后的当前持仓,其中 `size` 是 share 数量,`avgPrice`/`avg_price` 是平均开仓成本。翻译成 NT 通用 `PositionStatusReport` 时必须同时填 `quantity` 与 `avg_px_open`;若 Data API 未返回平均成本,`avg_px_open` 保持 `None`(未知),不得在 strategy/risk 侧用当前盘口估算或把未知成本当 0。这样 `ArbitragePortfolio.outcome_exposures/outcome_shares` 与 `mean_rebate_recovery` 继续只读 NT cache position,成本权威仍在 execution adapter 的 venue report 翻译层。
+**PM 持仓成本映射约束(#100/#494,已落地)**:`generate_position_status_reports` 的数据源是 PM Data API v2 `/v2/positions?status=OPEN`。响应是 `{data,pagination}`，以 `next_cursor` 游标翻页；每个 token 的 `current_size` 是 share 数量，`avg_price` 是平均开仓成本。翻译成 NT 通用 `PositionStatusReport` 时必须同时填 `quantity` 与 `avg_px_open`;若 Data API 未返回平均成本,`avg_px_open` 保持 `None`(未知),不得在 strategy/risk 侧用当前盘口估算或把未知成本当 0。这样 `ArbitragePortfolio.outcome_exposures/outcome_shares` 与 `mean_rebate_recovery` 继续只读 NT cache position,成本权威仍在 execution adapter 的 venue report 翻译层。
 
 **套利子类新增**:
 ```python
@@ -553,11 +553,11 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `_retry_manager_pool` 或 monkeypatch `manager.run`。原因是 NT `generate_mass_status()` 会并发 gather
   order/fill/position reports，全局替换 pool 不具备并发安全前提。OE/SE 已随 #259 对齐为查询失败抛异常。
 - PM `generate_fill_reports` 读取用户历史 trades 时可能遇到当前未加载/未匹配的 instrument;这是目标市场外历史成交的正常跳过路径,只打 DEBUG,不影响 order/position liveness。open-order report 中未知 instrument 仍保留 WARNING,因为它代表当前 venue open-order response 无法映射到 NT instrument。⚠️ 2026-07-27(#279)起 `ArbPolymarketExecutionClient.generate_fill_reports` 恒返回 `[]`(见 (5d)),故本条描述的上游 trades 拉取在 **arb 运行时不再触发**;仅 base PM 适配器(非 arb)仍走原路径。
-- PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None（等价 `max_retries=0`,只执行首次请求）。CLOB 底层 transport 已独立提供一次连接建立重试;更广泛的周期 order 对账重试若要启用,仍须显式配置并意识到会同时影响真钱 submit/cancel。Data API `/positions` 使用另一套 NT `HttpClient`,不在这两个 CLOB retry 层内。
+- PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None（等价 `max_retries=0`,只执行首次请求）。CLOB 底层 transport 已独立提供一次连接建立重试;更广泛的周期 order 对账重试若要启用,仍须显式配置并意识到会同时影响真钱 submit/cancel。Data API v2 `/v2/positions` 使用另一套 NT `HttpClient`,不在这两个 CLOB retry 层内。
 - `_send_order_event` 漏斗不再写健康状态。NT fabricate 的本地终态只能推进 NT 状态机,不能把 venue 真相置 alive。
 - Risk 从 opportunity `expected_legs` 推导 required venues;任一 required venue `order_alive && position_alive` 不成立则 deny。Strategy/Portfolio 不读 liveness。
 
-**(5d) PM reconcile 与 OE/SE 同构 = position 快照权威 NET,不依赖 trades API(#279,2026-07-27,已落地)**:PM 的 position 对账走 NT 原生 NET 路径(`_reconcile_position_report_netting`:凭 `/positions` 权威净仓 + `avg_px_open` 合成 inferred fill,**不需要真 fill**),与 OE/SE 的 currentBets 快照对账同构。因此 `ArbPolymarketExecutionClient.generate_fill_reports` **恒返回 `[]`**(对齐 OE/SE `execution.py::generate_fill_reports`),使 reconcile **完全不依赖 trades API**:
+**(5d) PM reconcile 与 OE/SE 同构 = position 快照权威 NET,不依赖 trades API(#279,2026-07-27,已落地)**:PM 的 position 对账走 NT 原生 NET 路径(`_reconcile_position_report_netting`:凭 Data API v2 OPEN position 权威净仓 + `avg_px_open` 合成 inferred fill,**不需要真 fill**),与 OE/SE 的 currentBets 快照对账同构。因此 `ArbPolymarketExecutionClient.generate_fill_reports` **恒返回 `[]`**(对齐 OE/SE `execution.py::generate_fill_reports`),使 reconcile **完全不依赖 trades API**:
 - ① **启动 mass-reconcile 不再被 trades 查询连坐**:此前 trades API 超时抛异常会掀翻整个 `ExecutionMassStatus` 组装,连带丢弃**已拿到的权威 position**(见 refactor.md #279 根因日志)。返 `[]` 后 mass-status 正常组装(0 fill)→ `_reconcile_position_report_netting` 按权威净仓 NET 进 cache。
 - ② **连续对账不再走脆弱 fill-attach**:此前拉到真 fill 却指向历史母单(母单未 cache)→ `FillReport received before OrderStatusReport` → 挂不上 → NT core `_process_venue_reported_positions`(无 NET 兜底)卡死。返 `[]` 后不再进该路径。
 - **live 成交不受影响**:PM 实时持仓由 USER WS trade(`_handle_user_trade_in_ws_trade_msg` → `generate_order_filled`)累加,与 `generate_fill_reports`(仅供 reconcile / 从 fill 反建未知订单)无关；cancel/match 竞态下即使撤单终态先落地，也按 §3.1 #381 应用尚未处理的真实迟到 fill。
@@ -731,18 +731,18 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 > **落地**:编排层 = `nautilus_trader/adapters/polymarket/settlement.py`(`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在同一 adapter 目录。
 
 - **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。`generate_position_status_reports` 只生成权威仓位报告，不在返回前刷新余额；`ArbLiveExecutionEngine` 应用完全部报告及其 inferred fill 后，才调用 PM `_refresh_account_state_after_position_reconcile()`，让 `get_balance_allowance` 权威值覆盖 inferred BUY/SELL 对计算型 CASH 的临时增减。该顺序覆盖启动 mass-status、周期 `_check_positions_consistency` 与迟到成交触发的定向 `_reconcile_position_now`；启动 completion event 也在余额刷新完成后才最终置位。仅成功取得 position batch 的 client 参与刷新，余额失败只 warning，不回滚已经完成的仓位对账。
-- **position → settlement → position 时序(#283/#285/#383)**:`generate_position_status_reports` 先由上游
-  `_fetch_user_positions` 拉 `/positions`，把原始响应 stash 到 `_last_raw_positions` 供
+- **position → settlement → position 时序(#283/#285/#383/#494)**:`generate_position_status_reports` 先由上游
+  `_fetch_user_positions` 拉 Data API v2 `status=OPEN`，把原始 `data` 行 stash 到 `_last_raw_positions` 供
   settlement 判断。若本轮没有尝试 merge/redeem，沿用第一次 reports；若 `result.merges` 或
   `result.redeems` 非空，
   无论交易结果成功或失败，都在同一轮再调用上游 `generate_position_status_reports`，
-  以第二次 `/positions` 生成最终 reports。
+  以第二次 v2 OPEN 快照生成最终 reports。
   第一次 reports 不返回给 NT，避免链上仓位已被 merge 后 Strategy 仍按旧 LONG 规划 SELL。
   失败回执不能证明 merge 尝试期间仓位未发生变化，因此也不能复用第一次 reports。
   不再需要注入独立 `_positions_fetcher`。
-- **realized PnL reconcile(#282/#331)**:同一 override 另分页拉 `/closed-positions`。两个 endpoint
-  的 `realizedPnl` 都是按 asset 的**累计快照**而非可相加流水：先分别按
-  `conditionId-asset.POLYMARKET` 聚合，再以 current 覆盖 closed 的重叠 instrument；closed-only
+- **realized PnL reconcile(#282/#331/#494)**:同一 override 复用 `/v2/positions`，以 `status=CLOSED` 游标分页拉关闭仓位。OPEN/CLOSED
+  的 `realized_pnl` 都是按 token 的**累计快照**而非可相加流水：先分别按
+  `condition_id-token_id.POLYMARKET` 聚合，再以 OPEN 覆盖 CLOSED 的重叠 instrument；CLOSED-only
   instrument 保留。因此同一 asset 同时出现在两端时只计一次，已全平的对侧腿也不会丢。结果先保存在当前协程的
   候选 map，最终并发校验通过后才让账本保存
   `Data API realized - NT 当前 instrument realized` 的基线差；后续 CONFIRMED fill 仍只走
@@ -759,7 +759,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   (供 per-report 的 per-pair 校验);连续对账(复数)、startup `ExecutionMassStatus` 的 order/position
   两 batch 都走同一摘要。**单份 QueryOrder(单数 `generate_order_status_report`,inflight-check 专用)自 #319 起
   豁免、不附摘要**(见下)。**adapter 不做并发或 liveness 判定**:远端拉取成功正常返回,网络失败继续 raise;
-  启动/周期 reconciliation 上层据此标记 order/position alive/dead。PM `/closed-positions` 只生成 deferred
+  启动/周期 reconciliation 上层据此标记 order/position alive/dead。PM v2 CLOSED 视图只生成 deferred
   realized 候选,随 position batch 下传,不在 adapter 中提交。
 
   `ArbLiveExecutionEngine` 应用前**逐 pair 校验**(`is_current_for_instruments`:该 pair 全部腿的分格摘要都未变才 current;
@@ -793,14 +793,14 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   账户余额不参与摘要:它是仓位报告应用后的独立权威刷新，不影响该 batch 的乐观并发判定；这样 settlement
   缩仓生成的 inferred SELL 即使先按成交价把本金加回计算型 CASH，随后也会被同轮 PM 权威余额覆盖，不会成为
   本轮对账结束后的最终余额。
-- **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
+- **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 v2 position 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **路由约束(#276)**:结算 Relayer SDK(`py_builder_relayer_client`,requests)经 `configure_relayer_http_transport(polymarket_proxy_url)` 换显式路由 Session(`trust_env=False`),`PolymarketContractService.initialize` 内配置;与 PM 其余出口同路由,未配置=直连。
 - **liveness**:最终要返回的 position reports 拉成功 → 正常返回；第一次或 merge
   后第二次 REST 拉取失败/超时 → **`raise`**(#259)。启动/周期 reconciliation 上层分别据此
   `mark_position_alive/dead`。position reports
   成功但应用后的余额刷新失败时，只 warning，不改变 position liveness、不回滚已应用 reports。
 - **结算 await + single-flight(#283)**:position report 协程必须等待 settlement 返回，才能判断
-  是否需要第二次 `/positions`；不再 `create_task` fire-and-forget。链上同步 SDK 调用仍必须在
+  是否需要第二次 v2 OPEN position 快照；不再 `create_task` fire-and-forget。链上同步 SDK 调用仍必须在
   `contract.py` 经 `loop.run_in_executor(None, ...)` 丢线程池，因此等待 settlement 只挂起当前
   report 协程，不阻塞 NT app loop、data/exec WS 或 inflight 定时器。`_settlement_inflight`
   保留用于防并发重复提交；并发 report 看到 settlement 仍在飞时跳过重复结算，使用本轮
@@ -809,7 +809,7 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
 - **merge**:同 condition ≥2 outcome 持仓 →
   `merge_positions(condition, min(sizes), neg_risk)`。merge 不是 venue order，禁止生成
   synthetic `OrderFilled`，也不手工计算 condition realized PnL；对账以
-  `/positions + /closed-positions.realizedPnl` 去重合并后的快照为权威。真实账户样本已确认：三次各 10 share
+  Data API v2 OPEN/CLOSED `realized_pnl` 去重合并后的快照为权威。真实账户样本已确认：三次各 10 share
   merge 后，两 outcome 的 closed realized 合计等于 `30 - 30×avg_yes - 30×avg_no`。
   **redeem**:`redeemable=true` →
   `redeem_positions(condition, neg_risk)`。settlement 不计算链上 token amounts。
@@ -818,13 +818,13 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内先结算、�
   不直接改变 `VenueExecutionLiveness`。但只要尝试过 merge/redeem，就必须重拉 positions；
   第二次 positions 查询失败按正常 position reconcile 失败向上抛，由上层 `mark_position_dead`。
 - **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态由每轮成功的 PM position reconciliation 调 `_update_account_state()` 刷新。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不在 settlement 完成后立即 `_update_account_state`,由下一轮 position reconciliation 覆盖。
-- merge/redeem 尝试后第二次 `/positions` 与随后 `/closed-positions` 在同轮分别刷新仓位和
+- merge/redeem 尝试后第二次 v2 OPEN 与随后 v2 CLOSED 查询在同轮分别刷新仓位和
   realized PnL。settlement 不发 synthetic fill、不直接改 NT Position cache 或 realized 账本。
 - **NETTING 归属(#383)**:position report 表明 venue 仓位在同方向减少（含归零）时，若该
   instrument 的本地 open Position 只属于一个 strategy，内部 reconciliation 合成订单继承该
   `strategy_id` 并保留 `RECONCILIATION` tag，使 inferred fill 减少/关闭原 Position，而不是建立
   `EXTERNAL` 反向 Position。合成价只承担数量闭合，结算盈亏以同批
-  `/closed-positions.realizedPnl` ledger 为权威。若存在多个 strategy，数量归属不唯一，本轮
+  v2 CLOSED `realized_pnl` ledger 为权威。若存在多个 strategy，数量归属不唯一，本轮
   fail-closed 延后并报警，不生成 EXTERNAL offset；从 flat 补建 venue 仓位或同方向增仓仍保持
   既有 EXTERNAL 语义。
 - **验收锚点(低噪声)**:override 每轮对账打一条 INFO
@@ -910,7 +910,7 @@ sequenceDiagram
     HC->>CK: 跳过, _schedule_next (finally)
   else
     HC->>HC: publish health_check.started
-    HC->>API: 拉 /positions + /orders (原始响应)
+    HC->>API: 拉 /v2/positions + /orders (原始响应)
     HC->>EE: generate_*_status_report → reconcile
     HC->>SE: run(positions_raw) → merge/redeem (TxResult 仅 log)
     HC->>HC: 写 VenueExecutionLiveness
@@ -925,7 +925,7 @@ sequenceDiagram
 **PM(薄子类,上游为主)—— ✅ 子类骨架落地 `nautilus_trader/adapters/polymarket/arb_execution.py:ArbPolymarketExecutionClient`(集成 /live-test 验)**:
 - [x] `class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecutionClient)`(MRO 验过:mixin 在上游前)+ `_init_arb_session` + 建 `HealthCheckLoop`(PM `health_interval_secs`,`lambda: self._execution_active`)+ 持 `PolymarketSettlement`
 - [x] `_submit_order` 接 `_begin_session`;上游 PM submit 异常若发生在 venue ack 前 → `OrderDenied` + 结束 session(不写 liveness);`_cancel_residual_orders` 建 `CancelOrder`→上游 `_cancel_order`;`_connect/_disconnect` 起停 health loop;`_run_health_check`(positions_fetcher→settlement.run + `position_alive`)
-- [x] 位置:**`nautilus_trader/adapters/polymarket/arb_execution.py`**(P9 唯一例外:venue-coupled 代码住 adapter 目录;**与上游 `execution.py` 同目录但不同文件名**避 upstream merge 冲突;#33 校准,settlement orchestration 仍按 Q18c 在 `src/arbitrage/settlement/`)。Data API /positions 拉取**注入** `positions_fetcher`(launcher 接,复用旧 `odds_client.fetch_positions` 的 `PolymarketPosition`);纯映射 `pm_position_to_settlement` 已单测
+- [x] 位置:**`nautilus_trader/adapters/polymarket/arb_execution.py`**(P9 唯一例外:venue-coupled 代码住 adapter 目录;**与上游 `execution.py` 同目录但不同文件名**避 upstream merge 冲突;#33 校准,settlement orchestration 仍按 Q18c 在 adapter 子类宿主)。Data API v2 position 原始行由上游 `PolymarketExecutionClient` 拉取并 stash；纯映射 `pm_raw_position_to_settlement` 已单测
 - [ ] **/live-test 验**:真 `ClobClient`/`ws_auth` 构造、`_submit_order`/`_run_health_check` 跑通;`order_version_mismatch` 已消失(memory bug);reconcile 走 NT report 通路(集成点,§4.3)
 - [ ] settlement creds 注入(钱包与 execution config 共享 + builder/relayer);`_execute_with_proxy` monkey-patch 线程安全(单 loop 串行确认)
 

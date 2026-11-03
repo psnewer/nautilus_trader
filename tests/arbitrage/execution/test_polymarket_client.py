@@ -525,10 +525,10 @@ def test_matched_pair_prewarm_failure_falls_back_without_raising():
 async def _pm_positions_with_avg_price(**_kwargs):
     return [
         {
-            "conditionId": "0xcond",
-            "asset": "123",
-            "size": "5",
-            "avgPrice": "0.47",
+            "condition_id": "0xcond",
+            "token_id": "123",
+            "current_size": "5",
+            "avg_price": "0.47",
         },
     ]
 
@@ -536,16 +536,82 @@ async def _pm_positions_with_avg_price(**_kwargs):
 async def _pm_positions_without_valid_avg_price(**_kwargs):
     return [
         {
-            "conditionId": "0xcond",
-            "asset": "123",
-            "size": "5",
-            "avgPrice": "not-a-price",
+            "condition_id": "0xcond",
+            "token_id": "123",
+            "current_size": "5",
+            "avg_price": "not-a-price",
         },
     ]
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_v2_positions_uses_cursor_pagination():
+    class FakeHttpClient:
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                {
+                    "data": [{"condition_id": "0xc", "token_id": "1"}],
+                    "pagination": {"has_more": True, "next_cursor": "cursor-2"},
+                },
+                {
+                    "data": [{"condition_id": "0xc", "token_id": "2"}],
+                    "pagination": {"has_more": False, "next_cursor": None},
+                },
+            ]
+
+        async def get(self, *, url, params):
+            self.calls.append((url, dict(params)))
+            payload = self.responses[len(self.calls) - 1]
+            return SimpleNamespace(status=200, body=msgspec.json.encode(payload))
+
+    http = FakeHttpClient()
+    client = SimpleNamespace(
+        _config=SimpleNamespace(base_url_data_api="https://data.example"),
+        _user_address="0xuser",
+        _http_client_async=http,
+    )
+    fetch = PolymarketExecutionClient._fetch_user_positions.__get__(client)
+
+    rows = _run(fetch(limit=1, filter_amount=0))
+
+    assert [row["token_id"] for row in rows] == ["1", "2"]
+    assert http.calls[0] == (
+        "https://data.example/v2/positions",
+        {
+            "user": "0xuser",
+            "limit": "1",
+            "status": "OPEN",
+            "sort_by": "TOKENS",
+            "sort_direction": "DESC",
+            "filter_type": "TOKENS",
+            "filter_amount": "0",
+        },
+    )
+    assert http.calls[1][1]["cursor"] == "cursor-2"
+    assert "offset" not in http.calls[1][1]
+
+
+def test_closed_positions_uses_v2_closed_view():
+    captured = {}
+
+    async def fetch_user_positions(**kwargs):
+        captured.update(kwargs)
+        return [{"status": "CLOSED"}]
+
+    client = SimpleNamespace(_fetch_user_positions=fetch_user_positions)
+    fetch = ArbPolymarketExecutionClient._fetch_closed_positions.__get__(client)
+
+    assert _run(fetch(limit=50)) == [{"status": "CLOSED"}]
+    assert captured == {
+        "limit": 50,
+        "filter_amount": None,
+        "status": "CLOSED",
+        "sort_by": "TIMESTAMP",
+    }
 
 
 def test_mro_mixin_before_upstream():
@@ -555,23 +621,28 @@ def test_mro_mixin_before_upstream():
 
 
 def test_raw_position_to_settlement_maps_fields():
-    """#110:原始 /positions dict(Data API 键:conditionId/size/negativeRisk/redeemable)→ SettlementPosition。"""
-    item = {"conditionId": "0xcond", "size": 80.0, "negativeRisk": True, "redeemable": True}
+    """#110:原始 v2 positions dict 映射为 SettlementPosition。"""
+    item = {
+        "condition_id": "0xcond",
+        "current_size": 80.0,
+        "negative_risk": True,
+        "redeemable": True,
+    }
     assert pm_raw_position_to_settlement(item) == SettlementPosition(
         condition_id="0xcond", size=80.0, neg_risk=True, redeemable=True,
     )
 
 
 def test_raw_position_to_settlement_defaults():
-    s = pm_raw_position_to_settlement({"conditionId": "0xc", "size": 10.0})
+    s = pm_raw_position_to_settlement({"condition_id": "0xc", "current_size": 10.0})
     assert s.neg_risk is False and s.redeemable is False
 
 
 def test_realized_by_instrument_aggregates_rows_within_one_snapshot():
     rows = [
-        {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.25"},
-        {"conditionId": "0xc", "asset": "1", "realizedPnl": "-0.25"},
-        {"conditionId": "0xc", "asset": "2", "realizedPnl": "3"},
+        {"condition_id": "0xc", "token_id": "1", "realized_pnl": "1.25"},
+        {"condition_id": "0xc", "token_id": "1", "realized_pnl": "-0.25"},
+        {"condition_id": "0xc", "token_id": "2", "realized_pnl": "3"},
     ]
 
     assert _realized_by_instrument(rows) == {
@@ -587,15 +658,15 @@ def test_position_reconcile_deduplicates_realized_snapshot_overlap():
 
         async def closed_positions():
             return [
-                {"conditionId": "0xc", "asset": "1", "realizedPnl": "0.75"},
-                {"conditionId": "0xc", "asset": "2", "realizedPnl": "-0.75"},
+                {"condition_id": "0xc", "token_id": "1", "realized_pnl": "0.75"},
+                {"condition_id": "0xc", "token_id": "2", "realized_pnl": "-0.75"},
             ]
 
         client._fetch_closed_positions = closed_positions
         load = ArbPolymarketExecutionClient._load_realized_pnl_snapshot.__get__(client)
 
         snapshot = await load([
-            {"conditionId": "0xc", "asset": "1", "realizedPnl": "0.75"},
+            {"condition_id": "0xc", "token_id": "1", "realized_pnl": "0.75"},
         ])
 
         assert snapshot == {
@@ -1403,7 +1474,7 @@ def test_polymarket_cancel_order_unknown_result_ends_session():
 
 
 def test_polymarket_position_report_maps_avg_price_from_data_api():
-    """PM /positions 的 avgPrice 必须进入 NT PositionStatusReport.avg_px_open。"""
+    """PM v2 positions 的 avg_price 必须进入 NT PositionStatusReport.avg_px_open。"""
     instrument_id = InstrumentId.from_str("0xcond-123.POLYMARKET")
     client = SimpleNamespace()
     client.account_id = AccountId("PM-001")
@@ -2019,7 +2090,12 @@ def test_arb_generate_position_reports_settles_without_writing_liveness(monkeypa
     async def fake_super(self, command):
         position_calls.append(command)
         self._last_raw_positions = [
-            {"conditionId": "cond1", "size": "10", "negativeRisk": True, "redeemable": False},
+            {
+                "condition_id": "cond1",
+                "current_size": "10",
+                "negative_risk": True,
+                "redeemable": False,
+            },
         ]
         return [SimpleNamespace(name="report")]
 
@@ -2070,7 +2146,7 @@ def test_settlement_attempt_refetches_positions_before_returning_reports(
     liveness = VenueExecutionLiveness()
     responses = [
         (
-            [{"conditionId": "cond1", "asset": "yes", "size": "10"}],
+            [{"condition_id": "cond1", "token_id": "yes", "current_size": "10"}],
             [SimpleNamespace(name="pre-report")],
         ),
         (
@@ -2143,7 +2219,9 @@ def test_position_reconcile_returns_stale_guard_when_state_changes_during_fetch(
     settlement_calls = []
 
     async def fake_super(self, command):
-        self._last_raw_positions = [{"conditionId": "0xc", "asset": "1", "size": "10"}]
+        self._last_raw_positions = [
+            {"condition_id": "0xc", "token_id": "1", "current_size": "10"},
+        ]
         state["version"] += 1
         return [SimpleNamespace(name="stale-report")]
 
@@ -2179,7 +2257,12 @@ def test_position_reconcile_defers_realized_when_state_changes_during_closed_fet
 
     async def fake_super(self, command):
         self._last_raw_positions = [
-            {"conditionId": "0xc", "asset": "1", "size": "0", "realizedPnl": "9.0"},
+            {
+                "condition_id": "0xc",
+                "token_id": "1",
+                "current_size": "0",
+                "realized_pnl": "9.0",
+            },
         ]
         return [SimpleNamespace(name="stale-report")]
 
@@ -2318,7 +2401,7 @@ def test_run_settlement_does_not_auto_sync_collateral_balance_after_successful_t
         client._http_client = SimpleNamespace(update_balance_allowance=update_balance_allowance)
         client._config = SimpleNamespace(signature_type=2)
 
-        await client._run_settlement([{"conditionId": "cond1", "size": "10"}])
+        await client._run_settlement([{"condition_id": "cond1", "current_size": "10"}])
 
         assert client._settlement_inflight is False
         assert calls == []
@@ -2340,7 +2423,7 @@ def test_run_settlement_does_not_sync_collateral_balance_without_successful_tx()
         client._http_client = SimpleNamespace(update_balance_allowance=lambda params: calls.append(params))
         client._config = SimpleNamespace(signature_type=2)
 
-        await client._run_settlement([{"conditionId": "cond1", "size": "10"}])
+        await client._run_settlement([{"condition_id": "cond1", "current_size": "10"}])
 
         assert client._settlement_inflight is False
         assert calls == []
@@ -2364,14 +2447,14 @@ def test_position_reconcile_sets_external_minus_native_realized_baseline():
         )
 
         async def closed_positions():
-            return [{"conditionId": "0xc", "asset": "1", "realizedPnl": "2.0"}]
+            return [{"condition_id": "0xc", "token_id": "1", "realized_pnl": "2.0"}]
 
         client._fetch_closed_positions = closed_positions
         load = ArbPolymarketExecutionClient._load_realized_pnl_snapshot.__get__(
             client,
         )
         external = await load([
-            {"conditionId": "0xc", "asset": "1", "realizedPnl": "1.0"},
+            {"condition_id": "0xc", "token_id": "1", "realized_pnl": "1.0"},
         ])
         commit = ArbPolymarketExecutionClient._commit_realized_pnl_snapshot.__get__(client)
         commit(external)

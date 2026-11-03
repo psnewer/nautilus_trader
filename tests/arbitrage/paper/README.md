@@ -46,8 +46,8 @@ best quote，删除最优档后切到下一档；同一市场顺带收到的对�
 连 USER WS，重启 arb node 后观察 reconcile。
 **期望**：订单生命周期进 Cache/Portfolio，重启后从 SQLite 恢复，无真实私有
 PM/OE/SE 写请求。
-**离线验收**：`test_http_and_user_ws_protocol_round_trip` 已覆盖本地 HTTP submit/report/
-positions 与 USER WS placement/trade 回路；`test_paper_server_launcher_passes_public_pm_proxy`
+**离线验收**：`test_http_and_user_ws_protocol_round_trip` 已覆盖本地 HTTP submit/report、
+Data API v2 `/v2/positions` 的 `{data,pagination}` 回执与 USER WS placement/trade 回路；`test_paper_server_launcher_passes_public_pm_proxy`
 钉住 launcher 把真实 Market WS URL 与 proxy 传给 paper 服务，
 `test_public_market_query_uses_configured_proxy` 钉住公开 PM 请求实际使用该 proxy；
 `test_real_clob_sdk_submit_and_reports_round_trip` 使用真实

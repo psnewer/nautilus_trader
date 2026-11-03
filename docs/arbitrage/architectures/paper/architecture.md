@@ -62,7 +62,8 @@ Paper 服务作为唯一执行真值，所以 NT 周期 reconcile 保持开启�
 - `POST /order`, `POST /orders`；
 - `DELETE /order`, `/orders`, `/cancel-all`, `/cancel-market-orders`；
 - `GET /data/order/{id}`, `/data/orders`, `/data/trades`；
-- `GET /balance-allowance`, `/positions`, `/closed-positions`；
+- `GET /balance-allowance`, `/v2/positions`；后者按生产 Data API v2 返回
+  `{data,pagination}`，接受 `status=OPEN|CLOSED` 与 `cursor`，paper 当前 CLOSED 视图为空；
 - `POST /paper/order-metadata`（仅本地审计 metadata 回写）；
 - `GET /ws/user` WebSocket。
 
