@@ -4,6 +4,7 @@
 （旧 on_data(InstrumentsRefreshed) + 2×window gate 已退役:发现迁 DataClient,matching 自 timer 读 cache。）
 """
 
+import asyncio
 from decimal import Decimal
 
 import pandas as pd
@@ -232,6 +233,59 @@ def test_market_matching_config_defaults_do_not_implicit_pm_oe_match():
 
     assert published == []
     assert len(registry) == 0
+
+
+def test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store():
+    from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+
+    actor, _, cache, _, _ = _harness(anchor_venue="PMSPORTS")
+    cache.add_instrument(_pmsports("Tennis", "Felix Gill", "Marcus Walters", game_id=777))
+    store = SportsGameStateStore(cache)
+    store.put(
+        SportsGameUpdate(
+            ts_event=1,
+            ts_init=1,
+            game_id=777,
+            league="atp",
+            home_team="Felix Gill",
+            away_team="Marcus Walters",
+            status="InProgress",
+            score="3-4",
+            period="S1",
+            elapsed="",
+            live=True,
+            ended=False,
+            finished_ts="",
+        ),
+    )
+    payload = {
+        "Stages": [
+            {
+                "Events": [
+                    {
+                        "Eid": "1915017",
+                        "T1": [{"Nm": "Felix Gill"}],
+                        "T2": [{"Nm": "Marcus Walters"}],
+                        "Esrv": 2,
+                        "Tr1S1": "3",
+                        "Tr2S1": "5",
+                    },
+                ],
+            },
+        ],
+    }
+
+    async def fetch(_day):
+        return payload
+
+    actor._fetch_livescore_date = fetch
+    actor._livescore_dates = lambda: ("20261104",)
+
+    asyncio.run(actor._refresh_livescore_mapping())
+
+    assert actor._livescore_eids == {777: "1915017"}
+    assert store.get(777).first_serve == "away"
 
 
 def test_both_venues_in_cache_matches_and_publishes():

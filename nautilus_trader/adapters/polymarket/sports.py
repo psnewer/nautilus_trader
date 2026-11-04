@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -247,6 +248,7 @@ class SportsGameUpdate(Data):
     - `live`         进行中
     - `ended`        已结束(eviction 触发,D4)
     - `finished_ts`  ISO 结束时刻(仅 ended 时非空)
+    - `first_serve`  网球第一局发球方(`home`/`away`);LiveScore 校验通过后由 Store 补入
     """
 
     game_id: int
@@ -260,6 +262,7 @@ class SportsGameUpdate(Data):
     live: bool
     ended: bool
     finished_ts: str
+    first_serve: str = ""
 
     _schema = pa.schema(
         {
@@ -274,6 +277,7 @@ class SportsGameUpdate(Data):
             "live": pa.bool_(),
             "ended": pa.bool_(),
             "finished_ts": pa.string(),
+            "first_serve": pa.string(),
             "ts_event": pa.int64(),
             "ts_init": pa.int64(),
         },
@@ -293,6 +297,7 @@ class SportsGameUpdate(Data):
             "live": self.live,
             "ended": self.ended,
             "finished_ts": self.finished_ts,
+            "first_serve": self.first_serve,
             "ts_event": self.ts_event,
             "ts_init": self.ts_init,
         }
@@ -313,6 +318,7 @@ class SportsGameUpdate(Data):
             live=bool(values["live"]),
             ended=bool(values["ended"]),
             finished_ts=values["finished_ts"],
+            first_serve=str(values.get("first_serve") or ""),
         )
 
 
@@ -344,6 +350,33 @@ def parse_sport_result(d: dict, *, ts: int) -> SportsGameUpdate | None:
 # ── #250:CustomData 状态管线(设计 data §3.4.1)─────────────────────────────
 
 _STORE_KEY_PREFIX = "pmsports:game:"
+_TENNIS_SET = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\(\d+\s*-\s*\d+\))?\s*$")
+
+
+def _tennis_score_units(score: str) -> tuple[tuple[int, int], ...] | None:
+    parts = [part for part in str(score or "").split(",") if part.strip()]
+    units = []
+    for part in parts:
+        match = _TENNIS_SET.match(part)
+        if match is None:
+            return None
+        units.append((int(match.group(1)), int(match.group(2))))
+    return tuple(units) if units else None
+
+
+def _tennis_scores_within_one_game(local_score: str, livescore_score: str) -> bool:
+    local = _tennis_score_units(local_score)
+    remote = _tennis_score_units(livescore_score)
+    if local is None or remote is None:
+        return False
+    length = max(len(local), len(remote))
+    local = local + ((0, 0),) * (length - len(local))
+    remote = remote + ((0, 0),) * (length - len(remote))
+    distance = sum(
+        abs(a - c) + abs(b - d)
+        for (a, b), (c, d) in zip(local, remote, strict=True)
+    )
+    return distance <= 1
 
 
 # #322:sports 数据分通道(phase / score),各自独立 topic;见 data §3.4.2。
@@ -437,17 +470,41 @@ class SportsGameStateStore:
     def put(self, update: SportsGameUpdate) -> None:
         existing_raw = self._cache.get(self._key(update.game_id))
         history: list[dict[str, Any]] = []
+        first_serve = update.first_serve
         if existing_raw:
             existing = json.loads(existing_raw.decode("utf-8"))
             if "latest" in existing:
                 history = list(existing.get("score_history", []))
+                first_serve = str(existing["latest"].get("first_serve") or first_serve)
             elif existing.get("score"):
                 history = [existing]
+                first_serve = str(existing.get("first_serve") or first_serve)
+        latest = update.to_dict()
+        latest["first_serve"] = first_serve
         if update.score and (not history or history[-1].get("score") != update.score):
-            history.append(update.to_dict())
-        payload = {"latest": update.to_dict(), "score_history": history}
+            history.append(latest)
+        payload = {"latest": latest, "score_history": history}
         raw = json.dumps(payload).encode("utf-8")
         self._cache.add(self._key(update.game_id), raw)
+
+    def set_first_serve(self, game_id, *, livescore_score: str, first_serve: str) -> bool:
+        """比分相差不超过一局时，将第一局发球方补入已有比分状态与历史。"""
+        if first_serve not in {"home", "away"}:
+            return False
+        raw = self._cache.get(self._key(game_id))
+        if not raw:
+            return False
+        payload = json.loads(raw.decode("utf-8"))
+        latest = payload.get("latest") if "latest" in payload else payload
+        if not _tennis_scores_within_one_game(str(latest.get("score") or ""), livescore_score):
+            return False
+        latest["first_serve"] = first_serve
+        if "latest" in payload:
+            payload["latest"] = latest
+            for item in payload.get("score_history", []):
+                item["first_serve"] = first_serve
+        self._cache.add(self._key(game_id), json.dumps(payload).encode("utf-8"))
+        return True
 
     def delete(self, game_id) -> None:
         self._cache.delete(self._key(game_id))

@@ -38,6 +38,19 @@
 | `test_normalizer.py` | 名称归一化算法 + instrument → `NormalizedEvent` 反推 |
 | `test_engine.py` | 匹配算法(输入为 `NormalizedEvent` 列表,输出 anchor/tradable `MatchResult`) |
 | `test_actor.py` | Actor timer 触发、cache latch、PairRegistry 注册、PMSPORTS anchor 聚合、ended eviction |
+
+## matching-livescore-eid:#495
+
+- `test_mapping_reuses_same_direction_team_similarity_for_name_variants`：复用 `MatchEngine` 后，既有
+  PM/OE 队名相似匹配可把带姓氏后缀或名称缩写的 LiveScore 队名映射到 PMSPORTS anchor。
+- `test_mapping_does_not_try_home_away_swap`：仅允许同向主客队，不因反向队名建立 EID
+  映射。
+- `test_first_serve_is_inferred_from_current_server_and_completed_game_parity`：根据 `Esrv` 与各盘已打局数奇偶反推
+  `first_serve`。
+- `test_first_serve_is_not_inferred_during_active_tiebreak`：当前盘 `6-6` 抢七进行中不把逐分
+  `Esrv` 当作整局发球方；抢七结束后恢复奇偶反推。
+- `test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store`：实际 Actor refresh
+  路径取得 EID 后，只有外部比分与 Store 当前比分最多相差一局才写入首局发球方。
 | `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |
 | `test_pair_registry.py` | pair→legs / anchor 分槽 / refresh interval 热改 |
 

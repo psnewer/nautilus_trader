@@ -676,6 +676,18 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_set_exempt.py` 覆盖 S/TB 命中、其它/未知盘、三种腿输入、撤单保留和参数校验；
   `test_in_game_set_three_is_blocked_by_set_exempt` 覆盖真实配置第三盘不形成执行计划；launcher 注册测试覆盖 JSON 装配。
 
+## strategy-4.serve-gate：按首局发球方筛选当前发球/接发腿（#496）
+
+- **前置/输入**：Sports 最新状态含经比分校验写入的 `first_serve=home|away` 和当前完整比分；
+  pair 必须能把腿唯一映射为 home/away。
+- **步骤/期望**：各盘局数总和为偶数时当前发球方等于 `first_serve`，奇数时为对手；
+  `serve=true`（默认）只保留发球方，`serve=false` 只保留接发方。BUY/SELL 不改变目标参赛方。
+- 当前盘 `6-6` 或存在抢七括号小分时，不把逐分发球方冒充整局发球方，fail-closed 清除普通
+  下单腿。比分末段已完盘但赛事未 ended 时，直接按累计局数计算下一盘第一局发球方；赛事明确
+  `ended=true`、缺 Store/game/first_serve/合法比分时清腿。撤单 candidate 原样保留。
+- **验收**：`test_action_serve_gate.py` 覆盖首局、奇偶轮换、跨盘、抢七完成后的下一盘、
+  `serve=false`、三种腿输入、撤单保留和所有未知证据边界；launcher 注册测试覆盖 JSON 装配。
+
 ## strategy-4.set-selection：已完成盘胜数筛选
 
 - `set_selection` 是独立 Action；`standing` 接受与 `score_selection` 相同的

@@ -91,6 +91,7 @@ from src.arbitrage.strategy.actions.pm_quote_legs import PmQuoteLegsAction
 from src.arbitrage.strategy.actions.price_gate import PriceGateAction
 from src.arbitrage.strategy.actions.same_set import SameSetAction
 from src.arbitrage.strategy.actions.score_selection import ScoreSelectionAction
+from src.arbitrage.strategy.actions.serve_gate import ServeGateAction
 from src.arbitrage.strategy.actions.set_exempt import SetExemptAction
 from src.arbitrage.strategy.actions.set_selection import SetSelectionAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
@@ -174,6 +175,7 @@ def register_builtin_checks_and_actions() -> None:
     register_action("price_gate", PriceGateAction)
     register_action("dash_gate", DashGateAction)
     register_action("score_selection", ScoreSelectionAction)
+    register_action("serve_gate", ServeGateAction)
     register_action("latest_score", LatestScoreAction)
     register_action("start_price_gate", StartPriceGateAction)
     register_action("latest_consecutive_trigger", LatestConsecutiveTriggerAction)

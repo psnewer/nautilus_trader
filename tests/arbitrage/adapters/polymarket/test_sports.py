@@ -391,6 +391,29 @@ def test_store_reads_legacy_latest_only_value_as_one_history_item():
     assert [item.score for item in store.score_history(9)] == ["0-0", "1-0"]
 
 
+def test_store_sets_first_serve_only_when_livescore_is_within_one_game():
+    store = SportsGameStateStore(_MemCache())
+    store.put(_update(game_id=9, ts=3, score="6-4, 2-1"))
+
+    assert store.set_first_serve(9, livescore_score="6-4, 2-2", first_serve="home") is True
+    assert store.get(9).first_serve == "home"
+    assert [item.first_serve for item in store.score_history(9)] == ["home"]
+
+    assert store.set_first_serve(9, livescore_score="6-4, 4-2", first_serve="away") is False
+    assert store.get(9).first_serve == "home"
+
+
+def test_store_preserves_verified_first_serve_on_future_score_updates():
+    store = SportsGameStateStore(_MemCache())
+    store.put(_update(game_id=9, ts=3, score="6-4"))
+    assert store.set_first_serve(9, livescore_score="6-4, 0-0", first_serve="away") is True
+
+    store.put(_update(game_id=9, ts=4, score="6-4, 1-0"))
+
+    assert store.get(9).first_serve == "away"
+    assert [item.first_serve for item in store.score_history(9)] == ["away", "away"]
+
+
 def test_per_game_channel_data_types_route_to_distinct_topics():
     """pm-adapter-sports.state.5:(game_id, channel) 即订阅键 —— 每场每通道独立 DataType/topic;
     metadata 两键参与身份且键序固定(game_id→channel),engine 逐 (场,通道) 转发命令。"""

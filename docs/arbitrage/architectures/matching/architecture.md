@@ -340,6 +340,24 @@ def _evict_game(gid):
 > 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
 > `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
 
+### 4.5 LiveScore EID 映射与首局发球方补充(#495，已落地 · live-unvalidated)
+
+每次 Matching timer tick 完成 `_maybe_match` 后，Actor 对 PMSPORTS anchor 异步发起一次
+LiveScore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。刷新读取北京时间
+昨天、当天、明天三个 tennis date endpoint，以覆盖跨午夜赛事。
+
+映射继续复用本组件既有 `MatchEngine` 的队名 token 相似度、confidence 排序和一对一贪心分配，
+不另造名称算法。PMSPORTS 的 `home_team/away_team` 与 LiveScore 的 `T1/T2` 必须同向匹配，
+不尝试主客互换；LiveScore 赛事名与 Provider competition taxonomy 不同，因此候选只在各 anchor
+competition 分组内部参与同一队名算法，赛事名本身不作第二道严格相等门。成功结果以
+`game_id → EID` 保存在 Actor 进程内存，下一 tick 可重建。
+
+LiveScore `Esrv` 表示当前局发球方。将各盘局分求和：已打局数为偶数时首局发球方等于当前
+发球方，为奇数时取另一方，由此得到赛事级 `first_serve=home|away`。Matching 只负责取得并
+提交这份补充证据。当前盘为 `6-6` 时处于抢七，`Esrv` 是当前分而非整局发球方，故本轮不推断、
+不写入；抢七结束后的 `7-6` 仍作为一局参与奇偶反推。比分相差一局校验、字段存储和后续继承由 data §3.4.4 的
+`SportsGameStateStore` 定义。HTTP、payload 或映射失败均 fail-soft 告警，留待下一 tick 重试。
+
 ---
 
 ## 5. 与横切的咬合

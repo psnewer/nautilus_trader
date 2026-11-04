@@ -12,15 +12,22 @@ venue cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venu
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
+from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.adapters.polymarket.sports import sports_data_type
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.core.nautilus_pyo3 import HttpClient
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -38,10 +45,14 @@ from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.matching.events import PairEvicted
+from src.arbitrage.matching.livescore import map_livescore_events
+from src.arbitrage.matching.livescore import parse_livescore_payloads
 from src.arbitrage.matching.normalizer import events_from_instruments
 
 
 _MATCH_ALERT = "market_matching:tick"
+_LIVESCORE_URL = "https://prod-public-api.livescore.com/v1/api/app/date/tennis"
+_BEIJING = timezone(timedelta(hours=8))
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
@@ -121,6 +132,9 @@ class MarketMatchingActor(Actor):
         self._validation_pairs_by_market: dict[tuple[str, str], set[str]] = {}
         self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
+        self._livescore_http = HttpClient(timeout_secs=15)
+        self._livescore_task: asyncio.Task | None = None
+        self._livescore_eids: dict[int, str] = {}
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
     def on_start(self) -> None:
@@ -233,6 +247,9 @@ class MarketMatchingActor(Actor):
 
     def on_stop(self) -> None:
         self._cancel_alert()
+        if self._livescore_task is not None:
+            self._livescore_task.cancel()
+            self._livescore_task = None
         for pair_id in list(self._pair_validations):
             self._clear_pair_validation(pair_id)
 
@@ -247,8 +264,82 @@ class MarketMatchingActor(Actor):
     def _on_alert(self, event) -> None:
         try:
             self._maybe_match()
+            self._schedule_livescore_mapping()
         finally:
             self._schedule_next()
+
+    def _schedule_livescore_mapping(self) -> None:
+        """每个 matching tick 最多启动一轮 LiveScore EID 映射。"""
+        if self._anchor_venue_str != SPORTS_CLIENT:
+            return
+        if self._livescore_task is not None and not self._livescore_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._livescore_task = loop.create_task(self._refresh_livescore_mapping())
+
+    async def _refresh_livescore_mapping(self) -> None:
+        try:
+            anchor_instruments = [
+                instrument
+                for instrument in self.cache.instruments(venue=Venue(self._anchor_venue_str))
+                if self._game_id_of(instrument) not in self._ended_games
+            ]
+            anchor_events = events_from_instruments(anchor_instruments)
+            if not anchor_events:
+                return
+            payloads = await asyncio.gather(*(
+                self._fetch_livescore_date(day)
+                for day in self._livescore_dates()
+            ))
+            livescore_events = parse_livescore_payloads([payload for payload in payloads if payload])
+            mapped = map_livescore_events(anchor_events, livescore_events, self._engine)
+            sports_store = SportsGameStateStore(self.cache)
+            for game_id, event in mapped.items():
+                previous_eid = self._livescore_eids.get(game_id)
+                self._livescore_eids[game_id] = event.eid
+                verified = bool(
+                    event.first_serve
+                    and event.score
+                    and sports_store.set_first_serve(
+                        game_id,
+                        livescore_score=event.score,
+                        first_serve=event.first_serve,
+                    )
+                )
+                if previous_eid != event.eid:
+                    self.log.info(
+                        f"LiveScore mapped: game={game_id} eid={event.eid} "
+                        f"{event.home_team} vs {event.away_team} first_serve={event.first_serve} "
+                        f"score_verified={verified}",
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — 补充数据失败不影响原 matching
+            self._log.warning(f"LiveScore mapping failed: {e!r}; retrying next matching tick")
+
+    async def _fetch_livescore_date(self, day: str) -> dict | None:
+        response = await self._livescore_http.get(
+            f"{_LIVESCORE_URL}/{day}/8",
+            params={"countryCode": "CN", "locale": "en", "MD": "1"},
+            timeout_secs=15,
+        )
+        if response.status >= 400:
+            raise RuntimeError(f"HTTP {response.status} for LiveScore date {day}")
+        payload = json.loads(response.body.decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
+
+    def _livescore_dates(self) -> tuple[str, str, str]:
+        now = datetime.fromtimestamp(
+            self.clock.timestamp_ns() / 1_000_000_000,
+            timezone.utc,
+        ).astimezone(_BEIJING)
+        return tuple(
+            (now.date() + timedelta(days=offset)).strftime("%Y%m%d")
+            for offset in (-1, 0, 1)
+        )
 
     def _cancel_alert(self) -> None:
         try:
