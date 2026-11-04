@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
@@ -70,9 +71,10 @@ class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
 
 @dataclass(slots=True)
 class _RuntimeDeps:
-    """非 msgspec config 可放对象的字段(PairRegistry 由 launcher 经 ArbContext 注入)。"""
+    """非 msgspec config 可放对象的字段(由 launcher 注入)。"""
 
     pair_registry: PairRegistry
+    loop: asyncio.AbstractEventLoop
 
 
 @dataclass(slots=True)
@@ -133,7 +135,8 @@ class MarketMatchingActor(Actor):
         self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
         self._livescore_http = HttpClient(timeout_secs=15)
-        self._livescore_task: asyncio.Task | None = None
+        self._loop = deps.loop
+        self._livescore_task: Future[None] | None = None
         self._livescore_eids: dict[int, str] = {}
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
@@ -274,11 +277,10 @@ class MarketMatchingActor(Actor):
             return
         if self._livescore_task is not None and not self._livescore_task.done():
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._livescore_task = loop.create_task(self._refresh_livescore_mapping())
+        self._livescore_task = asyncio.run_coroutine_threadsafe(
+            self._refresh_livescore_mapping(),
+            self._loop,
+        )
 
     async def _refresh_livescore_mapping(self) -> None:
         try:
@@ -297,6 +299,7 @@ class MarketMatchingActor(Actor):
             livescore_events = parse_livescore_payloads([payload for payload in payloads if payload])
             mapped = map_livescore_events(anchor_events, livescore_events, self._engine)
             sports_store = SportsGameStateStore(self.cache)
+            verified_count = 0
             for game_id, event in mapped.items():
                 previous_eid = self._livescore_eids.get(game_id)
                 self._livescore_eids[game_id] = event.eid
@@ -309,12 +312,18 @@ class MarketMatchingActor(Actor):
                         first_serve=event.first_serve,
                     )
                 )
+                verified_count += int(verified)
                 if previous_eid != event.eid:
                     self.log.info(
                         f"LiveScore mapped: game={game_id} eid={event.eid} "
                         f"{event.home_team} vs {event.away_team} first_serve={event.first_serve} "
                         f"score_verified={verified}",
                     )
+            self.log.info(
+                f"LiveScore refresh completed: anchors={len(anchor_events)} "
+                f"events={len(livescore_events)} mapped={len(mapped)} "
+                f"first_serve_verified={verified_count}",
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 补充数据失败不影响原 matching

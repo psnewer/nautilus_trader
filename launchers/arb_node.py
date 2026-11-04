@@ -366,27 +366,21 @@ def add_actors(
       - `MarketMatchingActor`
       - `StrategyEvaluator` Strategy(`is_pair_executing` §7.5/#316 桥到 exec client 的 per-pair session)
 
-    `loop` 用 `asyncio.get_event_loop()`。
+    异步运行时依赖统一使用 TradingNode kernel 的 event loop。
 
     #58(slice A):InstrumentRefresher 退役 —— 周期发现已迁进 PM/OE DataClient 原生
     `_update_instruments`(provider→`_handle_data`→DataEngine→cache + on_instrument)。
     matching 改自 timer 读 cache(不再依赖 InstrumentsRefreshed 事件)。
     """
-    import asyncio
-
-    # 防御:add_actors 在 node.run() 之前调,不保证有「当前」event loop(Py3.13 无当前 loop 时
-    # get_event_loop() 抛 RuntimeError)。无则现地建一个并设为当前(actor 仅用它 create_task)。
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    loop = node.get_event_loop()
+    if loop is None:
+        raise RuntimeError("TradingNode kernel event loop is unavailable after build")
 
     # MarketMatchingActor:自 timer 读 cache → 算 MatchedPair → PairRegistry
     node.trader.add_actor(
         MarketMatchingActor(
             config=to_market_matching_actor_config(cfg),
-            deps=MatchingDeps(pair_registry=pair_registry),
+            deps=MatchingDeps(pair_registry=pair_registry, loop=loop),
         ),
     )
 

@@ -5,7 +5,9 @@
 """
 
 import asyncio
+import threading
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -145,6 +147,7 @@ def _harness(
     anchor_venue="POLYMARKET",
     tradable_venues=("ORBITEXCH",),
     probability_validation_enabled=False,
+    loop=None,
 ):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
@@ -157,7 +160,13 @@ def _harness(
         tradable_venues=tradable_venues,
         probability_validation_enabled=probability_validation_enabled,
     )
-    actor = MarketMatchingActor(cfg, _RuntimeDeps(pair_registry=registry))
+    actor = MarketMatchingActor(
+        cfg,
+        _RuntimeDeps(
+            pair_registry=registry,
+            loop=loop or MagicMock(spec=asyncio.AbstractEventLoop),
+        ),
+    )
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
     return actor, clock, cache, registry, msgbus
 
@@ -223,7 +232,13 @@ def test_market_matching_config_defaults_do_not_implicit_pm_oe_match():
     cache = TestComponentStubs.cache()
     portfolio = Portfolio(msgbus=msgbus, cache=cache, clock=clock)
     registry = PairRegistry()
-    actor = MarketMatchingActor(MarketMatchingConfig(), _RuntimeDeps(pair_registry=registry))
+    actor = MarketMatchingActor(
+        MarketMatchingConfig(),
+        _RuntimeDeps(
+            pair_registry=registry,
+            loop=MagicMock(spec=asyncio.AbstractEventLoop),
+        ),
+    )
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
     _populate_match(cache)
     published = []
@@ -286,6 +301,30 @@ def test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store()
 
     assert actor._livescore_eids == {777: "1915017"}
     assert store.get(777).first_serve == "away"
+
+
+def test_livescore_timer_callback_submits_refresh_to_injected_loop():
+    """LiveClock 同步回调没有 running loop 时，仍把刷新提交到 kernel loop。"""
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever)
+    refresh_entered = threading.Event()
+    actor, _, _, _, _ = _harness(anchor_venue="PMSPORTS", loop=loop)
+
+    async def refresh():
+        refresh_entered.set()
+
+    actor._maybe_match = lambda: None
+    actor._refresh_livescore_mapping = refresh
+    loop_thread.start()
+    try:
+        actor._on_alert(None)
+        assert refresh_entered.wait(timeout=1)
+        assert actor._livescore_task is not None
+        actor._livescore_task.result(timeout=1)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=1)
+        loop.close()
 
 
 def test_both_venues_in_cache_matches_and_publishes():

@@ -51,6 +51,8 @@
   `Esrv` 当作整局发球方；抢七结束后恢复奇偶反推。
 - `test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store`：实际 Actor refresh
   路径取得 EID 后，只有外部比分与 Store 当前比分最多相差一局才写入首局发球方。
+- `test_livescore_timer_callback_submits_refresh_to_injected_loop`：在调用线程没有 running loop 的
+  条件下走真实 `_on_alert` 路径，确认 LiveScore refresh 被提交到注入的 kernel loop 并实际进入。
 | `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |
 | `test_pair_registry.py` | pair→legs / anchor 分槽 / refresh interval 热改 |
 

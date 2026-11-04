@@ -856,7 +856,7 @@ def test_main_disposes_even_on_run_exception(tmp_path, monkeypatch):
 # ─── slice 8A:add_actors(必须 node.build 后调用)─────────────
 
 def _add_actors_setup(monkeypatch, *, pm_provider=None, oe_provider=None):
-    """共享 setup:重置 ArbContext,装 mock providers,monkeypatch asyncio。"""
+    """共享 setup:重置 ArbContext,装 mock providers。"""
     bootstrap.reset_arb_context()
     bootstrap.prepare_arb_context(
         instrument_provider_by_venue={
@@ -864,10 +864,6 @@ def _add_actors_setup(monkeypatch, *, pm_provider=None, oe_provider=None):
             "ORBITEXCH": oe_provider,
         },
     )
-    fake_loop = MagicMock(name="loop")
-    import asyncio
-    monkeypatch.setattr(asyncio, "get_event_loop", lambda: fake_loop)
-    return fake_loop
 
 
 def test_add_actors_registers_matching_actor_and_evaluator_strategy(monkeypatch):
@@ -882,6 +878,20 @@ def test_add_actors_registers_matching_actor_and_evaluator_strategy(monkeypatch)
 
     assert node.trader.add_actor.call_count == 1
     assert node.trader.add_strategy.call_count == 1
+
+
+def test_add_actors_injects_trading_node_loop_into_matching_actor(monkeypatch):
+    """LiveClock 回调的 async 工作必须提交到 kernel 权威 event loop。"""
+    _add_actors_setup(monkeypatch)
+    node = MagicMock()
+    node_loop = MagicMock(name="kernel_loop")
+    node.get_event_loop.return_value = node_loop
+    node.kernel.portfolio = MagicMock(name="portfolio")
+
+    arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
+
+    matching_actor = node.trader.add_actor.call_args.args[0]
+    assert matching_actor._loop is node_loop
 
 
 def test_add_actors_skips_web_gateway_when_disabled(monkeypatch):

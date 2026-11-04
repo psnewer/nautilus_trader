@@ -164,7 +164,9 @@ tradable venue 通路。
 `probability_validation_min_best_sum` 默认 `0.95`。它们只控制 Matching→Strategy 之间的
 pair 发布门槛,不进入 RiskEngine。
 
-`_RuntimeDeps`:`pair_registry: PairRegistry`。
+`_RuntimeDeps`:`pair_registry: PairRegistry`、`loop: asyncio.AbstractEventLoop`。loop 由 launcher
+通过 `TradingNode.get_event_loop()` 注入，指向 kernel 的权威事件循环；它是不可序列化的运行时
+依赖，不进入 `MarketMatchingConfig`。
 
 > 旧(#52,已退役):订 `data.InstrumentsRefreshed*`(注意 NT publish_data 无 metadata 时 topic 带尾 `*`,#58 修)→ `on_data` → `_both_recent()` 2×window gate。迁 timer 后这些全删。
 
@@ -340,11 +342,25 @@ def _evict_game(gid):
 > 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
 > `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
 
-### 4.5 LiveScore EID 映射与首局发球方补充(#495，已落地 · live-unvalidated)
+### 4.5 LiveScore EID 映射与首局发球方补充(#495/#497，已落地 · live-validated 2026-11-04)
 
 每次 Matching timer tick 完成 `_maybe_match` 后，Actor 对 PMSPORTS anchor 异步发起一次
 LiveScore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。刷新读取北京时间
 昨天、当天、明天三个 tennis date endpoint，以覆盖跨午夜赛事。
+
+NT `LiveClock` 的 native timer 回调中没有 asyncio running loop，不能在回调内用
+`asyncio.get_running_loop()`；该写法会在每次 tick 静默跳过刷新。launcher 在 `node.build()` 后把
+`node.get_event_loop()` 注入 Actor，timer 回调用 `asyncio.run_coroutine_threadsafe` 将刷新提交到
+kernel loop，返回的 `concurrent.futures.Future` 同时用于防重入和 `on_stop` 取消。这里的线程安全
+提交是已由远端 `RuntimeError('no running event loop')` 证实的同步回调→async loop 边界，不是
+未经证实的兜底分支。每轮请求完成记录 anchor/event/mapped/verified 数量，失败则保留原有
+fail-soft 告警，便于区分“未调度、请求失败、映射为零、比分校验未通过”。
+
+2026-11-04 远端修复版首轮完成 `anchors=78/events=382/mapped=76/verified=0`；当时 Strategy
+尚未因 in-play 建立 score 订阅。下一轮在 PMS 本地比分进入 Store 后完成
+`anchors=78/events=382/mapped=76/verified=4`，证明 timer→kernel loop→HTTP→映射→比分校验→
+`first_serve` 写入整条生产路径已执行。其后 score 更新也正常触发 Strategy；当时策略树未命中，
+故未产生 ExecutionPlan，不能据此把下游 `serve_gate` 标为 live-validated。
 
 映射继续复用本组件既有 `MatchEngine` 的队名 token 相似度、confidence 排序和一对一贪心分配，
 不另造名称算法。PMSPORTS 的 `home_team/away_team` 与 LiveScore 的 `T1/T2` 必须同向匹配，
