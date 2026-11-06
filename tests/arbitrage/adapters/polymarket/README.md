@@ -732,9 +732,11 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 
 **输入**：Store 已有 PMS 当前比分，LiveScore 映射提交外部比分与 `first_serve`。
 **期望/验收**：双方各盘局分绝对差总和 `<=1`（含本地尚无、外部已出现的 `0-0` 新盘）才接受；
-更大差异拒绝。接受后 latest、既有历史和未来比分记录均保留该赛事级字段。由
+更大差异拒绝。首次接受后 latest、既有历史和未来比分记录均保留该赛事级字段；
+后续快照即使提交相反值也不覆盖。由
 `test_store_sets_first_serve_only_when_livescore_is_within_one_game`、
-`test_store_preserves_verified_first_serve_on_future_score_updates` 覆盖。
+`test_store_preserves_verified_first_serve_on_future_score_updates`、
+`test_store_does_not_overwrite_existing_first_serve` 覆盖。
 
 ### pm-adapter-exec.cancel.ack-policy:撤单请求 ACK 接入 session
 

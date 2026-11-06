@@ -471,8 +471,10 @@ PMS 原始 parser 不猜发球方，初始值为空；Matching 的 LiveScore EID
 写入前必须用 Store 的**当前本地比分**校验 LiveScore 比分。两侧比分按各盘 game score 解析，
 忽略抢七括号小分；缺失的末盘按 `0-0` 补齐，然后计算所有盘、双方局分绝对差之和。只有总差
 `<= 1` 时才接受，解析失败或差值更大均不写。校验通过后同步更新 latest 与既有
-`score_history` 中的 `first_serve`；后续 PMS `put` 继承这个赛事级稳定值，因此新比分不会把它
-清空。LiveScore 当前发球方到首局发球方的奇偶反推归 Matching §4.5 所有。
+`score_history` 中的 `first_serve`。`first_serve` 是赛事级不变量：已有合法值时，后续校验
+通过的 LiveScore 快照也不再覆盖，避免 `Esrv` 在局分变化后指向上一局发球方时把已确认值
+反转。后续 PMS `put` 继承该值，新比分不会把它清空。LiveScore 当前发球方到首局发球方的
+奇偶反推归 Matching §4.5 所有。
 
 原始 PMS score event 已经发布时不会被追溯重发；需要该补充字段的消费者应读取
 `SportsGameStateStore`，它是比分历史及其附件的真理源。

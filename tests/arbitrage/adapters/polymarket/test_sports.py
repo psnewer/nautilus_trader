@@ -414,6 +414,16 @@ def test_store_preserves_verified_first_serve_on_future_score_updates():
     assert [item.first_serve for item in store.score_history(9)] == ["away", "away"]
 
 
+def test_store_does_not_overwrite_existing_first_serve():
+    store = SportsGameStateStore(_MemCache())
+    store.put(_update(game_id=9, ts=3, score="1-0"))
+    assert store.set_first_serve(9, livescore_score="1-0", first_serve="away") is True
+
+    assert store.set_first_serve(9, livescore_score="2-0", first_serve="home") is True
+    assert store.get(9).first_serve == "away"
+    assert [item.first_serve for item in store.score_history(9)] == ["away"]
+
+
 def test_per_game_channel_data_types_route_to_distinct_topics():
     """pm-adapter-sports.state.5:(game_id, channel) 即订阅键 —— 每场每通道独立 DataType/topic;
     metadata 两键参与身份且键序固定(game_id→channel),engine 逐 (场,通道) 转发命令。"""

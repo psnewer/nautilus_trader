@@ -488,7 +488,7 @@ class SportsGameStateStore:
         self._cache.add(self._key(update.game_id), raw)
 
     def set_first_serve(self, game_id, *, livescore_score: str, first_serve: str) -> bool:
-        """比分相差不超过一局时，将第一局发球方补入已有比分状态与历史。"""
+        """比分相差不超过一局时，首次将第一局发球方补入已有比分状态与历史。"""
         if first_serve not in {"home", "away"}:
             return False
         raw = self._cache.get(self._key(game_id))
@@ -498,6 +498,8 @@ class SportsGameStateStore:
         latest = payload.get("latest") if "latest" in payload else payload
         if not _tennis_scores_within_one_game(str(latest.get("score") or ""), livescore_score):
             return False
+        if str(latest.get("first_serve") or "") in {"home", "away"}:
+            return True
         latest["first_serve"] = first_serve
         if "latest" in payload:
             payload["latest"] = latest
