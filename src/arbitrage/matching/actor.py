@@ -303,6 +303,7 @@ class MarketMatchingActor(Actor):
             for game_id, event in mapped.items():
                 previous_eid = self._livescore_eids.get(game_id)
                 self._livescore_eids[game_id] = event.eid
+                local_state = sports_store.get(game_id)
                 verified = bool(
                     event.first_serve
                     and event.score
@@ -313,6 +314,14 @@ class MarketMatchingActor(Actor):
                     )
                 )
                 verified_count += int(verified)
+                if event.first_serve and event.score:
+                    self.log.info(
+                        f"LiveScore serve snapshot: game={game_id} eid={event.eid} "
+                        f"{event.home_team} vs {event.away_team} "
+                        f"esrv={event.raw.get('Esrv')} livescore_score='{event.score}' "
+                        f"pms_score='{getattr(local_state, 'score', '')}' "
+                        f"inferred_first_serve={event.first_serve} verified={verified}",
+                    )
                 if previous_eid != event.eid:
                     self.log.info(
                         f"LiveScore mapped: game={game_id} eid={event.eid} "
