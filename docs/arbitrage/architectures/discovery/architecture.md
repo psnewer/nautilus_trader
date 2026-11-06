@@ -85,6 +85,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 |---|---|
 | `sport` | `sport_aliases.get(event.sport, event.sport)` —— **slice 7A 规范化**(`"soccer"` → `"Soccer"`)|
 | `competition` | 先查 `competition_group_by_sport[规范化 sport]`；未命中再查 `competition_aliases[event.competition]`，最后原值透传。前者用于把同 sport 的不同原始联赛统一为一个 matching 分组 |
+| `competition_raw` | PM 专用：Gamma `/sports[].sport` 原值（如 `atp` / `wta`）。不参与 matching 分组，供 Strategy 在 `competition` 已按 sport 归并后仍可区分原始赛事 |
 | `home_team` | `event.home_team` |
 | `away_team` | `event.away_team` |
 | `selection_role` | `"home"` / `"draw"` / `"away"`(由本腿对应的 selection_id 决定) |
@@ -148,6 +149,8 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > - **competition**:写 `info` 时先按 `competition_group_by_sport` 强制分组，未命中再经
 >   `competition_aliases_by_venue["POLYMARKET"]` 精确标准化；matching `(sport,competition)`
 >   分组键由同一 Provider 契约保证跨 venue 对齐。
+> - **competition_raw**:同时保留 `/sports[].sport` 原值（如 `atp` / `wta`）；它不参与
+>   matching，只供下游在 `competition="Tennis"` 的统一分组内识别原始巡回赛。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断，当前由 `/events/keyset?series_id=` 游标分页取全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。

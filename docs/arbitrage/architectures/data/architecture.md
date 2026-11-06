@@ -272,7 +272,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         return instrument
 ```
 
-> **实写已落地(superseded,2026-06-21 核实;2026-07-29 更新)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构草案。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_all_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events/keyset?series_id=`(内嵌 teams),`_load_moneyline_market` 直接把 matching 字段(`sport/competition/home_team/away_team/selection_role`)和 `game_id` 写入 `info`;`start_ts` 不再是 matching info 字段。下面的 seam 版仅作历史参照,extraction 不再是当前待办。
+> **实写已落地(superseded,2026-06-21 核实;2026-11-06 更新)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构草案。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_all_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events/keyset?series_id=`(内嵌 teams),`_load_moneyline_market` 直接把 matching 字段(`sport/competition/home_team/away_team/selection_role`)和 `game_id` 写入 `info`;另以 `competition_raw` 保留 Gamma `/sports[].sport` 原值（如 `atp/wta`），只供 Strategy 分类，不参与 matching。`start_ts` 不再是 matching info 字段。下面的 seam 版仅作历史参照,extraction 不再是当前待办。
 
 `enrich_pm_six_key_info(market_info, outcome) -> dict`(历史 seam,已被 arb_provider 取代):
 - `sport` ← `market_info.get("category")`(PM gamma 给的最接近字段)

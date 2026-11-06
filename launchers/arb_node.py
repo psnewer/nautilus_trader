@@ -120,7 +120,7 @@ from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecov
 from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.checks.spread_cancel_recovery import SpreadCancelRecoveryCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
-from src.arbitrage.strategy.queries.competition import CompetitionIncludeQuery
+from src.arbitrage.strategy.queries.competition import CompetitionIsQuery
 from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
 from src.arbitrage.strategy.queries.in_game import InGameQuery
 from src.arbitrage.strategy.queries.in_game import PreGameQuery
@@ -165,7 +165,7 @@ def register_builtin_checks_and_actions() -> None:
     register_state_query("lower_tier", LowerTierQuery)
     register_state_query("exposure_source", ExposureSourceQuery)
     register_state_query("start_game", StartGameQuery)
-    register_state_query("competition", CompetitionIncludeQuery)
+    register_state_query("competition", CompetitionIsQuery)
     register_action("share_limit", ShareLimitModification)
     register_action("venue_replace", VenueReplaceAction)
     register_action("venue_select", VenueSelectAction)

@@ -177,11 +177,13 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 **期望**:
 - `info["sport"]` 来自 `competition_to_sport_by_data_source["PMSPORTS"]`
 - `info["competition"]` 使用 PM venue competition alias 标准化后的名字
+- `info["competition_raw"]` 保留 Gamma `/sports[].sport` 原值（如 `atp/wta`），即使
+  `competition_group_by_sport` 把 matching 分组归并为 `Tennis` 也不丢失
 - `home_team` / `away_team` 优先来自 `event["teams"]`,缺失时 fallback title 解析
 - `selection_role` 按 moneyline slug + competition ordering + team abbreviation 解析为 `home/draw/away`
 - `game_id` 等于 Gamma event `gameId`;`start_ts` 不写入 matching info。
 
-**验收**:`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖 teams/title 解析、role 解析和 `_load_moneyline_market` 写入完整 matching info;完整 Gamma HTTP 路径仍归 live smoke。
+**验收**:`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖 teams/title 解析、role 解析、`competition_raw` 透传和 `_load_moneyline_market` 写入完整 matching info;完整 Gamma HTTP 路径仍归 live smoke。
 
 ### discovery-7B.2(slice 7B,#57):PM series-based discovery 路径
 

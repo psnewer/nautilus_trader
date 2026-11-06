@@ -116,6 +116,27 @@ def test_order_source_can_filter_orders_by_magic():
     assert ctx.scratch[CANCEL_CANDIDATES] == ["FIRST"]
 
 
+def test_order_source_can_filter_pair_by_exact_competition_array():
+    ctx = _ctx(orders=[_order("IN", "in_game")])
+    ctx.cache.instrument("Y.POLYMARKET").info["competition_raw"] = "wta"
+
+    assert ExposureSourceQuery("in_game_order", **{"is": ["atp", "wta"]}).eval(ctx) is True
+    assert ctx.scratch[CANCEL_CANDIDATES] == ["IN"]
+    assert ExposureSourceQuery("in_game_order", **{"is": ["WTA"]}).eval(ctx) is False
+    assert ctx.scratch[CANCEL_CANDIDATES] == ["IN"]
+
+
+def test_position_source_can_filter_pair_by_competition():
+    opening = _order("OPEN", "pre_game")
+    ctx = _ctx(positions=[_position("OPEN")], history=[opening])
+    ctx.cache.instrument("N.POLYMARKET").info["competition_raw"] = "atp"
+
+    query = ExposureSourceQuery("pre_game_position", **{"is": ["atp"]})
+
+    assert query.eval(ctx) is True
+    assert ctx.scratch[POSITION_CANDIDATES] == ["P-OPEN"]
+
+
 def test_failed_source_query_does_not_overwrite_existing_candidates():
     ctx = _ctx(orders=[_order("PRE", "pre_game")])
     ctx.scratch[CANCEL_CANDIDATES] = ["BASELINE"]
@@ -154,3 +175,14 @@ def test_rejects_magic_for_position_source_or_empty_magic():
         ExposureSourceQuery("pre_game_order", magic=" ")
     with pytest.raises(ValueError, match="non-empty string"):
         ExposureSourceQuery("pre_game_order", magic=1)
+
+
+@pytest.mark.parametrize("values", [None, "wta", [], [""], [1]])
+def test_rejects_invalid_competition_is(values):
+    with pytest.raises(ValueError, match="is must be a non-empty array"):
+        ExposureSourceQuery("in_game_order", **{"is": values})
+
+
+def test_rejects_unknown_params():
+    with pytest.raises(ValueError, match="unknown params"):
+        ExposureSourceQuery("in_game_order", competition=["wta"])

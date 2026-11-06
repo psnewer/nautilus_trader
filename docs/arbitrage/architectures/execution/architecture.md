@@ -21,6 +21,9 @@
 
 **不做**:recovery / re-plan / retry;裸单补救;跨腿对冲。
 
+PM `instrument.info["competition_raw"]` 是 Discovery 生产、Strategy 消费的赛事分类元数据；
+Execution 不读取它，也不把 ATP/WTA 分类带入订单路由、回执或对账语义。
+
 ---
 
 ## 2. 数据流

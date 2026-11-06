@@ -1,41 +1,72 @@
-"""CompetitionIncludeQuery:self_hits 按 OE 赛事名称子串过滤。"""
+"""CompetitionIsQuery:self_hits 按 PM/OE 原始赛事精确过滤。"""
 
 import pytest
 
-from src.arbitrage.strategy.queries.competition import CompetitionIncludeQuery
+from src.arbitrage.strategy.queries.competition import CompetitionIsQuery
 from tests.arbitrage.strategy._live_state import live_context
 
 
 @pytest.mark.parametrize(
-    ("include", "competition", "expected"),
+    ("values", "competition_raw", "expected"),
     [
-        ("WTA", "WTA Tokyo 2026", True),
-        ("WTA", "wta beijing", True),          # 大小写不敏感
-        ("WTA", "ATP Masters 1000 Shanghai", False),
-        ("WTA", "ATP Challenger Porto", False),
+        (["wta"], "wta", True),
+        (["atp", "wta"], "wta", True),
+        (["WTA"], "wta", False),
+        (["wta"], "atp", False),
     ],
 )
-def test_matches_oe_competition_substring(include, competition, expected):
+def test_matches_pm_raw_competition_exactly(values, competition_raw, expected):
+    ctx = live_context(infos={"Y.POLYMARKET": {"competition_raw": competition_raw}})
+
+    assert CompetitionIsQuery(**{"is": values}).matches(ctx) is expected
+
+
+@pytest.mark.parametrize(
+    ("values", "competition", "expected"),
+    [
+        (["WTA Beijing"], "WTA Beijing", True),
+        (["wta beijing"], "WTA Beijing", False),
+        (["WTA"], "WTA Beijing", False),
+        (["ATP Masters", "WTA Beijing"], "WTA Beijing", True),
+    ],
+)
+def test_matches_oe_competition_name_exactly(values, competition, expected):
     ctx = live_context(infos={"Y.ORBITEXCH": {"competition": "Tennis"}})
     ctx.cache.instrument("Y.ORBITEXCH").competition_name = competition
 
-    assert CompetitionIncludeQuery(include).matches(ctx) is expected
+    assert CompetitionIsQuery(**{"is": values}).matches(ctx) is expected
 
 
-def test_pm_only_pair_fails_closed():
-    ctx = live_context(infos={"Y.POLYMARKET": {"claim": "yes"}})
+def test_either_pm_or_oe_match_is_enough():
+    ctx = live_context(
+        infos={
+            "Y.POLYMARKET": {"competition_raw": "atp"},
+            "N.ORBITEXCH": {"competition": "Tennis"},
+        },
+    )
+    ctx.cache.instrument("N.ORBITEXCH").competition_name = "WTA Beijing"
 
-    assert CompetitionIncludeQuery("WTA").matches(ctx) is False
+    assert CompetitionIsQuery(**{"is": ["WTA Beijing"]}).matches(ctx) is True
 
 
 def test_does_not_use_grouped_info_competition():
-    ctx = live_context(infos={"Y.ORBITEXCH": {"competition": "WTA Beijing"}})
-    ctx.cache.instrument("Y.ORBITEXCH").competition_name = "ATP Masters Shanghai"
+    ctx = live_context(infos={"Y.POLYMARKET": {"competition": "wta"}})
 
-    assert CompetitionIncludeQuery("WTA").matches(ctx) is False
+    assert CompetitionIsQuery(**{"is": ["wta"]}).matches(ctx) is False
 
 
-@pytest.mark.parametrize("include", ["", "  ", None])
-def test_invalid_include_fails_fast(include):
-    with pytest.raises(ValueError, match="include"):
-        CompetitionIncludeQuery(include)
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"is": "wta"},
+        {"is": []},
+        {"is": [""]},
+        {"is": [None]},
+        {"include": "WTA"},
+        {"is": ["wta"], "include": "WTA"},
+    ],
+)
+def test_invalid_is_fails_fast(params):
+    with pytest.raises(ValueError, match="competition"):
+        CompetitionIsQuery(**params)

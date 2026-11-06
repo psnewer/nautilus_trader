@@ -1,4 +1,4 @@
-"""TriggerCountAction：只保留当前盘去重触发次数唯一最多的 outcome。"""
+"""TriggerCountAction: 只保留当前盘去重触发次数唯一最多的 outcome。"""
 
 import asyncio
 from types import SimpleNamespace
@@ -58,8 +58,8 @@ def _ctx(history, *, score="6-4, 3-3", legs=None):
     return ctx
 
 
-def _run(ctx):
-    asyncio.run(TriggerCountAction(_HISTORY).execute(ctx))
+def _run(ctx, *, when=None):
+    asyncio.run(TriggerCountAction(_HISTORY, when=when).execute(ctx))
 
 
 def _book(ask):
@@ -149,6 +149,55 @@ def test_previous_set_and_failed_observations_are_not_counted():
     assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
 
 
+def test_current_draw_excludes_latest_draw_and_later_scores():
+    ctx = _ctx(
+        [
+            _observation("yes", "6-4, 0-1"),
+            _observation("yes", "6-4, 1-1"),
+            _observation("no", "6-4, 2-1"),
+            _observation("no", "6-4, 2-2"),
+            _observation("no", "6-4, 2-2"),
+            _observation("no", "6-4, 3-2"),
+            _observation("no", "6-4, 4-2"),
+            _observation("no", "6-4, 5-2"),
+        ],
+        score="6-4, 5-2",
+    )
+
+    _run(ctx, when="current_draw")
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_draw_without_draw_in_current_set_fails_closed():
+    ctx = _ctx(
+        [
+            _observation("yes", "6-4, 1-0"),
+            _observation("yes", "6-4, 2-0"),
+        ],
+        score="6-4, 2-0",
+    )
+
+    _run(ctx, when="current_draw")
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_omitted_when_keeps_counting_after_latest_draw():
+    ctx = _ctx(
+        [
+            _observation("yes", "6-4, 1-0"),
+            _observation("no", "6-4, 1-1"),
+            _observation("no", "6-4, 2-1"),
+        ],
+        score="6-4, 2-1",
+    )
+
+    _run(ctx)
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["no"]
+
+
 def test_selected_candidate_is_filtered_and_synchronized_to_legs():
     ctx = _ctx([
         _observation("no", "6-4, 0-0"),
@@ -180,3 +229,9 @@ def test_missing_or_invalid_current_score_fails_closed(score):
 def test_invalid_history_key_fails_fast(history_key):
     with pytest.raises(ValueError, match="history_key"):
         TriggerCountAction(history_key)
+
+
+@pytest.mark.parametrize("when", ["", "draw", True, 1])
+def test_invalid_when_fails_fast(when):
+    with pytest.raises(ValueError, match="when"):
+        TriggerCountAction(_HISTORY, when=when)

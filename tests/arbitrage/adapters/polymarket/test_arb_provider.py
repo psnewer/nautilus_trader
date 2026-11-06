@@ -209,8 +209,8 @@ def test_load_all_async_applies_sport_competition_group():
 
     captured = []
 
-    async def load_series(_client, series_id, competition, sport, ordering):
-        captured.append((series_id, competition, sport, ordering))
+    async def load_series(_client, series_id, competition, competition_raw, sport, ordering):
+        captured.append((series_id, competition, competition_raw, sport, ordering))
         return 0
 
     provider._fetch_json = fetch_json
@@ -226,7 +226,7 @@ def test_load_all_async_applies_sport_competition_group():
     finally:
         bootstrap.reset_arb_context()
 
-    assert captured == [("10365", "Tennis", "Tennis", "home")]
+    assert captured == [("10365", "Tennis", "atp", "Tennis", "home")]
 
 
 # ─── _load_moneyline_market: PM matching info + game_id 写入 ──────────────
@@ -264,6 +264,7 @@ def test_load_moneyline_market_writes_matching_info_keys():
         market=market,
         event_ticker="atp-aaa-bbb-2026-06-03",
         comp_name="ATP",
+        comp_raw="atp",
         sport="Tennis",
         home_team="A",
         away_team="B",
@@ -278,6 +279,7 @@ def test_load_moneyline_market_writes_matching_info_keys():
     for inst in added:
         assert inst.info["sport"] == "Tennis"
         assert inst.info["competition"] == "ATP"
+        assert inst.info["competition_raw"] == "atp"
         assert inst.info["home_team"] == "A"
         assert inst.info["away_team"] == "B"
         assert "start_ts" not in inst.info
@@ -318,6 +320,7 @@ def test_load_moneyline_market_3way_binary_exposes_yes_and_no():
         market=market,
         event_ticker="epl-bur-wol-2026-05-24",
         comp_name="EPL",
+        comp_raw="epl",
         sport="Soccer",
         home_team="Burnley",
         away_team="Wolves",

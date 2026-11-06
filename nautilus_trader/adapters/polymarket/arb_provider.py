@@ -242,12 +242,18 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
             # ordering:competition 特异(ATP=home / MLB=away),决定 2-way outcomes 映射
             ordering = str(comp_info.get("ordering") or "home")
             count += await self._load_series(
-                client, str(series_id), competition, sport, ordering,
+                client, str(series_id), competition, comp_raw, sport, ordering,
             )
         self._log.info(f"PM discovery: loaded {count} instruments")
 
     async def _load_series(
-        self, client, series_id: str, comp_name: str, sport: str, ordering: str,
+        self,
+        client,
+        series_id: str,
+        comp_name: str,
+        comp_raw: str,
+        sport: str,
+        ordering: str,
     ) -> int:
         # 旧 /events 单个大响应已 deprecated，经代理回源时还会偶发传输解码失败。
         try:
@@ -270,10 +276,17 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         for event in events or []:
             if event.get("closed") or not event.get("active", True):
                 continue
-            count += self._process_event(event, comp_name, sport, ordering)
+            count += self._process_event(event, comp_name, comp_raw, sport, ordering)
         return count
 
-    def _process_event(self, event: dict, comp_name: str, sport: str, ordering: str) -> int:
+    def _process_event(
+        self,
+        event: dict,
+        comp_name: str,
+        comp_raw: str,
+        sport: str,
+        ordering: str,
+    ) -> int:
         title = event.get("title", "")
         event_ticker = (event.get("ticker") or "").lower()
 
@@ -298,6 +311,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 market=market,
                 event_ticker=event_ticker,
                 comp_name=comp_name,
+                comp_raw=comp_raw,
                 sport=sport,
                 home_team=home_team,
                 away_team=away_team,
@@ -314,6 +328,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         market: dict,
         event_ticker: str,
         comp_name: str,
+        comp_raw: str,
         sport: str,
         home_team: str,
         away_team: str,
@@ -355,6 +370,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 instrument.info.update({
                     "sport": sport,
                     "competition": comp_name,
+                    "competition_raw": comp_raw,
                     "home_team": home_team,
                     "away_team": away_team,
                     "selection_role": role,

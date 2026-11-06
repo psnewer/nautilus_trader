@@ -442,10 +442,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.pre_rebate.6b: WTA 赛事门与最大 start price 得分腿（2026-10-28）
 
-- `competition(include="WTA")` 只读取 pair 中 OE instrument 的原始 `competition_name`，按
-  大小写不敏感子串匹配；归并后的 `info["competition"]` 即使包含 WTA 也不能命中。缺 OE、
-  缺原始名称、ATP/Challenger 均 fail-closed。该 query 位于套利树最外层，因此同时约束赛前与
-  赛中套利；补偿树不受它限制。
+- `competition(is=["wta"])` 同时读取 pair 中 PM instrument 的 Gamma 原始
+  `info["competition_raw"]` 与 OE 原始 `competition_name`；任一来源与数组任一项
+  **大小写敏感、完整相等**即命中，两 venue 无优先级。归并后的 `info["competition"]`
+  不参与判断；旧 `include`、非数组、空数组或空元素均 fail-fast。该 query 位于套利树最外层，
+  因此同时约束赛前与赛中套利；补偿树不受它限制。
 - score 事件已有同盘通过 observation，当前比分平局且当前盘 away/no 的去重触发次数唯一最多，start price
   `{yes:0.40,no:0.60}`：真实配置完整 action 链应生成唯一 `N.POLYMARKET` 计划；改为
   `{yes:0.60,no:0.40}` 时，`trigger_count` 虽留下 no 腿，`start_price_gate` 仍须清腿且不生成计划。
@@ -562,6 +563,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `magic=pre_game_close_pre_game_position`，避免重复生成同类型平仓单。
 - `exposure_source(...,magic=...)` 仅对 order source 生效，与 source/position_order 取交集并只输出
   匹配订单 ID；position source 配 magic fail-fast。
+- `exposure_source(...,is=[...])` 对 order/position source 都可用；先按当前 pair 的 PM
+  `competition_raw` 或 OE `competition_name` 做大小写敏感、完整相等匹配，任一 venue 命中数组任一项
+  才继续筛 exposure。省略 `is` 保持原行为；非数组、空数组、空元素或未知参数 fail-fast；赛事不匹配
+  时不覆盖 scratch 中已有的候选集合。
 - 验收：`test_action_magic_order_gate.py`、`test_query_exposure_source.py`、`test_action_place_bets.py`、
   `test_submitter.py`、`test_opportunity.py` 与 launcher registry 测试。
 
@@ -652,8 +657,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ## strategy-4.trigger-count：当前盘触发次数最多方向筛腿（#490）
 
-- `trigger_count(history_key)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘 `passed=true`
-  observation，同一 outcome 在同一完整比分的重复 OBD 只计一次。
+- `trigger_count(history_key, when=None)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘
+  `passed=true` observation，同一 outcome 在同一完整比分的重复 OBD 只计一次。省略 `when` 时统计
+  当前盘全部历史；`when="current_draw"` 时以当前盘最近一次常规局分平局（包括 `0-0`）为截止点，
+  只统计该平局比分以前的数据，平局比分本身及之后的数据均略去，避免比分切换前的滞后 OBD
+  被误计入平局前窗口；当前盘没有平局记录时 fail-closed。
 - 仅唯一最高 outcome 的现有腿通过；并列、无通过记录、缺 Store/game/比分或坏比分均 fail-closed。
   没有上游腿时，Action 不读取历史腿，而是按唯一最高 outcome 从当前 live Cache 选最低隐含概率报价腿，
   补当前 `share` 后生成一条腿；当前报价/share 缺失同样 fail-closed。历史不被改变；已有腿时支持
@@ -662,7 +670,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   独立完成历史计数和当前报价产腿；它位于 action 链首位，确保后续 `set_selection(draw)` 与
   `current_set_game_selection(draw)` 能实际筛选已生成的腿，随后才进入 `start_price_gate`。
 - **验收**：`test_action_trigger_count.py` 覆盖当前盘计数、同比分去重、跨盘/未通过排除、并列、
-  无上游腿时按当前报价产腿、selected candidate 同步、缺比分及非法参数；launcher 注册由
+  `current_draw` 排除平局比分本身及其后记录、无平局 fail-closed、默认全盘兼容、无上游腿时按当前报价产腿、selected
+  candidate 同步、缺比分及非法参数；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
 ## strategy-4.set-exempt：指定当前盘拦截下单腿（#493）

@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 
 from src.arbitrage.common.venues import venue_preference_rank
-from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
+from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.consecutive_triggers import same_set
@@ -19,13 +19,16 @@ _LOG = logging.getLogger(__name__)
 class TriggerCountAction(Action):
     """只保留当前盘去重触发次数唯一最多的 outcome 腿。"""
 
-    def __init__(self, history_key: str) -> None:
+    def __init__(self, history_key: str, when: str | None = None) -> None:
         if not isinstance(history_key, str) or not history_key.strip():
             raise ValueError("trigger_count: history_key must be a non-empty string")
+        if when not in (None, "current_draw"):
+            raise ValueError("trigger_count: when must be 'current_draw' or omitted")
         self._history_key = history_key.strip()
+        self._when = when
 
     async def execute(self, ctx: EvalContext) -> None:
-        outcome, counts = _most_triggered_outcome(ctx, self._history_key)
+        outcome, counts = _most_triggered_outcome(ctx, self._history_key, when=self._when)
 
         selected = ctx.scratch.get("selected_candidate")
         if isinstance(selected, dict):
@@ -75,25 +78,48 @@ class TriggerCountAction(Action):
 def _most_triggered_outcome(
     ctx: EvalContext,
     history_key: str,
+    *,
+    when: str | None = None,
 ) -> tuple[str | None, dict[str, int]]:
-    counts = {outcome: 0 for outcome in VALID_OUTCOMES}
+    counts = dict.fromkeys(VALID_OUTCOMES, 0)
     store = ctx.consecutive_trigger_store
     current_score = _current_score_key(ctx)
     if store is None or current_score is None:
         return None, counts
 
+    history = [
+        observation
+        for observation in store.history(ctx.pair_id, history_key)
+        if same_set(observation.score_key, current_score)
+    ]
+    if when == "current_draw":
+        draw_score = next(
+            (observation.score_key for observation in reversed(history) if _is_draw(observation.score_key)),
+            None,
+        )
+        if draw_score is None:
+            return None, counts
+        cutoff = max(index for index, observation in enumerate(history) if observation.score_key == draw_score)
+        while cutoff > 0 and history[cutoff - 1].score_key == draw_score:
+            cutoff -= 1
+        history = history[:cutoff]
+
     scores = {outcome: set() for outcome in VALID_OUTCOMES}
-    for observation in store.history(ctx.pair_id, history_key):
+    for observation in history:
         if (
             observation.passed
             and observation.outcome in scores
-            and same_set(observation.score_key, current_score)
         ):
             scores[observation.outcome].add(observation.score_key)
     counts = {outcome: len(values) for outcome, values in scores.items()}
     maximum = max(counts.values(), default=0)
     winners = [outcome for outcome, count in counts.items() if count == maximum]
     return (winners[0] if maximum > 0 and len(winners) == 1 else None), counts
+
+
+def _is_draw(value) -> bool:
+    left, right, _, _ = value[-1]
+    return left == right
 
 
 def _filter_legs(

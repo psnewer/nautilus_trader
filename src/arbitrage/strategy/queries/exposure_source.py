@@ -9,6 +9,7 @@ from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
 from src.arbitrage.strategy.checks.quote_legs import pair_positions
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.position_orders import targets_existing_position
+from src.arbitrage.strategy.queries.competition import CompetitionIsQuery
 
 
 _SOURCES = {
@@ -29,7 +30,11 @@ class ExposureSourceQuery(StateQuery):
         source: str,
         position_order: bool | None = None,
         magic: str | None = None,
+        **params,
     ) -> None:
+        unknown = set(params) - {"is"}
+        if unknown:
+            raise ValueError(f"exposure_source: unknown params {sorted(unknown)!r}")
         if source not in _SOURCES:
             raise ValueError(f"exposure_source: unsupported source {source!r}")
         self._kind, self._origin = _SOURCES[source]
@@ -41,11 +46,25 @@ class ExposureSourceQuery(StateQuery):
             raise ValueError("exposure_source: magic must be a non-empty string")
         if self._kind != "order" and magic is not None:
             raise ValueError("exposure_source: magic is only valid for order sources")
+        values = params.get("is")
+        if "is" in params and (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+        ):
+            raise ValueError("exposure_source: is must be a non-empty array of non-empty strings")
         self._position_order = position_order
         self._magic = magic.strip() if magic is not None else None
+        self._competition = (
+            CompetitionIsQuery(**{"is": values})
+            if "is" in params
+            else None
+        )
 
     def matches(self, ctx: EvalContext) -> bool:
         if ctx.cache is None or ctx.pair_registry is None:
+            return False
+        if self._competition is not None and not self._competition.matches(ctx):
             return False
         if self._kind == "order":
             orders = _pair_open_orders(ctx)

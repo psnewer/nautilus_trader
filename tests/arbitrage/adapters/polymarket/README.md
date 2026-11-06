@@ -42,7 +42,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖纯函数;`test_debug_data_factories.py` 覆盖 provider 回写 `instrument_provider_by_venue["POLYMARKET"]`)
 - 评估结果:**上游 info=market_info(gamma dict)缺 matching key** → 走"子类化 PolymarketInstrumentProvider 补"路径
 - `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order,再按 series 调 `/events/keyset?series_id=...` 游标分页拉内嵌 teams + markets；PMSPORTS 共用同一分页 helper。
-- `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`;`start_ts` 不写入 matching info。
+- `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/competition_raw/home_team/away_team/selection_role/game_id`;`competition_raw` 保留 Gamma `/sports[].sport`（如 `atp/wta`）且不参与 matching；`selection_role` 与 OE/SE 对齐为 `home/draw/away`;`start_ts` 不写入 matching info。
 - 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入；`test_gamma_keyset.py` 覆盖分页协议；真实 Gamma keyset 完整性仍由 live smoke 验。
 
 ### pm-adapter-1.3: PM 两侧最小下单 share 映射
