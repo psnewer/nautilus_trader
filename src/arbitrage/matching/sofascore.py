@@ -1,4 +1,4 @@
-"""LiveScore 网球事件解析与 PMSPORTS anchor 映射。"""
+"""SofaScore 网球事件解析与 PMSPORTS anchor 映射。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from src.arbitrage.matching.normalizer import normalize_team_name
 
 
 @dataclass(frozen=True, slots=True)
-class LiveScoreEvent:
-    eid: str
+class SofaScoreEvent:
+    event_id: str
     home_team: str
     away_team: str
     score: str
@@ -20,35 +20,33 @@ class LiveScoreEvent:
     raw: dict[str, Any]
 
 
-def parse_livescore_payloads(payloads: list[dict[str, Any]]) -> list[LiveScoreEvent]:
-    """把日期接口 payload 展平为去重后的网球事件。"""
-    by_eid: dict[str, LiveScoreEvent] = {}
-    for payload in payloads:
-        for stage in payload.get("Stages") or []:
-            for event in stage.get("Events") or []:
-                parsed = _parse_event(event)
-                if parsed is not None:
-                    by_eid[parsed.eid] = parsed
-    return list(by_eid.values())
+def parse_sofascore_payload(payload: dict[str, Any]) -> list[SofaScoreEvent]:
+    """把 live endpoint payload 展平为去重后的网球事件。"""
+    by_event_id: dict[str, SofaScoreEvent] = {}
+    for event in payload.get("events") or []:
+        parsed = _parse_event(event)
+        if parsed is not None:
+            by_event_id[parsed.event_id] = parsed
+    return list(by_event_id.values())
 
 
-def map_livescore_events(
+def map_sofascore_events(
     anchor_events: list[NormalizedEvent],
-    livescore_events: list[LiveScoreEvent],
+    sofascore_events: list[SofaScoreEvent],
     engine: MatchEngine,
-) -> dict[int, LiveScoreEvent]:
+) -> dict[int, SofaScoreEvent]:
     """
-    复用 PM/OE 的同向队名算法,将 PMS ``game_id`` 映射到 LiveScore EID。
+    复用 PM/OE 的同向队名算法,将 PMS ``game_id`` 映射到 SofaScore event ID。
 
-    不尝试 home/away 互换。LiveScore 赛事名不参与分组,因为它与 Gamma 的命名并不一致;
+    不尝试 home/away 互换。SofaScore 赛事名不参与分组,因为它与 Gamma 的命名并不一致;
     这里只把同一批候选放入 anchor 当前的 sport/competition 分组后调用既有 MatchEngine。
     """
     anchors_by_group: dict[str, list[NormalizedEvent]] = {}
     for anchor in anchor_events:
         anchors_by_group.setdefault(anchor.group_key, []).append(anchor)
 
-    mapped: dict[int, LiveScoreEvent] = {}
-    used_eids: set[str] = set()
+    mapped: dict[int, SofaScoreEvent] = {}
+    used_event_ids: set[str] = set()
     for group_key in sorted(anchors_by_group):
         anchors = anchors_by_group[group_key]
         if not anchors:
@@ -57,7 +55,7 @@ def map_livescore_events(
         competition = anchors[0].competition
         candidates = [
             NormalizedEvent(
-                venue="LIVESCORE",
+                venue="SOFASCORE",
                 sport=sport,
                 competition=competition,
                 home_team=event.home_team,
@@ -66,35 +64,39 @@ def map_livescore_events(
                 away_team_normalized=normalize_team_name(event.away_team),
                 legs=[event],
             )
-            for event in livescore_events
-            if event.eid not in used_eids
+            for event in sofascore_events
+            if event.event_id not in used_event_ids
         ]
         for result in engine.match_events(anchors, candidates, skip_cap=True):
             game_id = _anchor_game_id(result.anchor_event)
             event = result.tradable_event.legs[0]
-            if game_id is None or not isinstance(event, LiveScoreEvent):
+            if game_id is None or not isinstance(event, SofaScoreEvent):
                 continue
             mapped[game_id] = event
-            used_eids.add(event.eid)
+            used_event_ids.add(event.event_id)
     return mapped
 
 
-def _parse_event(event: dict[str, Any]) -> LiveScoreEvent | None:
-    eid = str(event.get("Eid") or "")
-    home_team = _team_name(event.get("T1"))
-    away_team = _team_name(event.get("T2"))
-    if not eid or not home_team or not away_team:
+def _parse_event(event: dict[str, Any]) -> SofaScoreEvent | None:
+    event_id = str(event.get("id") or "")
+    home_team = _team_name(event.get("homeTeam"))
+    away_team = _team_name(event.get("awayTeam"))
+    if not event_id or not home_team or not away_team:
         return None
 
     units = _score_units(event)
     score = ", ".join(f"{home}-{away}" for home, away in units)
-    current_serve = event.get("Esrv")
+    current_serve = event.get("firstToServe")
     first_serve = None
     if units and units[-1] != (6, 6) and current_serve in (1, 2):
         current_role = "home" if current_serve == 1 else "away"
-        first_serve = current_role if sum(a + b for a, b in units) % 2 == 0 else _opposite(current_role)
-    return LiveScoreEvent(
-        eid=eid,
+        first_serve = (
+            current_role
+            if sum(a + b for a, b in units) % 2 == 0
+            else _opposite(current_role)
+        )
+    return SofaScoreEvent(
+        event_id=event_id,
         home_team=home_team,
         away_team=away_team,
         score=score,
@@ -104,17 +106,30 @@ def _parse_event(event: dict[str, Any]) -> LiveScoreEvent | None:
 
 
 def _team_name(team: Any) -> str:
-    if not isinstance(team, list):
+    if not isinstance(team, dict):
         return ""
-    names = [str(player.get("Nm") or "").strip() for player in team if isinstance(player, dict)]
-    return " / ".join(name for name in names if name)
+    sub_teams = team.get("subTeams")
+    if isinstance(sub_teams, list) and sub_teams:
+        names = [
+            str(player.get("name") or "").strip()
+            for player in sub_teams
+            if isinstance(player, dict)
+        ]
+        full_name = " / ".join(name for name in names if name)
+        if full_name:
+            return full_name
+    return str(team.get("name") or "").strip()
 
 
 def _score_units(event: dict[str, Any]) -> tuple[tuple[int, int], ...]:
+    home_score = event.get("homeScore")
+    away_score = event.get("awayScore")
+    if not isinstance(home_score, dict) or not isinstance(away_score, dict):
+        return ()
     units = []
     for index in range(1, 6):
-        home = event.get(f"Tr1S{index}")
-        away = event.get(f"Tr2S{index}")
+        home = home_score.get(f"period{index}")
+        away = away_score.get(f"period{index}")
         if home is None and away is None:
             continue
         try:

@@ -461,19 +461,19 @@ members、全部 runner routing、game 路由与 conflater 激活，再执行开
 完整应用盘口 → 发布 market OBD。phase 变化本身不另发事件、不绕过 Strategy 的价格变化门控；
 后续正常 OBD/PMS 评估读取最新 phase。
 
-#### 3.4.4 LiveScore `first_serve` 补充(#495，已落地 · live-unvalidated)
+#### 3.4.4 SofaScore `first_serve` 写入契约(#495/#501，已落地 · offline-verified 2026-11-06)
 
 `SportsGameUpdate` 增加与 `score/status/ts` 并列的 `first_serve` 字段，合法值为 `home`、
 `away` 或空串；Arrow schema 与 dict roundtrip 同步承载，旧 payload 缺字段时按空串读取。
-PMS 原始 parser 不猜发球方，初始值为空；Matching 的 LiveScore EID 映射取得外部证据后，
+PMS 原始 parser 不猜发球方，初始值为空；Matching 的 SofaScore event 映射取得外部证据后，
 通过 `SportsGameStateStore.set_first_serve` 补充 Store。
 
-写入前必须用 Store 的**当前本地比分**校验 LiveScore 比分。两侧比分按各盘 game score 解析，
+写入前必须用 Store 的**当前本地比分**校验 SofaScore 比分。两侧比分按各盘 game score 解析，
 忽略抢七括号小分；缺失的末盘按 `0-0` 补齐，然后计算所有盘、双方局分绝对差之和。只有总差
 `<= 1` 时才接受，解析失败或差值更大均不写。校验通过后同步更新 latest 与既有
 `score_history` 中的 `first_serve`。`first_serve` 是赛事级不变量：已有合法值时，后续校验
-通过的 LiveScore 快照也不再覆盖，避免 `Esrv` 在局分变化后指向上一局发球方时把已确认值
-反转。后续 PMS `put` 继承该值，新比分不会把它清空。LiveScore 当前发球方到首局发球方的
+通过的 SofaScore 快照也不再覆盖，避免外部当前发球方与比分更新先后不一致时把已确认值
+反转。后续 PMS `put` 继承该值，新比分不会把它清空。SofaScore 当前发球方到首局发球方的
 奇偶反推归 Matching §4.5 所有。
 
 原始 PMS score event 已经发布时不会被追溯重发；需要该补充字段的消费者应读取

@@ -250,7 +250,7 @@ def test_market_matching_config_defaults_do_not_implicit_pm_oe_match():
     assert len(registry) == 0
 
 
-def test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store():
+def test_sofascore_mapping_refresh_writes_verified_first_serve_to_sports_store():
     from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
     from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 
@@ -275,35 +275,30 @@ def test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store()
         ),
     )
     payload = {
-        "Stages": [
+        "events": [
             {
-                "Events": [
-                    {
-                        "Eid": "1915017",
-                        "T1": [{"Nm": "Felix Gill"}],
-                        "T2": [{"Nm": "Marcus Walters"}],
-                        "Esrv": 2,
-                        "Tr1S1": "3",
-                        "Tr2S1": "5",
-                    },
-                ],
+                "id": 1915017,
+                "homeTeam": {"name": "Felix Gill", "subTeams": []},
+                "awayTeam": {"name": "Marcus Walters", "subTeams": []},
+                "firstToServe": 2,
+                "homeScore": {"period1": 3},
+                "awayScore": {"period1": 5},
             },
         ],
     }
 
-    async def fetch(_day):
+    async def fetch():
         return payload
 
-    actor._fetch_livescore_date = fetch
-    actor._livescore_dates = lambda: ("20261104",)
+    actor._fetch_sofascore_live = fetch
 
-    asyncio.run(actor._refresh_livescore_mapping())
+    asyncio.run(actor._refresh_sofascore_mapping())
 
-    assert actor._livescore_eids == {777: "1915017"}
+    assert actor._sofascore_event_ids == {777: "1915017"}
     assert store.get(777).first_serve == "away"
 
 
-def test_livescore_timer_callback_submits_refresh_to_injected_loop():
+def test_sofascore_timer_callback_submits_refresh_to_injected_loop():
     """LiveClock 同步回调没有 running loop 时，仍把刷新提交到 kernel loop。"""
     loop = asyncio.new_event_loop()
     loop_thread = threading.Thread(target=loop.run_forever)
@@ -314,13 +309,13 @@ def test_livescore_timer_callback_submits_refresh_to_injected_loop():
         refresh_entered.set()
 
     actor._maybe_match = lambda: None
-    actor._refresh_livescore_mapping = refresh
+    actor._refresh_sofascore_mapping = refresh
     loop_thread.start()
     try:
         actor._on_alert(None)
         assert refresh_entered.wait(timeout=1)
-        assert actor._livescore_task is not None
-        actor._livescore_task.result(timeout=1)
+        assert actor._sofascore_task is not None
+        actor._sofascore_task.result(timeout=1)
     finally:
         loop.call_soon_threadsafe(loop.stop)
         loop_thread.join(timeout=1)

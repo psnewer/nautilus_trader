@@ -16,9 +16,6 @@ import asyncio
 import json
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import timedelta
-from datetime import timezone
 
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
@@ -46,14 +43,13 @@ from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.matching.events import PairEvicted
-from src.arbitrage.matching.livescore import map_livescore_events
-from src.arbitrage.matching.livescore import parse_livescore_payloads
 from src.arbitrage.matching.normalizer import events_from_instruments
+from src.arbitrage.matching.sofascore import map_sofascore_events
+from src.arbitrage.matching.sofascore import parse_sofascore_payload
 
 
 _MATCH_ALERT = "market_matching:tick"
-_LIVESCORE_URL = "https://prod-public-api.livescore.com/v1/api/app/date/tennis"
-_BEIJING = timezone(timedelta(hours=8))
+_SOFASCORE_URL = "https://www.sofascore.com/api/v1/sport/tennis/events/live"
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
@@ -134,10 +130,16 @@ class MarketMatchingActor(Actor):
         self._validation_pairs_by_market: dict[tuple[str, str], set[str]] = {}
         self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
-        self._livescore_http = HttpClient(timeout_secs=15)
+        self._sofascore_http = HttpClient(
+            default_headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout_secs=15,
+        )
         self._loop = deps.loop
-        self._livescore_task: Future[None] | None = None
-        self._livescore_eids: dict[int, str] = {}
+        self._sofascore_task: Future[None] | None = None
+        self._sofascore_event_ids: dict[int, str] = {}
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
     def on_start(self) -> None:
@@ -250,9 +252,9 @@ class MarketMatchingActor(Actor):
 
     def on_stop(self) -> None:
         self._cancel_alert()
-        if self._livescore_task is not None:
-            self._livescore_task.cancel()
-            self._livescore_task = None
+        if self._sofascore_task is not None:
+            self._sofascore_task.cancel()
+            self._sofascore_task = None
         for pair_id in list(self._pair_validations):
             self._clear_pair_validation(pair_id)
 
@@ -267,22 +269,22 @@ class MarketMatchingActor(Actor):
     def _on_alert(self, event) -> None:
         try:
             self._maybe_match()
-            self._schedule_livescore_mapping()
+            self._schedule_sofascore_mapping()
         finally:
             self._schedule_next()
 
-    def _schedule_livescore_mapping(self) -> None:
-        """每个 matching tick 最多启动一轮 LiveScore EID 映射。"""
+    def _schedule_sofascore_mapping(self) -> None:
+        """每个 matching tick 最多启动一轮 SofaScore event ID 映射。"""
         if self._anchor_venue_str != SPORTS_CLIENT:
             return
-        if self._livescore_task is not None and not self._livescore_task.done():
+        if self._sofascore_task is not None and not self._sofascore_task.done():
             return
-        self._livescore_task = asyncio.run_coroutine_threadsafe(
-            self._refresh_livescore_mapping(),
+        self._sofascore_task = asyncio.run_coroutine_threadsafe(
+            self._refresh_sofascore_mapping(),
             self._loop,
         )
 
-    async def _refresh_livescore_mapping(self) -> None:
+    async def _refresh_sofascore_mapping(self) -> None:
         try:
             anchor_instruments = [
                 instrument
@@ -292,24 +294,21 @@ class MarketMatchingActor(Actor):
             anchor_events = events_from_instruments(anchor_instruments)
             if not anchor_events:
                 return
-            payloads = await asyncio.gather(*(
-                self._fetch_livescore_date(day)
-                for day in self._livescore_dates()
-            ))
-            livescore_events = parse_livescore_payloads([payload for payload in payloads if payload])
-            mapped = map_livescore_events(anchor_events, livescore_events, self._engine)
+            payload = await self._fetch_sofascore_live()
+            sofascore_events = parse_sofascore_payload(payload) if payload else []
+            mapped = map_sofascore_events(anchor_events, sofascore_events, self._engine)
             sports_store = SportsGameStateStore(self.cache)
             verified_count = 0
             for game_id, event in mapped.items():
-                previous_eid = self._livescore_eids.get(game_id)
-                self._livescore_eids[game_id] = event.eid
+                previous_event_id = self._sofascore_event_ids.get(game_id)
+                self._sofascore_event_ids[game_id] = event.event_id
                 local_state = sports_store.get(game_id)
                 verified = bool(
                     event.first_serve
                     and event.score
                     and sports_store.set_first_serve(
                         game_id,
-                        livescore_score=event.score,
+                        external_score=event.score,
                         first_serve=event.first_serve,
                     )
                 )
@@ -317,50 +316,39 @@ class MarketMatchingActor(Actor):
                 if event.first_serve and event.score:
                     stored_state = sports_store.get(game_id)
                     self.log.info(
-                        f"LiveScore serve snapshot: game={game_id} eid={event.eid} "
+                        f"SofaScore serve snapshot: game={game_id} event_id={event.event_id} "
                         f"{event.home_team} vs {event.away_team} "
-                        f"esrv={event.raw.get('Esrv')} livescore_score='{event.score}' "
+                        f"current_serve={event.raw.get('firstToServe')} sofascore_score='{event.score}' "
                         f"pms_score='{getattr(local_state, 'score', '')}' "
                         f"inferred_first_serve={event.first_serve} "
                         f"stored_first_serve='{getattr(stored_state, 'first_serve', '')}' "
                         f"verified={verified}",
                     )
-                if previous_eid != event.eid:
+                if previous_event_id != event.event_id:
                     self.log.info(
-                        f"LiveScore mapped: game={game_id} eid={event.eid} "
+                        f"SofaScore mapped: game={game_id} event_id={event.event_id} "
                         f"{event.home_team} vs {event.away_team} first_serve={event.first_serve} "
                         f"score_verified={verified}",
                     )
             self.log.info(
-                f"LiveScore refresh completed: anchors={len(anchor_events)} "
-                f"events={len(livescore_events)} mapped={len(mapped)} "
+                f"SofaScore refresh completed: anchors={len(anchor_events)} "
+                f"events={len(sofascore_events)} mapped={len(mapped)} "
                 f"first_serve_verified={verified_count}",
             )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 补充数据失败不影响原 matching
-            self._log.warning(f"LiveScore mapping failed: {e!r}; retrying next matching tick")
+            self._log.warning(f"SofaScore mapping failed: {e!r}; retrying next matching tick")
 
-    async def _fetch_livescore_date(self, day: str) -> dict | None:
-        response = await self._livescore_http.get(
-            f"{_LIVESCORE_URL}/{day}/8",
-            params={"countryCode": "CN", "locale": "en", "MD": "1"},
+    async def _fetch_sofascore_live(self) -> dict | None:
+        response = await self._sofascore_http.get(
+            _SOFASCORE_URL,
             timeout_secs=15,
         )
         if response.status >= 400:
-            raise RuntimeError(f"HTTP {response.status} for LiveScore date {day}")
+            raise RuntimeError(f"HTTP {response.status} for SofaScore live tennis")
         payload = json.loads(response.body.decode("utf-8"))
         return payload if isinstance(payload, dict) else None
-
-    def _livescore_dates(self) -> tuple[str, str, str]:
-        now = datetime.fromtimestamp(
-            self.clock.timestamp_ns() / 1_000_000_000,
-            timezone.utc,
-        ).astimezone(_BEIJING)
-        return tuple(
-            (now.date() + timedelta(days=offset)).strftime("%Y%m%d")
-            for offset in (-1, 0, 1)
-        )
 
     def _cancel_alert(self) -> None:
         try:

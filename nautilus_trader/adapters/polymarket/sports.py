@@ -248,7 +248,7 @@ class SportsGameUpdate(Data):
     - `live`         进行中
     - `ended`        已结束(eviction 触发,D4)
     - `finished_ts`  ISO 结束时刻(仅 ended 时非空)
-    - `first_serve`  网球第一局发球方(`home`/`away`);LiveScore 校验通过后由 Store 补入
+    - `first_serve`  网球第一局发球方(`home`/`away`);SofaScore 校验通过后由 Store 补入
     """
 
     game_id: int
@@ -364,9 +364,9 @@ def _tennis_score_units(score: str) -> tuple[tuple[int, int], ...] | None:
     return tuple(units) if units else None
 
 
-def _tennis_scores_within_one_game(local_score: str, livescore_score: str) -> bool:
+def _tennis_scores_within_one_game(local_score: str, external_score: str) -> bool:
     local = _tennis_score_units(local_score)
-    remote = _tennis_score_units(livescore_score)
+    remote = _tennis_score_units(external_score)
     if local is None or remote is None:
         return False
     length = max(len(local), len(remote))
@@ -487,7 +487,7 @@ class SportsGameStateStore:
         raw = json.dumps(payload).encode("utf-8")
         self._cache.add(self._key(update.game_id), raw)
 
-    def set_first_serve(self, game_id, *, livescore_score: str, first_serve: str) -> bool:
+    def set_first_serve(self, game_id, *, external_score: str, first_serve: str) -> bool:
         """比分相差不超过一局时，首次将第一局发球方补入已有比分状态与历史。"""
         if first_serve not in {"home", "away"}:
             return False
@@ -496,7 +496,7 @@ class SportsGameStateStore:
             return False
         payload = json.loads(raw.decode("utf-8"))
         latest = payload.get("latest") if "latest" in payload else payload
-        if not _tennis_scores_within_one_game(str(latest.get("score") or ""), livescore_score):
+        if not _tennis_scores_within_one_game(str(latest.get("score") or ""), external_score):
             return False
         if str(latest.get("first_serve") or "") in {"home", "away"}:
             return True

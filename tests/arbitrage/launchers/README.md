@@ -28,7 +28,7 @@
 `launchers/arb_node.py:add_actors(node, cfg, pair_registry=)` — node.build 后调用；MarketMatchingActor /
 WebGatewayActor 经 `add_actor` 注册，StrategyEvaluator 经 `add_strategy` 注册。
 异步运行时依赖统一取 `node.get_event_loop()`；MatchingActor 以此把 LiveClock 同步 timer 回调中的
-LiveScore refresh 线程安全提交到 kernel loop，不再查找或创建隐式 asyncio loop。
+SofaScore refresh 线程安全提交到 kernel loop，不再查找或创建隐式 asyncio loop。
 
 - ✅ `test_arb_node.py`:默认装 1 个 Matching Actor + 1 个 Evaluator Strategy；`web.enabled=true`
   额外装 WebGatewayActor；StrategyEvaluator portfolio 取自 kernel；bootstrap_and_build 调 add_actors

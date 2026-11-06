@@ -39,20 +39,23 @@
 | `test_engine.py` | 匹配算法(输入为 `NormalizedEvent` 列表,输出 anchor/tradable `MatchResult`) |
 | `test_actor.py` | Actor timer 触发、cache latch、PairRegistry 注册、PMSPORTS anchor 聚合、ended eviction |
 
-## matching-livescore-eid:#495
+## matching-sofascore-event:#495/#501
 
+- `test_parser_reads_full_names_stable_event_id_and_score`：从 SofaScore live JSON 读取 event ID、
+  单打完整姓名、各盘局分与当前发球方；不使用页面简写名。
+- `test_parser_uses_full_subteam_names_for_doubles`：双打优先组合 `subTeams[].name` 完整姓名。
 - `test_mapping_reuses_same_direction_team_similarity_for_name_variants`：复用 `MatchEngine` 后，既有
-  PM/OE 队名相似匹配可把带姓氏后缀或名称缩写的 LiveScore 队名映射到 PMSPORTS anchor。
-- `test_mapping_does_not_try_home_away_swap`：仅允许同向主客队，不因反向队名建立 EID
+  PM/OE 队名相似匹配可把 SofaScore 完整姓名映射到 PMSPORTS anchor。
+- `test_mapping_does_not_try_home_away_swap`：仅允许同向主客队，不因反向队名建立 event ID
   映射。
-- `test_first_serve_is_inferred_from_current_server_and_completed_game_parity`：根据 `Esrv` 与各盘已打局数奇偶反推
+- `test_first_serve_is_inferred_from_current_server_and_completed_game_parity`：根据 `firstToServe` 与各盘已打局数奇偶反推
   `first_serve`。
 - `test_first_serve_is_not_inferred_during_active_tiebreak`：当前盘 `6-6` 抢七进行中不把逐分
-  `Esrv` 当作整局发球方；抢七结束后恢复奇偶反推。
-- `test_livescore_mapping_refresh_writes_verified_first_serve_to_sports_store`：实际 Actor refresh
-  路径取得 EID 后，只有外部比分与 Store 当前比分最多相差一局才写入首局发球方。
-- `test_livescore_timer_callback_submits_refresh_to_injected_loop`：在调用线程没有 running loop 的
-  条件下走真实 `_on_alert` 路径，确认 LiveScore refresh 被提交到注入的 kernel loop 并实际进入。
+  `firstToServe` 当作整局发球方；抢七结束后恢复奇偶反推。
+- `test_sofascore_mapping_refresh_writes_verified_first_serve_to_sports_store`：实际 Actor refresh
+  路径取得 event ID 后，只有外部比分与 Store 当前比分最多相差一局才写入首局发球方。
+- `test_sofascore_timer_callback_submits_refresh_to_injected_loop`：在调用线程没有 running loop 的
+  条件下走真实 `_on_alert` 路径，确认 SofaScore refresh 被提交到注入的 kernel loop 并实际进入。
 | `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |
 | `test_pair_registry.py` | pair→legs / anchor 分槽 / refresh interval 热改 |
 
