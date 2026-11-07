@@ -706,10 +706,16 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - 普通执行腿沿用目标 instrument 与 BUY/SELL 无关的筛选语义。`order_cancel` 已写
   `cancel_pair_orders` 时，逐个 `client_order_id` 回查 open Order 的 instrument，仅保留其参赛方
   standing 命中的撤单 ID；全部不命中、比分/订单映射证据缺失时删除撤单请求，本叶不形成计划。
+- `current_set_exempt` 缺失/`false` 时完整保持上述行为；显式 `true` 时只对 SELL 平仓对象逐仓位
+  豁免：本轮生成的平仓腿以 `position_id` 关联 Position，再读取 opening Order 冻结的
+  `arb:origin/arb:order_score`。opening order 明确为赛中且开仓比分与当前比分仍在同一盘时，该腿
+  不受 standing 限制；跨盘、赛前及任一证据缺失/非法均不豁免。定向撤单请求不使用本参数，仍
+  完全沿用 standing 过滤。
 - `standing` 缺失时严格 no-op；比分缺失、格式非法、出现非末段未完成盘或目标参赛方不可映射时
-  fail-closed。非法 standing 构造失败。
+  fail-closed。非法 standing 或非 boolean `current_set_exempt` 构造失败。
 - **验收**：`test_action_set_selection.py` 覆盖已完成盘统计、忽略当前盘、盘间完成帧、无已完成盘、
-  缺失/坏比分、撤单 ID 定向过滤、空结果删除撤单请求、缺参数 no-op 与非法参数；launcher 注册由
+  缺失/坏比分、撤单 ID 定向过滤、空结果删除撤单请求、同盘赛中仓位的平仓腿豁免、跨盘与
+  缺证据不豁免、默认兼容、缺参数 no-op 与非法参数；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
 ## strategy-4.current-set-game-selection：当前盘局分筛选

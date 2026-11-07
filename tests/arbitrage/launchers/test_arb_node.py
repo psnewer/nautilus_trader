@@ -104,7 +104,10 @@ def test_register_builtin_checks_and_actions_registers_current_types():
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
     assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)
     assert isinstance(
-        build_action({"type": "set_selection", "params": {"standing": "lose"}}),
+        build_action({
+            "type": "set_selection",
+            "params": {"standing": "lose", "current_set_exempt": True},
+        }),
         SetSelectionAction,
     )
     assert isinstance(

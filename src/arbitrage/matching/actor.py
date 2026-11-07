@@ -13,7 +13,6 @@ venue cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venu
 from __future__ import annotations
 
 import asyncio
-import json
 from concurrent.futures import Future
 from dataclasses import dataclass
 
@@ -43,13 +42,14 @@ from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.matching.events import PairEvicted
+from src.arbitrage.matching.flashscore import map_flashscore_events
+from src.arbitrage.matching.flashscore import parse_flashscore_feed
 from src.arbitrage.matching.normalizer import events_from_instruments
-from src.arbitrage.matching.sofascore import map_sofascore_events
-from src.arbitrage.matching.sofascore import parse_sofascore_payload
 
 
 _MATCH_ALERT = "market_matching:tick"
-_SOFASCORE_URL = "https://www.sofascore.com/api/v1/sport/tennis/events/live"
+_FLASHSCORE_URL = "https://global.flashscore.ninja/2/x/feed/f_2_0_2_en_1"
+_FLASHSCORE_FSIGN = "SW9D1eZo"
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
@@ -130,16 +130,19 @@ class MarketMatchingActor(Actor):
         self._validation_pairs_by_market: dict[tuple[str, str], set[str]] = {}
         self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
-        self._sofascore_http = HttpClient(
+        self._flashscore_http = HttpClient(
             default_headers={
-                "Accept": "application/json",
+                "Accept": "text/plain",
+                "Origin": "https://www.flashscore.com",
+                "Referer": "https://www.flashscore.com/",
                 "User-Agent": "Mozilla/5.0",
+                "x-fsign": _FLASHSCORE_FSIGN,
             },
             timeout_secs=15,
         )
         self._loop = deps.loop
-        self._sofascore_task: Future[None] | None = None
-        self._sofascore_event_ids: dict[int, str] = {}
+        self._flashscore_task: Future[None] | None = None
+        self._flashscore_event_ids: dict[int, str] = {}
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
     def on_start(self) -> None:
@@ -252,9 +255,9 @@ class MarketMatchingActor(Actor):
 
     def on_stop(self) -> None:
         self._cancel_alert()
-        if self._sofascore_task is not None:
-            self._sofascore_task.cancel()
-            self._sofascore_task = None
+        if self._flashscore_task is not None:
+            self._flashscore_task.cancel()
+            self._flashscore_task = None
         for pair_id in list(self._pair_validations):
             self._clear_pair_validation(pair_id)
 
@@ -269,22 +272,22 @@ class MarketMatchingActor(Actor):
     def _on_alert(self, event) -> None:
         try:
             self._maybe_match()
-            self._schedule_sofascore_mapping()
+            self._schedule_flashscore_mapping()
         finally:
             self._schedule_next()
 
-    def _schedule_sofascore_mapping(self) -> None:
-        """每个 matching tick 最多启动一轮 SofaScore event ID 映射。"""
+    def _schedule_flashscore_mapping(self) -> None:
+        """每个 matching tick 最多启动一轮 Flashscore event ID 映射。"""
         if self._anchor_venue_str != SPORTS_CLIENT:
             return
-        if self._sofascore_task is not None and not self._sofascore_task.done():
+        if self._flashscore_task is not None and not self._flashscore_task.done():
             return
-        self._sofascore_task = asyncio.run_coroutine_threadsafe(
-            self._refresh_sofascore_mapping(),
+        self._flashscore_task = asyncio.run_coroutine_threadsafe(
+            self._refresh_flashscore_mapping(),
             self._loop,
         )
 
-    async def _refresh_sofascore_mapping(self) -> None:
+    async def _refresh_flashscore_mapping(self) -> None:
         try:
             anchor_instruments = [
                 instrument
@@ -294,14 +297,14 @@ class MarketMatchingActor(Actor):
             anchor_events = events_from_instruments(anchor_instruments)
             if not anchor_events:
                 return
-            payload = await self._fetch_sofascore_live()
-            sofascore_events = parse_sofascore_payload(payload) if payload else []
-            mapped = map_sofascore_events(anchor_events, sofascore_events, self._engine)
+            payload = await self._fetch_flashscore_live()
+            flashscore_events = parse_flashscore_feed(payload) if payload else []
+            mapped = map_flashscore_events(anchor_events, flashscore_events, self._engine)
             sports_store = SportsGameStateStore(self.cache)
             verified_count = 0
             for game_id, event in mapped.items():
-                previous_event_id = self._sofascore_event_ids.get(game_id)
-                self._sofascore_event_ids[game_id] = event.event_id
+                previous_event_id = self._flashscore_event_ids.get(game_id)
+                self._flashscore_event_ids[game_id] = event.event_id
                 local_state = sports_store.get(game_id)
                 verified = bool(
                     event.first_serve
@@ -316,9 +319,9 @@ class MarketMatchingActor(Actor):
                 if event.first_serve and event.score:
                     stored_state = sports_store.get(game_id)
                     self.log.info(
-                        f"SofaScore serve snapshot: game={game_id} event_id={event.event_id} "
+                        f"Flashscore serve snapshot: game={game_id} event_id={event.event_id} "
                         f"{event.home_team} vs {event.away_team} "
-                        f"current_serve={event.raw.get('firstToServe')} sofascore_score='{event.score}' "
+                        f"current_serve={event.raw.get('WC')} flashscore_score='{event.score}' "
                         f"pms_score='{getattr(local_state, 'score', '')}' "
                         f"inferred_first_serve={event.first_serve} "
                         f"stored_first_serve='{getattr(stored_state, 'first_serve', '')}' "
@@ -326,29 +329,28 @@ class MarketMatchingActor(Actor):
                     )
                 if previous_event_id != event.event_id:
                     self.log.info(
-                        f"SofaScore mapped: game={game_id} event_id={event.event_id} "
+                        f"Flashscore mapped: game={game_id} event_id={event.event_id} "
                         f"{event.home_team} vs {event.away_team} first_serve={event.first_serve} "
                         f"score_verified={verified}",
                     )
             self.log.info(
-                f"SofaScore refresh completed: anchors={len(anchor_events)} "
-                f"events={len(sofascore_events)} mapped={len(mapped)} "
+                f"Flashscore refresh completed: anchors={len(anchor_events)} "
+                f"events={len(flashscore_events)} mapped={len(mapped)} "
                 f"first_serve_verified={verified_count}",
             )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 补充数据失败不影响原 matching
-            self._log.warning(f"SofaScore mapping failed: {e!r}; retrying next matching tick")
+            self._log.warning(f"Flashscore mapping failed: {e!r}; retrying next matching tick")
 
-    async def _fetch_sofascore_live(self) -> dict | None:
-        response = await self._sofascore_http.get(
-            _SOFASCORE_URL,
+    async def _fetch_flashscore_live(self) -> str:
+        response = await self._flashscore_http.get(
+            _FLASHSCORE_URL,
             timeout_secs=15,
         )
         if response.status >= 400:
-            raise RuntimeError(f"HTTP {response.status} for SofaScore live tennis")
-        payload = json.loads(response.body.decode("utf-8"))
-        return payload if isinstance(payload, dict) else None
+            raise RuntimeError(f"HTTP {response.status} for Flashscore live tennis")
+        return response.body.decode("utf-8")
 
     def _cancel_alert(self) -> None:
         try:

@@ -248,7 +248,7 @@ class SportsGameUpdate(Data):
     - `live`         进行中
     - `ended`        已结束(eviction 触发,D4)
     - `finished_ts`  ISO 结束时刻(仅 ended 时非空)
-    - `first_serve`  网球第一局发球方(`home`/`away`);SofaScore 校验通过后由 Store 补入
+    - `first_serve`  网球第一局发球方(`home`/`away`);Flashscore 校验通过后由 Store 补入
     """
 
     game_id: int

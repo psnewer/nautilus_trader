@@ -342,17 +342,18 @@ def _evict_game(gid):
 > 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
 > `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
 
-### 4.5 SofaScore event 映射与首局发球方补充(#495/#497/#501，已落地 · offline-verified 2026-11-06)
+### 4.5 Flashscore event 映射与首局发球方补充(#495/#497/#501/#502，已落地 · offline-verified 2026-11-07)
 
 每次 Matching timer tick 完成 `_maybe_match` 后，Actor 对 PMSPORTS anchor 异步发起一次
-SofaScore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。运行时唯一外部源为
-`https://www.sofascore.com/api/v1/sport/tennis/events/live`，每轮只请求一次当前全部 live 网球；
-请求显式携带 `Accept: application/json` 与普通浏览器 `User-Agent`。LiveScore 请求、日期窗口、
-`Esrv` 解析和 fallback 均已删除。
+Flashscore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。运行时唯一外部源为
+`https://global.flashscore.ninja/2/x/feed/f_2_0_2_en_1`，每轮只请求一次当日网球 feed；请求显式
+携带昨晚浏览器与次日直连验证一致的 `x-fsign: SW9D1eZo`、Flashscore `Origin/Referer` 和普通
+浏览器 `User-Agent`。解析时只保留 `AB=2` 的 live 赛事。LiveScore/SofaScore 请求及 fallback
+均已删除，也不为完整姓名逐球员请求 profile feed。
 
 NT `LiveClock` 的 native timer 回调中没有 asyncio running loop，不能在回调内用
 `asyncio.get_running_loop()`；该写法会在每次 tick 静默跳过刷新。launcher 在 `node.build()` 后把
-`node.get_event_loop()` 注入 Actor，timer 回调用 `asyncio.run_coroutine_threadsafe` 将 SofaScore 刷新提交到
+`node.get_event_loop()` 注入 Actor，timer 回调用 `asyncio.run_coroutine_threadsafe` 将 Flashscore 刷新提交到
 kernel loop，返回的 `concurrent.futures.Future` 同时用于防重入和 `on_stop` 取消。这里的线程安全
 提交是已由远端 `RuntimeError('no running event loop')` 证实的同步回调→async loop 边界，不是
 未经证实的兜底分支。每轮请求完成记录 anchor/event/mapped/verified 数量，失败则保留原有
@@ -362,24 +363,25 @@ fail-soft 告警，便于区分“未调度、请求失败、映射为零、比�
 尚未因 in-play 建立 score 订阅。下一轮在 PMS 本地比分进入 Store 后完成
 `anchors=78/events=382/mapped=76/verified=4`，证明 timer→kernel loop→HTTP→映射→比分校验→
 `first_serve` 写入整条生产路径已执行。其后 score 更新也正常触发 Strategy；当时策略树未命中，
-故未产生 ExecutionPlan。该记录只证明调度与 Store 写入架构；2026-11-06 换成 SofaScore 后尚未 live 验证，
+故未产生 ExecutionPlan。该记录只证明调度与 Store 写入架构；2026-11-07 换成 Flashscore 后尚未 live 验证，
 不能沿用旧数据源的 live-validated 状态，也不能据此把下游 `serve_gate` 标为 live-validated。
 
 映射继续复用本组件既有 `MatchEngine` 的队名 token 相似度、confidence 排序和一对一贪心分配，
-不另造名称算法。PMSPORTS 的 `home_team/away_team` 与 SofaScore 的 `homeTeam/awayTeam` 必须同向匹配，
-不尝试主客互换；单打读取双方 `name` 全名，双打优先把 `subTeams[].name` 全名按顺序拼接。SofaScore
+不另造名称算法。PMSPORTS 的 `home_team/away_team` 与 Flashscore 的 `AE/AF` 必须同向匹配，
+不尝试主客互换；按用户裁定直接使用 day feed 的简写姓名（双打保留原始 `/` 组合），不请求
+`pl_1_<player_id>_0` 球员资料补全姓名。Flashscore
 赛事名与 Provider competition taxonomy 不同，因此候选只在各 anchor
 competition 分组内部参与同一队名算法，赛事名本身不作第二道严格相等门。成功结果以
-`game_id → SofaScore event ID` 保存在 Actor 进程内存，下一 tick 可重建。
+`game_id → Flashscore AA event ID` 保存在 Actor 进程内存，下一 tick 可重建。
 
-SofaScore live payload 的 `firstToServe` 经同场实时变化验证为当前局发球方（`1=home`、`2=away`），
-不是赛事首局发球方。各盘局分只读取 `homeScore/awayScore.period1..period5`。将各盘局分求和：
+Flashscore live record 的 `WC` 是当前局发球方（`1=home`、`2=away`），不是赛事首局发球方。
+各盘局分依次读取 `BA/BB`、`BC/BD`、`BE/BF`、`BG/BH`、`BI/BJ`。将各盘局分求和：
 已打局数为偶数时首局发球方等于当前
 发球方，为奇数时取另一方，由此得到赛事级 `first_serve=home|away`。Matching 只负责取得并
-提交这份补充证据。当前盘为 `6-6` 时处于抢七，`firstToServe` 是当前分发球方而非整局发球方，故本轮不推断、
+提交这份补充证据。当前盘为 `6-6` 时处于抢七，`WC` 是当前分发球方而非整局发球方，故本轮不推断、
 不写入；抢七结束后的 `7-6` 仍作为一局参与奇偶反推。比分相差一局校验、字段存储和后续继承由 data §3.4.4 的
 `SportsGameStateStore` 定义。HTTP、payload 或映射失败均 fail-soft 告警，留待下一 tick 重试。
-对每个可推断的赛事，每轮同时记录原始 `firstToServe`、SofaScore 盘分、PMS 当前盘分、
+对每个可推断的赛事，每轮同时记录原始 `WC`、Flashscore 盘分、PMS 当前盘分、
 本轮反推值、Store 已保存值与校验结果；Store 已有 `first_serve` 时本轮只观测、不覆盖。
 
 ---

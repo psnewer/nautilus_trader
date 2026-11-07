@@ -728,9 +728,9 @@ PMS ended。全部 sports channel 退订归零时两个 Store 一并回收。**�
 `test_processor_advances_shared_phase_store_from_pms_state`，以及 common
 `test_sports_phase.py` 的单调推进/删除用例。
 
-### pm-adapter-sports.first-serve:#495/#501 SofaScore 首局发球方附件
+### pm-adapter-sports.first-serve:#495/#501/#502 Flashscore 首局发球方附件
 
-**输入**：Store 已有 PMS 当前比分，SofaScore 映射提交外部比分与 `first_serve`。
+**输入**：Store 已有 PMS 当前比分，Flashscore 映射提交外部比分与 `first_serve`。
 **期望/验收**：双方各盘局分绝对差总和 `<=1`（含本地尚无、外部已出现的 `0-0` 新盘）才接受；
 更大差异拒绝。首次接受后 latest、既有历史和未来比分记录均保留该赛事级字段；
 后续快照即使提交相反值也不覆盖。由
