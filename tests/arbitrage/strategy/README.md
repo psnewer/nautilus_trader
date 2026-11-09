@@ -657,19 +657,23 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ## strategy-4.trigger-count：当前盘触发次数最多方向筛腿（#490）
 
-- `trigger_count(history_key, when=None)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘
+- `trigger_count(history_key, when=None, equal_enable=false)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘
   `passed=true` observation，同一 outcome 在同一完整比分的重复 OBD 只计一次。省略 `when` 时统计
   当前盘全部历史；`when="current_draw"` 时以当前盘最近一次常规局分平局（包括 `0-0`）为截止点，
   只统计该平局比分以前的数据，平局比分本身及之后的数据均略去，避免比分切换前的滞后 OBD
   被误计入平局前窗口；当前盘没有平局记录时 fail-closed。
-- 仅唯一最高 outcome 的现有腿通过；并列、无通过记录、缺 Store/game/比分或坏比分均 fail-closed。
-  没有上游腿时，Action 不读取历史腿，而是按唯一最高 outcome 从当前 live Cache 选最低隐含概率报价腿，
-  补当前 `share` 后生成一条腿；当前报价/share 缺失同样 fail-closed。历史不被改变；已有腿时支持
+- `equal_enable` 缺失/`false` 时仅唯一最高 outcome 的现有腿通过，并列 fail-closed；显式 `true` 时
+  所有并列最高且最高次数大于 0 的 outcome 都通过，`0:0` 不命中。无通过记录、缺 Store/game/比分或坏比分
+  均 fail-closed。没有上游腿时，Action 不读取历史腿，而是为每个命中 outcome 从当前 live Cache 选最低
+  隐含概率报价腿，补当前 `share` 后生成当前腿；某个并列命中方向缺当前报价时只跳过该方向，不清空其他
+  有报价的命中方向；share 缺失时 fail-closed。历史不被改变；已有腿时支持
   selected candidate、候选池、legs-only 与撤单候选。
 - 当前 `arb_config.json` 已删除 score 叶中的 `latest_consecutive_trigger` 与 `latest_score`，由本 Action
   独立完成历史计数和当前报价产腿；它位于 action 链首位，确保后续 `set_selection(draw)` 与
   `current_set_game_selection(draw)` 能实际筛选已生成的腿，随后才进入 `start_price_gate`。
-- **验收**：`test_action_trigger_count.py` 覆盖当前盘计数、同比分去重、跨盘/未通过排除、并列、
+- **验收**：`test_action_trigger_count.py` 覆盖当前盘计数、同比分去重、跨盘/未通过排除、默认并列拦截、
+  `equal_enable=true` 并列腿保留/当前报价产腿、单方向缺报价跳过与零计数保护，并覆盖多腿依次通过
+  `set_exempt → set_selection → current_set_game_selection → start_price_gate → serve_gate` 的真实筛选链、
   `current_draw` 排除平局比分本身及其后记录、无平局 fail-closed、默认全盘兼容、无上游腿时按当前报价产腿、selected
   candidate 同步、缺比分及非法参数；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。

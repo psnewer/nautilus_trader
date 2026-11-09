@@ -17,18 +17,31 @@ _LOG = logging.getLogger(__name__)
 
 
 class TriggerCountAction(Action):
-    """只保留当前盘去重触发次数唯一最多的 outcome 腿。"""
+    """保留当前盘去重触发次数最多的 outcome 腿。"""
 
-    def __init__(self, history_key: str, when: str | None = None) -> None:
+    def __init__(
+        self,
+        history_key: str,
+        when: str | None = None,
+        equal_enable: bool = False,
+    ) -> None:
         if not isinstance(history_key, str) or not history_key.strip():
             raise ValueError("trigger_count: history_key must be a non-empty string")
         if when not in (None, "current_draw"):
             raise ValueError("trigger_count: when must be 'current_draw' or omitted")
+        if not isinstance(equal_enable, bool):
+            raise ValueError("trigger_count: equal_enable must be a boolean")
         self._history_key = history_key.strip()
         self._when = when
+        self._equal_enable = equal_enable
 
-    async def execute(self, ctx: EvalContext) -> None:
-        outcome, counts = _most_triggered_outcome(ctx, self._history_key, when=self._when)
+    async def execute(self, ctx: EvalContext) -> None:  # noqa: C901 - 兼容三种 scratch 输入形态
+        outcomes, counts = _most_triggered_outcomes(
+            ctx,
+            self._history_key,
+            when=self._when,
+            equal_enable=self._equal_enable,
+        )
 
         selected = ctx.scratch.get("selected_candidate")
         if isinstance(selected, dict):
@@ -37,7 +50,7 @@ class TriggerCountAction(Action):
             legs = selected.get("legs")
             if not isinstance(legs, list) or not legs:
                 return
-            kept = _filter_legs(ctx, legs, outcome, counts)
+            kept = _filter_legs(ctx, legs, outcomes, counts)
             filtered = dict(selected)
             filtered["legs"] = kept
             ctx.scratch["selected_candidate"] = filtered
@@ -59,7 +72,7 @@ class TriggerCountAction(Action):
                 legs = candidate.get("legs")
                 if not isinstance(legs, list) or not legs:
                     continue
-                kept = _filter_legs(ctx, legs, outcome, counts)
+                kept = _filter_legs(ctx, legs, outcomes, counts)
                 if not kept:
                     continue
                 filtered = dict(candidate)
@@ -70,22 +83,23 @@ class TriggerCountAction(Action):
 
         legs = ctx.scratch.get("legs")
         if isinstance(legs, list) and legs:
-            ctx.scratch["legs"] = _filter_legs(ctx, legs, outcome, counts)
+            ctx.scratch["legs"] = _filter_legs(ctx, legs, outcomes, counts)
             return
-        ctx.scratch["legs"] = _current_leg(ctx, outcome)
+        ctx.scratch["legs"] = _current_legs(ctx, outcomes)
 
 
-def _most_triggered_outcome(
+def _most_triggered_outcomes(
     ctx: EvalContext,
     history_key: str,
     *,
     when: str | None = None,
-) -> tuple[str | None, dict[str, int]]:
+    equal_enable: bool = False,
+) -> tuple[frozenset[str], dict[str, int]]:
     counts = dict.fromkeys(VALID_OUTCOMES, 0)
     store = ctx.consecutive_trigger_store
     current_score = _current_score_key(ctx)
     if store is None or current_score is None:
-        return None, counts
+        return frozenset(), counts
 
     history = [
         observation
@@ -94,27 +108,34 @@ def _most_triggered_outcome(
     ]
     if when == "current_draw":
         draw_score = next(
-            (observation.score_key for observation in reversed(history) if _is_draw(observation.score_key)),
+            (
+                observation.score_key
+                for observation in reversed(history)
+                if _is_draw(observation.score_key)
+            ),
             None,
         )
         if draw_score is None:
-            return None, counts
-        cutoff = max(index for index, observation in enumerate(history) if observation.score_key == draw_score)
+            return frozenset(), counts
+        cutoff = max(
+            index
+            for index, observation in enumerate(history)
+            if observation.score_key == draw_score
+        )
         while cutoff > 0 and history[cutoff - 1].score_key == draw_score:
             cutoff -= 1
         history = history[:cutoff]
 
     scores = {outcome: set() for outcome in VALID_OUTCOMES}
     for observation in history:
-        if (
-            observation.passed
-            and observation.outcome in scores
-        ):
+        if observation.passed and observation.outcome in scores:
             scores[observation.outcome].add(observation.score_key)
     counts = {outcome: len(values) for outcome, values in scores.items()}
     maximum = max(counts.values(), default=0)
     winners = [outcome for outcome, count in counts.items() if count == maximum]
-    return (winners[0] if maximum > 0 and len(winners) == 1 else None), counts
+    if maximum <= 0 or (not equal_enable and len(winners) != 1):
+        return frozenset(), counts
+    return frozenset(winners), counts
 
 
 def _is_draw(value) -> bool:
@@ -125,41 +146,49 @@ def _is_draw(value) -> bool:
 def _filter_legs(
     ctx: EvalContext,
     legs: list[dict],
-    target_outcome: str | None,
+    target_outcomes: frozenset[str],
     counts: dict[str, int],
 ) -> list[dict]:
     kept = []
     for leg in legs:
         outcome = _leg_outcome(leg)
-        if target_outcome is not None and outcome == target_outcome:
+        if outcome in target_outcomes:
             kept.append(leg)
             continue
         _LOG.info(
             f"TriggerCount: pair={ctx.pair_id} drop leg={leg.get('instrument_id')} "
-            f"outcome={outcome} target_outcome={target_outcome} counts={counts}",
+            f"outcome={outcome} target_outcomes={sorted(target_outcomes)} counts={counts}",
         )
     return kept
 
 
-def _current_leg(ctx: EvalContext, outcome: str | None) -> list[dict]:
-    if outcome is None:
+def _current_legs(ctx: EvalContext, outcomes: frozenset[str]) -> list[dict]:
+    if not outcomes:
         return []
     share = float((ctx.strategy_defaults or {}).get("share") or 0.0)
     if share <= 0:
         return []
-    current = quote_legs_by_outcome(ctx).get(outcome, [])
-    if not current:
-        return []
-    leg = dict(min(
-        current,
-        key=lambda value: (
-            float(value["prob"]),
-            venue_preference_rank(value["venue"]),
-            str(value["instrument_id"]),
-        ),
-    ))
-    leg["share_if_wins"] = share
-    return [leg]
+    current_by_outcome = quote_legs_by_outcome(ctx)
+    result = []
+    for outcome in VALID_OUTCOMES:
+        if outcome not in outcomes:
+            continue
+        current = current_by_outcome.get(outcome, [])
+        if not current:
+            continue
+        leg = dict(
+            min(
+                current,
+                key=lambda value: (
+                    float(value["prob"]),
+                    venue_preference_rank(value["venue"]),
+                    str(value["instrument_id"]),
+                ),
+            )
+        )
+        leg["share_if_wins"] = share
+        result.append(leg)
+    return result
 
 
 def _current_score_key(ctx: EvalContext):
