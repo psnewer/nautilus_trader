@@ -139,6 +139,11 @@ source/binary ID；OE/SE 的 `instrument.market_id` 是 source ID，
 把 PairRegistry 已知的赛事 ID 放入 params，OE/SE DataClient 用它建立
 `source_market_id → game_id`。同一 source market 出现冲突 ID 必须拒绝，不能静默覆盖。
 
+`RefreshMarketBooksCommand` 是 Matching 概率校验到行情 owner 的单向准备命令，topic 为
+`command.arb.refresh_market_books`。payload 只表达 `venue + scan_id + instrument_ids`，不暴露
+competition page；具体是 open、reload 还是无需动作由 venue DataClient 决定。Matching 的
+candidate 差分与等待新帧语义见 matching §4.2.1，OE 页动作见 data §3.1。
+
 ### 3.3 SportsPhaseStore(#365)
 
 `src/arbitrage/common/sports_phase.py` 在 NT Cache 通用对象区按 `sports:phase:{game_id}` 保存

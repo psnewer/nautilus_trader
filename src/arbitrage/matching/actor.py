@@ -32,11 +32,14 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.market_order_book import MarketOrderBookDeltas
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
+from src.arbitrage.common.market_books import TOPIC_REFRESH_MARKET_BOOKS
 from src.arbitrage.common.market_books import MarketBookSubscription
+from src.arbitrage.common.market_books import RefreshMarketBooksCommand
 from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.common.market_books import subscribe_market_book
 from src.arbitrage.common.market_books import unsubscribe_market_book
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
@@ -96,6 +99,7 @@ class _PairValidationState:
     log_message: str | None = None
     status: str = "PENDING"
     subscribed_market_keys: set[tuple[str, str]] = None
+    awaiting_fresh_market_keys: set[tuple[str, str]] = None
     venue_sums: dict[str, float] = None
     best_sum: float | None = None
     fail_reason: str | None = None
@@ -103,6 +107,8 @@ class _PairValidationState:
     def __post_init__(self) -> None:
         if self.subscribed_market_keys is None:
             self.subscribed_market_keys = set()
+        if self.awaiting_fresh_market_keys is None:
+            self.awaiting_fresh_market_keys = set()
         if self.venue_sums is None:
             self.venue_sums = {}
 
@@ -130,6 +136,19 @@ class MarketMatchingActor(Actor):
         self._validation_pairs_by_market: dict[tuple[str, str], set[str]] = {}
         self._validation_market_subscriptions: dict[tuple[str, str], MarketBookSubscription] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
+        # 每轮完整 matching 结果的短期快照；不能复用跨轮 sticky 的 `_pair_validations`。
+        self._candidate_scan_id = 0
+        self._active_candidate_scan_id: int | None = None
+        self._scan_candidates: dict[
+            tuple[str, tuple[tuple[str, tuple[str, ...]], ...]],
+            tuple[str, ...],
+        ] = {}
+        self._scan_refreshable: set[
+            tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]
+        ] = set()
+        self._previous_candidate_signatures: set[
+            tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]
+        ] = set()
         self._flashscore_http = HttpClient(
             default_headers={
                 "Accept": "text/plain",
@@ -360,6 +379,22 @@ class MarketMatchingActor(Actor):
 
     # ── 匹配主流程 ────────────────────────────────────────────────────
     def _maybe_match(self) -> None:
+        """执行一次完整扫描，并在成功后处理相对上一轮新增的校验 candidate。"""
+        self._candidate_scan_id += 1
+        self._active_candidate_scan_id = self._candidate_scan_id
+        self._scan_candidates = {}
+        self._scan_refreshable = set()
+        try:
+            self._scan_matches()
+        except Exception:
+            # 部分扫描不能覆盖上一份完整快照，否则下一轮会制造伪新增。
+            self._active_candidate_scan_id = None
+            self._scan_candidates = {}
+            self._scan_refreshable = set()
+            raise
+        self._complete_candidate_scan()
+
+    def _scan_matches(self) -> None:
         if not self._anchor_venue_str or not self._tradable_venue_strs:
             return
         # latch:anchor + 单个 tradable venue cache 都非空才配(#58)。
@@ -594,25 +629,73 @@ class MarketMatchingActor(Actor):
         group_pair_ids = tuple(candidate.pair_id for candidate, _ in candidates)
         for candidate, log_message in candidates:
             candidate.validation_group_pair_ids = group_pair_ids
-            self._handle_pair_candidate(candidate, log_message=log_message)
+            signature, oe_instrument_ids = self._candidate_scan_signature(candidate)
+            if self._active_candidate_scan_id is not None:
+                self._scan_candidates[signature] = oe_instrument_ids
+            if self._handle_pair_candidate(candidate, log_message=log_message):
+                self._scan_refreshable.add(signature)
 
-    def _handle_pair_candidate(self, candidate: _PairCandidate, *, log_message: str) -> None:
+    def _candidate_scan_signature(
+        self,
+        candidate: _PairCandidate,
+    ) -> tuple[
+        tuple[str, tuple[tuple[str, tuple[str, ...]], ...]],
+        tuple[str, ...],
+    ]:
+        venue_instrument_ids = tuple(
+            (venue, tuple(sorted(instrument_ids)))
+            for venue, instrument_ids in sorted(candidate.venue_instrument_ids.items())
+        )
+        oe_instrument_ids = tuple(sorted(candidate.venue_instrument_ids.get(ORBITEXCH, ())))
+        return (candidate.pair_id, venue_instrument_ids), oe_instrument_ids
+
+    def _complete_candidate_scan(self) -> None:
+        current = set(self._scan_candidates)
+        added = current - self._previous_candidate_signatures
+        # 正常情况下 `_scan_refreshable` 是 `added` 的子集；唯一例外是上一轮订阅
+        # 中途失败、这一轮对未变化 candidate 成功重建 PENDING。该失败恢复也必须准备页面，
+        # 否则 fresh-market gate 会永久等待。
+        newly_added = added & self._scan_refreshable
+        recovered_after_subscribe_failure = self._scan_refreshable - added
+        refreshable = newly_added | recovered_after_subscribe_failure
+        refresh_instrument_ids = tuple(sorted({
+            instrument_id
+            for signature in refreshable
+            for instrument_id in self._scan_candidates[signature]
+        }))
+        scan_id = self._active_candidate_scan_id
+        self._previous_candidate_signatures = current
+        self._active_candidate_scan_id = None
+        self._scan_candidates = {}
+        self._scan_refreshable = set()
+        if refresh_instrument_ids and scan_id is not None:
+            self._msgbus.publish(
+                topic=TOPIC_REFRESH_MARKET_BOOKS,
+                msg=RefreshMarketBooksCommand(
+                    venue=ORBITEXCH,
+                    scan_id=scan_id,
+                    instrument_ids=refresh_instrument_ids,
+                ),
+            )
+
+    def _handle_pair_candidate(self, candidate: _PairCandidate, *, log_message: str) -> bool:
+        """处理 candidate；返回是否新建了需要 OE 页面准备的 PENDING 校验。"""
         if candidate.event_key:
             self._event_pairs.setdefault(candidate.event_key, set()).add(candidate.pair_id)
         if not self.config.probability_validation_enabled:
             self._finalize_pair(candidate, log_message=log_message)
-            return
+            return False
         if self._pair_registry.instrument_ids_for_pair(candidate.pair_id):
-            return
+            return False
         if candidate.pair_id in self._pair_validations:
-            return
+            return False
         # #228 FAIL 连坐(后到方向):同 event 已有 FAIL(错配证据)→ 本 pair 直接 sticky FAILED,
         # 不订阅、不校验、不 publish(先到方向的连坐见 `_fail_event_siblings`)。
         if self._event_has_failed_pair(candidate.event_key):
             self._pair_validations[candidate.pair_id] = _PairValidationState(
                 candidate=candidate, status="FAILED", fail_reason="event failed",
             )
-            return
+            return False
         state = _PairValidationState(candidate=candidate)
         state.log_message = log_message
         self._pair_validations[candidate.pair_id] = state
@@ -626,17 +709,23 @@ class MarketMatchingActor(Actor):
             state.status = "FAILED"
             state.fail_reason = str(exc)
             self._log.warning(f"matching validation market subscription failed: {exc}")
-            return
+            return False
         for subscription in subscriptions:
             key = subscription.key
             pair_ids = self._validation_pairs_by_market.setdefault(key, set())
             first_subscriber = not pair_ids
             pair_ids.add(candidate.pair_id)
             state.subscribed_market_keys.add(key)
+            if key[0] == ORBITEXCH:
+                state.awaiting_fresh_market_keys.add(key)
             self._validation_market_subscriptions.setdefault(key, subscription)
             try:
                 if first_subscriber:
-                    subscribe_market_book(self, subscription)
+                    subscribe_market_book(
+                        self,
+                        subscription,
+                        validation_scan_id=self._active_candidate_scan_id,
+                    )
             except Exception as e:  # noqa: BLE001
                 pair_ids.discard(candidate.pair_id)
                 state.subscribed_market_keys.discard(key)
@@ -646,8 +735,13 @@ class MarketMatchingActor(Actor):
                 self._unsubscribe_validation_books(candidate.pair_id, state)
                 self._pair_validations.pop(candidate.pair_id, None)
                 self._log.warning(f"matching validation subscribe {key} failed: {e!r}")
-                return
+                return False
+        needs_oe_page_prepare = bool(candidate.venue_instrument_ids.get(ORBITEXCH))
+        if needs_oe_page_prepare and self._active_candidate_scan_id is not None:
+            # 不能在 open/reload 前用 Cache 中可能陈旧的赔率通过校验；等待新 OBD 驱动。
+            return True
         self._try_validate_pair(candidate.pair_id)
+        return False
 
     def _register_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
         """先完成 PairRegistry 写入，保证同批事件发布前 registry 已完整。"""
@@ -695,11 +789,16 @@ class MarketMatchingActor(Actor):
         if isinstance(data, MarketOrderBookDeltas):
             key = (data.venue.value, data.market_id)
             for pair_id in list(self._validation_pairs_by_market.get(key, set())):
+                state = self._pair_validations.get(pair_id)
+                if state is not None:
+                    state.awaiting_fresh_market_keys.discard(key)
                 self._try_validate_pair(pair_id)
 
     def _try_validate_pair(self, pair_id: str) -> None:
         state = self._pair_validations.get(pair_id)
         if state is None or state.status != "PENDING":
+            return
+        if state.awaiting_fresh_market_keys:
             return
         result = _validate_pair_probability(
             state.candidate,

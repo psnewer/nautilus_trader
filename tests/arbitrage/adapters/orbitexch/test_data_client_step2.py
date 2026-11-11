@@ -32,6 +32,7 @@ from nautilus_trader.model.market_order_book import OrderBookFrameDeltas
 from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import market_order_book_data_type
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.market_books import RefreshMarketBooksCommand
 from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
 from src.arbitrage.common.sports_phase import PHASE_PRE
 from src.arbitrage.common.venues import ORBITEXCH
@@ -216,7 +217,7 @@ def test_market_subscription_routes_initial_inplay_frame_after_state_is_ready():
     c._cache.add_instrument(inst)
     c._handle_data = lambda _data: None
 
-    async def page_emits_initial_frame(_instrument_id):
+    async def page_emits_initial_frame(_instrument_id, **_kwargs):
         # page.goto 期间 prices WS 就会回调；此时 game 路由必须已经存在。
         c._on_price_frame({
             "id": inst.market_id,
@@ -258,7 +259,7 @@ def test_market_subscription_replays_unrouted_initial_inplay_observation():
     assert c._phase_store.get(77) is None
     assert inst.market_id in c._pending_in_play
 
-    async def no_page(_instrument_id):
+    async def no_page(_instrument_id, **_kwargs):
         return None
 
     c._ensure_competition_page = no_page
@@ -701,6 +702,57 @@ def test_open_or_reload_reloads_existing_page():
     page = c._comp_pages["2_999"]
     assert len(page.goto_calls) == 1 and page.reload_calls == 1   # 首次 goto,二次 reload
     assert page.bring_to_front_calls == 2
+
+
+def test_validation_refresh_skips_page_opened_by_same_scan_then_reloads_old_page_once():
+    """新增 candidate 的 open/reload 是同一准备动作：本轮新开不重刷，下一轮视为旧页可刷新。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    c._browser_manager = _FakeBM()
+    home = oe_instrument("EPL", "home", selection_id=42)
+    away = oe_instrument("EPL", "away", selection_id=43)
+    c._cache.add_instrument(home)
+    c._cache.add_instrument(away)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(c._ensure_competition_page(home.id, opened_by_scan=7))
+    page = c._comp_pages["1_1"]
+
+    same_scan = RefreshMarketBooksCommand(
+        venue=ORBITEXCH,
+        scan_id=7,
+        instrument_ids=(str(home.id), str(away.id)),
+    )
+    loop.run_until_complete(c._refresh_existing_competition_pages(same_scan))
+    assert page.reload_calls == 0
+
+    later_scan = RefreshMarketBooksCommand(
+        venue=ORBITEXCH,
+        scan_id=8,
+        instrument_ids=(str(home.id), str(away.id)),
+    )
+    loop.run_until_complete(c._refresh_existing_competition_pages(later_scan))
+    assert page.reload_calls == 1  # 同 competition 两条腿仍只 reload 一次
+
+
+def test_validation_refresh_does_not_open_missing_page():
+    """无页时 refresh command 不越权开页；原订阅 ensure 路径负责 open。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    c._browser_manager = _FakeBM()
+    instrument = oe_instrument("EPL", "home", selection_id=42)
+    c._cache.add_instrument(instrument)
+    command = RefreshMarketBooksCommand(
+        venue=ORBITEXCH,
+        scan_id=1,
+        instrument_ids=(str(instrument.id),),
+    )
+
+    asyncio.get_event_loop().run_until_complete(c._refresh_existing_competition_pages(command))
+
+    assert c._comp_pages == {}
+    assert c._browser_manager.created == []
 
 
 def test_open_or_reload_discards_closed_page_and_reopens():

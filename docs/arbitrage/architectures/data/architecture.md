@@ -197,6 +197,15 @@ class OrbitExchDataClient(LiveMarketDataClient):
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
 - **周期发现容错(2026-06-29 overnight 修)**:`_update_instruments(interval)` 是 60min 级别的 instrument rediscovery,不是行情 WS 恢复路径。每轮 `provider.load_all_async()` / `initialize(reload=True)` 的普通异常只记录 warning 并等下一轮继续;只有 `CancelledError` 退出 task。否则一次 `ERR_NAME_NOT_RESOLVED` / `ERR_INTERNET_DISCONNECTED` 会让 NT `create_task` 记录 `Error running '_update_instruments'` 后整个周期发现永久停止。
 - **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
+- **Matching 新增 candidate 的赔率准备（已落地，2026-11-11）**：OE DataClient 消费
+  `RefreshMarketBooksCommand(venue,scan_id,instrument_ids)`，由 instrument 反查 page key 并按
+  competition 去重。market 订阅先注册完整 routing，再进入页面动作：页面不存在时命令不另行
+  开页（原 `_ensure_competition_page` 已负责 open）；页面由同一 `scan_id` 刚打开时不重复
+  reload；此前已有页先经 market-frame barrier CLEAR 旧 Cache，再复用
+  `_open_or_reload_competition_page` 的 reload 分支。单页失败只记录并令 Matching 保持 PENDING，
+  不阻断其它 competition。Matching 只有收到 open/reload 后的新 OE market OBD 才继续概率
+  校验，完整 candidate 差分与等待语义见 matching §4.2.1。该路径不是 discovery 刷新，也不按
+  matching timer 无条件 reload。
 - **关页 = 退订归零对称关闭(#251,废除 #68"保持打开")**:`_unsubscribe_order_book_deltas` 清路由后,若该 competition 页已无任何剩余 market 订阅(`_market_to_page_key` 反查),**整个关闭动作持 `_comp_pages_lock`**:摘 `_comp_pages/_comp_handlers`(断开回调因此 no-op,不触发 reload)→ stop handler → `close_page`,关闭完成前锁住同 competition 的再订阅开页(防同名新页竞态)。#250 eviction 驱动真实退订后,空页 = Chromium tab + 价格 WS 泄漏,与 engine 侧归零回收(book/Store)对称。订阅状态机抽为模块级纯函数 `oe_subscription_plan_from_instrument` / `oe_update_subscription_state` / `oe_remove_subscription_state`(对齐 SE 风格,可单测;client 方法只留 cache 读取与 warning);remove 同步清空 market 条目与 `market_to_page_key`(旧实现残留导致 `_delayed_reopen` 的"已解订"判据永不生效,一并修复)。
 - **competition 页存活 = WS handler 自洽封装(#109,2026-06-16;#111 feed-specific 修正,2026-06-19,✅ 已落地代码 + 离线测 + 心跳已 live 验证 prices ~25s 空闲)**:**存活检测封装进 `OrbitExchWebSocketHandler`**(像 PM 把 ping-timeout 藏在 pyo3 WS client 里),DataClient 只收事件、对称 PM。**单一真理源 = 本节**;handler 是契约定义者,DataClient 是消费者(规则 3 主判据:单一自然归属 → 不单独成章)。
   - **handler 内部(契约定义者)**:可选传 `clock` / `loop` / `liveness_timeout_secs`(传了才开存活;**执行页 general WS 不传 → 行为不变**)与 `liveness_ws_type`(为空=任一 WS 非空帧刷新;指定=仅该 feed 刷新)。`_on_frame_received` 对命中 feed 的非空帧(含 SockJS 心跳 `'h'`)更新 `_last_frame_ns`(廉价);单个 **lazy self-rescheduling** NT clock alert 到期读它 —— 还活着(`now-last_frame<timeout`)就重排到 `last_frame+timeout`,死了(心跳停=静默死亡)fire `on_disconnect`。重排前必须先 `cancel_timer(name)` 再 `set_time_alert_ns(...)`,因为 LiveClock callback 执行期间同名 timer 仍占用 name。**prices WS close** 也 fire `on_disconnect`(干净关闭快路)。**零 per-frame timer churn**(每帧只写 ns,不碰 timer)。暴露 `on_disconnect(callback)`。

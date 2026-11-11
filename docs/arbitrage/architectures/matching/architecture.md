@@ -229,6 +229,23 @@ Risk 门控。
 同一个 `pair_id` 已存在于 `_pair_validations` 时,新的 matching candidate 直接跳过,不更新
 candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pair 也直接跳过。
 
+**新增 candidate 的赔率准备（已落地，2026-11-11）**：每次 `_maybe_match` 保存本轮完整
+candidate 签名集合，签名包含 `pair_id` 与各 venue 的完整 instrument 组成，成功扫描后与上一轮完整
+集合做差。`_pair_validations` 是跨轮 sticky 状态，不能充当当前扫描结果。空扫描也会整体替换
+快照，因此 candidate 中途消失、随后重现时会再次成为新增；扫描异常则保留上一份完整快照，
+避免部分结果制造伪新增。
+
+若上一轮 candidate 已在完整集合中、但校验订阅中途失败并完成回滚，则下一轮成功重建的
+PENDING 仍执行同一页面准备；这是失败恢复，不把稳定存在的 candidate 误当成每轮新增。
+
+新增 candidate 若包含 OE 腿并成功新建 PENDING 校验，Matching 先下发其全部 market OBD
+订阅，订阅参数携本轮 `validation_scan_id`；本轮全部 candidate 处理完成后，再发布一次
+`RefreshMarketBooksCommand`。OE DataClient 按 competition 去重：无页由订阅路径 open，本轮
+刚 open 的页不重复 reload，此前已有的页统一 reload。Matching 不直接使用 reload 前 Cache
+中的 OE 赔率：PENDING 保存尚待新帧的 OE market key，在对应 `MarketOrderBookDeltas` 到达前
+拒绝校验；open/reload 后的新帧逐项解除等待，再进入下述概率算法。页面动作与失败处理的单一
+真理源见 data §3.1；该机制与周期 discovery 无关，也不会在 candidate 集合不变时刷新。
+
 校验算法:
 1. 对 candidate 中每个可交易 instrument 读取 cache order book 的 best ask。⚠️ 2026-07-20/21
    (#256)起,该值直接就是隐含概率(decimal venue 的 book 写侧已按 claim 换算,见

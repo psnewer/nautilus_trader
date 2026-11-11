@@ -370,6 +370,15 @@ CLEAR。**期望**：adapter 自有 `binary_market_id → members` 与首订/最
 的帧仍不更新 phase。**验收**：OE adapter README #365 及
 `test_data_client_step2.py::{test_market_subscription_replays_unrouted_initial_inplay_observation,test_market_subscription_routes_initial_inplay_frame_after_state_is_ready,test_on_price_frame_missing_inplay_does_not_create_phase}`。
 
+### discovery-2.4：新增 candidate 的 OE 页面赔率准备（#505）
+
+**前置**：Matching 完整扫描相对上一轮新增一个包含 OE 腿的待校验 pair candidate。
+**步骤**：校验订阅先注册 source/binary market routing；OE DataClient 对无页执行原 eager open，
+对本轮前已经存在的页按 competition 去重 reload，本轮刚 open 的页不重复刷新。
+**期望**：open/reload 后的新 market OBD 才解除 Matching 的 fresh-market 等待；该动作不由
+周期 discovery 触发。**验收**：matching README `matching-prob-validation.5` 与 OE adapter
+README `data-2.page.{9,10}`。
+
 ### discovery-paper.1：paper 模式不改变发现/行情路由
 
 **输入**：`execution.mode=paper`。**期望**：PM/PMSPORTS/OE/SE DataClient 与 OE/SE

@@ -226,6 +226,20 @@
 
 **验收**:`test_probability_validation_ended_game_clears_state_and_subscription`。
 
+### matching-prob-validation.5:新增 candidate 驱动 OE 页面准备(已落地)
+
+**前置**：完整 matching scan 产出包含 OE 腿、且需要新建 PENDING 概率校验的 pair candidate。
+
+**步骤**：以 `pair_id + 各 venue 的完整 instrument 组成` 比较本轮与上一轮完整 candidate 集合；先下发
+全部校验订阅，再为新增项发布一次 market-book refresh command。OE market 新帧到达前，即使
+Cache 已有 best ask 也不得通过校验。
+
+**期望/验收**：首次新增刷新一次；连续两轮相同集合不重复；candidate 消失后重现再次刷新；
+`test_new_candidate_refreshes_once_and_reappearance_refreshes_again` 覆盖集合差分，
+`test_probability_validation_passes_then_registers_and_publishes` 覆盖等待 fresh OE market；
+`test_probability_validation_subscription_failure_rolls_back_for_retry` 覆盖订阅失败后成功重建
+PENDING 时仍执行页面准备。
+
 ### matching-3.3: 异构 instrument 归一(Q9 关键)
 
 前置: Cache 含 PM `BinaryOption` 列表 + OE `BettingInstrument` 列表

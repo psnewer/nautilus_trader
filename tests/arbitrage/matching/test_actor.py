@@ -34,6 +34,8 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.market_books import TOPIC_REFRESH_MARKET_BOOKS
+from src.arbitrage.common.market_books import RefreshMarketBooksCommand
 from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import ORBITEXCH
@@ -210,6 +212,13 @@ def _add_order_book(cache, instrument_id, ask):
         ts_init=0,
     ))
     cache.add_order_book(book)
+
+
+def _deliver_fresh_validation_books(actor):
+    """模拟 open/reload 后的新 OBD 已到齐，驱动现有概率校验。"""
+    for pair_id in list(actor._pair_validations):
+        actor._pair_validations[pair_id].awaiting_fresh_market_keys.clear()
+        actor._try_validate_pair(pair_id)
 
 
 # ── 触发:_maybe_match(timer 回调驱动)+ cache-非空 latch ──────────────
@@ -425,6 +434,9 @@ def test_probability_validation_passes_then_registers_and_publishes():
     actor.publish_data = publish_after_register_before_unsubscribe
 
     actor._maybe_match()
+    assert published == []
+    assert next(iter(actor._pair_validations.values())).awaiting_fresh_market_keys
+    _deliver_fresh_validation_books(actor)
 
     assert len(published) == 1
     pair_id = published[0]["data"].pair_id
@@ -467,8 +479,53 @@ def test_probability_validation_waits_when_venue_sum_not_clean():
     assert unsubscribed == []
 
 
+def test_new_candidate_refreshes_once_and_reappearance_refreshes_again():
+    """新增的完整 pair candidate 含 OE 腿时刷新；连续存在不重复，消失后重现再刷新。"""
+    actor, _, cache, _, msgbus = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    instruments = [
+        _pmsports("ATP", "Rafael Jodar", "Felix Gill"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a"),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
+    ]
+    for instrument in instruments:
+        cache.add_instrument(instrument)
+    commands: list[RefreshMarketBooksCommand] = []
+    subscription_params = []
+    msgbus.subscribe(topic=TOPIC_REFRESH_MARKET_BOOKS, handler=commands.append)
+    actor.subscribe_data = lambda _data_type, *args, **kwargs: subscription_params.append(
+        kwargs.get("params", {}),
+    )
+    actor.unsubscribe_data = lambda *_args, **_kwargs: None
+
+    actor._maybe_match()
+    actor._maybe_match()
+
+    assert len(commands) == 1
+    assert commands[0].venue == ORBITEXCH
+    assert commands[0].scan_id == 1
+    assert set(commands[0].instrument_ids) == {str(instruments[3].id), str(instruments[4].id)}
+    assert any(params.get("validation_scan_id") == 1 for params in subscription_params)
+
+    for instrument in instruments[3:]:
+        instrument.info["home_team"] = "Unrelated"
+        instrument.info["away_team"] = "Players"
+    actor._maybe_match()  # candidate 消失，完整快照更新为空并清理 PENDING
+    for instrument in instruments[3:]:
+        instrument.info["home_team"] = "Rafael Jodar"
+        instrument.info["away_team"] = "Felix Gill"
+    actor._maybe_match()
+
+    assert [command.scan_id for command in commands] == [1, 4]
+
+
 def test_probability_validation_subscription_failure_rolls_back_for_retry():
-    actor, _, cache, registry, _ = _harness(
+    actor, _, cache, registry, msgbus = _harness(
         anchor_venue="PMSPORTS",
         tradable_venues=("POLYMARKET", "ORBITEXCH"),
         probability_validation_enabled=True,
@@ -484,11 +541,15 @@ def test_probability_validation_subscription_failure_rolls_back_for_retry():
         cache.add_instrument(instrument)
     subscribed = []
     unsubscribed = []
+    refresh_commands = []
+    fail_pm_subscription = True
+    msgbus.subscribe(topic=TOPIC_REFRESH_MARKET_BOOKS, handler=refresh_commands.append)
 
     def subscribe(data_type, *args, **kwargs):
+        nonlocal fail_pm_subscription
         key = (data_type.metadata["venue"], data_type.metadata["market_id"])
         subscribed.append(key)
-        if key[0] == "POLYMARKET":
+        if key[0] == "POLYMARKET" and fail_pm_subscription:
             raise RuntimeError("temporary subscribe failure")
 
     actor.subscribe_data = subscribe
@@ -504,6 +565,14 @@ def test_probability_validation_subscription_failure_rolls_back_for_retry():
     assert actor._validation_market_subscriptions == {}
     assert subscribed == [("ORBITEXCH", "1-123"), ("POLYMARKET", "0xcond")]
     assert unsubscribed == [("ORBITEXCH", "1-123")]
+    assert refresh_commands == []
+
+    fail_pm_subscription = False
+    actor._maybe_match()
+
+    assert len(refresh_commands) == 1
+    assert refresh_commands[0].scan_id == 2
+    assert next(iter(actor._pair_validations.values())).awaiting_fresh_market_keys
 
 
 def test_probability_validation_failed_is_sticky_and_not_published():
@@ -530,6 +599,7 @@ def test_probability_validation_failed_is_sticky_and_not_published():
     actor.publish_data = lambda **k: published.append(k)
 
     actor._maybe_match()
+    _deliver_fresh_validation_books(actor)
     actor._maybe_match()
 
     state = list(actor._pair_validations.values())[0]
@@ -837,6 +907,7 @@ def test_three_way_validation_publishes_only_after_all_roles_pass():
     actor.publish_data = publish_after_group_registered_before_unsubscribe
 
     actor._maybe_match()
+    _deliver_fresh_validation_books(actor)
 
     assert {pair.pair_id for pair in published} == expected_pair_ids
     assert all(registry.instrument_ids_for_pair(pair.pair_id) for pair in published)
@@ -913,6 +984,7 @@ def test_three_way_validation_fail_never_publishes_event_siblings():
     actor.publish_data = lambda **k: published.append(k["data"])
 
     actor._maybe_match()
+    _deliver_fresh_validation_books(actor)
 
     home_pair = "EPL|Arsenal|Chelsea|home"
     draw_pair = "EPL|Arsenal|Chelsea|draw"

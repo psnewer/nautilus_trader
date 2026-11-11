@@ -46,6 +46,8 @@ from nautilus_trader.model.market_order_book import OrderBookFrameProcessed
 from nautilus_trader.model.market_order_book import order_book_frame_processed_topic
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from src.arbitrage.common.market_books import TOPIC_REFRESH_MARKET_BOOKS
+from src.arbitrage.common.market_books import RefreshMarketBooksCommand
 from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import probability_from_price
 
@@ -266,6 +268,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # #68:每 competition 一页(key=f"{sport_id}_{competition_id}"),新开/刷新统一。
         self._comp_pages: dict[str, object] = {}                          # page_key -> Page
         self._comp_handlers: dict[str, OrbitExchWebSocketHandler] = {}    # page_key -> WS handler
+        # page_key -> 首次打开它的 matching scan；仅用于避免“本轮刚 open 又 reload”。
+        self._comp_opened_by_scan: dict[str, int] = {}
         self._comp_pages_lock = asyncio.Lock()                            # 防并发订阅双开同一 competition
         # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
         # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
@@ -282,6 +286,10 @@ class OrbitExchDataClient(LiveMarketDataClient):
         self._msgbus.subscribe(
             topic=order_book_frame_processed_topic(self.venue),
             handler=self._handle_market_frame_processed,
+        )
+        self._msgbus.subscribe(
+            topic=TOPIC_REFRESH_MARKET_BOOKS,
+            handler=self._on_refresh_market_books,
         )
         # market_id(str) -> page_key:`_delayed_reopen` 据此判断页是否仍被订阅(决定是否继续重试开页)
         self._market_to_page_key: dict[str, str] = {}
@@ -333,6 +341,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
             await handler.stop()
         self._comp_handlers.clear()
         self._comp_pages.clear()
+        self._comp_opened_by_scan.clear()
         # **不**关 browser(共享单例;关停由 factory 层)
 
     # ── 周期发现(#58 slice A:DataClient-owned,NT 原生 _update_instruments 范式)──
@@ -362,6 +371,9 @@ class OrbitExchDataClient(LiveMarketDataClient):
         binary_market_id = str((command.data_type.metadata or {}).get("market_id") or "")
         source_market_id = str(command.params.get("source_market_id") or "")
         game_id = command.params.get("game_id")
+        validation_scan_id = command.params.get("validation_scan_id")
+        if validation_scan_id is not None:
+            validation_scan_id = int(validation_scan_id)
         if game_id is not None:
             game_id = int(game_id)
             existing = self._market_to_game_id.get(source_market_id)
@@ -399,7 +411,10 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # 否则带 marketDefinition.inPlay 的完整首帧会因缺 game_id 被丢弃，后续省略该字段的
         # 增量帧无法再补建 PRE；同页其余 selection 的首帧也会因路由尚未注册而丢失。
         for instrument_id in instrument_ids:
-            await self._ensure_competition_page(instrument_id)
+            await self._ensure_competition_page(
+                instrument_id,
+                opened_by_scan=validation_scan_id,
+            )
 
     async def _unsubscribe(self, command) -> None:
         if command.data_type.type is not MarketOrderBookDeltas:
@@ -436,6 +451,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         async with self._comp_pages_lock:
             page = self._comp_pages.pop(page_key, None)
             handler = self._comp_handlers.pop(page_key, None)
+            self._comp_opened_by_scan.pop(page_key, None)
             if page is None and handler is None:
                 return
             if handler is not None:
@@ -452,6 +468,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         因此即使 close 抛异常,`create_page` 下次也必定新建而不是取回死 page。"""
         self._comp_pages.pop(page_key, None)
         handler = self._comp_handlers.pop(page_key, None)
+        self._comp_opened_by_scan.pop(page_key, None)
         if handler is not None:
             with suppress(Exception):
                 await handler.stop()
@@ -459,7 +476,12 @@ class OrbitExchDataClient(LiveMarketDataClient):
             await self._browser_manager.close_page(f"comp-{page_key}")
 
     # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
-    async def _ensure_competition_page(self, instrument_id: InstrumentId) -> None:
+    async def _ensure_competition_page(
+        self,
+        instrument_id: InstrumentId,
+        *,
+        opened_by_scan: int | None = None,
+    ) -> None:
         """确保该 instrument 所属 competition 页已开(去重);未开则 open。"""
         inst = self._cache.instrument(instrument_id)
         if inst is None:
@@ -476,10 +498,67 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 return  # 已开,复用
             try:
                 await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+                if opened_by_scan is not None:
+                    self._comp_opened_by_scan[page_key] = opened_by_scan
             except Exception as e:  # noqa: BLE001 — #109:开页失败 → 事件化延迟重试(对齐 PM _delayed_connect)
                 self._log.warning(
                     f"OE open competition {page_key} failed: {e!r}; retry in {_COMP_REOPEN_RETRY_SECS}s")
                 self._loop.create_task(self._delayed_reopen(page_key, sport_id, competition_id))
+
+    def _on_refresh_market_books(self, command) -> None:
+        if (
+            not isinstance(command, RefreshMarketBooksCommand)
+            or str(command.venue).upper() != ORBITEXCH
+            or not command.instrument_ids
+        ):
+            return
+        self.create_task(
+            self._refresh_existing_competition_pages(command),
+            log_msg=f"refresh validation books: scan={command.scan_id}",
+        )
+
+    async def _refresh_existing_competition_pages(
+        self,
+        command: RefreshMarketBooksCommand,
+    ) -> None:
+        """为新增待校验 candidate 刷新旧页；无页或本轮刚开的页由 open 路径负责。"""
+        page_keys: set[str] = set()
+        for value in command.instrument_ids:
+            instrument_id = InstrumentId.from_str(value)
+            instrument = self._cache.instrument(instrument_id)
+            if instrument is None:
+                continue
+            sport_id = str(getattr(instrument, "event_type_id", "") or "")
+            competition_id = str(getattr(instrument, "competition_id", "") or "")
+            if sport_id and competition_id:
+                page_keys.add(f"{sport_id}_{competition_id}")
+
+        for page_key in sorted(page_keys):
+            async with self._comp_pages_lock:
+                if self._disconnecting or page_key not in self._comp_pages:
+                    continue
+                if self._comp_opened_by_scan.get(page_key) == command.scan_id:
+                    continue
+                if page_key in self._comp_reloading:
+                    continue
+                self._comp_reloading.add(page_key)
+                try:
+                    self._clear_competition_order_books(
+                        page_key,
+                        reason=f"validation scan {command.scan_id} refresh",
+                    )
+                    sport_id, _, competition_id = page_key.partition("_")
+                    await self._open_or_reload_competition_page(
+                        page_key,
+                        sport_id,
+                        competition_id,
+                    )
+                except Exception as e:  # noqa: BLE001 — 单页失败不阻断其它 competition
+                    self._log.error(
+                        f"OE competition page {page_key} validation refresh failed: {e}",
+                    )
+                finally:
+                    self._comp_reloading.discard(page_key)
 
     async def _delayed_reopen(self, page_key: str, sport_id: str, competition_id: str) -> None:
         """#109:开页失败后延迟重试,直到成功 / 关停 / 解订(对齐 PM `_delayed_connect`)。不再靠 health tick 补开。"""
@@ -616,7 +695,12 @@ class OrbitExchDataClient(LiveMarketDataClient):
         finally:
             self._comp_reloading.discard(page_key)
 
-    def _clear_competition_order_books(self, page_key: str) -> None:
+    def _clear_competition_order_books(
+        self,
+        page_key: str,
+        *,
+        reason: str = "prices disconnected",
+    ) -> None:
         """通过 market-frame 管道清空断线 competition 页所辖的已订阅盘口。"""
         ts = self._clock.timestamp_ns()
         cleared = 0
@@ -668,7 +752,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
             cleared += sum(len(market.deltas) for market in markets)
         if cleared:
             self._log.warning(
-                f"OE competition page {page_key} prices disconnected; cleared {cleared} cached order book(s)",
+                f"OE competition page {page_key} {reason}; cleared {cleared} cached order book(s)",
             )
 
     # ── WS 帧回调 → OrderBookDeltas → DataEngine ─────────────────────

@@ -14,6 +14,18 @@ from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
+TOPIC_REFRESH_MARKET_BOOKS = "command.arb.refresh_market_books"
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshMarketBooksCommand:
+    """请求 venue 为本轮新增校验对象准备一份新鲜盘口。"""
+
+    venue: str
+    scan_id: int
+    instrument_ids: tuple[str, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class MarketBookSubscription:
     venue: Venue
@@ -90,10 +102,16 @@ def market_book_subscriptions(
 
 
 def subscribe_market_book(
-    actor, subscription: MarketBookSubscription, *, managed: bool = True
+    actor,
+    subscription: MarketBookSubscription,
+    *,
+    managed: bool = True,
+    validation_scan_id: int | None = None,
 ) -> None:
     params = subscription.params
     params["managed"] = managed
+    if validation_scan_id is not None:
+        params["validation_scan_id"] = validation_scan_id
     actor.subscribe_data(
         subscription.data_type,
         client_id=ClientId(subscription.venue.value),

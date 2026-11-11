@@ -142,6 +142,11 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
   - **oe-ws-liveness.6**:指定 `liveness_ws_type="prices"` 后,orders 心跳不刷新存活锚,prices feed 缺失仍会 timeout(`test_liveness_filters_by_ws_type`)
 - DataClient 消费侧(`test_data_client_step2.py`):
   - **data-2.page.8**:competition 页 handler 接线 `liveness_ws_type="prices"`(`test_open_page_liveness_tracks_prices_feed_only`)
+  - **data-2.page.9**:同一 matching scan 刚 open 的 competition 页不重复 reload；后续 scan
+    将其视为已有页，多个新增腿同 competition 只 reload 一次
+    (`test_validation_refresh_skips_page_opened_by_same_scan_then_reloads_old_page_once`)
+  - **data-2.page.10**:validation refresh command 遇无页不自行 open，继续由原订阅 ensure
+    路径负责 (`test_validation_refresh_does_not_open_missing_page`)
   - **data-2.health.11/12/13**:事件化 connect-retry —— `_delayed_reopen` 开成功不再重排 / 仍失败再排 / 关停放弃(`test_delayed_reopen_*`)
   - **data-2.health.14/15**:`on_disconnect`(close:prices / liveness_timeout)→ 调度 reload,跑完页 reload(`test_disconnect_prices_close_schedules_reload` / `_liveness_timeout_schedules_reload`)
   - **data-2.health.16/17**:防护(非 prices/非心跳 reason / 关停 / reload 中 / 页未开 → 不调度)+ 冷却抑制风暴(`test_disconnect_guards` / `_cooldown_suppresses_storm`)
