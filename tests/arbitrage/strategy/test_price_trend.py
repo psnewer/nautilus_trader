@@ -65,8 +65,8 @@ def test_trend_price_uses_cross_venue_best_probability_for_each_outcome():
     ("yes", "no"),
     [
         (0.50, 0.50),
-        (0.50, 0.55),
-        (0.50, 0.56),
+        (0.50, 0.52),
+        (0.50, 0.53),
     ],
 )
 def test_trend_price_does_not_update_outside_strict_commission_window(yes, no):

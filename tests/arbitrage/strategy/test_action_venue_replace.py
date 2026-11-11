@@ -175,6 +175,52 @@ def test_invalid_pm_price_param_raises():
         VenueReplaceAction(pm_price="yes")
 
 
+@pytest.mark.parametrize("value", [0, 1, "true"])
+def test_invalid_pm_gate_param_raises(value):
+    with pytest.raises(ValueError, match="pm_gate must be a boolean"):
+        VenueReplaceAction(pm_gate=value)
+
+
+def test_pm_gate_keeps_only_original_pm_legs_in_candidates():
+    ctx = _ctx()
+    pm_yes, candidate = _mixed_candidate()
+    ctx.scratch["candidates"] = [candidate]
+
+    _run(VenueReplaceAction(pm_gate=True).execute(ctx))
+
+    assert ctx.scratch["candidates"] == [{
+        "candidate_id": "mixed",
+        "rate": 0.1,
+        "legs": [pm_yes],
+    }]
+
+
+def test_pm_gate_clears_non_pm_legs_in_legs_only_input():
+    ctx = _ctx()
+    ctx.scratch["legs"] = [{
+        "instrument_id": "Y.ORBITEXCH",
+        "venue": "ORBITEXCH",
+        "role": "yes",
+        "share_if_wins": 50.0,
+    }]
+
+    _run(VenueReplaceAction(pm_gate=True).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_pm_gate_updates_selected_candidate_and_legs_together():
+    ctx = _ctx()
+    pm_yes, candidate = _mixed_candidate()
+    ctx.scratch["selected_candidate"] = candidate
+    ctx.scratch["legs"] = candidate["legs"]
+
+    _run(VenueReplaceAction(pm_gate=True).execute(ctx))
+
+    assert ctx.scratch["selected_candidate"]["legs"] == [pm_yes]
+    assert ctx.scratch["legs"] == [pm_yes]
+
+
 def test_invalid_convert_param_raises():
     with pytest.raises(ValueError, match="convert must be a boolean"):
         VenueReplaceAction(convert="true")
@@ -773,13 +819,14 @@ def test_selected_candidate_and_legs_are_updated_together():
     assert ctx.scratch["legs"][0]["share_if_wins"] == 50.0
 
 
-def test_cancel_plan_is_not_rewritten():
+@pytest.mark.parametrize("pm_gate", [False, True])
+def test_cancel_plan_is_not_rewritten(pm_gate):
     ctx = _ctx()
     original = [{"instrument_id": "N.SHARPEXCH", "venue": "SHARPEXCH", "role": "no"}]
     ctx.scratch["legs"] = original
     ctx.scratch["cancel_pair_orders"] = True
 
-    _run(VenueReplaceAction().execute(ctx))
+    _run(VenueReplaceAction(pm_gate=pm_gate).execute(ctx))
 
     assert ctx.scratch["legs"] is original
 

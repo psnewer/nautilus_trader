@@ -36,6 +36,7 @@ class VenueReplaceAction(Action):
     `pm_price`(默认真)决定替换后 PM 腿的下单价:
       - **不存在 / True**:用 PM 报价腿自身概率(= PM best_ask 隐含概率,PM 实时价);
       - **存在且 False**:沿用原腿的 committed `prob`(两 venue 共享 outcome 概率,不看 PM 实时价)。
+    `pm_gate=true` 时在替换/反转前删除原始 venue 不是 PM 的腿;缺失或 `false` 保持现有替换行为。
     `tier_ignore=true` 且 OE 原始 competition 属于 Challenger/WTA/UTR/ITF 时清空本 pair
     的执行腿/候选,阻止低级别赛事继续下单;缺失或 `false` 不增加该门控。
     `convert=true` 时,已经是 PM
@@ -55,6 +56,7 @@ class VenueReplaceAction(Action):
     def __init__(
         self,
         pm_price: bool | None = None,
+        pm_gate: bool | None = None,
         convert: bool | None = None,
         deviate_convert: bool | None = None,
         attitude: bool | None = None,
@@ -64,6 +66,8 @@ class VenueReplaceAction(Action):
     ) -> None:
         if pm_price is not None and not isinstance(pm_price, bool):
             raise ValueError("pm_price must be a boolean")
+        if pm_gate is not None and not isinstance(pm_gate, bool):
+            raise ValueError("pm_gate must be a boolean")
         if convert is not None and not isinstance(convert, bool):
             raise ValueError("convert must be a boolean")
         if deviate_convert is not None and not isinstance(deviate_convert, bool):
@@ -85,6 +89,7 @@ class VenueReplaceAction(Action):
             raise ValueError("random_convert must be a finite number in [0, 1]")
         # 不存在或 True → 用 PM 实时价;仅显式 False 保留旧逻辑(用原 OE/SE prob)。
         self._use_pm_price = pm_price is None or pm_price
+        self._pm_gate = bool(pm_gate)
         self._convert = bool(convert)
         self._tier_ignore = bool(tier_ignore)
         self._deviate_convert = bool(deviate_convert)
@@ -95,6 +100,9 @@ class VenueReplaceAction(Action):
     async def execute(self, ctx: EvalContext) -> None:
         if ctx.scratch.get("cancel_pair_orders"):
             return
+
+        if self._pm_gate:
+            _apply_pm_gate(ctx)
 
         lower_tier_competition = (
             lower_tier_oe_competition(ctx) if self._tier_ignore else None
@@ -202,6 +210,53 @@ def _clear_execution_candidates(ctx: EvalContext) -> None:
         ctx.scratch["candidates"] = []
     if "legs" in ctx.scratch:
         ctx.scratch["legs"] = []
+
+
+def _apply_pm_gate(ctx: EvalContext) -> None:
+    selected = ctx.scratch.get("selected_candidate")
+    if isinstance(selected, dict):
+        if selected.get("cancel_pair_orders"):
+            return
+        filtered = dict(selected)
+        filtered["legs"] = _pm_only_legs(ctx, selected.get("legs"))
+        ctx.scratch["selected_candidate"] = filtered
+        ctx.scratch["legs"] = filtered["legs"]
+        return
+
+    if "candidates" in ctx.scratch:
+        candidates = []
+        for candidate in ctx.scratch.get("candidates") or ():
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("cancel_pair_orders"):
+                candidates.append(candidate)
+                continue
+            legs = _pm_only_legs(ctx, candidate.get("legs"))
+            if not legs:
+                continue
+            filtered = dict(candidate)
+            filtered["legs"] = legs
+            candidates.append(filtered)
+        ctx.scratch["candidates"] = candidates
+        return
+
+    if isinstance(ctx.scratch.get("legs"), list):
+        ctx.scratch["legs"] = _pm_only_legs(ctx, ctx.scratch["legs"])
+
+
+def _pm_only_legs(ctx: EvalContext, legs) -> list[dict]:
+    result = []
+    for leg in legs if isinstance(legs, list) else ():
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("venue") or "").upper() == POLYMARKET:
+            result.append(leg)
+            continue
+        _LOG.info(
+            f"VenueReplace[pm_gate]: pair={ctx.pair_id} "
+            f"drop leg={leg.get('instrument_id')} venue={leg.get('venue')}",
+        )
+    return result
 
 
 def _polymarket_bids_by_outcome(

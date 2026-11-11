@@ -718,7 +718,7 @@ class StrategyEvaluator(Strategy):
         if prices is None or set(prices) != set(state.outcomes):
             return
         total = sum(prices.values())
-        if 1.0 < total < 1.05:
+        if 1.0 < total < 1.02:
             store.update_trend(pair_id, prices)
 
     def _capture_start_prices(self, update: SportsGameUpdate) -> None:
