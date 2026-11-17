@@ -45,7 +45,6 @@ from src.arbitrage.strategy.checks.order_cancel import OrderCancelCheck
 from src.arbitrage.strategy.checks.position_close import PositionCloseCheck
 from src.arbitrage.strategy.checks.pre_game_order import PreGameOrderCheck
 from src.arbitrage.strategy.checks.pre_game_reverse import PreGameReverseCheck
-from src.arbitrage.strategy.checks.price_change_recovery import PriceChangeRecoveryCheck
 from src.arbitrage.strategy.checks.select_orders import SelectOrdersCheck
 from src.arbitrage.strategy.checks.start_price_below import StartPriceBelowCheck
 from src.arbitrage.strategy.queries.exposure_source import ExposureSourceQuery
@@ -99,7 +98,8 @@ def test_register_builtin_checks_and_actions_registers_current_types():
         }),
         OneSideRecoveryCheck,
     )
-    assert isinstance(build_check({"type": "price_change_recovery"}), PriceChangeRecoveryCheck)
+    with pytest.raises(StrategyConfigError, match="unknown check type: 'price_change_recovery'"):
+        build_check({"type": "price_change_recovery"})
     assert isinstance(build_check({"type": "event", "params": {"event": "score"}}), EventCheck)
     assert isinstance(build_check({"type": "lower_tier"}), LowerTierCheck)
     assert isinstance(build_action({"type": "pm_quote_legs"}), PmQuoteLegsAction)

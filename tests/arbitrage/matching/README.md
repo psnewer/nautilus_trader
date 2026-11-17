@@ -39,11 +39,12 @@
 | `test_engine.py` | 匹配算法(输入为 `NormalizedEvent` 列表,输出 anchor/tradable `MatchResult`) |
 | `test_actor.py` | Actor timer 触发、cache latch、PairRegistry 注册、PMSPORTS anchor 聚合、ended eviction |
 
-## matching-flashscore-event:#495/#501/#502
+## matching-flashscore-event:#495/#501/#502/#507
 
 - `test_parser_reads_abbreviated_names_stable_event_id_and_score`：从 Flashscore 分隔文本读取 `AA`
   event ID、`AE/AF` 简写姓名、各盘局分与 `WC` 当前发球方。
-- `test_parser_keeps_only_live_events`：day feed 中只保留 `AB=2` 的 live 赛事。
+- `test_parser_keeps_live_and_finished_events`：day feed 中保留 `AB=2` live 和 `AB=3` ended，
+  排除 `AB=1` scheduled。
 - `test_parser_keeps_doubles_abbreviations_without_player_profile_requests`：双打直接保留 feed 的 `/`
   组合简写，不请求逐球员 profile。
 - `test_mapping_reuses_same_direction_team_similarity_for_abbreviations`：复用 `MatchEngine` 后，既有
@@ -56,6 +57,8 @@
   `WC` 当作整局发球方；抢七结束后恢复奇偶反推。
 - `test_flashscore_mapping_refresh_writes_verified_first_serve_to_sports_store`：实际 Actor refresh
   路径取得 event ID 后，只有外部比分与 Store 当前比分最多相差一局才写入首局发球方。
+- `test_flashscore_finished_event_evicts_pair_without_saved_event_id`：即使进程内尚未保存 Flashscore
+  event ID，`AB=3` 也能经同向队名映射到 PMS `game_id` 并复用统一 eviction；feed 缺失不作结束推断。
 - `test_flashscore_timer_callback_submits_refresh_to_injected_loop`：在调用线程没有 running loop 的
   条件下走真实 `_on_alert` 路径，确认 Flashscore refresh 被提交到注入的 kernel loop 并实际进入。
 | `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |

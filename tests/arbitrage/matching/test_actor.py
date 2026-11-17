@@ -299,6 +299,46 @@ def test_flashscore_mapping_refresh_writes_verified_first_serve_to_sports_store(
     assert store.get(777).first_serve == "away"
 
 
+def test_flashscore_finished_event_evicts_pair_without_saved_event_id():
+    actor, _, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+    )
+    for instrument in [
+        _pmsports("ATP", "Rafael Jodar", "Felix Gill", game_id=888),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a"),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
+    ]:
+        cache.add_instrument(instrument)
+    actor.publish_data = lambda **k: None
+    actor._maybe_match()
+    assert len(registry) > 0
+    assert actor._flashscore_event_ids == {}
+
+    async def fetch_empty():
+        return "SA÷2¬"
+
+    actor._fetch_flashscore_live = fetch_empty
+    asyncio.run(actor._refresh_flashscore_mapping())
+    assert len(registry) > 0
+    assert 888 not in actor._ended_games
+
+    async def fetch_finished():
+        return (
+            "SA÷2¬~AA÷finished¬AB÷3¬AE÷Jodar R.¬AF÷Gill F.¬"
+            "BA÷6¬BB÷4¬BC÷6¬BD÷3¬"
+        )
+
+    actor._fetch_flashscore_live = fetch_finished
+    asyncio.run(actor._refresh_flashscore_mapping())
+
+    assert len(registry) == 0
+    assert 888 in actor._ended_games
+    assert actor._flashscore_event_ids == {}
+
+
 def test_flashscore_timer_callback_submits_refresh_to_injected_loop():
     """LiveClock 同步回调没有 running loop 时，仍把刷新提交到 kernel loop。"""
     loop = asyncio.new_event_loop()

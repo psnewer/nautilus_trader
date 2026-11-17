@@ -174,7 +174,18 @@
           "checktion": {
             "OR": [
               {
-                "type": "price_change_recovery"
+                "AND": [
+                  {
+                    "type": "select_orders"
+                  },
+                  {
+                    "type": "order_cancel",
+                    "params": {
+                      "book_side": "ask",
+                      "price_drift": 0.01
+                    }
+                  }
+                ]
               },
               {
                 "type": "one_side_recovery",

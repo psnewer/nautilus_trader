@@ -297,6 +297,19 @@ def test_condition_exposure_source_feeds_order_cancel_without_select_check():
     assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["ordinary"]
 
 
+def test_condition_select_orders_feeds_order_cancel_for_all_open_orders():
+    orders = [_order("first", price=0.40), _order("second", price=0.41)]
+    ctx = _ctx(orders=orders, ask=0.42, other_ask=0.58)
+    branch = AndCheckExpr(
+        SelectOrdersCheck(),
+        OrderCancelCheck(book_side="ask", price_drift=0.01),
+    )
+
+    assert branch.eval(ctx) is True
+    assert ctx.scratch[CANCEL_CANDIDATES] == ["first", "second"]
+    assert ctx.scratch["cancel_pair_orders"]["client_order_ids"] == ["first", "second"]
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

@@ -325,7 +325,7 @@ event 级名称匹配成功后、进入概率校验(§4.2.1)前,按 market 拆 p
 **latch**:anchor cache 非空,且某个 tradable venue cache 非空时,只匹配该 tradable venue。cache 永远保留 last-good(`add_instrument` upsert,失败发现不清零)+ matching 增量 register → 冷启动 anchor 未加载时不出半成品;单个 tradable venue 未加载不阻塞其它 tradable venue。"多 venue 一失败不挡其他"自然成立。PMSPORTS 聚合路径允许先发布当前已匹配到的 tradable venues;下一轮 discovery/cache 补齐后同 pair_id register 覆盖为更完整集合。
 > Q5 的 2×interval 新鲜度 gate(及 `_last_refresh_ns`)**退役**:DataClient 拥有发现后,"新鲜度"不再是 matching 的关注点;cache 非空即可配(理由见 refactor.md #58/#59)。
 
-**eviction —— PM Sports `ended` 驱动(#60,替 #59 的 expiration 扫描)**:用户判定 gamma `end_date_iso`(→`expiration_ns`)与 Data API `redeemable` 都**不准**;改用 **PM Sports WS 的真实赛事 `ended` 信号**。NT 无 instrument cache 删除 API,只清 registry / 活跃集(`SportsGameUpdate` 全链路见 §sports / refactor.md §5.9)。
+**eviction —— PMS Sports `ended` 主信号 + Flashscore 明确结束补充(#60/#507，替 #59 的 expiration 扫描)**:用户判定 gamma `end_date_iso`(→`expiration_ns`)与 Data API `redeemable` 都**不准**；主路径使用 **PMS Sports WS 的真实赛事 `ended` 信号**。Flashscore day feed 明确返回并成功映射 `AB=3` 时复用同一 `_evict_game` 路径补充清理；不以赛事从 feed 消失推断结束。NT 无 instrument cache 删除 API，只清 registry / 活跃集(`SportsGameUpdate` 全链路见 §sports / refactor.md §5.9，Flashscore 见 §4.5)。
 ```
 # matching 订 data.SportsGameUpdate*;ended 事件:
 def on_data(d): if isinstance(d, SportsGameUpdate) and d.ended: self._evict_game(d.game_id)
@@ -338,7 +338,7 @@ def _evict_game(gid):
 # _emit_pair 填 game_to_pair[anchor 腿 info["game_id"]].add(pair_id);_maybe_match 排除 game_id ∈ _ended_games 的 anchor 腿
 ```
 - **映射键 `game_id`**:`arb_provider` / 后续 PMSPORTS provider 发现时抽 `event["gameId"]` 入 `info["game_id"]`(== sports WS gameId,§5.9 实采证实)。
-- **纯 `ended` 无兜底**(D4 用户定):漏 `ended` 就不清(`finished_timestamp` 与 ended 绑定不能当 fallback)。
+- **只认明确结束状态**：PMS `ended=true` 或已映射 Flashscore `AB=3` 才清；漏掉两者就不清。`finished_timestamp` 与 feed 缺失均不能作为 fallback。
 - **P11 归属 = matching**(MarketMatchingActor 是 PairRegistry 唯一写者 + game→pair 索引宿主;`SportsGameUpdate` 生产者是 sports DataClient,单一归属挂 data 主方)—— 不耦合 execution。expiration 静态属性**不再用于 eviction**。
 - **pair 清理事件(#432)**:`PairRegistry` 真正移除已注册 pair 后，Matching
   同步发布 `PairEvicted(pair_id, reason)`。Matching 是 pair 生命周期的契约定义者，
@@ -359,13 +359,13 @@ def _evict_game(gid):
 > 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
 > `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
 
-### 4.5 Flashscore event 映射与首局发球方补充(#495/#497/#501/#502，已落地 · offline-verified 2026-11-07)
+### 4.5 Flashscore event 映射、首局发球方与结束状态补充(#495/#497/#501/#502/#507，已落地 · offline-verified 2026-11-16)
 
 每次 Matching timer tick 完成 `_maybe_match` 后，Actor 对 PMSPORTS anchor 异步发起一次
 Flashscore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。运行时唯一外部源为
 `https://global.flashscore.ninja/2/x/feed/f_2_0_2_en_1`，每轮只请求一次当日网球 feed；请求显式
 携带昨晚浏览器与次日直连验证一致的 `x-fsign: SW9D1eZo`、Flashscore `Origin/Referer` 和普通
-浏览器 `User-Agent`。解析时只保留 `AB=2` 的 live 赛事。LiveScore/SofaScore 请求及 fallback
+浏览器 `User-Agent`。解析时保留 `AB=2` 的 live 赛事与 `AB=3` 的明确结束赛事，`AB=1` 不参与映射。LiveScore/SofaScore 请求及 fallback
 均已删除，也不为完整姓名逐球员请求 profile feed。
 
 NT `LiveClock` 的 native timer 回调中没有 asyncio running loop，不能在回调内用
@@ -390,6 +390,10 @@ fail-soft 告警，便于区分“未调度、请求失败、映射为零、比�
 赛事名与 Provider competition taxonomy 不同，因此候选只在各 anchor
 competition 分组内部参与同一队名算法，赛事名本身不作第二道严格相等门。成功结果以
 `game_id → Flashscore AA event ID` 保存在 Actor 进程内存，下一 tick 可重建。
+
+映射到 `AB=3` 时不要求内存中已有 event ID，直接复用 §4.4 的 `_evict_game`，因此进程重启后
+也能按队名清理陈旧 pair；正常完赛和取消赛事都属于不可继续交易的结束状态。仅从 live feed
+消失不触发清理，请求、payload 或映射失败继续 fail-soft，留待下一 tick 重试。
 
 Flashscore live record 的 `WC` 是当前局发球方（`1=home`、`2=away`），不是赛事首局发球方。
 各盘局分依次读取 `BA/BB`、`BC/BD`、`BE/BF`、`BG/BH`、`BI/BJ`。将各盘局分求和：

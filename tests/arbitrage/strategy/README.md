@@ -1122,17 +1122,19 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - `test_mean_rebate_e2e.py::test_spread_cancel_and_mean_recovery_build_as_or_expression`:
   JSON loader 可将 `spread_cancel_recovery OR mean_rebate_recovery` 装配为补偿 CheckExpr。
 
-## strategy-4.35:one_side_rebate 价格变化撤单补偿
+## strategy-4.35:one_side_rebate 订单价格漂移撤单补偿
 
-- `test_check_price_change_recovery.py`:market OBD 唤醒(`event_name=MarketOrderBookDeltas`；
-  兼容旧 `OrderBookDeltas`)且该 pair 存在
-  open order 时写 `price_change_recovery` 整组撤单请求；不再读取 momentum。
-- MatchedPair/sports 等非 OBD 唤醒不命中；OBD 唤醒但无 open order 也不命中。
-- 默认深度开关关闭时，纯深度帧在 Evaluator 入口已被过滤，不会进入 Check；
-  显式开启时纯深度 OBD 会评估，因而也会触发该撤单 check。
-- `arb_config.json` 的 `one_side_rebate.compensation_tree` 使用
-  `price_change_recovery OR one_side_recovery`；撤单仍经补偿 Action 链生成 `cancel_pair` plan，
-  再由统一 dispatcher 执行，不在 Check 内直接撤单。
+- `price_change_recovery` 已退役；配置使用
+  `select_orders → order_cancel(book_side=ask,price_drift=0.01)`，先选择该 pair 全部 open order，
+  再逐单以订单自身价格和该订单 instrument 当前 ask 的概率绝对差判断；完整 PM ask 向量只用于
+  commission 合法性门控。
+- 漂移 `<0.01` 不撤，`>=0.01`（含浮点容差下的等号）只撤命中的候选订单；缺订单、缺完整
+  PM yes/no ask、commission 不在 `[0.98,1.02]` 时 fail-closed。
+- 定向撤单链与 `one_side_recovery` 保持原 OR 顺序；撤单仍经补偿 Action 链生成
+  `cancel_pair` plan，再由统一 dispatcher 执行，不在 Check 内直接撤单。
+- **验收**：`test_check_order_cancel.py::test_condition_select_orders_feeds_order_cancel_for_all_open_orders`
+  覆盖无筛选参数时选择全部 open order 并按 ask 漂移定向撤单；launcher/config loader 用例覆盖
+  旧 `price_change_recovery` 类型已不再注册且正式配置可装配。
 
 ## strategy-4.36:binary-market OBD 单次评估(#357/#358)
 
@@ -1144,7 +1146,7 @@ Cache 整组更新 first/extreme/trend price，priority=0 `on_data` 再做顶价
 ended 按 market 退订并清 `_last_best_ask`。
 **验收**:`test_evaluator.py::test_market_obd_routes_each_pair_once_and_injects_market_event_name` /
 `test_market_price_memory_handler_runs_before_strategy_route` 及 market 订阅/退订用例，以及
-`test_check_price_change_recovery.py::test_hits_when_market_order_book_trigger_has_open_order`。
+`test_check_order_cancel.py::test_condition_select_orders_feeds_order_cancel_for_all_open_orders`。
 
 3-way source frame 可同时更新 home/draw/away 三个二元市场，但每个 logical event 仅路由
 对应 pair；不把六条投影腿作为一个策略市场。源帧原子性由 DataEngine 单测覆盖，分组由

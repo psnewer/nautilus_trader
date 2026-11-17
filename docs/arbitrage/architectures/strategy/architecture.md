@@ -70,7 +70,7 @@ flowchart TB
 - arb / comp 两棵树 **真并行**(`asyncio.gather`)
 - **树间取舍(#301)**在 Evaluator 统一分发阶段执行：两树各自完成门控、选择和计划构造，
   有补偿 plan 就选择补偿，否则选择套利。补偿树内部仍由 CheckExpr OR 的配置顺序决定
-  `price_change_recovery` 与 `one_side_recovery` 的优先级
+  定向撤单链与 `one_side_recovery` 的优先级
 - order/position digests 不是对象快照；它们只用于 Execution release 前检测评估窗口内订单或
   仓位字段是否变化
 - **订单成交终态树**不进入行情评估的 per-pair inflight gate，也不执行
@@ -462,7 +462,6 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `RequireCrossVenueCheck()` | `src/arbitrage/strategy/checks/cross_venue.py` | 套利树过滤器:放在 `mean_rebate` / `one_side_rebate` 之后。若 `ctx.scratch["legs"]` 全部来自同一 venue,清空 legs 并返回 False;若 `ctx.scratch["candidates"]` 存在,过滤掉“candidate 内所有腿同 venue”的 candidate,剩余为空才返回 False。补偿树/recovery 可能天然单腿,不要放这个 Check |
 | `EventCheck(event=None)` | `src/arbitrage/strategy/checks/event.py` | 省略 `event` 时不筛触发源；`obd` 接受 `OrderBookDeltas/MarketOrderBookDeltas`，`score` 接受 `SportsGameUpdate`。用于由配置决定 sibling 消费哪类事件，未知参数 fail-fast。 |
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, venue_select=False, force=False, pnl=True)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | 从 live Cache 的 open positions 计算每个 outcome 的实际 share,**补单目标位**为最大实际 share;当前/修复后 rebate 的净利润基线读取 Portfolio outcome exposure,包含 Data API 对账恢复的 SELL/merge 已实现盈亏;对缺口 outcome 选补救腿写 recovery legs。**rebate 费率分母(#321)** = arbitrage `share`(读 `strategy_defaults["share"]`,不单设 Check 参数);分子含 realizedPNL,故分母用固定意向 share、不用波动的在场 share(理由见 refactor #321),取不到/≤0 则 fail-closed。**`venue_select`**:缺省/`False` 保持现状(各 venue 按 `(prob, venue_preference_rank)` 取最优赔率);`True` 时只在 PM 里选,某 outcome 无 PM 报价则该 role 缺席 → `roles_present` 校验 fail-closed(不补)。position outcome/金额统一委托 venues §4.1。**`force`(#326)**:缺省 `False` 保持 #262 双向率门(当前率 < 阈值才补、补后率 ≥阈值才算有用);`True` 时**旁路这两道率门**,只要存在缺口 outcome 就无条件补到 `target_share`(供 pre_rebate 开赛兜底强平衡,见 §3.10)。仅设很低的 `min_repaired_rebate` **不能**达到强补效果——#262 前置门 `current >= 阈值` 反而会拦住。**`pnl`(#327)**:缺省 `True` 保持 #321(补后率分子含 realizedPNL);`False` 时经 `outcome_exposures(..., include_realized_pnl=False)` 取基线,**当前率/补后率均不含 realized**,只按当轮开仓投影判率(供 pre_rebate 循环开平防即买即卖,见 §3.10;不影响 `target_share`/denom)。 |
-| `PriceChangeRecoveryCheck()` | `src/arbitrage/strategy/checks/price_change_recovery.py` | 本轮由 OBD 唤醒且该 pair 当前至少有一张 open order 时，写 `cancel_pair_orders` 并生成整组撤单 plan。Check 接受现行 `MarketOrderBookDeltas` 与兼容 `OrderBookDeltas` 两种 `event_name`，不读取/比较 momentum；价格帧过滤由 Evaluator 入口的 `arbitrage.evaluate_on_depth_change` 统一负责。默认 `false` 时能进入 Check 的 OBD 已是真实顶价变化；显式 `true` 时纯深度 OBD 也会进入并触发撤单。MatchedPair/sports 等其它 `event_name` 不命中。无参数 |
 | `SpreadCancelRecoveryCheck(spread)` | `src/arbitrage/strategy/checks/spread_cancel_recovery.py` | 遍历该 pair 的 open orders，逐单直接读取其自身 instrument 的 live OrderBook：BUY 取 best bid，SELL 取 best ask；订单价与盘口价均换算到该 instrument 的同一概率口径后计算严格 `< spread` 的概率差。它不按 outcome exposure 改写 side/instrument，因此能覆盖 `place_bets` 根据 PM 互斥库存动态生成的 SELL。命中时写标准 `legs + cancel_pair_orders`，随后仍完整经过补偿树 `candi_select -> place_bets`：前者做树内门控，后者生成 `cancel_pair` plan；不在 Check/Action 中旁路撤单 |
 | `LowerTierCheck()` | `src/arbitrage/strategy/checks/lower_tier.py` | 复用 `competition_tier.lower_tier_oe_competition`，只读 pair 的 OE instrument 原始 `competition_name`；名称包含 Challenger/WTA/UTR/ITF（大小写不敏感）才命中。缺 OE 腿、缺原始名称或只在归并后的 `info["competition"]` 出现标记均 fail-closed；与 `venue_replace.tier_ignore` 共用同一赛事分级真理源 |
 | `CompetitionIsQuery(is)` | `src/arbitrage/strategy/queries/competition.py` | 注册名 `competition`。`is` 必须是非空字符串数组；逐个读取 pair 中 PM instrument 的 Gamma 原始 `info["competition_raw"]`（如 `atp/wta`）与 OE 原始 `competition_name`，任一值与数组任一项**大小写敏感、完整相等**即命中。两 venue 并列判断，无优先级；不读取归并后的 `info["competition"]`。无可用原始值或无精确匹配均 fail-closed；旧 `include` 参数非法。**2026-11-06 已扩展并离线验证** |
@@ -648,8 +647,7 @@ Pair 价格内存更新使用同一 market topic 上 `priority=5` 的同步 Mess
 handler，Strategy 普通 `on_data` 订阅保持 `priority=0`。该顺序只负责
 `PairPriceStore(first/extreme/trend) → 策略评估`；订单簿整批先写完的保证由
 DataEngine 批次契约提供(data §2.1)，不依赖 MessageBus priority 解决跨 instrument
-中间态。`price_change_recovery` 接受 `event_name=MarketOrderBookDeltas`；旧
-`OrderBookDeltas` 值仅为兼容通路保留。
+中间态。
 
 **成熟度**：相关路径有离线用例覆盖；见 `test_pair_prices.py`、`test_price_trend.py`、
 `test_action_trend_gate.py` 与 `test_evaluator.py`。决策史见 refactor #356。
@@ -796,8 +794,8 @@ score 显式绕过该闸，不增加 pending/replay 队列；
 - `intent` 未显式配置时**按树推导**:compensation tree → `"recovery"`,arbitrage tree(及
   `tree_kind=None`)→ `"arbitrage"`。解析优先级:胜出 candidate 标记 > Action 显式配置 >
   按树推导(`ctx.tree_kind`,由 actor 在 arb_ctx/comp_ctx 分别置 `"arbitrage"`/`"compensation"`)。
-  因此补偿树所有产单分支默认即 `recovery`,**包括原先漏标的 `one_side_recovery`/`price_change_recovery`
-  OR 分支**(它们从此一并豁免 TP/SL profit gate,修正了"recovery 单却按普通单受 TP/SL 拦"的
+  因此补偿树所有产单分支默认即 `recovery`,**包括原先漏标的 `one_side_recovery`
+  分支**(它从此豁免 TP/SL profit gate,修正了"recovery 单却按普通单受 TP/SL 拦"的
   不一致)。B5 的 `"start_game"` 等特殊 intent 仍须显式配置(显式覆盖按树推导;当前配置未接入 B5)。
   submitter 写入 `arb:intent=<intent>`。Risk 仅对 `recovery` 跳过单场 profit gates(详见 risk §3.1)。
 - `origin` 未显式配置时**按统一比赛阶段推导**：`phase_store` 该 game 为 `IN_PLAY`，或
@@ -821,14 +819,22 @@ score 显式绕过该闸，不增加 pending/replay 队列；
   pair 路由、Sports state、比分或时间缺失，以及读取异常，均只写空 tag（异常另记 warning）并继续下单；
   该观测字段不进入 `OpportunityMeta` barrier 语义，也不参与 Risk / Execution 门控。编码契约见 common §1。
 
-**one_side_rebate 补偿配置形态(#294)**:
+**one_side_rebate 补偿配置形态(#294；2026-11-14 退役 `price_change_recovery`)**:
 
 ```json
 {
   "compensation_tree": {
     "checktion": {
       "OR": [
-        {"type": "price_change_recovery"},
+        {
+          "AND": [
+            {"type": "select_orders"},
+            {
+              "type": "order_cancel",
+              "params": {"book_side": "ask", "price_drift": 0.01}
+            }
+          ]
+        },
         {"type": "one_side_recovery", "params": {"min_rate": 0.04, "force": true}}
       ]
     },
@@ -1119,8 +1125,8 @@ if plan := comp_plan or arb_plan:
 ```
 
 **补偿优先语义**:两棵树先独立完成本树门控、选择和计划转换；有补偿 plan 就不选择套利
-plan，补偿链没有生成 plan 才回退套利 plan。`price_change_recovery` 也必须完整经过补偿树，
-生成 `cancel_pair` plan 后参与同一统一分发，不存在撤单旁路。
+plan，补偿链没有生成 plan 才回退套利 plan。`select_orders → order_cancel` 定向撤单链也必须
+完整经过补偿树，生成 `cancel_pair` plan 后参与同一统一分发，不存在撤单旁路。
 
 **为什么 evaluate 必须分离求值与执行**:两棵树必须先完成独立求值和计划构造，Evaluator
 才能在没有执行副作用的前提下比较两个 plan。若边求值边提交，先完成的树会绕过补偿优先。

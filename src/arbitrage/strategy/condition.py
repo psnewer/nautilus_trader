@@ -52,7 +52,6 @@ class EvalContext:
     # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。
     strategy_defaults: dict = field(default_factory=dict)
     # 本轮评估的触发事件名：OrderBookDeltas / MarketOrderBookDeltas / MatchedPair 等。
-    # price_change_recovery 只认 instrument / market 级 OrderBookDeltas。
     event_name: str | None = None
     # 非行情触发树可读取原始触发事件及其终态订单；普通行情评估均为 None。
     trigger_event: object | None = None

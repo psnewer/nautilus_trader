@@ -56,7 +56,7 @@ def test_parser_reads_abbreviated_names_stable_event_id_and_score():
     assert event.raw["WC"] == "2"
 
 
-def test_parser_keeps_only_live_events():
+def test_parser_keeps_live_and_finished_events():
     payload = "¬".join(
         (
             "SA÷2",
@@ -68,7 +68,10 @@ def test_parser_keeps_only_live_events():
 
     events = parse_flashscore_feed(payload)
 
-    assert [event.event_id for event in events] == ["live"]
+    assert [(event.event_id, event.status) for event in events] == [
+        ("live", "2"),
+        ("finished", "3"),
+    ]
 
 
 def test_parser_keeps_doubles_abbreviations_without_player_profile_requests():

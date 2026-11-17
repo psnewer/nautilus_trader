@@ -205,6 +205,7 @@ class MarketMatchingActor(Actor):
     def _evict_game(self, game_id: int) -> None:
         # #250:eviction 退订本场 sports(strategy 侧同场退订后归零,client 回收 Store 条目)。
         self._ended_games.add(game_id)
+        self._flashscore_event_ids.pop(game_id, None)
         pair_ids = self._game_to_pair.pop(game_id, set())
         for pair_id in pair_ids:
             self._evict_pair(pair_id, reason=f"game {game_id} ended")
@@ -322,6 +323,13 @@ class MarketMatchingActor(Actor):
             sports_store = SportsGameStateStore(self.cache)
             verified_count = 0
             for game_id, event in mapped.items():
+                if event.status == "3":
+                    self.log.info(
+                        f"Flashscore ended: game={game_id} event_id={event.event_id} "
+                        f"{event.home_team} vs {event.away_team}",
+                    )
+                    self._evict_game(game_id)
+                    continue
                 previous_event_id = self._flashscore_event_ids.get(game_id)
                 self._flashscore_event_ids[game_id] = event.event_id
                 local_state = sports_store.get(game_id)

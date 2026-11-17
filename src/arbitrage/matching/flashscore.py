@@ -12,6 +12,7 @@ from src.arbitrage.matching.normalizer import normalize_team_name
 @dataclass(frozen=True, slots=True)
 class FlashscoreEvent:
     event_id: str
+    status: str
     home_team: str
     away_team: str
     score: str
@@ -20,7 +21,7 @@ class FlashscoreEvent:
 
 
 def parse_flashscore_feed(payload: str) -> list[FlashscoreEvent]:
-    """解析 Flashscore 当日网球 feed，只返回正在进行的赛事。"""
+    """解析 Flashscore 当日网球 feed;只返回进行中或已结束的赛事。"""
     by_event_id: dict[str, FlashscoreEvent] = {}
     for record in payload.split("~AA÷")[1:]:
         parsed = _parse_event(record)
@@ -81,7 +82,8 @@ def _parse_event(record: str) -> FlashscoreEvent | None:
         if separator:
             fields[key] = value
 
-    if fields.get("AB") != "2":
+    status = fields.get("AB")
+    if status not in {"2", "3"}:
         return None
     home_team = fields.get("AE", "").strip()
     away_team = fields.get("AF", "").strip()
@@ -101,6 +103,7 @@ def _parse_event(record: str) -> FlashscoreEvent | None:
         )
     return FlashscoreEvent(
         event_id=event_id,
+        status=status,
         home_team=home_team,
         away_team=away_team,
         score=score,
