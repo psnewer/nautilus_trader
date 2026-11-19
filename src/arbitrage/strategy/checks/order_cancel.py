@@ -8,7 +8,9 @@ opt-in 条件撤单。
 就不跑该条校验:
 
 - `price_drift`:完整 PM yes/no 在 `book_side` 对应方向的 commission 概率和位于
-  `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。
+  `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。配置
+  `serve_plus` 后,若订单下单比分对应的是目标 outcome 的对手发球,该订单阈值增加
+  `serve_plus`;无法可靠判断时仍使用原阈值。
 - `game_drift`:`当前局数 - baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
 - `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,当前盘低于
@@ -30,6 +32,9 @@ from src.arbitrage.common.opportunity import order_score
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.actions.score_selection import _SCORE_PART
+from src.arbitrage.strategy.actions.score_selection import _pair_roles
+from src.arbitrage.strategy.actions.score_selection import _side_role
+from src.arbitrage.strategy.actions.serve_gate import server_role_at_score
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
@@ -50,6 +55,7 @@ class OrderCancelCheck(Check):
         self,
         book_side: str = "ask",
         price_drift: float | None = None,
+        serve_plus: float | None = None,
         game_drift: int | None = None,
         min_tp_set: int | None = None,
         min_sl_set: int | None = None,
@@ -70,6 +76,7 @@ class OrderCancelCheck(Check):
             if not math.isfinite(price_drift) or not 0 <= price_drift < 1:
                 raise ValueError("order_cancel: price_drift must be in [0, 1)")
         self._price_drift = price_drift
+        self._serve_plus = _validate_serve_plus(price_drift, serve_plus)
         if game_drift is not None and (
             isinstance(game_drift, bool) or not isinstance(game_drift, int) or game_drift < 0
         ):
@@ -110,11 +117,7 @@ class OrderCancelCheck(Check):
         if self._min_set_kind is not None and ctx.in_game_position_store is not None:
             getter = getattr(ctx.in_game_position_store, f"min_{self._min_set_kind}_set")
             runtime_min_set = getter(ctx.pair_id)
-        min_set = (
-            runtime_min_set
-            if runtime_min_set is not None
-            else self._configured_min_set
-        )
+        min_set = runtime_min_set if runtime_min_set is not None else self._configured_min_set
         current_set = current_set_number(
             pair_id=ctx.pair_id,
             pair_registry=ctx.pair_registry,
@@ -126,6 +129,8 @@ class OrderCancelCheck(Check):
             self._book_side,
         )
         tie_break_hit = self._tie_break and _tie_break_in_progress(ctx)
+        first_serve = _first_serve(ctx) if self._serve_plus is not None else None
+        pair_roles = _pair_roles(ctx) if self._serve_plus is not None else set()
 
         triggers = []
         for instrument_id in pair_instrument_ids(ctx):
@@ -153,14 +158,28 @@ class OrderCancelCheck(Check):
                                 quote_claim,
                             )
                             drift = abs(current_probability - order_probability)
-                            price_hit = (
-                                drift > self._price_drift
-                                or math.isclose(
-                                    drift,
-                                    self._price_drift,
-                                    rel_tol=0.0,
-                                    abs_tol=1e-12,
+                            effective_price_drift = self._price_drift
+                            if self._serve_plus is not None and pair_roles == {"home", "away"}:
+                                server_role = server_role_at_score(
+                                    first_serve,
+                                    order_score(order),
                                 )
+                                target_role = _side_role(
+                                    ctx,
+                                    {"instrument_id": str(instrument_id)},
+                                    pair_roles,
+                                )
+                                if (
+                                    server_role is not None
+                                    and target_role is not None
+                                    and server_role != target_role
+                                ):
+                                    effective_price_drift += self._serve_plus
+                            price_hit = drift > effective_price_drift or math.isclose(
+                                drift,
+                                effective_price_drift,
+                                rel_tol=0.0,
+                                abs_tol=1e-12,
                             )
                         except (KeyError, TypeError, ValueError, ZeroDivisionError):
                             price_hit = False
@@ -192,6 +211,7 @@ class OrderCancelCheck(Check):
             "client_order_ids": sorted(set(triggers)),
             "book_side": self._book_side,
             "price_drift": self._price_drift,
+            "serve_plus": self._serve_plus,
             "game_drift": self._game_drift,
             "tie_break": self._tie_break,
             "min_tp_set": min_set if self._min_set_kind == "tp" else None,
@@ -214,6 +234,7 @@ class OrderCancelCheck(Check):
             "force": True,
             "book_side": self._book_side,
             "price_drift": self._price_drift,
+            "serve_plus": self._serve_plus,
             "game_drift": self._game_drift,
             "tie_break": self._tie_break,
             "min_tp_set": None,
@@ -223,10 +244,26 @@ class OrderCancelCheck(Check):
 
 
 def _validate_min_set(name: str, value: int | None) -> None:
-    if value is not None and (
-        isinstance(value, bool) or not isinstance(value, int) or value <= 0
-    ):
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
         raise ValueError(f"order_cancel: {name} must be a positive integer")
+
+
+def _validate_serve_plus(
+    price_drift: float | None,
+    serve_plus: float | None,
+) -> float | None:
+    if serve_plus is None:
+        return None
+    if isinstance(serve_plus, bool):
+        raise ValueError("order_cancel: serve_plus must be a non-negative number")
+    value = float(serve_plus)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("order_cancel: serve_plus must be a non-negative number")
+    if price_drift is None:
+        raise ValueError("order_cancel: serve_plus requires price_drift")
+    if price_drift + value >= 1:
+        raise ValueError("order_cancel: price_drift + serve_plus must be in [0, 1)")
+    return value
 
 
 def _current_score(ctx: EvalContext) -> str:
@@ -235,6 +272,14 @@ def _current_score(ctx: EvalContext) -> str:
     game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
     state = ctx.sports_store.get(game_id) if game_id is not None else None
     return str(getattr(state, "score", "") or "")
+
+
+def _first_serve(ctx: EvalContext) -> str:
+    if ctx.sports_store is None or ctx.pair_registry is None:
+        return ""
+    game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
+    state = ctx.sports_store.get(game_id) if game_id is not None else None
+    return str(getattr(state, "first_serve", "") or "").lower()
 
 
 def _tie_break_in_progress(ctx: EvalContext) -> bool:
@@ -295,10 +340,7 @@ def _side_satisfies_commission(ctx: EvalContext, side: str) -> bool:
         if probability is None:
             return False
         probabilities[outcome] = probability
-    return (
-        set(probabilities) == set(VALID_OUTCOMES)
-        and 0.98 <= sum(probabilities.values()) <= 1.02
-    )
+    return set(probabilities) == set(VALID_OUTCOMES) and 0.98 <= sum(probabilities.values()) <= 1.02
 
 
 def _number(value) -> float | None:

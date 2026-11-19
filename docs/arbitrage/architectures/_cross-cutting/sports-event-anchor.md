@@ -47,9 +47,9 @@
 | PairRegistry 区分 anchor 与 tradable | 下游从 pair 查 instruments 时必须能只取 tradable ids |
 | Strategy 只消费 tradable ids | MatchedPair 触发 OBD 订阅与 snapshot 构造时跳过 anchor ids |
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
-| 详细状态与阶段分家 | `SportsGameStateStore` 保存 PMS 完整 payload；`SportsPhaseStore` 是 PMS/OE/SE 聚合后的阶段真理源 |
+| 详细状态与阶段分家 | `SportsGameStateStore` 保存 PMS 完整 payload；`SportsPhaseStore` 是 PMS/OE/SE/Flashscore 聚合后的阶段真理源 |
 | `(game_id, channel)` 即订阅键 | 每场每通道独立 DataType/topic；matching 与 strategy 当前均订 `phase`，全部通道订阅汇合归零后回收 Store 条目；OBD book 仍按原订阅生命周期回收 |
-| phase 单调推进 | PRE → IN_PLAY → POST；OE/SE false 不得把已确认的 IN_PLAY/POST 回退，POST 只认 PMS ended |
+| phase 单调推进 | PRE → IN_PLAY → POST；OE/SE false 不得把已确认的 IN_PLAY/POST 回退；POST 只认 PMS ended 或已映射 Flashscore `AB=3` |
 
 ---
 
@@ -123,14 +123,17 @@ account   = None
    - matching/strategy 当前均订 `phase`，以保证 `ended` 可达；`score` 通道已具备但当前无消费者。
      完整接口与错误边界只在 data architecture §3.4.1/§3.4.2 定义,本文不复述。
 
-4. 多源 phase(#365):
-   - PMS 的 `live/ended`、OE/SE market WS 的 `inPlay` 共同写 Cache-backed
+4. 多源 phase(#365/#508):
+   - PMS 的 `live/ended`、OE/SE market WS 的 `inPlay`、已映射 Flashscore 的 `AB=2/3` 共同写 Cache-backed
      `SportsPhaseStore(game_id)`；完整比分等字段仍只由 PMS 写 `SportsGameStateStore`。
    - OE/SE 的 `game_id` 来自 Matching/Strategy market 订阅 params，不从 venue event id 猜测。
-   - `inPlay` 缺失不更新；false 只能建立 PRE，true 推进 IN_PLAY；POST 只由 PMS ended 推进。
+   - `inPlay` 缺失不更新；false 只能建立 PRE，true 推进 IN_PLAY；Flashscore `AB=2` 推进
+     IN_PLAY，`AB=3` 推进 POST；`AB=1` 与 feed 缺失不更新。
    - 所有源都未给出有效 phase 时 Store 无记录，语义为 UNKNOWN；消费者不得用
      `NOT in_game` 将 UNKNOWN 反推为 PRE。显式 PRE 与 IN_PLAY 分别由 `pre_game` / `in_game` 查询。
    - OE/SE phase 变化不建立第二条事件管线；现有 OBD/PMS 唤醒后读取最新 phase。
+     Flashscore 阶段变化则复用 PMS 的 per-game `phase`/`score` 通知管道：Matching 与 Strategy
+     分别消费既有通道，不直接跨组件调用 eviction 或订阅清理。
 
 当前代码 `adapters/polymarket/sports.py` 已经是独立 client 形态。注册生命周期由
 `DATA_SOURCE_REGISTRY["sports_status"]` 与 `data_sources.sports_status.enabled` 控制,

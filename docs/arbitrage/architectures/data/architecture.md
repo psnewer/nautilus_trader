@@ -463,8 +463,9 @@ pair 完成 Matching/订阅；DataClient 对未路由 market 只暂存其中明�
 members、全部 runner routing、game 路由与 conflater 激活，再执行开页 IO，关闭同一竞态窗口。
 解析器继续区分 `inPlay` 缺失与明确 false：缺失字段不缓存、不更新，明确 false 只初始化 PRE，true
 推进 IN_PLAY；OE/SE 的 phase 含义一致。状态写到 common `SportsPhaseStore`，不写可变
-`instrument.info`，也不伪造缺少比分字段的 `SportsGameUpdate`。OE/SE 不推断 POST；PMS
-`ended=True` 是唯一 POST 来源。完整聚合不变量见 `_cross-cutting/sports-event-anchor.md`。
+`instrument.info`，也不伪造缺少比分字段的 `SportsGameUpdate`。OE/SE 不推断 POST；
+Flashscore 的明确阶段补充见 §3.4.5。完整聚合不变量见
+`_cross-cutting/sports-event-anchor.md`。
 
 处理顺序为：解析并确认 routing → 写 phase（若有效跃迁）→ offer source frame → DataEngine
 完整应用盘口 → 发布 market OBD。phase 变化本身不另发事件、不绕过 Strategy 的价格变化门控；
@@ -487,6 +488,24 @@ PMS 原始 parser 不猜发球方，初始值为空；Matching 的 Flashscore ev
 
 原始 PMS score event 已经发布时不会被追溯重发；需要该补充字段的消费者应读取
 `SportsGameStateStore`，它是比分历史及其附件的真理源。
+
+#### 3.4.5 Flashscore phase 补充契约(#507/#508，已落地 · offline-verified 2026-11-17)
+
+Matching 成功把 Flashscore 赛事映射到 PMS `game_id` 后，且该场已有 Matching sports 订阅时，
+`AB=2` 表示明确 IN_PLAY，`AB=3` 表示明确 POST；`AB=1`、请求失败、映射失败和赛事从 feed
+消失均不构成阶段证据。两种有效状态
+先通过 common `SportsPhaseStore.advance` 单调写入，source 记为 `FLASHSCORE`。无订阅赛事不存不推，
+避免绕过 PMS 的兴趣门控与归零回收；只有发生真实阶段跃迁才发布通知，重复 `AB=2/3` 不重复唤醒。
+
+AB=2 的 `first_serve` 校验写入先于阶段通知，保持“Store 最新状态先可读、再唤醒消费者”的顺序。
+通知复用 PMS 已有的 per-game sports 管道：按 `phase`、`score` 顺序各发布一份
+`SportsGameUpdate`，使 Matching 继续从 phase 通道执行 eviction，Strategy 继续从 score 通道完成
+既有 ended 生命周期处理与订阅释放。payload 优先承载 `SportsGameStateStore` 中现有 PMS 详细状态，只覆盖本次
+阶段所需的 `live/ended/status/ts`；若 PMS 尚无详细状态，则构造最小通知。Flashscore 的比分不写入
+`SportsGameStateStore`，因此 PMS 仍是详细比分与历史的唯一真理源。
+
+Store 写入失败时不得发布；某通道发布失败不回滚已经单调推进的 phase。`AB=3` 不得绕过通知管道
+直接调用 Matching eviction，否则 Strategy 收不到 ended，无法按 PMS 相同架构释放赛事订阅。
 
 ---
 

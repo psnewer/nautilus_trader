@@ -260,8 +260,12 @@ def test_market_matching_config_defaults_do_not_implicit_pm_oe_match():
 
 
 def test_flashscore_mapping_refresh_writes_verified_first_serve_to_sports_store():
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
     from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
     from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+    from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+    from src.arbitrage.common.sports_phase import SportsPhaseStore
 
     actor, _, cache, _, _ = _harness(anchor_venue="PMSPORTS")
     cache.add_instrument(_pmsports("Tennis", "Felix Gill", "Marcus Walters", game_id=777))
@@ -292,14 +296,33 @@ def test_flashscore_mapping_refresh_writes_verified_first_serve_to_sports_store(
         return payload
 
     actor._fetch_flashscore_live = fetch
+    published = []
+    actor.publish_data = lambda **kwargs: published.append(kwargs)
+    actor._sports_subscribed.add(777)
 
     asyncio.run(actor._refresh_flashscore_mapping())
 
     assert actor._flashscore_event_ids == {777: "n9P7Yw5K"}
     assert store.get(777).first_serve == "away"
+    phase = SportsPhaseStore(cache).get(777)
+    assert phase is not None
+    assert phase.phase == PHASE_IN_PLAY
+    assert phase.source == "FLASHSCORE"
+    assert [item["data_type"].metadata["channel"] for item in published] == [
+        SPORTS_CHANNEL_PHASE,
+        SPORTS_CHANNEL_SCORE,
+    ]
+    assert all(item["data"].live and not item["data"].ended for item in published)
+    assert all(item["data"].first_serve == "away" for item in published)
 
 
 def test_flashscore_finished_event_evicts_pair_without_saved_event_id():
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+    from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+    from src.arbitrage.common.sports_phase import PHASE_POST
+    from src.arbitrage.common.sports_phase import SportsPhaseStore
+
     actor, _, cache, registry, _ = _harness(
         anchor_venue="PMSPORTS",
         tradable_venues=("POLYMARKET", "ORBITEXCH"),
@@ -315,6 +338,7 @@ def test_flashscore_finished_event_evicts_pair_without_saved_event_id():
     actor.publish_data = lambda **k: None
     actor._maybe_match()
     assert len(registry) > 0
+    assert 888 in actor._sports_subscribed
     assert actor._flashscore_event_ids == {}
 
     async def fetch_empty():
@@ -332,11 +356,36 @@ def test_flashscore_finished_event_evicts_pair_without_saved_event_id():
         )
 
     actor._fetch_flashscore_live = fetch_finished
+    published = []
+
+    def publish_and_route(**kwargs):
+        published.append(kwargs)
+        if (
+            isinstance(kwargs["data"], SportsGameUpdate)
+            and kwargs["data_type"].metadata["channel"] == SPORTS_CHANNEL_PHASE
+        ):
+            actor.on_data(kwargs["data"])
+
+    actor.publish_data = publish_and_route
     asyncio.run(actor._refresh_flashscore_mapping())
 
     assert len(registry) == 0
     assert 888 in actor._ended_games
     assert actor._flashscore_event_ids == {}
+    phase = SportsPhaseStore(cache).get(888)
+    assert phase is not None
+    assert phase.phase == PHASE_POST
+    assert phase.source == "FLASHSCORE"
+    assert [
+        item["data_type"].metadata["channel"] if item["data_type"].metadata else None
+        for item in published
+    ] == [
+        SPORTS_CHANNEL_PHASE,
+        None,
+        SPORTS_CHANNEL_SCORE,
+    ]
+    assert published[0]["data"].ended is True
+    assert published[2]["data"].ended is True
 
 
 def test_flashscore_timer_callback_submits_refresh_to_injected_loop():

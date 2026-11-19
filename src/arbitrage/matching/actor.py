@@ -17,6 +17,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_PHASE
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CHANNEL_SCORE
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
@@ -39,6 +40,9 @@ from src.arbitrage.common.market_books import market_book_subscriptions
 from src.arbitrage.common.market_books import subscribe_market_book
 from src.arbitrage.common.market_books import unsubscribe_market_book
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.sports_phase import PHASE_IN_PLAY
+from src.arbitrage.common.sports_phase import PHASE_POST
+from src.arbitrage.common.sports_phase import SportsPhaseStore
 from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
@@ -53,6 +57,7 @@ from src.arbitrage.matching.normalizer import events_from_instruments
 _MATCH_ALERT = "market_matching:tick"
 _FLASHSCORE_URL = "https://global.flashscore.ninja/2/x/feed/f_2_0_2_en_1"
 _FLASHSCORE_FSIGN = "SW9D1eZo"
+_FLASHSCORE_SOURCE = "FLASHSCORE"
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
@@ -324,11 +329,11 @@ class MarketMatchingActor(Actor):
             verified_count = 0
             for game_id, event in mapped.items():
                 if event.status == "3":
-                    self.log.info(
-                        f"Flashscore ended: game={game_id} event_id={event.event_id} "
-                        f"{event.home_team} vs {event.away_team}",
-                    )
-                    self._evict_game(game_id)
+                    if self._publish_flashscore_phase(game_id, event, sports_store):
+                        self.log.info(
+                            f"Flashscore ended: game={game_id} event_id={event.event_id} "
+                            f"{event.home_team} vs {event.away_team}",
+                        )
                     continue
                 previous_event_id = self._flashscore_event_ids.get(game_id)
                 self._flashscore_event_ids[game_id] = event.event_id
@@ -360,6 +365,7 @@ class MarketMatchingActor(Actor):
                         f"{event.home_team} vs {event.away_team} first_serve={event.first_serve} "
                         f"score_verified={verified}",
                     )
+                self._publish_flashscore_phase(game_id, event, sports_store)
             self.log.info(
                 f"Flashscore refresh completed: anchors={len(anchor_events)} "
                 f"events={len(flashscore_events)} mapped={len(mapped)} "
@@ -369,6 +375,77 @@ class MarketMatchingActor(Actor):
             raise
         except Exception as e:  # noqa: BLE001 — 补充数据失败不影响原 matching
             self._log.warning(f"Flashscore mapping failed: {e!r}; retrying next matching tick")
+
+    def _publish_flashscore_phase(self, game_id, event, sports_store: SportsGameStateStore) -> bool:
+        """Flashscore AB=2/3 经统一 phase Store 与 sports topic 补充 PMS 阶段。"""
+        if game_id not in self._sports_subscribed:
+            return False
+        phase = PHASE_POST if event.status == "3" else PHASE_IN_PLAY
+        ts = self.clock.timestamp_ns()
+        try:
+            changed = SportsPhaseStore(self.cache).advance(
+                game_id,
+                phase,
+                source=_FLASHSCORE_SOURCE,
+                ts_event=ts,
+            )
+        except Exception as e:  # noqa: BLE001 — phase 未写入时不得发布通知
+            self._log.error(
+                f"Flashscore phase store write failed: game={game_id} "
+                f"phase={phase} error={e!r}",
+            )
+            return False
+        if not changed:
+            return False
+
+        update = self._flashscore_phase_update(game_id, event, sports_store, ts=ts)
+        self.log.info(
+            f"Flashscore phase updated: game={game_id} phase={phase} "
+            f"source={_FLASHSCORE_SOURCE}",
+        )
+        for channel in (SPORTS_CHANNEL_PHASE, SPORTS_CHANNEL_SCORE):
+            try:
+                self.publish_data(
+                    data_type=sports_data_type(game_id, channel),
+                    data=update,
+                )
+            except Exception as e:  # noqa: BLE001 — Store 已是新状态，不回滚
+                self._log.error(
+                    f"Flashscore publish game {game_id} channel {channel} failed: {e!r}",
+                )
+        return True
+
+    @staticmethod
+    def _flashscore_phase_update(game_id, event, sports_store: SportsGameStateStore, *, ts: int):
+        """Phase 通知优先承载 PMS 详细状态且不把 Flashscore 比分写回 PMS Store。"""
+        previous = sports_store.get(game_id)
+        ended = event.status == "3"
+        if previous is not None:
+            values = previous.to_dict()
+            values.update(
+                ts_event=ts,
+                ts_init=ts,
+                status="Finished" if ended else (previous.status or "InProgress"),
+                live=not ended,
+                ended=ended,
+            )
+            return SportsGameUpdate.from_dict(values)
+        return SportsGameUpdate(
+            ts_event=ts,
+            ts_init=ts,
+            game_id=int(game_id),
+            league="",
+            home_team=event.home_team,
+            away_team=event.away_team,
+            status="Finished" if ended else "InProgress",
+            score=event.score,
+            period="",
+            elapsed="",
+            live=not ended,
+            ended=ended,
+            finished_ts="",
+            first_serve=event.first_serve or "",
+        )
 
     async def _fetch_flashscore_live(self) -> str:
         response = await self._flashscore_http.get(

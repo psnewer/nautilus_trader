@@ -325,7 +325,7 @@ event 级名称匹配成功后、进入概率校验(§4.2.1)前,按 market 拆 p
 **latch**:anchor cache 非空,且某个 tradable venue cache 非空时,只匹配该 tradable venue。cache 永远保留 last-good(`add_instrument` upsert,失败发现不清零)+ matching 增量 register → 冷启动 anchor 未加载时不出半成品;单个 tradable venue 未加载不阻塞其它 tradable venue。"多 venue 一失败不挡其他"自然成立。PMSPORTS 聚合路径允许先发布当前已匹配到的 tradable venues;下一轮 discovery/cache 补齐后同 pair_id register 覆盖为更完整集合。
 > Q5 的 2×interval 新鲜度 gate(及 `_last_refresh_ns`)**退役**:DataClient 拥有发现后,"新鲜度"不再是 matching 的关注点;cache 非空即可配(理由见 refactor.md #58/#59)。
 
-**eviction —— PMS Sports `ended` 主信号 + Flashscore 明确结束补充(#60/#507，替 #59 的 expiration 扫描)**:用户判定 gamma `end_date_iso`(→`expiration_ns`)与 Data API `redeemable` 都**不准**；主路径使用 **PMS Sports WS 的真实赛事 `ended` 信号**。Flashscore day feed 明确返回并成功映射 `AB=3` 时复用同一 `_evict_game` 路径补充清理；不以赛事从 feed 消失推断结束。NT 无 instrument cache 删除 API，只清 registry / 活跃集(`SportsGameUpdate` 全链路见 §sports / refactor.md §5.9，Flashscore 见 §4.5)。
+**eviction —— PMS Sports `ended` 主信号 + Flashscore 明确结束补充(#60/#507/#508，替 #59 的 expiration 扫描)**:用户判定 gamma `end_date_iso`(→`expiration_ns`)与 Data API `redeemable` 都**不准**；主路径使用 **PMS Sports WS 的真实赛事 `ended` 信号**。Flashscore day feed 明确返回并成功映射 `AB=3` 时先推进统一 phase Store，再向既有 phase/score sports 通道发布 ended；Matching 仍只在自己的 phase consumer 中复用 `_evict_game`，不从刷新协程直接清理。赛事从 feed 消失不推断结束。NT 无 instrument cache 删除 API，只清 registry / 活跃集(`SportsGameUpdate` 全链路见 §sports / refactor.md §5.9，Flashscore 见 §4.5)。
 ```
 # matching 订 data.SportsGameUpdate*;ended 事件:
 def on_data(d): if isinstance(d, SportsGameUpdate) and d.ended: self._evict_game(d.game_id)
@@ -359,7 +359,7 @@ def _evict_game(gid):
 > 只让 OE/SE DataClient 能把 source market 的 `inPlay` 观察值写到对应赛事的
 > `SportsPhaseStore`。Strategy 无概率校验直接首订时同样补该参数。
 
-### 4.5 Flashscore event 映射、首局发球方与结束状态补充(#495/#497/#501/#502/#507，已落地 · offline-verified 2026-11-16)
+### 4.5 Flashscore event 映射、首局发球方与阶段补充(#495/#497/#501/#502/#507/#508，已落地 · offline-verified 2026-11-17)
 
 每次 Matching timer tick 完成 `_maybe_match` 后，Actor 对 PMSPORTS anchor 异步发起一次
 Flashscore 映射刷新；上一轮尚未结束时不并发叠加，也不阻塞正常市场匹配。运行时唯一外部源为
@@ -391,9 +391,12 @@ fail-soft 告警，便于区分“未调度、请求失败、映射为零、比�
 competition 分组内部参与同一队名算法，赛事名本身不作第二道严格相等门。成功结果以
 `game_id → Flashscore AA event ID` 保存在 Actor 进程内存，下一 tick 可重建。
 
-映射到 `AB=3` 时不要求内存中已有 event ID，直接复用 §4.4 的 `_evict_game`，因此进程重启后
-也能按队名清理陈旧 pair；正常完赛和取消赛事都属于不可继续交易的结束状态。仅从 live feed
-消失不触发清理，请求、payload 或映射失败继续 fail-soft，留待下一 tick 重试。
+映射到 `AB=2/3` 时不要求内存中已有 event ID：分别把统一 phase Store 推进到 IN_PLAY/POST，
+再按 data §3.4.5 复用 PMS 的 per-game phase/score 通知管道。`AB=3` 因而仍由 §4.4 的 phase
+consumer 执行 `_evict_game`，Strategy 也能收到同一 ended 并释放订阅；刷新协程本身不直接清理。
+阶段写入只面向本 Actor 已订阅 sports 的 candidate/已注册 pair，未订阅 anchor 不存不推。
+进程重启后仍能按队名重建映射并清理陈旧 pair；正常完赛和取消赛事都属于不可继续交易的结束
+状态。仅从 live feed 消失不触发清理，请求、payload 或映射失败继续 fail-soft，留待下一 tick 重试。
 
 Flashscore live record 的 `WC` 是当前局发球方（`1=home`、`2=away`），不是赛事首局发球方。
 各盘局分依次读取 `BA/BB`、`BC/BD`、`BE/BF`、`BG/BH`、`BI/BJ`。将各盘局分求和：
@@ -404,6 +407,7 @@ Flashscore live record 的 `WC` 是当前局发球方（`1=home`、`2=away`）�
 `SportsGameStateStore` 定义。HTTP、payload 或映射失败均 fail-soft 告警，留待下一 tick 重试。
 对每个可推断的赛事，每轮同时记录原始 `WC`、Flashscore 盘分、PMS 当前盘分、
 本轮反推值、Store 已保存值与校验结果；Store 已有 `first_serve` 时本轮只观测、不覆盖。
+AB=2 的有效 `first_serve` 写入先于本轮阶段通知，使 Strategy 被 score 通道唤醒时已可读取最新附件。
 
 ---
 

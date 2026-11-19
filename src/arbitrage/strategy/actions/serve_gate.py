@@ -117,17 +117,19 @@ def _current_server_role(ctx: EvalContext) -> str | None:
     if state is None or bool(getattr(state, "ended", False)):
         return None
     first_serve = str(getattr(state, "first_serve", "") or "").lower()
+    return server_role_at_score(first_serve, getattr(state, "score", ""))
+
+
+def server_role_at_score(first_serve: str, score) -> str | None:
+    """按首局发球方与指定比分推导该比分对应的发球方。"""
+    first_serve = str(first_serve or "").lower()
     if first_serve not in {"home", "away"}:
         return None
-    score = _parse_score(getattr(state, "score", ""))
+    score = _parse_score(score)
     if score is None:
         return None
     current_unit = score[-1]
-    if (
-        current_unit[2] is not None
-        or current_unit[3] is not None
-        or current_unit[:2] == (6, 6)
-    ):
+    if current_unit[2] is not None or current_unit[3] is not None or current_unit[:2] == (6, 6):
         return None
     if any(not _unit_is_complete(unit) for unit in score[:-1]):
         return None

@@ -18,6 +18,7 @@ from tests.arbitrage.strategy._live_state import live_context
 def _order(
     order_id: str,
     *,
+    instrument_id: str = "Y.POLYMARKET",
     price: float = 0.40,
     score: str | None = "0-0",
     intent: str = "arbitrage",
@@ -29,7 +30,7 @@ def _order(
         tags.append(f"arb:order_score={score}")
     return SimpleNamespace(
         client_order_id=order_id,
-        instrument_id="Y.POLYMARKET",
+        instrument_id=instrument_id,
         side=side,
         price=price,
         tags=tags,
@@ -45,6 +46,7 @@ def _ctx(
     other_bid=None,
     score="0-0",
     period="S1",
+    first_serve="home",
 ):
     bid = ask - 0.01 if bid is None else bid
     other_ask = 1.0 - ask if other_ask is None else other_ask
@@ -55,12 +57,16 @@ def _ctx(
             "N.POLYMARKET": {"bid": other_bid, "ask": other_ask},
         },
         infos={
-            "Y.POLYMARKET": {"claim": "yes"},
-            "N.POLYMARKET": {"claim": "no"},
+            "Y.POLYMARKET": {"claim": "yes", "selection_role": "home"},
+            "N.POLYMARKET": {"claim": "no", "selection_role": "away"},
         },
         orders=orders,
         sports_store=SimpleNamespace(
-            get=lambda game_id: SimpleNamespace(score=score, period=period),
+            get=lambda game_id: SimpleNamespace(
+                score=score,
+                period=period,
+                first_serve=first_serve,
+            ),
         ),
         in_game_position_store=InGamePositionRuntimeStore(),
     )
@@ -116,6 +122,64 @@ def test_price_drift_includes_threshold_with_float_tolerance():
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(book_side="ask", price_drift=0.05).eval(ctx) is True
+
+
+def test_serve_plus_raises_price_drift_threshold_on_opponent_serve():
+    order = _order("o1", score="1-0")
+    ctx = _ctx(orders=[order], ask=0.46, other_ask=0.54, first_serve="home")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is False
+
+    ctx = _ctx(orders=[order], ask=0.47, other_ask=0.53, first_serve="home")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+    assert ctx.scratch["cancel_pair_orders"]["serve_plus"] == 0.02
+
+
+def test_serve_plus_uses_order_outcome_when_identifying_opponent_serve():
+    order = _order(
+        "o1",
+        instrument_id="N.POLYMARKET",
+        price=0.60,
+        score="0-0",
+    )
+    ctx = _ctx(orders=[order], ask=0.33, other_ask=0.67, first_serve="home")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+
+
+def test_serve_plus_is_not_added_when_order_target_was_serving():
+    ctx = _ctx(orders=[_order("o1", score="0-0")], ask=0.45, other_ask=0.55)
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+
+
+@pytest.mark.parametrize(
+    ("order_score_value", "first_serve"),
+    [
+        (None, "home"),
+        ("PRE", "home"),
+        ("6-6", "home"),
+        ("1-0", ""),
+    ],
+)
+def test_serve_plus_falls_back_to_base_drift_without_reliable_serve_evidence(
+    order_score_value,
+    first_serve,
+):
+    ctx = _ctx(
+        orders=[_order("o1", score=order_score_value)],
+        ask=0.45,
+        other_ask=0.55,
+        first_serve=first_serve,
+    )
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
 
 
 @pytest.mark.parametrize(
@@ -180,11 +244,14 @@ def test_invalid_commission_only_disables_price_drift_signal():
     )
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
-    assert OrderCancelCheck(
-        book_side="ask",
-        price_drift=0.05,
-        game_drift=1,
-    ).eval(ctx) is True
+    assert (
+        OrderCancelCheck(
+            book_side="ask",
+            price_drift=0.05,
+            game_drift=1,
+        ).eval(ctx)
+        is True
+    )
 
 
 def test_missing_order_score_uses_zero_game_baseline():
@@ -317,6 +384,10 @@ def test_condition_select_orders_feeds_order_cancel_for_all_open_orders():
         {"book_side": "mid", "price_drift": 0.1},
         {"price_drift": -0.1},
         {"price_drift": 1.0},
+        {"serve_plus": 0.01, "game_drift": 1},
+        {"price_drift": 0.05, "serve_plus": -0.01},
+        {"price_drift": 0.05, "serve_plus": True},
+        {"price_drift": 0.9, "serve_plus": 0.1},
         {"game_drift": -1},
         {"game_drift": True},
         {"min_tp_set": 0},

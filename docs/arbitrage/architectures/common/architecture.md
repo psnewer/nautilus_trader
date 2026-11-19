@@ -148,7 +148,8 @@ candidate 差分与等待新帧语义见 matching §4.2.1，OE 页动作见 data
 
 `src/arbitrage/common/sports_phase.py` 在 NT Cache 通用对象区按 `sports:phase:{game_id}` 保存
 聚合后的 `PRE / IN_PLAY / POST`。状态只允许向前推进：OE/SE `inPlay=false` 只能初始化 PRE，
-`true` 推进到 IN_PLAY；POST 只由 PMSPORTS `ended` 推进。记录同时保留最后一次有效跃迁的
+`true` 推进到 IN_PLAY；PMSPORTS `ended` 或成功映射的 Flashscore `AB=3` 推进 POST，
+Flashscore `AB=2` 可补充推进 IN_PLAY。记录同时保留最后一次有效跃迁的
 `source/ts_event`。Store 无记录(`get(...) is None`)表示 UNKNOWN，不得默认为 PRE；
 只有明确的 `inPlay=false` 或 PMS PRE 才构成赛前证据。完整多源生产、生命周期与消费契约见
 `_cross-cutting/sports-event-anchor.md`；common 只拥有 codec 与单调写入 API。

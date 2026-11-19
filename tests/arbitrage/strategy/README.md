@@ -811,6 +811,11 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   `[0.98,1.02]`：ask 合格时不受 bid 向量影响，bid 合格时不受 ask 向量影响；所选侧缺腿、缺报价或
   commission 越界只关闭价格信号。价格绝对概率差或累计常规局数推进任一达到或超过阈值时
   只撤命中的订单，等于阈值即撤。跨盘累计普通局，括号内抢七小分不计；非 in_game 来源忽略，
+  可选 `serve_plus` 只调整价格信号：逐张订单以其冻结的 `arb:order_score` 和赛事 `first_serve`
+  还原下单时发球方；若为订单目标 outcome 的对手发球，有效阈值为
+  `price_drift + serve_plus`，否则仍为 `price_drift`。不得使用当前比分替代下单比分；PRE、抢七、
+  first_serve/比分/outcome 任一不可确认时回退原阈值。参数缺失完整保持旧行为；显式配置时必须同时
+  配置 `price_drift`，且自身有限非负、总阈值 `<1`。
   单个信号缺失时另一信号仍可触发，两者均缺失则 fail-closed。condition 输出 client-order-id
   子集，撤单 Check 只消费该子集；缺输入 fail-closed，混合窗口不会串用另一类订单的阈值。
   另构造 `intent=recovery + origin=in_game + position_id` 的平仓挂单与普通入场挂单：运行时
@@ -845,7 +850,7 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   只撤对应参赛方已赢盘数落后的 TP 挂单，不配置 `min_tp_set`、不执行 `advance_min_tp_set`；SL 撤单支
   仍使用 `min_sl_set=1` 并执行 `advance_min_sl_set`。TP 仓位分支对应 `min_tp_set=1`，SL 仓位分支
   对应 `min_sl_set=1`。
-- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`（含 ask/bid 各自 commission、所选侧越界 fail-closed、其它 OR 信号不受阻、`6-6`/`6-6(x-y)` 立即撤及 `TB<N>` 独立兜底）、`test_action_set_selection.py`、`test_check_position_close.py`、
+- **验收**：`test_query_exposure_source.py`、`test_check_order_cancel.py`（含 ask/bid 各自 commission、所选侧越界 fail-closed、对手发球阈值加成、己方发球不加成、证据不足回退、缺参兼容、非法参数、其它 OR 信号不受阻、`6-6`/`6-6(x-y)` 立即撤及 `TB<N>` 独立兜底）、`test_action_set_selection.py`、`test_check_position_close.py`、
   `test_pre_rebate_scenarios.py::test_lower_in_game_tp_order_cancel_filters_by_completed_set_standing`、
   `test_in_game_positions.py`、`test_evaluator.py` 的撤单写入/eviction 清理用例、
   `test_opportunity.py::test_order_score_reads_frozen_order_tag`，以及
