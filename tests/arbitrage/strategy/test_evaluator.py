@@ -1394,6 +1394,33 @@ def test_first_price_rejects_dirty_sum_and_non_pm_obd():
     assert actor._get_pair_price_store().get("match_X").first_price == {}
 
 
+@pytest.mark.parametrize(("yes_ask", "no_ask"), [(0.48, 0.50), (0.51, 0.51)])
+def test_first_price_accepts_clean_sum_boundaries(yes_ask, no_ask):
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=yes_ask, no_ask=no_ask)
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").first_price == {
+        "yes": yes_ask,
+        "no": no_ask,
+    }
+
+
+@pytest.mark.parametrize(("yes_ask", "no_ask"), [(0.479, 0.50), (0.511, 0.51)])
+def test_first_price_rejects_sum_outside_clean_boundaries(yes_ask, no_ask):
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=yes_ask, no_ask=no_ask)
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").first_price == {}
+
+
 def test_first_price_is_not_captured_after_game_is_live():
     actor, _, pair_reg, _, loop, _ = _harness()
     yes, _ = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)

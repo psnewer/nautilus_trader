@@ -683,7 +683,7 @@ class StrategyEvaluator(Strategy):
         if state is None or state.first_price:
             return
         prices = self._pm_ask_prices(pair_id, state.outcomes)
-        if prices is None or not 0.95 <= sum(prices.values()) <= 1.05:
+        if prices is None or not 0.98 <= sum(prices.values()) <= 1.02:
             return
         store.capture_first(pair_id, prices)
 

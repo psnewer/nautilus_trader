@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
@@ -14,7 +15,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 class PreGameOrderCheck(Check):
-    """选择当前 PM ask 唯一较低的 outcome,并按该 ask 的偏移价下单。"""
+    """选择当前 PM ask 唯一较低且低于 first_price 的 outcome,并按偏移价下单。"""
 
     def __init__(self, offset: float) -> None:
         value = float(offset)
@@ -34,6 +35,13 @@ class PreGameOrderCheck(Check):
         prices.sort()
         current_ask, outcome = prices[0]
         if math.isclose(prices[1][0], current_ask, abs_tol=1e-12):
+            return False
+
+        state = PairPriceStore(ctx.cache).get(ctx.pair_id)
+        if state is None or set(state.first_price) != set(state.outcomes):
+            return False
+        first_price = float(state.first_price[outcome])
+        if not math.isfinite(first_price) or not 0 < first_price < 1 or current_ask >= first_price:
             return False
 
         order_price = current_ask * (1.0 - self._offset)

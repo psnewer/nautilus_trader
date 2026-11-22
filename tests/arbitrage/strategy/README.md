@@ -494,8 +494,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   实际 `arb_config.json` 须通过 loader 与 strategy registry 完整装配。
 
 ### strategy-4.pre_rebate.11: 当前低 ask 偏移挂单与反转（#437）
-- 当前 PM ask `{yes:0.43,no:0.57}`、`offset=0.2`：选 yes，并按当前 `0.43×0.8=0.344`
-  下单；不读取 first_price，不使用绝对价格阈值。
+- first_price `{yes:0.50,no:0.50}`，当前 PM ask `{yes:0.43,no:0.57}`、`offset=0.2`：
+  选 yes；其当前 ask 严格低于 first_price，再按当前 `0.43×0.8=0.344` 下单。
+- 比较使用偏移前的当前 ask。缺少完整 first_price、目标 ask 等于或高于其 first_price 均
+  fail-closed；因此 first_price `no=0.035` 时，当前 no ask 短时升至 `0.50` 不得生成挂单。
 - 缺任一 PM ask 或两边 ask 相等均 fail-closed；pair 有任意 open order 时由
   `share_limit.current_order_gate.enable=true` 拦截新单。
 - 当前已提交的 `arb:origin=pre_game` 挂单经济方向为 yes，实时 ask 变成
@@ -1099,7 +1101,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 **期望/验收**:
 - MatchedPair 按 outcomes 幂等初始化独立 `outcomes` 清单及 `first_price={}`、`start_price={}`、`up_price={}`、`down_price={}`、`trend_price={}`；旧 schema 的全 `0.6` start 向量读取时迁移为空；
-- 仅 Sports phase 明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.95,1.05]`
+- 仅 Sports phase 明确 PRE 时，PM OBD 的完整 ask 向量且概率和在 `[0.98,1.02]`
   内才首次写 first price；Store 无记录(UNKNOWN)、明确 IN_PLAY/POST、非 PM OBD 与不干净向量不写；
 - 每个 PM OBD 在评估前仅用概率和位于 `[0.98,1.02]` 的干净完整向量更新每个 outcome 的最高 `up_price`/最低 `down_price`；
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；

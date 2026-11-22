@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.arbitrage.common.pair_prices import PairPriceStore
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.checks.pre_game_order import PreGameOrderCheck
 from src.arbitrage.strategy.checks.pre_game_reverse import PreGameReverseCheck
@@ -12,8 +13,8 @@ from src.arbitrage.strategy.checks.select_orders import CANCEL_CANDIDATES
 from tests.arbitrage.strategy._live_state import live_context
 
 
-def _ctx(*, books=None, orders=None):
-    return live_context(
+def _ctx(*, books=None, orders=None, first_prices=None):
+    ctx = live_context(
         books=books,
         orders=orders,
         infos={
@@ -22,6 +23,11 @@ def _ctx(*, books=None, orders=None):
         },
         strategy_defaults={"share": 10.0, "max_leg_share": 10.0},
     )
+    if first_prices is not None:
+        store = PairPriceStore(ctx.cache)
+        store.initialize(ctx.pair_id, ("yes", "no"))
+        store.capture_first(ctx.pair_id, first_prices)
+    return ctx
 
 
 def _run(coro):
@@ -40,7 +46,7 @@ def test_pre_game_order_selects_lower_current_ask_and_applies_offset():
     ctx = _ctx(books={
         "Y.POLYMARKET": {"ask": 0.43},
         "N.POLYMARKET": {"ask": 0.57},
-    })
+    }, first_prices={"yes": 0.5, "no": 0.5})
 
     assert PreGameOrderCheck(offset=0.2).passes(ctx) is True
     assert ctx.scratch["legs"][0]["claim"] == "yes"
@@ -62,7 +68,44 @@ def test_pre_game_order_selects_lower_current_ask_and_applies_offset():
     ],
 )
 def test_pre_game_order_requires_complete_unequal_current_asks(books):
-    assert PreGameOrderCheck(offset=0.2).passes(_ctx(books=books)) is False
+    ctx = _ctx(books=books, first_prices={"yes": 0.6, "no": 0.4})
+    assert PreGameOrderCheck(offset=0.2).passes(ctx) is False
+
+
+@pytest.mark.parametrize(
+    ("first_prices", "current_ask"),
+    [
+        (None, 0.43),
+        ({"yes": 0.43, "no": 0.57}, 0.43),
+        ({"yes": 0.42, "no": 0.58}, 0.43),
+    ],
+)
+def test_pre_game_order_requires_current_ask_strictly_below_first_price(
+    first_prices,
+    current_ask,
+):
+    ctx = _ctx(
+        books={
+            "Y.POLYMARKET": {"ask": current_ask},
+            "N.POLYMARKET": {"ask": 0.57},
+        },
+        first_prices=first_prices,
+    )
+
+    assert PreGameOrderCheck(offset=0.2).passes(ctx) is False
+
+
+def test_pre_game_order_rejects_simone_price_spike_regression():
+    ctx = _ctx(
+        books={
+            "Y.POLYMARKET": {"ask": 0.51},
+            "N.POLYMARKET": {"ask": 0.50},
+        },
+        first_prices={"yes": 0.973, "no": 0.035},
+    )
+
+    assert PreGameOrderCheck(offset=0.2).passes(ctx) is False
+    assert "legs" not in ctx.scratch
 
 
 def test_reverse_cancels_when_order_direction_ask_is_not_lowest():

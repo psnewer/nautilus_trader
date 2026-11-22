@@ -466,7 +466,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `LowerTierCheck()` | `src/arbitrage/strategy/checks/lower_tier.py` | 复用 `competition_tier.lower_tier_oe_competition`，只读 pair 的 OE instrument 原始 `competition_name`；名称包含 Challenger/WTA/UTR/ITF（大小写不敏感）才命中。缺 OE 腿、缺原始名称或只在归并后的 `info["competition"]` 出现标记均 fail-closed；与 `venue_replace.tier_ignore` 共用同一赛事分级真理源 |
 | `CompetitionIsQuery(is)` | `src/arbitrage/strategy/queries/competition.py` | 注册名 `competition`。`is` 必须是非空字符串数组；逐个读取 pair 中 PM instrument 的 Gamma 原始 `info["competition_raw"]`（如 `atp/wta`）与 OE 原始 `competition_name`，任一值与数组任一项**大小写敏感、完整相等**即命中。两 venue 并列判断，无优先级；不读取归并后的 `info["competition"]`。无可用原始值或无精确匹配均 fail-closed；旧 `include` 参数非法。**2026-11-06 已扩展并离线验证** |
 | `StartPriceBelowCheck(price)` | `src/arbitrage/strategy/checks/start_price_below.py` | 要求 `PairPriceStore.start_price` 完整覆盖 outcomes，筛选严格 `< price` 的 outcome 并选唯一最低价；最低价并列、无合格价、缺 PM instrument/有效 share 均 fail-closed。产出一条 PM BUY，`price/prob` 固定为记录的 start_price，`qty/share_if_wins` 使用 `arbitrage.share`；阈值等号不命中，`price` 必须为 `(0,1)` 内有限数 |
-| `PreGameOrderCheck(offset)` | `src/arbitrage/strategy/checks/pre_game_order.py` | 要求 yes/no 两边 PM 实时 ask 完整且不相等，选择 ask 唯一较低的 outcome，按其当前 ask `×(1-offset)` 生成 PM BUY；不读取 first_price，不设绝对价格阈值。缺/重复 PM 报价、ask 相等、缺 instrument/share 均 fail-closed；`offset` 须为 `(0,1)` 内有限数 |
+| `PreGameOrderCheck(offset)` | `src/arbitrage/strategy/checks/pre_game_order.py` | 要求 yes/no 两边 PM 实时 ask 完整且不相等，选择 ask 唯一较低的 outcome；该 outcome 当前 ask 还必须严格低于 `PairPriceStore.first_price`，再按当前 ask `×(1-offset)` 生成 PM BUY。比较使用偏移前的原始 ask；缺/不完整 first_price、当前 ask 等于或高于 first_price、缺/重复 PM 报价、ask 相等、缺 instrument/share 均 fail-closed；不另设绝对价格阈值，`offset` 须为 `(0,1)` 内有限数 |
 | `PreGameReverseCheck()` | `src/arbitrage/strategy/checks/pre_game_reverse.py` | 只消费前置 `exposure_source(source=pre_game_order,position_order=false)` 写入的非空 `cancel_candidates`，缺输入 fail-closed。候选中已 `SUBMITTED` 的 BUY 按自身 claim、SELL 按互补 claim 还原经济买入方向，全部订单必须指向同一 outcome。仅当订单经济方向的当前 PM ask 严格高于对手 ask，即已不再是最低方向时，写带候选 `client_order_ids` 的定向撤单请求；ask 相等、缺/重复 PM 报价、无单或方向混杂均 fail-closed。撤单后下一轮重新选择当前最低 ask，不保存额外反转状态 |
 | `SelectOrdersCheck(position_order=None, origin=None)` | `src/arbitrage/strategy/checks/select_orders.py` | 旧策略配置兼容入口；仍可把订单来源/类型子集写入 `cancel_candidates`，但现行 `arb_config.json` 不再引用。新配置由 `ExposureSourceQuery` 在 condition 层完成筛选，避免 condition 只路由、checktion 再重复扫描 |
 | `OrderCancelCheck(book_side="ask", price_drift=None, serve_plus=None, game_drift=None, min_tp_set=None, min_sl_set=None, tie_break=False, force=False)` | `src/arbitrage/strategy/checks/order_cancel.py` | 统一撤单判定，只消费前置 condition `exposure_source`（兼容旧 `select_orders`）写入的非空 `cancel_candidates`。`force=true` 时不要求配置其它条件，并跳过盘口、commission、比分及盘数判断，无条件撤销候选集合中仍活动的订单；候选缺失/为空或候选已非活动订单仍 fail-closed，不退化为撤整个 pair。`force=false` 时价格漂移、局数漂移、盘数不足和抢七阶段均为 opt-in 且逐单 OR。`tie_break=true` 在当前盘比分到 `6-6`（含 `6-6(x-y)`）时立即撤销候选活动订单，不等待 period 切换；`period=TB<N>` 也独立命中，以覆盖比分暂缺或时序不同步。比分/period 均无法确认抢七时只关闭该信号。`price_drift` 额外要求完整 PM yes/no 在 `book_side` 指定侧的概率和位于 commission 闭区间 `[0.98,1.02]`：ask 只校验 best ask，bid 只校验 best bid；缺腿、缺该侧报价、重复 outcome 或越界只关闭价格信号，不阻断其它 OR 信号。可选 `serve_plus` 按每张订单冻结的 `arb:order_score` 与赛事固定 `first_serve` 还原下单比分时的发球方；对于赛中仓位，仅当订单下单盘与仓位 opening order 的开仓盘均可确认且盘号不同时视为跨盘；对于 `origin=pre_game` 的仓位，任何比分有效的赛中订单都视为跨盘。跨盘且发球方是订单目标 outcome 的对手时，该订单价格阈值才改为 `price_drift + serve_plus`。它不读取当前比分；同盘、仓位关联缺失、赛中仓位开仓比分缺失、首发球方/下单比分/outcome 无法确认或下单比分处于抢七时均使用原 `price_drift`。`serve_plus` 必须与 `price_drift` 同时配置、为有限非负数且总阈值 `<1`。盘数门只能配置 `min_tp_set` 或 `min_sl_set` 之一；仅对 Cache 已绑定 position 且 `intent=recovery` 的平仓单生效，并分别读取 TP/SL 独立的 pair 运行时覆盖，缺覆盖才用配置值。两种盘数参数并存 fail-fast；`tie_break/force` 非 boolean fail-fast；单项数据缺失只关闭该信号 |
@@ -582,7 +582,7 @@ Evaluator 从该 pair 全部 PM instruments 读取每个 outcome 唯一且完整
 **仅 SportsPhaseStore 明确为 PRE 时采集；Store 无记录(`None`)=UNKNOWN，IN_PLAY/POST 也禁止采集**。
 OE/SE `inPlay=false` 可在 PMS 赛前帧缺失时提供明确 PRE；`inPlay=true` 可在 PMS 首帧前
 关闭 late-join 窗口。完整向量的概率和位于闭区间
-`[0.95, 1.05]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持空值。OE/SE OBD
+`[0.98, 1.02]` 时整组首次写入；缺腿、重复 outcome、非法价格或区间不通过均保持空值。OE/SE OBD
 只继续触发既有策略评估，不参与参考价采集。
 
 > **UNKNOWN 取舍**：#367 取代 #364 的 `None=赛前`。系统宁可在所有源均未确认 PRE 时
@@ -1092,9 +1092,9 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
   因而双方已完成盘数须打平、当前盘也须打平，并且只留下本盘去重触发次数唯一最多的参赛方；随后才把
   执行腿定向 PM、缩量和做最小下注/commission 门控。被任一语义门删除的腿不会误杀其它 candidate。
   触发次数并列、触发/比分历史不足或趋势基准不完整时均 fail-closed 不下单。
-- **`pre_move` 与 first_price 均退出当前赛前配置**：组件与历史测试仍保留，但
+- **`pre_move` 退出当前赛前配置，first_price 改作 B1 上界**：`pre_move` 组件与历史测试仍保留，但
   `arb_config.json` 不再引用;非低级别 `pre_game` 套利直接留空(无赛前投机挂单),低级别赛前
-  B1 由 `pre_game_order` 以 PM 实时 ask 偏移下单,不读取 first_price。
+  B1 由 `pre_game_order` 只在当前 PM ask 严格低于同 outcome 的 first_price 时按实时 ask 偏移下单。
 - **`force` 补救自终止**:B3 每 tick 命中直到缺口补平;补平后 `mean_rebate_recovery` 找不到
   缺口 → 停。
 - **`pnl:false` 防即买即卖(#327)**:pre_rebate 循环开平会累积 banked realizedPNL;若 recovery 补后率
