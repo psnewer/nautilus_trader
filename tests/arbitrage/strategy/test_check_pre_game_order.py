@@ -76,11 +76,10 @@ def test_pre_game_order_requires_complete_unequal_current_asks(books):
     ("first_prices", "current_ask"),
     [
         (None, 0.43),
-        ({"yes": 0.43, "no": 0.57}, 0.43),
         ({"yes": 0.42, "no": 0.58}, 0.43),
     ],
 )
-def test_pre_game_order_requires_current_ask_strictly_below_first_price(
+def test_pre_game_order_rejects_missing_or_current_ask_above_first_price(
     first_prices,
     current_ask,
 ):
@@ -93,6 +92,20 @@ def test_pre_game_order_requires_current_ask_strictly_below_first_price(
     )
 
     assert PreGameOrderCheck(offset=0.2).passes(ctx) is False
+
+
+def test_pre_game_order_allows_current_ask_equal_to_first_price():
+    ctx = _ctx(
+        books={
+            "Y.POLYMARKET": {"ask": 0.43},
+            "N.POLYMARKET": {"ask": 0.57},
+        },
+        first_prices={"yes": 0.43, "no": 0.57},
+    )
+
+    assert PreGameOrderCheck(offset=0.2).passes(ctx) is True
+    assert ctx.scratch["legs"][0]["claim"] == "yes"
+    assert ctx.scratch["legs"][0]["price"] == pytest.approx(0.344)
 
 
 def test_pre_game_order_rejects_simone_price_spike_regression():

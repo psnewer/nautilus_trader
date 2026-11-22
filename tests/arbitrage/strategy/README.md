@@ -495,9 +495,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.pre_rebate.11: 当前低 ask 偏移挂单与反转（#437）
 - first_price `{yes:0.50,no:0.50}`，当前 PM ask `{yes:0.43,no:0.57}`、`offset=0.2`：
-  选 yes；其当前 ask 严格低于 first_price，再按当前 `0.43×0.8=0.344` 下单。
-- 比较使用偏移前的当前 ask。缺少完整 first_price、目标 ask 等于或高于其 first_price 均
-  fail-closed；因此 first_price `no=0.035` 时，当前 no ask 短时升至 `0.50` 不得生成挂单。
+  选 yes；其当前 ask 小于等于 first_price，再按当前 `0.43×0.8=0.344` 下单。
+- 比较使用偏移前的当前 ask。缺少完整 first_price 或目标 ask 高于其 first_price 均
+  fail-closed；目标 ask 等于 first_price 时放行。因此 first_price `no=0.035` 时，当前 no ask
+  短时升至 `0.50` 不得生成挂单。
 - 缺任一 PM ask 或两边 ask 相等均 fail-closed；pair 有任意 open order 时由
   `share_limit.current_order_gate.enable=true` 拦截新单。
 - 当前已提交的 `arb:origin=pre_game` 挂单经济方向为 yes，实时 ask 变成

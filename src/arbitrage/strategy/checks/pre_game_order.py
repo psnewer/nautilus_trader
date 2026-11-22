@@ -15,7 +15,7 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 class PreGameOrderCheck(Check):
-    """选择当前 PM ask 唯一较低且低于 first_price 的 outcome,并按偏移价下单。"""
+    """选择当前 PM ask 唯一较低且不高于 first_price 的 outcome,并按偏移价下单。"""
 
     def __init__(self, offset: float) -> None:
         value = float(offset)
@@ -41,7 +41,7 @@ class PreGameOrderCheck(Check):
         if state is None or set(state.first_price) != set(state.outcomes):
             return False
         first_price = float(state.first_price[outcome])
-        if not math.isfinite(first_price) or not 0 < first_price < 1 or current_ask >= first_price:
+        if not math.isfinite(first_price) or not 0 < first_price < 1 or current_ask > first_price:
             return False
 
         order_price = current_ask * (1.0 - self._offset)
