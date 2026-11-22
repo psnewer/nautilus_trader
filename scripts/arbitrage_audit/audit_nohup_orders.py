@@ -20,6 +20,10 @@ UTC = timezone.utc
 BEIJING = timezone(timedelta(hours=8))
 VENUES = ("POLYMARKET", "ORBITEXCH", "SHARPEXCH")
 ROLES = ("yes", "no")
+PAIR_TAG_PATTERNS = (
+    re.compile(r'"arb:pair_id=(?:\\.|[^"\\])*"'),
+    re.compile(r"'arb:pair_id=(?:\\.|[^'\\])*'"),
+)
 
 
 def parse_ts(line: str) -> datetime | None:
@@ -30,6 +34,15 @@ def parse_ts(line: str) -> datetime | None:
     if match:
         local = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S,%f")
         return local.replace(tzinfo=BEIJING).astimezone(UTC)
+    return None
+
+
+def pair_id_from_order_line(line: str) -> str | None:
+    for pattern in PAIR_TAG_PATTERNS:
+        match = pattern.search(line)
+        if match is not None:
+            tag = ast.literal_eval(match.group(0))
+            return tag.partition("=")[2] or None
     return None
 
 
@@ -163,7 +176,7 @@ def main() -> None:
 
             if "Sports score updated: game=" in line:
                 match = re.search(
-                    r"game=(\d+) (.+?) vs (.+?) score=(.*?) period=([^ ]+) elapsed=.*? status=([^ ]+)$",
+                    r"game=(\d+) (.*?) vs (.*?) score=(.*?) period=([^ ]+) elapsed=.*? status=(.*)$",
                     line,
                 )
                 if match:
@@ -218,7 +231,7 @@ def main() -> None:
 
             if "OrderInitialized(" in line and "client_order_id=ARB-" in line:
                 order_id = re.search(r"client_order_id=(ARB-[^,]+)", line)
-                pair = re.search(r"arb:pair_id=([^']+)", line)
+                pair = pair_id_from_order_line(line)
                 role = re.search(r"arb:leg_key=[^:]+:([^:']+):", line)
                 price = re.search(r"options=\{'price': '([^']+)'", line)
                 quantity = re.search(r"quantity=([0-9.]+)", line)
@@ -226,7 +239,7 @@ def main() -> None:
                     orders[order_id.group(1)] = {
                         "id": order_id.group(1),
                         "ts": ts,
-                        "pair": pair.group(1),
+                        "pair": pair,
                         "role": role.group(1),
                         "price": float(price.group(1)),
                         "quantity": float(quantity.group(1)),

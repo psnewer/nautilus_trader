@@ -9,8 +9,8 @@ opt-in 条件撤单。
 
 - `price_drift`:完整 PM yes/no 在 `book_side` 对应方向的 commission 概率和位于
   `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。配置
-  `serve_plus` 后,若订单下单比分对应的是目标 outcome 的对手发球,该订单阈值增加
-  `serve_plus`;无法可靠判断时仍使用原阈值。
+  `serve_plus` 后,仅当订单下单盘不同于所绑定仓位的开仓盘,且订单下单比分对应的是目标
+  outcome 的对手发球,该订单阈值才增加 `serve_plus`;无法可靠判断时仍使用原阈值。
 - `game_drift`:`当前局数 - baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
 - `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,当前盘低于
@@ -38,9 +38,11 @@ from src.arbitrage.strategy.actions.serve_gate import server_role_at_score
 from src.arbitrage.strategy.checks.quote_legs import VALID_OUTCOMES
 from src.arbitrage.strategy.checks.quote_legs import instrument_info
 from src.arbitrage.strategy.checks.quote_legs import pair_instrument_ids
+from src.arbitrage.strategy.checks.quote_legs import pair_positions
 from src.arbitrage.strategy.checks.quote_legs import venue_of
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.consecutive_triggers import score_key
 from src.arbitrage.strategy.in_game_positions import current_set_number
 from src.arbitrage.strategy.queries.exposure_source import CANCEL_CANDIDATES
 
@@ -131,6 +133,7 @@ class OrderCancelCheck(Check):
         tie_break_hit = self._tie_break and _tie_break_in_progress(ctx)
         first_serve = _first_serve(ctx) if self._serve_plus is not None else None
         pair_roles = _pair_roles(ctx) if self._serve_plus is not None else set()
+        positions_by_id = _positions_by_id(ctx) if self._serve_plus is not None else {}
 
         triggers = []
         for instrument_id in pair_instrument_ids(ctx):
@@ -173,6 +176,13 @@ class OrderCancelCheck(Check):
                                     server_role is not None
                                     and target_role is not None
                                     and server_role != target_role
+                                    and _order_is_in_different_set_from_position(
+                                        ctx,
+                                        order,
+                                        raw_client_order_id,
+                                        position_id_fn,
+                                        positions_by_id,
+                                    )
                                 ):
                                     effective_price_drift += self._serve_plus
                             price_hit = drift > effective_price_drift or math.isclose(
@@ -272,6 +282,41 @@ def _current_score(ctx: EvalContext) -> str:
     game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
     state = ctx.sports_store.get(game_id) if game_id is not None else None
     return str(getattr(state, "score", "") or "")
+
+
+def _positions_by_id(ctx: EvalContext) -> dict[str, object]:
+    result = {}
+    for position in pair_positions(ctx):
+        position_id = getattr(position, "id", None) or getattr(position, "position_id", None)
+        if position_id is not None:
+            result[str(position_id)] = position
+    return result
+
+
+def _order_is_in_different_set_from_position(
+    ctx: EvalContext,
+    order,
+    raw_client_order_id,
+    position_id_fn,
+    positions_by_id: dict[str, object],
+) -> bool:
+    if not callable(position_id_fn):
+        return False
+    position_id = position_id_fn(raw_client_order_id)
+    position = positions_by_id.get(str(position_id or ""))
+    opening_order_id = getattr(position, "opening_order_id", None)
+    if opening_order_id is None:
+        return False
+    opening_order = ctx.cache.order(opening_order_id)
+    if opening_order is None:
+        return False
+    placed_score = score_key(order_score(order))
+    opening_score = score_key(order_score(opening_order))
+    return (
+        placed_score is not None
+        and opening_score is not None
+        and len(placed_score) != len(opening_score)
+    )
 
 
 def _first_serve(ctx: EvalContext) -> str:

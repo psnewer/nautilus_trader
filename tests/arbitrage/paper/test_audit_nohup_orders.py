@@ -42,3 +42,33 @@ def test_audit_uses_game_id_for_doubles_and_marks_pre_fill(tmp_path):
     assert rows["ARB-pre"]["首次成交盘/局"] == "PRE"
     assert rows["ARB-live"]["首次成交比分"] == "0-0"
     assert rows["ARB-live"]["首次成交盘/局"] == "S1"
+
+
+def test_audit_preserves_apostrophe_in_pair_id_and_links_score(tmp_path):
+    log_path = tmp_path / "nohup.out"
+    output_path = tmp_path / "audit.json"
+    log_path.write_text(
+        "\n".join([
+            "2026-11-22T01:00:00.000000000Z [INFO] MatchedPair Tennis|Zane Stevens|Benjamin O'Connell (conf=2.00)",
+            "2026-11-22T01:00:00.010000000Z [INFO] SubscribeData(params={'game_id': 303})",
+            "2026-11-22T01:00:01.000000000Z [INFO] Sports score updated: game=303  vs  score=<none>->2-2 period=S1 elapsed= status=",
+            '2026-11-22T01:01:00.000000000Z [INFO] OrderInitialized(instrument_id=x.POLYMARKET, client_order_id=ARB-apostrophe, side=BUY, type=LIMIT, quantity=5.050000, options={\'price\': \'0.57\'}, tags=["arb:pair_id=Tennis|Zane Stevens|Benjamin O\'Connell", \'arb:leg_key=polymarket:yes:0\'])',
+            "2026-11-22T01:01:01.000000000Z [INFO] OrderFilled(client_order_id=ARB-apostrophe, last_qty=5.050000, last_px=0.57)",
+        ]),
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts/arbitrage_audit/audit_nohup_orders.py")),
+            str(log_path),
+            str(output_path),
+        ],
+        check=True,
+    )
+
+    row = json.loads(output_path.read_text(encoding="utf-8"))["rows"][0]
+    assert row["选手2"] == "Benjamin O'Connell"
+    assert row["下单比分"] == "2-2"
+    assert row["首次成交比分"] == "2-2"

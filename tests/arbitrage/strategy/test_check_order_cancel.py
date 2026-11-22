@@ -40,6 +40,8 @@ def _order(
 def _ctx(
     *,
     orders,
+    positions=None,
+    order_history=None,
     ask=0.40,
     bid=None,
     other_ask=None,
@@ -61,6 +63,8 @@ def _ctx(
             "N.POLYMARKET": {"claim": "no", "selection_role": "away"},
         },
         orders=orders,
+        positions=positions,
+        order_history=order_history,
         sports_store=SimpleNamespace(
             get=lambda game_id: SimpleNamespace(
                 score=score,
@@ -77,6 +81,20 @@ def _ctx(
     )
     ctx.cache.position_id = lambda order_id: None
     return ctx
+
+
+def _bind_position(ctx, order, *, opening_score):
+    opening_order = _order("opening", score=opening_score)
+    position = SimpleNamespace(
+        id="position-1",
+        instrument_id=order.instrument_id,
+        opening_order_id=opening_order.client_order_id,
+    )
+    ctx.cache._positions = [position]
+    ctx.cache._order_history = [opening_order, order]
+    ctx.cache.position_id = lambda order_id: (
+        position.id if str(order_id) == str(order.client_order_id) else None
+    )
 
 
 def test_requires_explicit_selected_candidates():
@@ -125,13 +143,15 @@ def test_price_drift_includes_threshold_with_float_tolerance():
 
 
 def test_serve_plus_raises_price_drift_threshold_on_opponent_serve():
-    order = _order("o1", score="1-0")
+    order = _order("o1", score="6-4, 1-0")
     ctx = _ctx(orders=[order], ask=0.46, other_ask=0.54, first_serve="home")
+    _bind_position(ctx, order, opening_score="6-4")
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is False
 
     ctx = _ctx(orders=[order], ask=0.47, other_ask=0.53, first_serve="home")
+    _bind_position(ctx, order, opening_score="6-4")
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
@@ -143,9 +163,10 @@ def test_serve_plus_uses_order_outcome_when_identifying_opponent_serve():
         "o1",
         instrument_id="N.POLYMARKET",
         price=0.60,
-        score="0-0",
+        score="6-4, 0-0",
     )
     ctx = _ctx(orders=[order], ask=0.33, other_ask=0.67, first_serve="home")
+    _bind_position(ctx, order, opening_score="6-4")
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
@@ -153,6 +174,23 @@ def test_serve_plus_uses_order_outcome_when_identifying_opponent_serve():
 
 def test_serve_plus_is_not_added_when_order_target_was_serving():
     ctx = _ctx(orders=[_order("o1", score="0-0")], ask=0.45, other_ask=0.55)
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+
+
+def test_serve_plus_is_not_added_when_order_and_position_are_in_same_set():
+    order = _order("o1", score="1-0")
+    ctx = _ctx(orders=[order], ask=0.46, other_ask=0.54, first_serve="home")
+    _bind_position(ctx, order, opening_score="0-0")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+
+
+def test_serve_plus_is_not_added_without_position_set_evidence():
+    order = _order("o1", score="1-0")
+    ctx = _ctx(orders=[order], ask=0.46, other_ask=0.54, first_serve="home")
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
