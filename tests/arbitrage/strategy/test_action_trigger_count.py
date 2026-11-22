@@ -23,9 +23,9 @@ _PAIR = "p"
 _HISTORY = "history"
 
 
-def _observation(outcome, score, *, passed=True):
+def _observation(outcome, score, *, passed=True, ts_ns=1):
     return TriggerObservation(
-        ts_ns=1,
+        ts_ns=ts_ns,
         event_name="MarketOrderBookDeltas",
         score_raw=score,
         score_key=score_key(score),
@@ -38,11 +38,23 @@ def _observation(outcome, score, *, passed=True):
 
 
 class _SportsStore:
-    def __init__(self, score, *, period="S2", first_serve=None, ended=False):
+    def __init__(
+        self,
+        score,
+        *,
+        period="S2",
+        first_serve=None,
+        ended=False,
+        score_history=(),
+    ):
         self._score = score
         self._period = period
         self._first_serve = first_serve
         self._ended = ended
+        self._score_history = tuple(
+            SimpleNamespace(score=value, ts_event=ts_event)
+            for ts_event, value in score_history
+        )
 
     def get(self, game_id):
         assert game_id == 42
@@ -53,8 +65,12 @@ class _SportsStore:
             ended=self._ended,
         )
 
+    def score_history(self, game_id):
+        assert game_id == 42
+        return self._score_history
 
-def _ctx(history, *, score="6-4, 3-3", legs=None):
+
+def _ctx(history, *, score="6-4, 3-3", score_history=(), legs=None):
     store = ConsecutiveTriggerStore()
     for observation in history:
         store.append(_PAIR, _HISTORY, observation)
@@ -64,7 +80,7 @@ def _ctx(history, *, score="6-4, 3-3", legs=None):
         ctx.pair_registry.instrument_ids_for_pair(_PAIR),
         game_id=42,
     )
-    ctx.sports_store = _SportsStore(score)
+    ctx.sports_store = _SportsStore(score, score_history=score_history)
     ctx.scratch["legs"] = legs or [
         {"instrument_id": "Y.POLYMARKET", "role": "yes"},
         {"instrument_id": "N.POLYMARKET", "role": "no"},
@@ -343,21 +359,48 @@ def test_previous_set_and_failed_observations_are_not_counted():
 def test_current_draw_excludes_latest_draw_and_later_scores():
     ctx = _ctx(
         [
-            _observation("yes", "6-4, 0-1"),
-            _observation("yes", "6-4, 1-1"),
-            _observation("no", "6-4, 2-1"),
-            _observation("no", "6-4, 2-2"),
-            _observation("no", "6-4, 2-2"),
-            _observation("no", "6-4, 3-2"),
-            _observation("no", "6-4, 4-2"),
-            _observation("no", "6-4, 5-2"),
+            _observation("yes", "6-4, 0-1", ts_ns=21),
+            _observation("yes", "6-4, 1-1", ts_ns=31),
+            _observation("no", "6-4, 2-1", ts_ns=41),
+            _observation("no", "6-4, 2-2", ts_ns=51),
+            _observation("no", "6-4, 2-2", ts_ns=52),
+            _observation("no", "6-4, 3-2", ts_ns=61),
+            _observation("no", "6-4, 4-2", ts_ns=71),
+            _observation("no", "6-4, 5-2", ts_ns=81),
         ],
         score="6-4, 5-2",
+        score_history=(
+            (10, "6-4, 0-0"),
+            (20, "6-4, 0-1"),
+            (30, "6-4, 1-1"),
+            (40, "6-4, 2-1"),
+            (50, "6-4, 2-2"),
+            (60, "6-4, 3-2"),
+            (70, "6-4, 4-2"),
+            (80, "6-4, 5-2"),
+        ),
     )
 
     _run(ctx, when="current_draw")
 
     assert [leg["role"] for leg in ctx.scratch["legs"]] == ["yes"]
+
+
+def test_current_draw_uses_score_history_when_latest_draw_has_no_trigger():
+    ctx = _ctx(
+        [_observation("no", "0-0", ts_ns=11)],
+        score="1-2",
+        score_history=(
+            (10, "0-0"),
+            (20, "0-1"),
+            (30, "1-1"),
+            (40, "1-2"),
+        ),
+    )
+
+    _run(ctx, when="current_draw")
+
+    assert [leg["role"] for leg in ctx.scratch["legs"]] == ["no"]
 
 
 def test_current_draw_without_draw_in_current_set_fails_closed():
@@ -367,6 +410,7 @@ def test_current_draw_without_draw_in_current_set_fails_closed():
             _observation("yes", "6-4, 2-0"),
         ],
         score="6-4, 2-0",
+        score_history=((10, "6-4, 1-0"), (20, "6-4, 2-0")),
     )
 
     _run(ctx, when="current_draw")

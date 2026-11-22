@@ -107,24 +107,10 @@ def _most_triggered_outcomes(
         if same_set(observation.score_key, current_score)
     ]
     if when == "current_draw":
-        draw_score = next(
-            (
-                observation.score_key
-                for observation in reversed(history)
-                if _is_draw(observation.score_key)
-            ),
-            None,
-        )
-        if draw_score is None:
+        cutoff_ns = _current_draw_cutoff_ns(ctx, current_score)
+        if cutoff_ns is None:
             return frozenset(), counts
-        cutoff = max(
-            index
-            for index, observation in enumerate(history)
-            if observation.score_key == draw_score
-        )
-        while cutoff > 0 and history[cutoff - 1].score_key == draw_score:
-            cutoff -= 1
-        history = history[:cutoff]
+        history = [observation for observation in history if observation.ts_ns < cutoff_ns]
 
     scores = {outcome: set() for outcome in VALID_OUTCOMES}
     for observation in history:
@@ -141,6 +127,24 @@ def _most_triggered_outcomes(
 def _is_draw(value) -> bool:
     left, right, _, _ = value[-1]
     return left == right
+
+
+def _current_draw_cutoff_ns(ctx: EvalContext, current_score) -> int | None:
+    if ctx.sports_store is None or ctx.pair_registry is None:
+        return None
+    game_id = ctx.pair_registry.game_id_for_pair(ctx.pair_id)
+    if game_id is None:
+        return None
+    history_reader = getattr(ctx.sports_store, "score_history", None)
+    if not callable(history_reader):
+        return None
+    for state in reversed(tuple(history_reader(game_id))):
+        parsed = score_key(getattr(state, "score", ""))
+        if parsed is None or not same_set(parsed, current_score) or not _is_draw(parsed):
+            continue
+        cutoff_ns = int(getattr(state, "ts_event", 0) or 0)
+        return cutoff_ns if cutoff_ns > 0 else None
+    return None
 
 
 def _filter_legs(

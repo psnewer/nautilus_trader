@@ -660,9 +660,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 - `trigger_count(history_key, when=None, equal_enable=false)` 只读连续触发 Store 与最新 Sports 比分；只统计当前盘
   `passed=true` observation，同一 outcome 在同一完整比分的重复 OBD 只计一次。省略 `when` 时统计
-  当前盘全部历史；`when="current_draw"` 时以当前盘最近一次常规局分平局（包括 `0-0`）为截止点，
-  只统计该平局比分以前的数据，平局比分本身及之后的数据均略去，避免比分切换前的滞后 OBD
-  被误计入平局前窗口；当前盘没有平局记录时 fail-closed。
+  当前盘全部历史；`when="current_draw"` 时从 `SportsGameStateStore.score_history` 的完整比分帧中找到
+  当前盘最近一次常规局分平局（包括 `0-0`），以该帧时间为严格截止点，只统计更早的数据，
+  平局时及之后的数据均略去；即使该平局比分没有触发记录，也不得退回触发历史中的更早平局。
+  当前盘没有平局帧、完整比分历史或有效截止时间时 fail-closed。
 - `equal_enable` 缺失/`false` 时仅唯一最高 outcome 的现有腿通过，并列 fail-closed；显式 `true` 时
   所有并列最高且最高次数大于 0 的 outcome 都通过，`0:0` 不命中。无通过记录、缺 Store/game/比分或坏比分
   均 fail-closed。没有上游腿时，Action 不读取历史腿，而是为每个命中 outcome 从当前 live Cache 选最低
@@ -675,7 +676,8 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - **验收**：`test_action_trigger_count.py` 覆盖当前盘计数、同比分去重、跨盘/未通过排除、默认并列拦截、
   `equal_enable=true` 并列腿保留/当前报价产腿、单方向缺报价跳过与零计数保护，并覆盖多腿依次通过
   `set_exempt → set_selection → current_set_game_selection → start_price_gate → serve_gate` 的真实筛选链、
-  `current_draw` 排除平局比分本身及其后记录、无平局 fail-closed、默认全盘兼容、无上游腿时按当前报价产腿、selected
+  `current_draw` 排除平局时及其后记录、最近平局没有触发记录仍以完整比分历史截止、无平局 fail-closed、
+  默认全盘兼容、无上游腿时按当前报价产腿、selected
   candidate 同步、缺比分及非法参数；launcher 注册由
   `test_arb_node.py::test_register_builtin_checks_and_actions_registers_current_types` 覆盖。
 
