@@ -22,10 +22,11 @@ def _order(
     price: float = 0.40,
     score: str | None = "0-0",
     intent: str = "arbitrage",
+    origin: str = "in_game",
     side: str = "BUY",
 ):
     tags = [f"arb:intent={intent}"]
-    tags.append("arb:origin=in_game")
+    tags.append(f"arb:origin={origin}")
     if score is not None:
         tags.append(f"arb:order_score={score}")
     return SimpleNamespace(
@@ -83,8 +84,8 @@ def _ctx(
     return ctx
 
 
-def _bind_position(ctx, order, *, opening_score):
-    opening_order = _order("opening", score=opening_score)
+def _bind_position(ctx, order, *, opening_score, opening_origin="in_game"):
+    opening_order = _order("opening", score=opening_score, origin=opening_origin)
     position = SimpleNamespace(
         id="position-1",
         instrument_id=order.instrument_id,
@@ -186,6 +187,15 @@ def test_serve_plus_is_not_added_when_order_and_position_are_in_same_set():
     ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
 
     assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is True
+
+
+def test_serve_plus_treats_pre_game_position_as_outside_every_live_set():
+    order = _order("o1", score="1-0")
+    ctx = _ctx(orders=[order], ask=0.46, other_ask=0.54, first_serve="home")
+    _bind_position(ctx, order, opening_score="PRE", opening_origin="pre_game")
+    ctx.scratch[CANCEL_CANDIDATES] = ["o1"]
+
+    assert OrderCancelCheck(price_drift=0.05, serve_plus=0.02).eval(ctx) is False
 
 
 def test_serve_plus_is_not_added_without_position_set_evidence():

@@ -9,8 +9,9 @@ opt-in 条件撤单。
 
 - `price_drift`:完整 PM yes/no 在 `book_side` 对应方向的 commission 概率和位于
   `[0.98, 1.02]` 时,当前盘口与**订单自身价**的概率绝对差 `>= price_drift`。配置
-  `serve_plus` 后,仅当订单下单盘不同于所绑定仓位的开仓盘,且订单下单比分对应的是目标
-  outcome 的对手发球,该订单阈值才增加 `serve_plus`;无法可靠判断时仍使用原阈值。
+  `serve_plus` 后,赛中仓位仅在订单下单盘不同于开仓盘时、赛前仓位在任一有效赛中比分时
+  视为跨盘;跨盘且订单下单比分对应的是目标 outcome 的对手发球,该订单阈值才增加
+  `serve_plus`;无法可靠判断时仍使用原阈值。
 - `game_drift`:`当前局数 - baseline >= game_drift`;baseline = 订单 `arb:order_score` 的局数,
   空/不可解析按 **0**。
 - `min_tp_set` / `min_sl_set`:仅对绑定 `position_id` 且 `intent=recovery` 的平仓单,当前盘低于
@@ -28,6 +29,7 @@ import math
 import re
 
 from src.arbitrage.common.opportunity import order_intent
+from src.arbitrage.common.opportunity import order_origin
 from src.arbitrage.common.opportunity import order_score
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import probability_from_price
@@ -311,12 +313,12 @@ def _order_is_in_different_set_from_position(
     if opening_order is None:
         return False
     placed_score = score_key(order_score(order))
+    if placed_score is None:
+        return False
+    if order_origin(opening_order) == "pre_game":
+        return True
     opening_score = score_key(order_score(opening_order))
-    return (
-        placed_score is not None
-        and opening_score is not None
-        and len(placed_score) != len(opening_score)
-    )
+    return opening_score is not None and len(placed_score) != len(opening_score)
 
 
 def _first_serve(ctx: EvalContext) -> str:

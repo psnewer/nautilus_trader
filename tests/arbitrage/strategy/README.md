@@ -813,9 +813,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
   只撤命中的订单，等于阈值即撤。跨盘累计普通局，括号内抢七小分不计；非 in_game 来源忽略，
   可选 `serve_plus` 只调整价格信号：逐张订单以其冻结的 `arb:order_score` 和赛事 `first_serve`
   还原下单时发球方；若为订单目标 outcome 的对手发球，有效阈值为
-  `price_drift + serve_plus`，但只限于该订单已绑定仓位，且订单下单盘号与仓位 opening order 的
-  开仓盘号均可确认并且不同；同盘订单仍使用 `price_drift`。不得使用当前比分替代下单比分；仓位
-  关联/开仓比分缺失、PRE、抢七、first_serve/比分/outcome 任一不可确认时回退原阈值。参数缺失完整保持旧行为；显式配置时必须同时
+  `price_drift + serve_plus`，但只限于该订单已绑定仓位：赛中仓位要求订单下单盘号与仓位 opening
+  order 的开仓盘号均可确认并且不同；`origin=pre_game` 的仓位没有所属盘，任何比分有效的赛中订单
+  均视为跨盘。同盘订单仍使用 `price_drift`。不得使用当前比分替代下单比分；仓位关联缺失、赛中仓位
+  开仓比分缺失、订单 PRE、抢七、first_serve/比分/outcome 任一不可确认时回退原阈值。参数缺失完整保持旧行为；显式配置时必须同时
   配置 `price_drift`，且自身有限非负、总阈值 `<1`。
   单个信号缺失时另一信号仍可触发，两者均缺失则 fail-closed。condition 输出 client-order-id
   子集，撤单 Check 只消费该子集；缺输入 fail-closed，混合窗口不会串用另一类订单的阈值。
