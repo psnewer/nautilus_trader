@@ -495,7 +495,7 @@ derived 数据只给同树 Action 使用；套利树和补偿树分别拥有独�
 | `PmQuoteLegsAction()` | `src/arbitrage/strategy/actions/pm_quote_legs.py` | 纯报价产腿 Action：要求 yes/no 各有唯一 PM instrument 与有效实时 best ask，按 `arbitrage.share` 生成完整 PM BUY legs；不判断机会率、比分或最终订单价。通用报价产腿 Action，原用于 one-side miss 后的 fallback 链首位(该 fallback 已删除,当前配置不再引用),报价不完整时写空 legs，后续 Action 自然不产单 |
 | `AdvanceMinTpSetAction(offset=1)` / `AdvanceMinSlSetAction(offset=1)` | `src/arbitrage/strategy/actions/advance_min_set.py` | 注册名分别为 `advance_min_tp_set` / `advance_min_sl_set`。命中对应撤单分支时只把本 pair 的 TP 或 SL 运行时阈值写为 `current_set + offset`，二者互不覆盖；`period=S<N>` 与 `period=TB<N>` 都取 N，缺 store/pair_registry 或其它盘号不可判定时不写。订单类型由上层 magic exposure 分支保证；`offset` 须为正整数 |
 | `PreMoveCheck(move_threshold)` | `src/arbitrage/strategy/checks/pre_move.py` | pre_rebate 赛前追概率下行腿(#341/#361):读 `PairPriceStore.up_price/down_price` 与当前完整 PM best ask 向量。某 outcome 从历史最高价下跌比例 `(up-now)/up >= move_threshold` 时买它自身；从历史最低价上涨比例 `(now-down)/down >= move_threshold` 时买其互补 outcome。多信号同时命中取变化比例最大者，等于阈值命中；写单条 PM `BUY` leg(`qty=qty_from_share(PM, share, now)`)。当前向量和极值采样均必须满足 commission 闭区间 `[0.98,1.02]`；缺极值/完整腿、区间不通过、基准价非正或无变化达阈均 False。赛前/赛中门由 self_hits `in_game` 负责(§3.10) |
-| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent=None, origin=None, spread=None, enable_timeout=None, market=None, limit=None, post_only=None, time_in_force=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。`intent=None` 时按树推导(补偿树 `recovery`、套利树 `arbitrage`)、`origin=None` 时按当前 phase 推导(`in_game`/`pre_game`,UNKNOWN 不写),显式值均覆盖推导,详见本节末 intent/origin 契约。若前置 `magic_order_gate` 已写本轮 magic，则原样复制到所有 submit spec。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。输入腿若已携带 `position_id`，直接 SELL 计划必须原样传到 submit spec，由 NT 精确关闭该 Position。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 取 `min(当前价, live best bid)`，SELL 取 `max(当前价, live best ask)`。`post_only=true` 写入 submit spec，由 submitter 构造 NT post-only GTC `LimitOrder`；缺失或 `false` 构造普通限价单。`time_in_force` 缺失时保持 GTC；显式 `"IOC"` 时构造 IOC 限价单，立即按限价或更优价成交并取消余量，不允许同时配置 `post_only=true`。PM adapter 在最终边界用官方 market builder 满足 FAK BUY makerAmount 两位精度，同时保留原限价；详见 execution §3.6。`market=true` 只写订单 metadata，最终市价转换同见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变。Paper 模式属于 launcher/execution 边界，不是 Action 分支 |
+| `PlaceBetsAction(price_overrides=None, qty_overrides=None, intent=None, origin=None, spread=None, enable_timeout=None, market=None, limit=None, post_only=None, time_in_force=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 名称为配置兼容保留，职责已收窄为**树内执行计划构造**。`intent=None` 时按树推导(补偿树 `recovery`、套利树 `arbitrage`)、`origin=None` 时按当前 phase 推导(`in_game`/`pre_game`,UNKNOWN 不写),显式值均覆盖推导,详见本节末 intent/origin 契约。若前置 `magic_order_gate` 已写本轮 magic，则原样复制到所有 submit spec。撤单意图生成 `ExecutionPlan(kind="cancel_pair")`；普通 legs 完成 side/price/qty、PM 库存减仓、spread/limit 定价、metadata 和资金需求转换后生成 `ExecutionPlan(kind="submit")`。输入腿若已携带 `position_id`，直接 SELL 计划必须原样传到 submit spec，由 NT 精确关闭该 Position。PM 目标 BUY 存在互斥 LONG 时优先转换为 SELL 既有仓位；当前暂不要求 SELL 互补参考价 `<= best bid`，缺 bid 或价格不交叉也继续转换，因此 SELL 可能只挂单而不立即成交。减仓量按现有 LONG Position 拆分，每条 SELL spec 携带对应 `position_id`，由 NT 原生 Position 生命周期关闭该仓位；无法取得 ID 或拆分后不满足单笔最小数量时不使用该库存。`limit=true` 时转换完成后每个最终 draft 的 BUY 取 `min(当前价, live best bid)`，SELL 取 `max(当前价, live best ask)`；随后应用有符号 `spread`（`-1 < spread < 1`），正数让 BUY 价下移/SELL 价上移，负数让 BUY 价上移/SELL 价下移，最终仍裁剪到 instrument 价格边界。`post_only=true` 写入 submit spec，由 submitter 构造 NT post-only GTC `LimitOrder`；缺失或 `false` 构造普通限价单。`time_in_force` 缺失时保持 GTC；显式 `"IOC"` 时构造 IOC 限价单，立即按限价或更优价成交并取消余量，不允许同时配置 `post_only=true`。PM adapter 在最终边界用官方 market builder 满足 FAK BUY makerAmount 两位精度，同时保留原限价；详见 execution §3.6。`market=true` 只写订单 metadata，最终市价转换同见 execution §3.6。Action 不调用 `submitter/pair_order_canceler`。最终计划由 Evaluator 统一选择和分发，现有 Risk、submit/cancel grouped barrier 与 adapter 不变。Paper 模式属于 launcher/execution 边界，不是 Action 分支 |
 
 `mean_rebate`、`one_side_rebate` 与 `mean_rebate_recovery` 的行情候选腿统一由
 `src/arbitrage/strategy/checks/quote_legs.py::quote_legs_by_outcome` 构造。⚠️ 2026-07-20/21
@@ -566,7 +566,7 @@ share，decimal venue qty 继续由 Venue Registry 反算，不能直接把 shar
 5. Strategy 不冻结 sports state。PMS score 是独立评估触发源；OE/SE `inPlay` 仍只更新状态。
    每轮评估从 Store 读取最新 phase/score。
 
-#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367/#404,已落地 · 离线已验证 · live-unvalidated · as-of 2026-09-28)
+#### 3.8.2 PM 初始/开赛/极值价格采集(#323/#341/#364/#367/#404/#513,已落地 · 离线已验证 · live-unvalidated · as-of 2026-11-28)
 
 `StrategyEvaluator` 组合 PM OBD、PMS phase 与 PairRegistry，把 market-level pair 的
 `first_price/start_price/up_price/down_price` 写入 Cache-backed `PairPriceStore`（Store schema/API 见 common §3.1）。
@@ -594,10 +594,17 @@ OE/SE `inPlay=false` 可在 PMS 赛前帧缺失时提供明确 PRE；`inPlay=tru
 仅当该 pair 已采到 `first_price`（= 见证过赛前盘口）且 `start_price` 仍为空时，读取当时
 Cache 中完整 PM best ask 向量；仅当概率和位于闭区间 `[0.98,1.02]` 时整组首次写入。
 phase 切换时缺完整 PM 盘口或区间不通过则保持空值；有效 phase 仍为 IN_PLAY 时，后续正常 OBD
-继续幂等重试，直到首次取得合格向量，成功后不再覆盖。`start_price` 不提供默认兜底；DashGate 等消费者在其
-为空时按缺数据处理，不得把占位价格用于策略判断。完整性校验使用独立的 `outcomes` 清单，
-不再借用 `start_price` 的键集合。`capture_start` 首次写入成功后打印一次 INFO：
-`Start price captured: pair=... game=... source=... prices=...`；重复尝试或缺少前置条件不打印。
+继续幂等重试，直到首次取得合格向量。收到 `SportsGameUpdate` 时，先以
+`SportsGameStateStore.score_history` 最后一条的 `score/ts_event` 判断本消息确实新追加了不同比分；
+仅当真实比分变化后的完整比分**当前盘局分相等且不为 `0-0`**（如 `1-1`、`2-2`，包括 `6-6`），
+才用该事件处理时 Cache 中同样完整且概率和位于
+`[0.98,1.02]` 的 PM best ask 向量整组覆盖 `start_price`；领先比分及 `0-0` 不覆盖，普通 OBD
+和仅 phase 变化但比分未变的消息也不覆盖。OBD 只负责首次空值重试，不能持续覆盖。
+覆盖仍要求已有 `first_price` 且 phase 为 IN_PLAY。
+`start_price` 不提供默认兜底；DashGate 等消费者在其为空时按缺数据处理，不得把占位价格用于策略判断。
+完整性校验使用独立的 `outcomes` 清单，不再借用 `start_price` 的键集合。首次写入打印
+`Start price captured: ...`；非零平局发生实际变更时打印 `Start price updated at draw: ...`；
+相同向量、缺少前置条件或不合格向量不打印。
 
 **up_price/down_price(#341)**：每个 PM OBD 回调在路由评估前，读取该 pair 各 outcome 唯一且
 完整的 PM best ask 概率向量；仅当概率和位于 pre_move commission 闭区间 `[0.98,1.02]` 才采样。

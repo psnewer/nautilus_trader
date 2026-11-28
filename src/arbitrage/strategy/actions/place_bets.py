@@ -23,8 +23,8 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整�
   - time_in_force="IOC" 写入 submit spec，由 submitter 构造 IOC LimitOrder；缺失时保持 GTC。
     IOC 与 post_only=true 互斥。
   - limit=true 时最终 BUY 取当前价与 live best bid 的较低者，SELL 取当前价与 live best ask
-    的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。若同时配置 spread，先应用
-    limit，再对最终 draft 应用 spread。
+    的较高者；盘口概率按 quote_claim 还原为 venue 原生价格。若同时配置有符号 spread，先应用
+    limit，再对最终 draft 应用 spread：正数让限价更保守，负数让限价更激进。
   - leg→side/price/qty 基础解析与 instrument constraints 读取在 `strategy/leg_plan.py`,
     与 `CandiSelectAction` 最小下注门控共用一份,防止门控与提交漂移。
 """
@@ -251,13 +251,13 @@ def _normalize_spread(value: float | None) -> float:
     if value is None:
         return 0.0
     spread = float(value)
-    if not math.isfinite(spread) or not 0 <= spread < 1:
-        raise ValueError(f"spread must be a finite probability in [0, 1), got {value!r}")
+    if not math.isfinite(spread) or not -1 < spread < 1:
+        raise ValueError(f"spread must be a finite probability offset in (-1, 1), got {value!r}")
     return spread
 
 
 def _apply_spread_to_drafts(drafts: list[dict], spread: float, ctx: EvalContext) -> None:
-    if spread <= 0:
+    if spread == 0:
         return
     for draft in drafts:
         original = float(draft["price"])

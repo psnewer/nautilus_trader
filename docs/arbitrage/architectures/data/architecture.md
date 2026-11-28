@@ -492,8 +492,9 @@ PMS 原始 parser 不猜发球方，初始值为空；Matching 的 Flashscore ev
 #### 3.4.5 Flashscore phase 补充契约(#507/#508，已落地 · offline-verified 2026-11-17)
 
 Matching 成功把 Flashscore 赛事映射到 PMS `game_id` 后，且该场已有 Matching sports 订阅时，
-`AB=2` 表示明确 IN_PLAY，`AB=3` 表示明确 POST；`AB=1`、请求失败、映射失败和赛事从 feed
-消失均不构成阶段证据。两种有效状态
+`AB=2` 表示明确 IN_PLAY；`AB=3` 仅在 `SportsGameStateStore.score_history(game_id)` 为空、即 PMS
+从未提供过有效比分时才作为 POST 补充，PMS 已出现任一比分后忽略 Flashscore POST。该门不要求
+此前阶段已为 IN_PLAY。`AB=1`、请求失败、映射失败和赛事从 feed 消失均不构成阶段证据。有效状态
 先通过 common `SportsPhaseStore.advance` 单调写入，source 记为 `FLASHSCORE`。无订阅赛事不存不推，
 避免绕过 PMS 的兴趣门控与归零回收；只有发生真实阶段跃迁才发布通知，重复 `AB=2/3` 不重复唤醒。
 
@@ -504,7 +505,7 @@ AB=2 的 `first_serve` 校验写入先于阶段通知，保持“Store 最新状
 阶段所需的 `live/ended/status/ts`；若 PMS 尚无详细状态，则构造最小通知。Flashscore 的比分不写入
 `SportsGameStateStore`，因此 PMS 仍是详细比分与历史的唯一真理源。
 
-Store 写入失败时不得发布；某通道发布失败不回滚已经单调推进的 phase。`AB=3` 不得绕过通知管道
+Store 写入失败时不得发布；某通道发布失败不回滚已经单调推进的 phase。通过 PMS 比分门的 `AB=3` 不得绕过通知管道
 直接调用 Matching eviction，否则 Strategy 收不到 ended，无法按 PMS 相同架构释放赛事订阅。
 
 ---

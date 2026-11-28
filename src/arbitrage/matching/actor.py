@@ -380,6 +380,8 @@ class MarketMatchingActor(Actor):
         """Flashscore AB=2/3 经统一 phase Store 与 sports topic 补充 PMS 阶段。"""
         if game_id not in self._sports_subscribed:
             return False
+        if event.status == "3" and sports_store.score_history(game_id):
+            return False
         phase = PHASE_POST if event.status == "3" else PHASE_IN_PLAY
         ts = self.clock.timestamp_ns()
         try:

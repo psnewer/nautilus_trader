@@ -76,3 +76,25 @@ Excel 包含“订单明细/Pair汇总/类型汇总/说明”，并以 `origin/i
 **期望**：建立连接前清除旧主库与 sidecar；新账本无历史订单，余额等于本次
 `starting_balance`。`reset=false` 仍保留原持久化语义。
 **验收**：`test_reset_recreates_empty_ledger_with_starting_balance`；launcher 测试钉住配置透传。
+
+## paper-7：历史回放接入单场 profit gate
+
+**前置**：审计回放使用现有 `PolymarketPaperExchange/PaperStore`；某场 BUY 后以更高价格
+SELL 全量平仓，paper 当前仓位归零但现金保留已实现收益。
+**输入**：`share=5.05`、`match_tp=0.01`，随后产生普通 `arbitrage` 新开仓计划；另测
+`intent=recovery` 补救计划。
+**期望**：回放从 paper 现金和当前成本还原两个 outcome 的 exposure，并直接调用生产
+`ArbitrageLiveRiskEngine._check_profit_gates`；普通新单被 `match_tp` 拒绝，recovery 保留
+生产例外。不得因平仓后当前 position 为空而丢失 realized PnL。
+**验收**：`test_replay_strategy_log.py::{test_closed_profit_triggers_production_match_tp_gate,
+test_recovery_order_keeps_production_profit_gate_exception}`。
+
+## paper-8：历史回放订单固化触发次数比
+
+**前置**：同一场当前盘已有多条 `ConsecutiveTriggerGate passed=True` observation，包含重复
+OBD、不同比分和最近平局边界。
+**输入**：普通 OBD 套利分支以及 `trigger_count(when="current_draw")` 分支形成 paper 订单。
+**期望**：订单形成当刻从回放使用的同一个 `ConsecutiveTriggerStore` 固化 YES:NO；同一
+outcome、同一完整比分只计一次。普通 OBD 统计当前盘全部历史；`current_draw` 只统计最近
+平局帧之前的 observation，平局时及之后不计；无有效比分或两边均为零时留空。
+**验收**：`test_trigger_ratio_uses_live_store_and_current_draw_boundary`。

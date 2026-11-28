@@ -1198,12 +1198,12 @@ def test_registered_executor_loop_used_without_running_loop():
 
 
 # ── PMSPORTS phase 状态消费与生命周期回收───────────────────────────────
-def _sports_update(game_id=888, *, ts=1, live=True, ended=False):
+def _sports_update(game_id=888, *, ts=1, live=True, ended=False, score="1-0"):
     from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 
     return SportsGameUpdate(
         ts_event=ts, ts_init=ts, game_id=game_id, league="x", home_team="A", away_team="B",
-        status="InProgress", score="1-0", period="Q1", elapsed="", live=live, ended=ended,
+        status="InProgress", score=score, period="Q1", elapsed="", live=live, ended=ended,
         finished_ts="",
     )
 
@@ -1536,6 +1536,109 @@ def test_start_price_accepts_clean_sum_boundaries(yes_ask, no_ask):
     assert actor._get_pair_price_store().get("match_X").start_price == {
         "yes": yes_ask,
         "no": no_ask,
+    }
+
+
+def test_nonzero_current_set_draw_updates_start_price_only_on_score_event():
+    from tests.arbitrage.matching.test_actor import _add_order_book
+
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    _add_order_book(actor.cache, yes.id, 0.48)
+    _add_order_book(actor.cache, no.id, 0.50)
+    live = _sports_update(888, live=True, ended=False, score="0-0")
+    _store_sports_update(actor, live)
+    actor.on_data(live)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.48,
+        "no": 0.50,
+    }
+
+    _add_order_book(actor.cache, yes.id, 0.55)
+    _add_order_book(actor.cache, no.id, 0.45)
+    zero_draw = _sports_update(888, ts=2, live=True, ended=False, score="0-0")
+    _store_sports_update(actor, zero_draw)
+    actor.on_data(zero_draw)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.48,
+        "no": 0.50,
+    }
+
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.48,
+        "no": 0.50,
+    }
+
+    leading = _sports_update(888, ts=3, live=True, ended=False, score="1-0")
+    _store_sports_update(actor, leading)
+    actor.on_data(leading)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.48,
+        "no": 0.50,
+    }
+
+    draw = _sports_update(888, ts=4, live=True, ended=False, score="1-1")
+    _store_sports_update(actor, draw)
+    actor.on_data(draw)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.55,
+        "no": 0.45,
+    }
+
+    _add_order_book(actor.cache, yes.id, 0.60)
+    _add_order_book(actor.cache, no.id, 0.40)
+    same_score_phase_update = _sports_update(
+        888,
+        ts=5,
+        live=True,
+        ended=False,
+        score="1-1",
+    )
+    _store_sports_update(actor, same_score_phase_update)
+    actor.on_data(same_score_phase_update)
+    _run(_drain(loop))
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.55,
+        "no": 0.45,
+    }
+
+
+def test_nonzero_draw_does_not_update_start_price_from_dirty_pm_vector():
+    from tests.arbitrage.matching.test_actor import _add_order_book
+
+    actor, _, pair_reg, _, loop, _ = _harness()
+    yes, no = _wire_pair_price_books(actor, pair_reg, yes_ask=0.44, no_ask=0.56)
+    _store_sports_update(actor, _sports_update(888, live=False, ended=False))
+    actor.on_order_book_deltas(_obd(str(yes.id)))
+    _run(_drain(loop))
+
+    _add_order_book(actor.cache, yes.id, 0.48)
+    _add_order_book(actor.cache, no.id, 0.50)
+    live = _sports_update(888, live=True, ended=False, score="0-0")
+    _store_sports_update(actor, live)
+    actor.on_data(live)
+    _run(_drain(loop))
+
+    _add_order_book(actor.cache, yes.id, 0.70)
+    _add_order_book(actor.cache, no.id, 0.60)
+    draw = _sports_update(888, ts=2, live=True, ended=False, score="2-2")
+    _store_sports_update(actor, draw)
+    actor.on_data(draw)
+    _run(_drain(loop))
+
+    assert actor._get_pair_price_store().get("match_X").start_price == {
+        "yes": 0.48,
+        "no": 0.50,
     }
 
 

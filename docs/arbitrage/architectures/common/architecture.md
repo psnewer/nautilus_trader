@@ -99,7 +99,7 @@ Strategy 记录与 Execution 重算的执行状态基线是 `pair_positions_dige
   `pair_ids_for_game`,防止同场的 3-way pair 只触发排序后的第一个。
 - MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。
 
-### 3.1 PairPriceStore(已落地,#323/#341/#356,as-of 2026-09-23)
+### 3.1 PairPriceStore(已落地,#323/#341/#356/#513,as-of 2026-11-28)
 
 `src/arbitrage/common/pair_prices.py` 在 NT Cache 通用对象区保存 market-level pair 的参考价格，
 key 为 `arb:pair_price:{pair_id}`。采集时机和盘口完整性规则归 Strategy
@@ -109,12 +109,13 @@ key 为 `arb:pair_price:{pair_id}`。采集时机和盘口完整性规则归 Str
 |---|---|
 | `outcomes` | pair 的完整 outcome 清单；初始化后不可变，供各价格向量做完整性校验 |
 | `first_price` | outcome → PM best ask 概率；初始化为空字典，首次完整写入后不可覆盖 |
-| `start_price` | outcome → PM best ask 概率；初始化为空字典，首次完整写入后不可覆盖；空字典就是“未采集”，不提供默认价格 |
+| `start_price` | outcome → PM best ask 概率；初始化为空字典，首次开赛采集后可由 Strategy 在非零当前盘平局比分事件上整组替换；空字典就是“未采集”，不提供默认价格 |
 | `up_price` | outcome → 满足 commission 区间的历史最高 PM best ask 概率；首个有效向量初始化，后续逐 outcome 取 `max` |
 | `down_price` | outcome → 满足 commission 区间的历史最低 PM best ask 概率；首个有效向量初始化，后续逐 outcome 取 `min` |
 | `trend_price` | outcome → 最近一次满足 `1 < Σ各 outcome 跨 venue 最优 best-ask 概率 < 1.05` 的完整基准向量；初始化为空，不进入 EvalContext 快照 |
 | `initialize(pair_id, outcomes)` | 幂等初始化；已有记录保持不变，重新收到 MatchedPair 不重置参考价 |
 | `capture_first` / `capture_start` | 比较并整组写入；禁止逐 outcome 更新造成混合时点向量 |
+| `update_start` | 接收完整同刻价格向量并原子替换 `start_price`；只允许在哪些比分覆盖及 commission 完整性校验由 Strategy 采集方拥有 |
 | `update_extremes` | 接收完整同刻价格向量并原子更新 `up_price/down_price`；commission 完整性校验由 Strategy 采集方拥有 |
 | `update_trend` | 接收完整同刻价格向量并原子替换 `trend_price`；最优价选择与 commission 区间校验由 Strategy 采集方拥有 |
 | `delete(pair_id)` | Strategy 在比赛 ended 的最后一轮评估完成后删除记录 |
@@ -148,7 +149,7 @@ candidate 差分与等待新帧语义见 matching §4.2.1，OE 页动作见 data
 
 `src/arbitrage/common/sports_phase.py` 在 NT Cache 通用对象区按 `sports:phase:{game_id}` 保存
 聚合后的 `PRE / IN_PLAY / POST`。状态只允许向前推进：OE/SE `inPlay=false` 只能初始化 PRE，
-`true` 推进到 IN_PLAY；PMSPORTS `ended` 或成功映射的 Flashscore `AB=3` 推进 POST，
+`true` 推进到 IN_PLAY；PMSPORTS `ended`，或 PMS 从未提供比分时成功映射的 Flashscore `AB=3` 推进 POST，
 Flashscore `AB=2` 可补充推进 IN_PLAY。记录同时保留最后一次有效跃迁的
 `source/ts_event`。Store 无记录(`get(...) is None`)表示 UNKNOWN，不得默认为 PRE；
 只有明确的 `inPlay=false` 或 PMS PRE 才构成赛前证据。完整多源生产、生命周期与消费契约见

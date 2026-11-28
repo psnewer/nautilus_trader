@@ -309,10 +309,10 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 
 ### strategy-4.29:PlaceBetsAction spread 限价偏移
 - **.1**:`spread=0.02` 时最终订单先转成 YES 隐含概率，BUY 概率减 0.02、SELL 概率加
-  0.02，再反算为 venue 价格；PM 价格因此直接加减，OE/SE decimal 赔率按倒数关系变化，
-  qty 不变
+  0.02；`spread=-0.02` 时反向偏移，BUY 概率加 0.02、SELL 概率减 0.02。随后反算为 venue
+  价格；PM 价格因此直接加减，OE/SE decimal 赔率按倒数关系变化，qty 不变
 - **.2**:PM 越界价格裁剪到 `[tick, 1-tick]`；decimal 越界裁剪到 `[1.01, 1000]`
-- **.3**:负数、`>=1`、NaN、Infinity 配置 fail-fast
+- **.3**:`spread` 必须为有限值且位于 `(-1,1)`；`<=-1`、`>=1`、NaN、Infinity 配置 fail-fast
 - **.4**:PM 互斥库存拆为 SELL+BUY 后再应用 spread，两条子单 qty 保持原 sizing 结果
 - **.5**:per-venue `venue_required_balance` 使用 spread 后的最终价格
 - **.6**:Action 保留 spread 反算后的计划价格，不重复执行 OE/SE 分段赔率量化；合法档位只由
@@ -1098,6 +1098,8 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 `test_start_price_not_captured_without_witnessed_first_price`、
 `test_start_price_retries_after_dirty_live_snapshot_until_clean_obd`、
 `test_start_price_accepts_clean_sum_boundaries`、
+`test_nonzero_current_set_draw_updates_start_price_only_on_score_event`、
+`test_nonzero_draw_does_not_update_start_price_from_dirty_pm_vector`、
 `test_ended_deletes_pair_prices_after_last_evaluation_finishes`。
 
 **期望/验收**:
@@ -1108,8 +1110,10 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   不依赖 `first_price`/Sports PRE，非 PM 或不干净向量不更新；旧 Cache schema 缺极值字段按空兼容；
 - IN_PLAY phase 仅当该 pair 已在明确 PRE 下采到 `first_price`，且完整 PM ask 向量概率和位于
   闭区间 `[0.98,1.02]` 时首次写 start price；phase 切换瞬间不合格则保持为空，后续正常 OBD
-  继续幂等重试直到首次合格；没有赛前见证则始终为空；成功写入时打印一次含
-  `pair/game/source/prices` 的 `Start price captured` INFO，重复尝试不打印；
+  继续幂等重试直到首次合格；没有赛前见证则始终为空；消息须在比分历史中形成新记录，且变化后
+  当前盘为非零平局，才用当时同样合格的完整 PM ask 向量覆盖 start price；`0-0`、领先比分、
+  仅 phase 变化但比分未变的消息、普通 OBD 与脏向量均不覆盖；
+  成功首次写入打印 `Start price captured`，非零平局实际改值打印 `Start price updated at draw`；
 - ended 调度后的异步评估运行期间记录仍存在，最后一个评估 task 完成后才删除 pair 记录和
   game 索引。
 

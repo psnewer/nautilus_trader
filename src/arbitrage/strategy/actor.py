@@ -71,6 +71,7 @@ from src.arbitrage.strategy.checks.quote_legs import best_probabilities_by_outco
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree_to_plan
 from src.arbitrage.strategy.consecutive_triggers import ConsecutiveTriggerStore
+from src.arbitrage.strategy.consecutive_triggers import score_key
 from src.arbitrage.strategy.execution_plan import dispatch_execution_plan
 from src.arbitrage.strategy.in_game_positions import InGamePositionRuntimeStore
 from src.arbitrage.strategy.registry import StrategyRegistry
@@ -726,10 +727,25 @@ class StrategyEvaluator(Strategy):
         phase_state = phase_store.get(update.game_id) if phase_store is not None else None
         if phase_state is None or phase_state.phase != PHASE_IN_PLAY:
             return
+        parsed_score = score_key(update.score)
+        current_set_draw = (
+            self._is_score_change(update)
+            and parsed_score is not None
+            and parsed_score[-1][0] == parsed_score[-1][1]
+            and parsed_score[-1][0] > 0
+        )
         for pair_id in sorted(self._price_pairs_by_game.get(int(update.game_id), set())):
-            self._capture_start_price_for_pair(pair_id)
+            self._capture_start_price_for_pair(pair_id, update=current_set_draw)
 
-    def _capture_start_price_for_pair(self, pair_id: str) -> None:
+    def _is_score_change(self, update: SportsGameUpdate) -> bool:
+        """判断当前消息是否是 Store 新追加的不同比分帧。"""
+        history = self._get_sports_store().score_history(update.game_id)
+        if not history:
+            return False
+        latest = history[-1]
+        return latest.score == update.score and latest.ts_event == update.ts_event
+
+    def _capture_start_price_for_pair(self, pair_id: str, *, update: bool = False) -> None:
         game_id = self._price_game_by_pair.get(pair_id)
         phase_store = self._get_phase_store()
         phase_state = phase_store.get(game_id) if phase_store is not None and game_id is not None else None
@@ -743,9 +759,11 @@ class StrategyEvaluator(Strategy):
         prices = self._pm_ask_prices(pair_id, state.outcomes)
         if prices is None or not 0.98 <= sum(prices.values()) <= 1.02:
             return
-        if store.capture_start(pair_id, prices):
+        changed = store.update_start(pair_id, prices) if update else store.capture_start(pair_id, prices)
+        if changed:
+            operation = "updated at draw" if update else "captured"
             self._log.info(
-                f"Start price captured: pair={pair_id} game={game_id} "
+                f"Start price {operation}: pair={pair_id} game={game_id} "
                 f"source={phase_state.source} prices={prices}",
             )
 

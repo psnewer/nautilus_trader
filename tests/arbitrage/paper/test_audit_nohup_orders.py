@@ -72,3 +72,41 @@ def test_audit_preserves_apostrophe_in_pair_id_and_links_score(tmp_path):
     assert row["选手2"] == "Benjamin O'Connell"
     assert row["下单比分"] == "2-2"
     assert row["首次成交比分"] == "2-2"
+
+
+def test_audit_links_inferred_fill_to_latest_live_strategy_order(tmp_path):
+    log_path = tmp_path / "nohup.out"
+    output_path = tmp_path / "audit.json"
+    instrument = "condition-token.POLYMARKET"
+    log_path.write_text(
+        "\n".join([
+            "2026-11-27T12:00:00.000000000Z [INFO] MatchedPair Tennis|Federico Bondioli|Semen Pankin (conf=2.00)",
+            "2026-11-27T12:00:00.010000000Z [INFO] SubscribeData(params={'game_id': 404})",
+            "2026-11-27T12:00:01.000000000Z [INFO] Sports score updated: game=404 Federico Bondioli vs Semen Pankin score=<none>->2-2 period=S1 elapsed= status=inprogress",
+            f"2026-11-27T12:01:00.000000000Z [INFO] OrderInitialized(instrument_id={instrument}, client_order_id=ARB-old, side=BUY, type=LIMIT, quantity=5.050000, options={{'price': '0.59'}}, tags=['arb:pair_id=Tennis|Federico Bondioli|Semen Pankin', 'arb:leg_key=polymarket:yes:0'])",
+            "2026-11-27T12:02:00.000000000Z [INFO] <--[EVT] OrderCanceled(client_order_id=ARB-old, account_id=POLYMARKET-001)",
+            f"2026-11-27T12:03:00.000000000Z [INFO] OrderInitialized(instrument_id={instrument}, client_order_id=ARB-live, side=BUY, type=LIMIT, quantity=5.050000, options={{'price': '0.59'}}, tags=['arb:pair_id=Tennis|Federico Bondioli|Semen Pankin', 'arb:leg_key=polymarket:yes:0'])",
+            f"2026-11-27T12:04:00.000000000Z [INFO] Generated inferred OrderFilled(instrument_id={instrument}, client_order_id=external, order_side=BUY, last_qty=5.050000, last_px=0.59 USDC.e)",
+            "2026-11-27T12:05:00.000000000Z [INFO] <--[EVT] OrderRejected(client_order_id=ARB-live, account_id=POLYMARKET-001)",
+        ]),
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts/arbitrage_audit/audit_nohup_orders.py")),
+            str(log_path),
+            str(output_path),
+        ],
+        check=True,
+    )
+
+    rows = {
+        row["client_order_id"]: row
+        for row in json.loads(output_path.read_text(encoding="utf-8"))["rows"]
+    }
+    assert rows["ARB-old"]["状态"] == "未成交-已撤单"
+    assert rows["ARB-live"]["状态"] == "已成交"
+    assert rows["ARB-live"]["已成交量"] == 5.05
+    assert rows["ARB-live"]["成交均价"] == 0.59

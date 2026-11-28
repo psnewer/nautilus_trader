@@ -52,6 +52,17 @@ def test_update_extremes_tracks_each_outcome_high_and_low():
     assert state.down_price == {"yes": 0.35, "no": 0.45}
 
 
+def test_update_start_replaces_only_complete_changed_vector():
+    store = PairPriceStore(_Cache())
+    store.initialize("p", ["yes", "no"])
+    store.capture_start("p", {"yes": 0.45, "no": 0.55})
+
+    assert store.update_start("p", {"yes": 0.45, "no": 0.55}) is False
+    assert store.update_start("p", {"yes": 0.5}) is False
+    assert store.update_start("p", {"yes": 0.52, "no": 0.48}) is True
+    assert store.get("p").start_price == {"yes": 0.52, "no": 0.48}
+
+
 def test_update_trend_replaces_complete_outcome_vector():
     store = PairPriceStore(_Cache())
     store.initialize("p", ["yes", "no"])

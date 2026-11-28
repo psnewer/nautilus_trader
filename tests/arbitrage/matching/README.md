@@ -60,8 +60,11 @@
   在已有 sports 订阅时同时把统一 phase 推进为 IN_PLAY，并在 `first_serve` 写入后按既有
   phase/score 两通道各通知一次；无订阅赛事不存不推。
 - `test_flashscore_finished_event_evicts_pair_without_saved_event_id`：即使进程内尚未保存 Flashscore
-  event ID，`AB=3` 也能经同向队名映射到 PMS `game_id`，先推进统一 POST，再由 phase 通知触发
-  既有 eviction；score 通知仍向 Strategy 发布，feed 缺失不作结束推断。
+  event ID，只要 PMS 从未提供比分，`AB=3` 也能经同向队名映射到 PMS `game_id`，无需已有
+  IN_PLAY phase 即可推进统一 POST，再由 phase 通知触发现有 eviction；score 通知仍向 Strategy
+  发布，feed 缺失不作结束推断。
+- `test_flashscore_finished_event_is_ignored_after_pms_score_exists`：PMS 比分历史已有任一有效比分时，
+  Flashscore `AB=3` 不得写 POST、发布 ended 或触发 eviction。
 - `test_flashscore_timer_callback_submits_refresh_to_injected_loop`：在调用线程没有 running loop 的
   条件下走真实 `_on_alert` 路径，确认 Flashscore refresh 被提交到注入的 kernel loop 并实际进入。
 | `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |

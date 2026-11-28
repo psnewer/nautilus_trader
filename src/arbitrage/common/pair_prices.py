@@ -115,6 +115,29 @@ class PairPriceStore:
         )
         return True
 
+    def update_start(self, pair_id: str, prices: dict[str, float]) -> bool:
+        """用完整 outcome 价格向量替换已记录的开赛价。"""
+        state = self.get(pair_id)
+        normalized = {str(outcome): float(value) for outcome, value in prices.items()}
+        if (
+            state is None
+            or set(normalized) != set(state.outcomes)
+            or normalized == state.start_price
+        ):
+            return False
+        self._put(
+            pair_id,
+            PairPriceState(
+                outcomes=state.outcomes,
+                first_price=state.first_price,
+                start_price=normalized,
+                up_price=state.up_price,
+                down_price=state.down_price,
+                trend_price=state.trend_price,
+            ),
+        )
+        return True
+
     def update_extremes(self, pair_id: str, prices: dict[str, float]) -> bool:
         """用一个完整同刻价格向量更新各 outcome 的历史最高/最低价。"""
         state = self.get(pair_id)

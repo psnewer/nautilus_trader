@@ -546,6 +546,40 @@ def test_action_spread_adjusts_final_buy_and_sell_prices_without_resizing():
     ]
 
 
+def test_action_negative_spread_makes_limit_prices_more_aggressive():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "BUY.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "yes",
+            "price": 0.4,
+            "qty": 5.0,
+        },
+        {
+            "instrument_id": "SELL.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "SELL",
+            "role": "no",
+            "price": 0.6,
+            "qty": 5.0,
+        },
+    ]
+
+    _prepare_and_dispatch(PlaceBetsAction(spread=-0.02), ctx)
+
+    assert [(call["side"], call["price"]) for call in calls] == [
+        ("BUY", pytest.approx(0.42)),
+        ("SELL", pytest.approx(0.58)),
+    ]
+
+
 def test_action_spread_clamps_prices_to_venue_extremes():
     calls = []
 
@@ -616,7 +650,7 @@ def test_action_spread_prefers_instrument_price_bounds():
     assert calls[0]["price"] == 0.05
 
 
-@pytest.mark.parametrize("spread", [-0.01, 1.0, float("inf"), float("nan")])
+@pytest.mark.parametrize("spread", [-1.0, 1.0, float("inf"), float("nan")])
 def test_action_rejects_invalid_probability_spread(spread):
     with pytest.raises(ValueError, match="spread must be"):
         PlaceBetsAction(spread=spread)

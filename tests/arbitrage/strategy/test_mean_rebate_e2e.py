@@ -263,7 +263,7 @@ def test_place_bets_spread_param_loads_from_strategy_json():
                             "type": "mean_rebate",
                             "params": {"min_rate": 0.01},
                         },
-                        "actions": [{"type": "place_bets", "params": {"spread": 0.02}}],
+                        "actions": [{"type": "place_bets", "params": {"spread": -0.02}}],
                     },
                 },
             },
@@ -276,7 +276,7 @@ def test_place_bets_spread_param_loads_from_strategy_json():
     assert strategy is not None
     action = strategy.arbitrage_tree.actions[0]
     assert isinstance(action, PlaceBetsAction)
-    assert action._spread == 0.02
+    assert action._spread == -0.02
 
 
 def test_place_bets_market_param_loads_from_strategy_json():

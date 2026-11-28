@@ -388,6 +388,49 @@ def test_flashscore_finished_event_evicts_pair_without_saved_event_id():
     assert published[2]["data"].ended is True
 
 
+def test_flashscore_finished_event_is_ignored_after_pms_score_exists():
+    from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+    from src.arbitrage.common.sports_phase import SportsPhaseStore
+    from src.arbitrage.matching.flashscore import FlashscoreEvent
+
+    actor, _, cache, _, _ = _harness(anchor_venue="PMSPORTS")
+    store = SportsGameStateStore(cache)
+    store.put(
+        SportsGameUpdate(
+            ts_event=1,
+            ts_init=1,
+            game_id=888,
+            league="atp",
+            home_team="Rafael Jodar",
+            away_team="Felix Gill",
+            status="InProgress",
+            score="3-3",
+            period="S1",
+            elapsed="",
+            live=True,
+            ended=False,
+            finished_ts="",
+        ),
+    )
+    event = FlashscoreEvent(
+        event_id="finished",
+        status="3",
+        home_team="Jodar R.",
+        away_team="Gill F.",
+        score="6-4, 6-3",
+        first_serve=None,
+        raw={"AB": "3"},
+    )
+    actor._sports_subscribed.add(888)
+    published = []
+    actor.publish_data = lambda **kwargs: published.append(kwargs)
+
+    assert actor._publish_flashscore_phase(888, event, store) is False
+    assert SportsPhaseStore(cache).get(888) is None
+    assert published == []
+
+
 def test_flashscore_timer_callback_submits_refresh_to_injected_loop():
     """LiveClock 同步回调没有 running loop 时，仍把刷新提交到 kernel loop。"""
     loop = asyncio.new_event_loop()

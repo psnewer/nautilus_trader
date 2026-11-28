@@ -49,7 +49,7 @@
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
 | 详细状态与阶段分家 | `SportsGameStateStore` 保存 PMS 完整 payload；`SportsPhaseStore` 是 PMS/OE/SE/Flashscore 聚合后的阶段真理源 |
 | `(game_id, channel)` 即订阅键 | 每场每通道独立 DataType/topic；matching 与 strategy 当前均订 `phase`，全部通道订阅汇合归零后回收 Store 条目；OBD book 仍按原订阅生命周期回收 |
-| phase 单调推进 | PRE → IN_PLAY → POST；OE/SE false 不得把已确认的 IN_PLAY/POST 回退；POST 只认 PMS ended 或已映射 Flashscore `AB=3` |
+| phase 单调推进 | PRE → IN_PLAY → POST；OE/SE false 不得把已确认的 IN_PLAY/POST 回退；POST 只认 PMS ended，或 PMS 从未提供比分时已映射的 Flashscore `AB=3` |
 
 ---
 
@@ -128,7 +128,7 @@ account   = None
      `SportsPhaseStore(game_id)`；完整比分等字段仍只由 PMS 写 `SportsGameStateStore`。
    - OE/SE 的 `game_id` 来自 Matching/Strategy market 订阅 params，不从 venue event id 猜测。
    - `inPlay` 缺失不更新；false 只能建立 PRE，true 推进 IN_PLAY；Flashscore `AB=2` 推进
-     IN_PLAY，`AB=3` 推进 POST；`AB=1` 与 feed 缺失不更新。
+     IN_PLAY；`AB=3` 仅在 PMS 比分历史为空时推进 POST，且不要求此前 phase 已为 IN_PLAY；`AB=1` 与 feed 缺失不更新。
    - 所有源都未给出有效 phase 时 Store 无记录，语义为 UNKNOWN；消费者不得用
      `NOT in_game` 将 UNKNOWN 反推为 PRE。显式 PRE 与 IN_PLAY 分别由 `pre_game` / `in_game` 查询。
    - OE/SE phase 变化不建立第二条事件管线；现有 OBD/PMS 唤醒后读取最新 phase。

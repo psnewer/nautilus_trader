@@ -120,6 +120,7 @@ def main() -> None:
     drops: dict[str, list[dict]] = defaultdict(list)
     orders: dict[str, dict] = {}
     fills: dict[str, list[dict]] = defaultdict(list)
+    inferred_fills: list[dict] = []
     terminal: dict[str, dict] = {}
 
     with args.input.open("r", errors="replace") as stream:
@@ -235,7 +236,9 @@ def main() -> None:
                 role = re.search(r"arb:leg_key=[^:]+:([^:']+):", line)
                 price = re.search(r"options=\{'price': '([^']+)'", line)
                 quantity = re.search(r"quantity=([0-9.]+)", line)
-                if order_id and pair and role and price and quantity:
+                instrument = re.search(r"instrument_id=([^,]+)", line)
+                side = re.search(r"side=(BUY|SELL)", line)
+                if order_id and pair and role and price and quantity and instrument and side:
                     orders[order_id.group(1)] = {
                         "id": order_id.group(1),
                         "ts": ts,
@@ -243,8 +246,25 @@ def main() -> None:
                         "role": role.group(1),
                         "price": float(price.group(1)),
                         "quantity": float(quantity.group(1)),
+                        "instrument": instrument.group(1),
+                        "side": side.group(1),
                         "line": line_number,
                     }
+                continue
+
+            if "Generated inferred OrderFilled(" in line:
+                instrument = re.search(r"instrument_id=([^,]+)", line)
+                side = re.search(r"order_side=(BUY|SELL)", line)
+                quantity = re.search(r"last_qty=([0-9.]+)", line)
+                price = re.search(r"last_px=([0-9.]+)", line)
+                if instrument and side and quantity and price:
+                    inferred_fills.append({
+                        "ts": ts,
+                        "instrument": instrument.group(1),
+                        "side": side.group(1),
+                        "quantity": float(quantity.group(1)),
+                        "price": float(price.group(1)),
+                    })
                 continue
 
             if "OrderFilled(" in line and "client_order_id=ARB-" in line:
@@ -265,9 +285,34 @@ def main() -> None:
                 if event and order_id:
                     terminal[order_id.group(1)] = {"ts": ts, "event": event.group(1)}
 
+    for inferred in inferred_fills:
+        candidates = []
+        for order in orders.values():
+            if order["instrument"] != inferred["instrument"] or order["side"] != inferred["side"]:
+                continue
+            if abs(order["price"] - inferred["price"]) > 1e-9 or order["ts"] > inferred["ts"]:
+                continue
+            end = terminal.get(order["id"])
+            if end is not None and end["ts"] < inferred["ts"]:
+                continue
+            filled = sum(item["quantity"] for item in fills.get(order["id"], ()))
+            if filled >= order["quantity"] - 1e-6:
+                continue
+            candidates.append(order)
+        if candidates:
+            order = max(candidates, key=lambda item: item["ts"])
+            fills[order["id"]].append({
+                "ts": inferred["ts"],
+                "quantity": inferred["quantity"],
+                "price": inferred["price"],
+                "inferred": True,
+            })
+
     for values in (snapshots, scores, phases, starts, preparations, drops):
         for items in values.values():
             items.sort(key=lambda item: item["ts"])
+    for items in fills.values():
+        items.sort(key=lambda item: item["ts"])
 
     rows = []
     for order in sorted(orders.values(), key=lambda item: item["ts"]):
